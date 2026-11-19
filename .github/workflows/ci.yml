@@ -256,6 +256,27 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sh scripts/ci-apt.sh libxkbcommon-dev pkg-config squashfs-tools binutils fonts-dejavu-core
+      # The urb engine (rune-ui/src/engine.rs) is libmesa's C, which is C23:
+      # ubuntu-22.04's clang and Xcode's cannot compile it, so each gets a
+      # newer one, as the desktop's jobs do. Windows builds without the engine.
+      - name: clang 18 for the urb engine (linux)
+        if: runner.os == 'Linux'
+        run: sh desktop/scripts/clang-18.sh
+      - name: homebrew llvm for the urb engine (macos)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm@20
+          llvm="$(brew --prefix llvm@20)"
+          echo "CC_aarch64_apple_darwin=$llvm/bin/clang" >> "$GITHUB_ENV"
+          echo "CC_x86_64_apple_darwin=$llvm/bin/clang" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=$llvm/lib" >> "$GITHUB_ENV"
+          echo "CLANG_PATH=$llvm/bin/clang" >> "$GITHUB_ENV"
+          sdk="$(xcrun --show-sdk-path)"
+          echo "SDKROOT=$sdk" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-isysroot $sdk -isystem $("$llvm/bin/clang" -print-resource-dir)/include" >> "$GITHUB_ENV"
+      - name: urb engine sources
+        if: runner.os != 'Windows'
+        run: sh rune-ui/scripts/mesa-deps.sh
       - name: cargo test
         if: runner.os == 'Linux'
         working-directory: rune-ui

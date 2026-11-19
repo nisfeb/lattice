@@ -37,6 +37,9 @@ const FETCH_BYTES: usize = 12 << 20;
 pub struct Key {
     pub name: String,
     pub rev: u64,
+    /// Which text of that revision: a page of another ship is always revision 0, and a save kept on
+    /// this device has new text at the old revision. The window counts up when the text is new.
+    pub text: u64,
 }
 
 /// How a page is wanted.
@@ -60,6 +63,8 @@ enum Cmd {
     Point(f32, f32, bool),
     /// Something the page asked for has come.
     Loaded,
+    /// The window is done with the thread.
+    Quit,
 }
 
 /// What the page's thread tells the window.
@@ -77,6 +82,9 @@ pub enum Out {
     Hot(bool),
     /// A link was pressed.
     Link(String),
+    /// Laying out or painting the page failed inside the engine. The thread goes on without it, and
+    /// the window reads the page another way.
+    Failed,
 }
 
 /// The window's hold on the page's thread.
@@ -91,7 +99,8 @@ impl Html {
         let (tx, rx) = channel();
         let out = Arc::new(Mutex::new(Vec::new()));
         let (o, own) = (out.clone(), tx.clone());
-        let _ = std::thread::Builder::new().name("html".to_owned()).spawn(move || run(rx, own, o, wake));
+        // style and layout go as deep as the page's markup does: a deep page gets the room
+        let _ = std::thread::Builder::new().name("html".to_owned()).stack_size(64 << 20).spawn(move || run(rx, own, o, wake));
         Html { tx, out }
     }
 
@@ -116,6 +125,13 @@ impl Html {
     /// What has come since last asked.
     pub fn take(&self) -> Vec<Out> {
         std::mem::take(&mut *self.out.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+impl Drop for Html {
+    fn drop(&mut self) {
+        // the thread holds a sender of its own, so the channel closing would never end it
+        let _ = self.tx.send(Cmd::Quit);
     }
 }
 
@@ -197,6 +213,8 @@ struct Page {
     net: Arc<Net>,
     height: f32,
     have: BTreeSet<usize>,
+    /// The height of the room it was laid out for.
+    view: f32,
 }
 
 fn viewport(ask: &Ask, view: f32) -> Viewport {
@@ -257,7 +275,21 @@ fn paint(page: &mut Page, r: &mut Option<(u32, u32, VelloCpuImageRenderer)>, ind
     (w, h, px)
 }
 
+/// Runs the page's thread until the window is done with it. The engine is a beta: when it panics on
+/// a page, that page is dropped and said to have failed, and the thread starts again for the next.
+/// Without this a panic was silent and for good: no later page was ever drawn.
 fn run(rx: Receiver<Cmd>, own: Sender<Cmd>, out: Arc<Mutex<Vec<Out>>>, wake: Arc<dyn Fn() + Send + Sync>) {
+    loop {
+        let turn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&rx, &own, &out, &wake)));
+        if turn.is_ok() {
+            return;
+        }
+        out.lock().unwrap_or_else(|e| e.into_inner()).push(Out::Failed);
+        wake();
+    }
+}
+
+fn serve(rx: &Receiver<Cmd>, own: &Sender<Cmd>, out: &Arc<Mutex<Vec<Out>>>, wake: &Arc<dyn Fn() + Send + Sync>) {
     let tell = |o: Out| {
         out.lock().unwrap_or_else(|e| e.into_inner()).push(o);
         wake();
@@ -280,6 +312,7 @@ fn run(rx: Receiver<Cmd>, own: Sender<Cmd>, out: Arc<Mutex<Vec<Out>>>, wake: Arc
                 }),
                 Cmd::See(top, view) => seen = (top, view),
                 Cmd::Loaded => loaded = true,
+                Cmd::Quit => return,
                 Cmd::Point(x, y, press) => point = Some(match point {
                     Some((_, _, true)) if !press => continue,
                     _ => (x, y, press),
@@ -292,16 +325,18 @@ fn run(rx: Receiver<Cmd>, own: Sender<Cmd>, out: Arc<Mutex<Vec<Out>>>, wake: Arc
                 (None, Some(p)) => {
                     if p.ask != ask {
                         p.ask = ask;
+                        p.view = seen.1;
                         p.doc.set_viewport(viewport(&p.ask, seen.1));
                         lay(p);
                         laid = true;
                     }
                 }
                 (Some(html), _) => {
-                    seen.0 = 0.0;
+                    // a new page: nothing of it is under the pointer yet
+                    (seen.0, hot) = (0.0, false);
                     let net = Arc::new(Net { tx: Mutex::new(own.clone()), outside: ask.outside, left: FETCHES.into(), held: 0.into() });
                     let doc = HtmlDocument::from_html(&html, DocumentConfig { viewport: Some(viewport(&ask, seen.1)), net_provider: Some(net.clone()), ..Default::default() });
-                    let mut p = Page { ask, doc, net, height: 1.0, have: BTreeSet::new() };
+                    let mut p = Page { ask, doc, net, height: 1.0, have: BTreeSet::new(), view: seen.1 };
                     lay(&mut p);
                     page = Some(p);
                     laid = true;
@@ -313,6 +348,13 @@ fn run(rx: Receiver<Cmd>, own: Sender<Cmd>, out: Arc<Mutex<Vec<Out>>>, wake: Arc
         let Some(p) = page.as_mut() else { continue };
         if loaded && !laid {
             p.doc.handle_messages();
+            lay(p);
+            laid = true;
+        }
+        // the room's height changed (the window was sized): what the page measures by it is measured again
+        if !laid && (seen.1 - p.view).abs() > 1.0 {
+            p.view = seen.1;
+            p.doc.set_viewport(viewport(&p.ask, seen.1));
             lay(p);
             laid = true;
         }
@@ -355,6 +397,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_page_nested_very_deep_is_laid_out_or_said_to_have_failed_and_the_next_is_drawn() {
+        let h = Html::start(Arc::new(|| {}));
+        let deep = format!("{}x{}", "<div>".repeat(20_000), "</div>".repeat(20_000));
+        h.show(Ask { key: Key { name: "deep".into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some(deep));
+        h.show(Ask { key: Key { name: "next".into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some("<p>after</p>".to_owned()));
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            if h.take().into_iter().any(|o| matches!(o, Out::Laid { ask, .. } if ask.key.name == "next")) {
+                break;
+            }
+            assert!(std::time::Instant::now() < end, "the page after a hard one is still drawn");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
     fn the_bands_in_view_come_first_and_those_far_off_are_let_go() {
         // a page of ten bands, the view over the fourth and fifth
         let (want, keep) = wanted(BAND * 3.0, BAND * 2.0, BAND * 10.0);
@@ -386,7 +444,7 @@ mod tests {
         let h = Html::start(Arc::new(|| {}));
         // nothing listens there: were it asked, the test would still pass, so the count is what is checked
         let html = "<link rel='stylesheet' href='http://127.0.0.1:9/a.css'><img src='http://127.0.0.1:9/a.png'><img src='data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=='>";
-        h.show(Ask { key: Key { name: "o".into(), rev: 1 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some(html.to_owned()));
+        h.show(Ask { key: Key { name: "o".into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some(html.to_owned()));
         let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
             if let Some(Out::Laid { held, .. }) = h.take().into_iter().find(|o| matches!(o, Out::Laid { .. })) {
@@ -415,7 +473,7 @@ mod tests {
     fn a_page_is_laid_out_painted_in_bands_and_its_link_found() {
         let h = Html::start(Arc::new(|| {}));
         let html = "<body style='margin:0;background:#102030'><div style='height:700px'><a href='https://example.com/x' style='display:block;width:200px;height:50px;background:#ff0000'>go</a></div></body>";
-        let ask = Ask { key: Key { name: "p".into(), rev: 1 }, width: 400.0, scale: 1.0, dark: false, outside: false };
+        let ask = Ask { key: Key { name: "p".into(), rev: 1, text: 0 }, width: 400.0, scale: 1.0, dark: false, outside: false };
         h.show(ask.clone(), Some(html.to_owned()));
         let (turn, height) = laid(&h);
         assert_eq!(height, 700.0);
@@ -460,7 +518,7 @@ mod tests {
     #[test]
     fn a_page_with_no_ground_stands_on_white() {
         let h = Html::start(Arc::new(|| {}));
-        h.show(Ask { key: Key { name: "w".into(), rev: 1 }, width: 300.0, scale: 2.0, dark: false, outside: false }, Some("<p>hello</p>".to_owned()));
+        h.show(Ask { key: Key { name: "w".into(), rev: 1, text: 0 }, width: 300.0, scale: 2.0, dark: false, outside: false }, Some("<p>hello</p>".to_owned()));
         laid(&h);
         let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
@@ -478,7 +536,7 @@ mod tests {
     #[test]
     fn at_two_pixels_to_a_point_every_band_is_painted_to_its_foot() {
         let h = Html::start(Arc::new(|| {}));
-        h.show(Ask { key: Key { name: "t".into(), rev: 1 }, width: 300.0, scale: 2.0, dark: false, outside: false }, Some("<body style='margin:0'><div style='height:1300px;background:#102030'></div></body>".to_owned()));
+        h.show(Ask { key: Key { name: "t".into(), rev: 1, text: 0 }, width: 300.0, scale: 2.0, dark: false, outside: false }, Some("<body style='margin:0'><div style='height:1300px;background:#102030'></div></body>".to_owned()));
         let (mut got, end) = (Vec::new(), std::time::Instant::now() + std::time::Duration::from_secs(20));
         while got.len() < 3 {
             for o in h.take() {

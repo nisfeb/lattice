@@ -1,6 +1,8 @@
 [package]
 name = "lattice-rune"
-version = "0.0.1"
+# the release it goes out in: release.yml refuses a tag that this does not match, and the app offers
+# itself whatever release names a later one (`src/update.rs`)
+version = "1.0.35"
 edition = "2024"
 publish = false
 description = "An experimental native client for lattice, drawn with Rune. Not the shipped desktop app."
@@ -31,6 +33,22 @@ blitz-traits = "=0.3.0-beta.4"
 anyrender = "=0.14.0"
 anyrender_vello_cpu = "=0.18.0"
 data-url = "0.3"
+# the app's own updates (`src/update.rs`): a release file is taken only with a minisign signature that holds.
+# minisign-verify has no dependencies of its own, and base64 is already in the build
+minisign-verify = "0.2"
+base64 = "0.22"
+
+# The urb engine: urb-fetch's Rust core over libmesa, linked in so the app reads pages people publish on
+# Urbit with no ship (`src/engine.rs`), as the desktop app does (`desktop/src/engine.rs`), at the commit it
+# pins. Unix only: the desktop has never built libmesa for Windows. mesa-sys compiles libmesa's C, which
+# needs clang 18 or newer and MESA_SYS_DEPS (`.cargo/config.toml`, filled by `scripts/mesa-deps.sh`).
+[target.'cfg(unix)'.dependencies]
+urb-engine = { package = "urb", git = "https://github.com/nisfeb/urb-fetch.git", rev = "3f584bf3567dd8c8e80365197994b6330cb95338", features = ["native"] }
+urb-gateway = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "3f584bf3567dd8c8e80365197994b6330cb95338" }
+# Rune hashes pictures with the blake3 crate, which by default compiles BLAKE3's own C and assembly, and
+# libmesa's urcrypt carries the same files: two of every symbol, and the link fails. `pure` is the crate
+# without them, in Rust alone. Nothing here calls blake3 itself
+blake3 = { version = "1", features = ["pure"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Rune's own, already in the lock: the browser's entry point, clock, requests and storage

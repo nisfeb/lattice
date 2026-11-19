@@ -110,7 +110,7 @@ pub struct Page {
 /// A bookmark the reader keeps on the ship: an address on the network
 /// or the web, the title it was kept under, and the folder it is in,
 /// empty for none (`bookmarks-json`).
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct Bookmark {
     #[serde(default)]
     pub url: String,
@@ -348,7 +348,11 @@ struct Flag {
 /// One comment on a page.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct Comment {
+    /// Empty in another ship's thread, which is one page's, and in a page's own held list.
+    #[serde(default)]
     pub page: String,
+    /// Empty in another ship's thread: its comments are not this ship's to answer or remove.
+    #[serde(default)]
     pub id: String,
     #[serde(default)]
     pub author: String,
@@ -596,12 +600,18 @@ struct Backlinks {
 struct Comets {
     #[serde(default)]
     mode: String,
+    /// The comets' comments on this page that wait for the owner's yes, newest first.
+    #[serde(default)]
+    pending: Vec<Comment>,
 }
 
 #[derive(Deserialize)]
 struct Inbox {
     #[serde(default)]
     items: Vec<Comment>,
+    /// How many there are in all: the ship sends the newest 200.
+    #[serde(default)]
+    total: u64,
 }
 
 #[derive(Deserialize)]
@@ -968,7 +978,8 @@ pub fn lapsed(error: &str) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Urb {
     /// A page: its ship, its path there, its kind and its text, and how many comments its public thread has.
-    Page { ship: String, path: String, kind: String, body: String, comments: usize },
+    /// `comments` is the page's public thread as the ship read it, oldest first: who, when and what.
+    Page { ship: String, path: String, kind: String, body: String, comments: Vec<Comment> },
     /// A folder: its path, and what is in it, each with its address and whether it is a folder too.
     Folder { path: String, entries: Vec<(String, String, bool)> },
     /// A forum board or one of its threads: read as the forum reads it.
@@ -999,7 +1010,7 @@ pub fn urb_parse(json: &str) -> Result<Urb, String> {
         Some("page") => {
             // this ship's own page comes with its name, another's with its path there
             let path = if v["name"].is_string() { text("name") } else { text("path").trim_start_matches('/').to_owned() };
-            Ok(Urb::Page { ship: text("ship"), path, kind: text("mode"), body: text("body"), comments: v["comments"].as_array().map_or(0, Vec::len) })
+            Ok(Urb::Page { ship: text("ship"), path, kind: text("mode"), body: text("body"), comments: serde_json::from_value(v["comments"].clone()).unwrap_or_default() })
         }
         Some("folder") => {
             let entries = v["entries"].as_array().map_or_else(Vec::new, |a| a.iter().filter_map(|e| Some((e["name"].as_str()?.to_owned(), e["url"].as_str()?.to_owned(), e["folder"].as_bool().unwrap_or(false)))).collect());
@@ -2803,9 +2814,35 @@ impl Conn {
     }
 
     /// The newest comments across every page (the ship gives 200 at most).
-    pub fn comments(&self) -> Result<Vec<Comment>, String> {
+    pub fn comments(&self) -> Result<(Vec<Comment>, u64), String> {
         let i: Inbox = serde_json::from_str(&self.call_in(60, "GET", "comments-inbox", None)?).map_err(|e| e.to_string())?;
-        Ok(i.items)
+        let total = i.total.max(i.items.len() as u64);
+        Ok((i.items, total))
+    }
+
+    /// Sends a comment to a page another ship publishes, as this ship. The
+    /// host decides whether it lands (comments on, its bans, its caps) and
+    /// names the author from the transport. `true` when the host took the
+    /// poke within the ship's five seconds: the ship says so by naming the
+    /// text in where it sends the reader back to (`&sent=`). `false` is not
+    /// a refusal, only no word yet.
+    pub fn comment_remote(&self, ship: &str, page: &str, body: &str) -> Result<bool, String> {
+        let url = format!("{}/apps/lattice/comment-remote?ship={}&page={}", self.url, enc(ship), enc(page));
+        let form = format!("body={}", enc(body));
+        #[cfg(target_arch = "wasm32")]
+        {
+            // a browser follows the answer to the reader's page, and where it went is not shown to this code
+            web::text(web::request("POST", &url, Some(web::FORM), None, Some(&form))).map(|_| true)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(40)).build();
+            match agent.post(&url).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&form) {
+                Ok(res) => Ok(res.header("location").is_some_and(|l| l.contains("&sent="))),
+                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+                Err(e) => Err(e.to_string()),
+            }
+        }
     }
 
     /// Whether comments are on for a page, by the nearest setting at or above it.
@@ -2870,9 +2907,11 @@ impl Conn {
     }
 
     /// What a page does with comets' comments: `open`, `held` or `off`.
-    pub fn comets(&self, name: &str) -> Result<String, String> {
+    pub fn comets(&self, name: &str) -> Result<(String, Vec<Comment>), String> {
         let c: Comets = serde_json::from_str(&self.call("GET", &format!("page-comets?name={}", enc(name)), None)?).map_err(|e| e.to_string())?;
-        Ok(if c.mode.is_empty() { "open".into() } else { c.mode })
+        // the held ones are this page's: the ship does not say so in each, since it was asked by page
+        let pending = c.pending.into_iter().map(|m| Comment { page: name.to_owned(), ..m }).collect();
+        Ok((if c.mode.is_empty() { "open".into() } else { c.mode }, pending))
     }
 
     pub fn set_comets(&self, name: &str, mode: &str) -> Result<(), String> {
@@ -3747,9 +3786,9 @@ mod tests {
         }
         assert!(urb_is_forum("urb://~nec/forum/chat/3") && urb_is_forum("urb://~nec/forum") && !urb_is_forum("urb://~nec/notes/forum"));
         let page = r##"{"url":"urb://~nec/notes/a","ship":"~nec","own":false,"kind":"page","shared":false,"path":"/notes/a","mode":"md","body":"# A\n","size":4,"comments":[{"author":"~bud","when":"~2026.1.1","body":"hi"}]}"##;
-        assert_eq!(urb_parse(page), Ok(Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: 1 }));
+        assert_eq!(urb_parse(page), Ok(Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: vec![Comment { page: String::new(), id: String::new(), author: "~bud".into(), when: "~2026.1.1".into(), body: "hi".into() }] }));
         let own = r##"{"url":"urb://~zod/a","ship":"~zod","own":true,"kind":"page","mode":"gmi","name":"a","body":"x","rev":2,"comments":[]}"##;
-        assert_eq!(urb_parse(own), Ok(Urb::Page { ship: "~zod".into(), path: "a".into(), kind: "gmi".into(), body: "x".into(), comments: 0 }));
+        assert_eq!(urb_parse(own), Ok(Urb::Page { ship: "~zod".into(), path: "a".into(), kind: "gmi".into(), body: "x".into(), comments: Vec::new() }));
         let folder = r#"{"url":"urb://~nec/notes/","ship":"~nec","own":false,"kind":"folder","path":"/notes","entries":[{"name":"sub","url":"urb://~nec/notes/sub/","folder":true},{"name":"a","url":"urb://~nec/notes/a","folder":false}]}"#;
         assert_eq!(urb_parse(folder), Ok(Urb::Folder { path: "/notes".into(), entries: vec![("sub".into(), "urb://~nec/notes/sub/".into(), true), ("a".into(), "urb://~nec/notes/a".into(), false)] }));
         assert_eq!(urb_parse(r#"{"kind":"binary","mark":"mime","type":"image/png","size":1234}"#), Ok(Urb::Binary { kind: "image/png".into(), size: 1234 }));
@@ -3768,7 +3807,7 @@ mod tests {
         assert!(matches!(c.send_queued(&name, &q), Sent::Done { .. }));
         c.share(&name, "shared").unwrap();
         let got = c.urb_read(&format!("urb://{}/{name}", c.ship())).unwrap();
-        assert_eq!(got, Urb::Page { ship: c.ship().to_owned(), path: name.clone(), kind: "md".into(), body: "# Read by address\n".into(), comments: 0 });
+        assert_eq!(got, Urb::Page { ship: c.ship().to_owned(), path: name.clone(), kind: "md".into(), body: "# Read by address\n".into(), comments: Vec::new() });
         let folder = c.urb_read(&format!("urb://{}/{dir}/", c.ship()));
         eprintln!("the folder's address: {folder:?}");
         let away = c.urb_read("urb://~nec/notes/a").unwrap_err();
@@ -4233,7 +4272,7 @@ mod tests {
         assert!(c.comments_on("rune-probe").unwrap());
         let said = format!("a comment at {base}");
         c.comment("rune-probe", &said).unwrap();
-        let mine = |c: &Conn| c.comments().unwrap().into_iter().find(|m| m.page == "rune-probe" && m.body == said);
+        let mine = |c: &Conn| c.comments().unwrap().0.into_iter().find(|m| m.page == "rune-probe" && m.body == said);
         // the write is its own step behind the answer
         let mut got = None;
         for _ in 0..20 {
@@ -4335,9 +4374,9 @@ mod tests {
         assert_eq!(c.waiting().unwrap().unread, 0);
         assert!(c.notices().unwrap().iter().all(|n| n.read), "{before:?}");
         // comets' comments: open until set, held when set, and nothing held with no comet about
-        assert_eq!(c.comets("rune-probe").unwrap(), "open");
+        assert_eq!(c.comets("rune-probe").unwrap().0, "open");
         c.set_comets("rune-probe", "held").unwrap();
-        assert_eq!(c.comets("rune-probe").unwrap(), "held");
+        assert_eq!(c.comets("rune-probe").unwrap().0, "held");
         assert!(c.set_comets("rune-probe", "sometimes").is_err());
         assert!(c.held().unwrap().is_empty());
         // answering a comment that is not there comes back, whatever it says

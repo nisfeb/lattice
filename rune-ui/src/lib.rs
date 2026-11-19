@@ -45,6 +45,10 @@ mod vault;
 mod view3d;
 #[cfg(not(target_arch = "wasm32"))]
 mod htmlview;
+#[cfg(not(target_arch = "wasm32"))]
+mod update;
+#[cfg(unix)]
+mod engine;
 mod vim;
 
 use std::collections::HashMap;
@@ -324,6 +328,8 @@ enum Prompt {
     ForumTags(TextEdit),
     /// A forum thread to delete, or one comment of the thread showing.
     ForumDelete(Option<u64>),
+    /// Removing a comment from one of this ship's pages: the page and the comment.
+    CommentRemove(String, String),
     /// A board to delete, with every thread on it.
     BoardDelete(String),
     /// An agent key to revoke: its id, and what it is called.
@@ -426,6 +432,10 @@ enum Op {
     Asked(String),
     /// Something about comments changed on the ship: what to say.
     Commented(String),
+    /// The owner's own comment landed on a page of theirs: what to say, the page, and the text, which is let go only now.
+    Posted(String, String, String),
+    /// A comment went to another ship's page: the address, the text, and whether the host took it in the ship's five seconds.
+    SentRemote(String, String, bool),
     /// A ship was let in to a page (edit or read, and whether it was told),
     /// or put out again.
     Granted(String, String, bool, bool),
@@ -438,6 +448,21 @@ struct App {
     conn: Option<Conn>,
     /// Browsing the built-in pages with no ship.
     sample: bool,
+    /// The save now being sent was made by a press of Read, with the ship answering: it is said as "saved".
+    read_save: bool,
+    /// Using the app with no ship: other ships' published pages are read by the urb engine, as a comet.
+    /// It stands on `sample` for everything a ship would be asked, with no pages of its own.
+    anon: bool,
+    /// The urb engine, made the first time the app is used with no ship.
+    #[cfg(unix)]
+    engine: Option<engine::Engine>,
+    /// The address the engine is reading, and which asking of it this is. A read has a thread of its
+    /// own: on the workers every request shares, four slow ones held them all and nothing else was answered.
+    anon_reading: Option<String>,
+    anon_seq: u64,
+    /// When the engine's start is next looked at (app clock): one wake at a time.
+    anon_tick: f64,
+    anon_got: std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<(String, api::Urb), String>)>>>,
     url: TextEdit,
     code: TextEdit,
     login_err: String,
@@ -522,10 +547,29 @@ struct App {
     tex_for: Option<(String, u64)>,
     tex_why: Option<(String, u64, String)>,
     comments: Vec<Comment>,
-    comments_req: Latest<Result<Vec<Comment>, String>>,
+    comments_req: Latest<Result<(Vec<Comment>, u64), String>>,
     comments_on: HashMap<String, bool>,
     comments_on_req: Latest<Result<(String, bool), String>>,
     comment: TextEdit,
+    /// How many comments the ship has in all: it sends the newest 200.
+    comments_total: u64,
+    /// A comment is on its way to the ship: Post waits, and the text stays until it is known to have landed.
+    comment_sending: bool,
+    /// A switch flipped here before the ship said yes, with what it was: put back if the ship refuses.
+    comment_undo: Option<CommentUndo>,
+    /// The comets' comments held on each page, as its Comments pane last read them.
+    page_held: HashMap<String, Vec<Comment>>,
+    /// The public thread of the page of another ship last read by address, oldest first.
+    thread: Option<Thread>,
+    thread_req: Latest<Result<(String, Vec<Comment>), String>>,
+    /// A comment being posted. It has a request of its own: on the one the other actions share, any
+    /// of them pressed meanwhile dropped the post's answer and left Post waiting for good.
+    comment_req: Latest<Result<Op, String>>,
+    /// A switch of the Comments pane being set, for the same reason: what it answers is what to say.
+    switch_req: Latest<Result<String, String>>,
+    /// Which page or thread the comment field's text is for, and what was typed for the others.
+    comment_for: String,
+    drafts: HashMap<String, String>,
     /// Comet comments waiting for a yes, and what each page asked about
     /// does with comets' comments (`open`, `held`, `off`).
     /// The activity notices, and how much waits (for the button's count).
@@ -539,7 +583,7 @@ struct App {
     held: Vec<Comment>,
     held_req: Latest<Result<Vec<Comment>, String>>,
     comets: HashMap<String, String>,
-    comets_req: Latest<Result<(String, String), String>>,
+    comets_req: Latest<Result<(String, (String, Vec<Comment>)), String>>,
     /// The sensitive mark of each page and folder asked about so far.
     sens: HashMap<String, bool>,
     sens_req: Latest<Result<(String, bool), String>>,
@@ -733,6 +777,9 @@ struct App {
     /// An HTML page drawn as a browser shows it: the thread that lays it out, and what it has sent.
     #[cfg(not(target_arch = "wasm32"))]
     web: WebShow,
+    /// The app's own updates: what is asked, what was offered, and how far along it is.
+    #[cfg(not(target_arch = "wasm32"))]
+    upd: Updater,
     /// The link of the rich editor that is open to its Markdown, while the caret is in it.
     link_open: Option<linkedit::Open>,
     /// A theme being made or changed in the settings: its id, light or dark, and its name, five colours and six more as typed.
@@ -933,6 +980,14 @@ fn init() -> App {
     url.focused = true;
     App {
         sample: false,
+        anon: false,
+        read_save: false,
+        #[cfg(unix)]
+        engine: None,
+        anon_reading: None,
+        anon_seq: 0,
+        anon_tick: 0.0,
+        anon_got: Default::default(),
         url,
         code: TextEdit::new(""),
         login_err: String::new(),
@@ -991,6 +1046,16 @@ fn init() -> App {
         comments_on: HashMap::new(),
         comments_on_req: Latest::default(),
         comment: TextEdit::new(""),
+        comments_total: 0,
+        comment_sending: false,
+        comment_undo: None,
+        page_held: HashMap::new(),
+        thread: None,
+        thread_req: Latest::default(),
+        comment_req: Latest::default(),
+        switch_req: Latest::default(),
+        comment_for: String::new(),
+        drafts: HashMap::new(),
         asks: Asks::default(),
         asks_req: Latest::default(),
         notices: Vec::new(),
@@ -1121,6 +1186,8 @@ fn init() -> App {
         link_open: None,
         #[cfg(not(target_arch = "wasm32"))]
         web: WebShow::default(),
+        #[cfg(not(target_arch = "wasm32"))]
+        upd: Updater::new(),
         marks_bad: false,
         marks_q: TextEdit::new(""),
         palette: None,
@@ -1344,10 +1411,18 @@ fn sign_out(s: &mut App) {
     fresh.asks_req = std::mem::take(&mut s.asks_req);
     fresh.waiting_req = std::mem::take(&mut s.waiting_req);
     fresh.comets_req = std::mem::take(&mut s.comets_req);
+    fresh.thread_req = std::mem::take(&mut s.thread_req);
+    fresh.comment_req = std::mem::take(&mut s.comment_req);
+    fresh.switch_req = std::mem::take(&mut s.switch_req);
     fresh.shared_req = std::mem::take(&mut s.shared_req);
     fresh.remote_req = std::mem::take(&mut s.remote_req);
     fresh.old_req = std::mem::take(&mut s.old_req);
     fresh.sidebar = s.sidebar.clone();
+    // the reader's comet is this computer's, not a session's: its thread and its store stay as they are
+    #[cfg(unix)]
+    {
+        fresh.engine = s.engine.take();
+    }
     // the listener of the session that ended stops, and every request this window keeps is woken as before
     s.beacon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let waker = s.waker.clone();
@@ -1435,6 +1510,15 @@ fn confirm(s: &mut App) {
     }
     if let Prompt::ForumDelete(comment) = &p {
         forum_act(s, ForumAct::Delete(*comment));
+        return;
+    }
+    if let Prompt::CommentRemove(page, id) = &p {
+        if let Some(c) = s.conn.clone() {
+            s.op_req.request((c, page.clone(), id.clone()), |(c, page, id)| {
+                c.comment_delete(&page, &id)?;
+                Ok(Op::Commented(format!("removed a comment from {page}")))
+            });
+        }
         return;
     }
     if let Prompt::Tag(t) = &p {
@@ -1593,7 +1677,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) | Op::Linked(..) | Op::Unlinked(..) | Op::Forgot(..) => {}
+                Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Posted(..) | Op::SentRemote(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) | Op::Linked(..) | Op::Unlinked(..) | Op::Forgot(..) => {}
             }
             Ok(op)
         }),
@@ -1795,6 +1879,33 @@ fn applied(s: &mut App, op: Op) {
             load_comments(s);
             return;
         }
+        Op::Posted(say, page, body) => {
+            s.note = say;
+            // landed: only now is what was typed let go
+            sent_draft(s, &page, &body);
+            load_comments(s);
+            return;
+        }
+        Op::SentRemote(url, body, told) => {
+            sent_draft(s, &url, &body);
+            let ours = s.conn.as_ref().map(|c| c.ship().to_owned()).unwrap_or_default();
+            let Some(t) = s.thread.as_mut().filter(|t| t.url == url) else {
+                s.note = "comment sent".into();
+                return;
+            };
+            s.note = if told { format!("sent to {}", t.ship) } else { format!("{} has not said it took the comment yet", t.ship) };
+            // how many like it were there already: it has shown when there is one more
+            let had = like_ours(&t.list, &ours, &body);
+            t.sent = Some((body, told, had));
+            // the thread is read again, a moment after: the host writes the comment in a step of its own
+            if let Some(c) = s.conn.clone() {
+                s.thread_req.request((c, url), |(c, url)| {
+                    api::pause(std::time::Duration::from_millis(2500));
+                    thread_of(&c, &url).map(|l| (url, l))
+                });
+            }
+            return;
+        }
         Op::Sensed(n, on, shared) => {
             s.note = match (on, shared) {
                 (true, true) => format!("{n} is sensitive, and its own share still stands: set it private to stop that"),
@@ -1901,6 +2012,8 @@ fn setup(s: &mut App, waker: Waker) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         s.web.html = Some(htmlview::Html::start(waker.clone()));
+        s.upd.check_req.set_waker(waker.clone());
+        s.upd.get_req.set_waker(waker.clone());
     }
     s.waker = Some(waker.clone());
     s.tree_req.set_waker(waker.clone());
@@ -1941,6 +2054,9 @@ fn setup(s: &mut App, waker: Waker) {
     s.asks_req.set_waker(waker.clone());
     s.waiting_req.set_waker(waker.clone());
     s.comets_req.set_waker(waker.clone());
+    s.thread_req.set_waker(waker.clone());
+    s.comment_req.set_waker(waker.clone());
+    s.switch_req.set_waker(waker.clone());
     s.shared_req.set_waker(waker.clone());
     s.marks_req.set_waker(waker.clone());
     s.theme_req.set_waker(waker.clone());
@@ -2078,6 +2194,12 @@ fn step(s: &mut App, by: isize) {
 /// Follows a link in a page: to a page of this ship, to a prompt that makes
 /// the page when there is none yet, or to the web.
 fn follow(s: &mut App, url: &str, tx: &mut Tx) {
+    // an address on the network is read here, in the browser, not handed to the system
+    let there = s.remote.as_ref().filter(|r| r.mode == "published").and_then(|sh| remote_link(&sh.host, sh.name(), url));
+    let to = there.or_else(|| url.starts_with("urb://").then(|| url.to_owned()));
+    if let Some(to) = to.filter(|_| s.conn.is_some() || s.anon) {
+        return urb_go(s, Some(to));
+    }
     match md::page_of(url) {
         Some(name) if s.names.contains(&name) => {
             s.files.reveal(&name, tx);
@@ -2095,6 +2217,31 @@ fn follow(s: &mut App, url: &str, tx: &mut Tx) {
             }
         }
     }
+}
+
+/// Where a link in a page another ship publishes leads, as an address: a wiki link or a path of its
+/// own is a page of that ship, and a name beside it is a page beside it. None for what is not the
+/// network's (the web, mail, a place in the same page).
+fn remote_link(host: &str, page: &str, url: &str) -> Option<String> {
+    if url.starts_with("urb://") {
+        return Some(url.to_owned());
+    }
+    if let Some(name) = md::page_of(url) {
+        return Some(format!("urb://{host}/{name}"));
+    }
+    if url.is_empty() || url.starts_with('#') || url.contains(':') || url.starts_with("//") {
+        return None;
+    }
+    // beside the page, or from the ship's top when it starts with a slash
+    let mut at: Vec<&str> = if url.starts_with('/') { Vec::new() } else { page.split('/').collect::<Vec<_>>().split_last().map(|(_, dir)| dir.to_vec()).unwrap_or_default() };
+    for seg in url.split(['#', '?']).next().unwrap_or_default().split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => drop(at.pop()),
+            seg => at.push(seg),
+        }
+    }
+    (!at.is_empty()).then(|| format!("urb://{host}/{}", at.join("/")))
 }
 
 /// Keeps `s.map` in step with the open page: built when a map page opens
@@ -4020,11 +4167,13 @@ fn status_bar(s: &App, k: &Kit, busy: bool) -> El {
 /// The right pane: its tabs as icons, then what the one in front shows.
 fn right_pane(s: &App, k: &Kit) -> El {
     let own = s.open.is_some() && !s.memory && s.remote.is_none();
+    // a page of another ship read by address has its public thread as well
+    let thread = thread_here(s).is_some();
     // a memory, and another ship's page, have only their history, whatever was showing before
-    let now = if own { s.pane } else { rpane::Tab::Hist };
+    let now = if own || (thread && s.pane == rpane::Tab::Comments) { s.pane } else { rpane::Tab::Hist };
     let mut tabs = row().key("rtabs").role("tablist").label("Right pane").w_full().gap(4.0).px(8.0).pt(8.0);
     // the tabs in the web client's order, each by the key its button in the header had
-    for (what, key, name, icon) in rpane::TABS.iter().copied().filter(|t| own || t.0 == rpane::Tab::Hist) {
+    for (what, key, name, icon) in rpane::TABS.iter().copied().filter(|t| own || t.0 == rpane::Tab::Hist || (thread && t.0 == rpane::Tab::Comments)) {
         tabs = tabs.child(IconButton::new(icon).control_size(ControlSize::Large).variant(if what == now { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(name).on_press(move |s: &mut App| pane_tab(s, what)).build(k).key(key));
     }
     let body = match now {
@@ -4320,6 +4469,9 @@ fn kept_by_orrery(s: &App) -> bool {
 }
 
 fn start_edit(s: &mut App) {
+    if no_node(s) {
+        return;
+    }
     s.old = None;
     if kept_by_orrery(s) {
         s.note = "orrery keeps this map, so it is read-only here. Draw on orrery/map-notes".into();
@@ -4473,7 +4625,7 @@ fn format_bar(s: &App, k: &Kit) -> El {
 /// Starts a page with no question asked: named in the inbox by the
 /// date, open in the editor, and kept by its first save.
 fn capture(s: &mut App) {
-    if !leave_edit(s) {
+    if no_node(s) || !leave_edit(s) {
         return;
     }
     if s.memory {
@@ -4488,9 +4640,10 @@ fn capture(s: &mut App) {
 /// Starts a page that is not written yet under a name it already has,
 /// open in the editor. Its first save makes it.
 fn start_named(s: &mut App, name: String) {
-    if !leave_edit(s) {
+    if no_node(s) || !leave_edit(s) {
         return;
     }
+    urb_cancel(s);
     if s.memory {
         flip(s);
     }
@@ -4507,7 +4660,7 @@ fn start_named(s: &mut App, name: String) {
 /// Today's journal page: the one there is, under any of its names, or a
 /// new one started at the name the ship's journal pass uses.
 fn open_today(s: &mut App) {
-    if !leave_edit(s) {
+    if no_node(s) || !leave_edit(s) {
         return;
     }
     if s.memory {
@@ -4617,6 +4770,29 @@ fn autosave_tick(s: &mut App, clock: f64) -> bool {
 }
 
 /// Save, pressed. It closes the editor, and autosave may run again.
+/// Goes from the editor to the reading of the page at once, as the web
+/// client does, where Read only hides the editor. The text is kept on this
+/// device and sent behind the switch, so the reader does not wait for the
+/// ship's answer, and text that was not changed is not sent at all. What
+/// cannot be left that way is saved in the open, as before: another
+/// ship's page, a page that changed elsewhere, and a save already on its way.
+fn to_read(s: &mut App) {
+    if s.remote.is_some() || s.stale || s.save_req.is_pending() {
+        return save(s);
+    }
+    // Read is a save made on purpose: autosave that was waiting for one goes on again
+    s.auto_held = false;
+    let (before, name) = (s.drain_req.is_pending(), s.open.as_ref().map(|p| p.name.clone()).unwrap_or_default());
+    // only when this press is what is being sent: text that was not changed sends nothing, and a sending
+    // already out is another page's, which says what it says
+    if leave_edit(s) && !before && s.drain_req.is_pending() && s.queue.contains_key(&name) {
+        // said as a save, which is what it is to the one who pressed Read
+        s.note = "saving\u{2026}".into();
+        // a memory's save moves the memories' list, which is read again as before
+        s.read_save = !s.memory;
+    }
+}
+
 fn save(s: &mut App) {
     s.auto_held = false;
     // a save of autosave's is on the wire: this one follows it, on its rev
@@ -4716,6 +4892,9 @@ type Drained = (Vec<(api::QueuedOp, Result<(), String>)>, Vec<(String, api::Queu
 /// meanwhile, and that newer save then goes. A conflict or a refusal is
 /// said with the name its other text is kept under.
 fn drained(s: &mut App, (did, out): Drained) {
+    // taken whatever comes of it: it speaks for this sending and no later one
+    let read_save = std::mem::take(&mut s.read_save);
+    let mut hist = false;
     let (mut gone_to_ship, mut stopped, mut said) = (0, false, Vec::new());
     for (op, r) in did {
         let what = match &op {
@@ -4771,6 +4950,8 @@ fn drained(s: &mut App, (did, out): Drained) {
                 }
                 if let Some(p) = s.open.as_mut().filter(|p| p.name == name) {
                     p.rev = rev;
+                    // the ship has a new revision of the page in front: its history is read again
+                    hist = true;
                 }
                 if let Some(kept) = kept {
                     said.push(format!("{name} had changed on the ship. Yours is the page now, and what it replaced is kept at {kept}"));
@@ -4789,12 +4970,18 @@ fn drained(s: &mut App, (did, out): Drained) {
         said.push(format!("the list of what waits could not be written: {e}"));
     }
     if gone_to_ship > 0 {
-        said.insert(0, format!("sent {gone_to_ship} saved on this device"));
-        // the memories too: one of them may have been among what went
-        load_know(s);
-        // the whole tree is read again: revisions moved, and a kept copy may have been made
-        s.since.clear();
-        load_tree(s);
+        // one save sent behind a press of Read was never waiting for the ship: it is said as the save it is
+        // and when the ship took it as it was, with nothing kept aside, the page's new revision is all that moved:
+        // it is set above, and the tree and the memories are not read again for it
+        let plain = read_save && gone_to_ship == 1 && said.is_empty() && !stopped;
+        said.insert(0, if plain { "saved".to_owned() } else { format!("sent {gone_to_ship} saved on this device") });
+        if !plain {
+            // the memories too: one of them may have been among what went
+            load_know(s);
+            // the whole tree is read again: revisions moved, and a kept copy may have been made
+            s.since.clear();
+            load_tree(s);
+        }
     }
     s.note = said.join(". ");
     if !stopped {
@@ -4823,8 +5010,43 @@ fn queue_save(s: &mut App, mut p: Page, base: u64, memory: bool) {
     }
     s.queue = q;
     p.rev = base;
+    // the text is new and the revision is not yet: what was drawn from the old text is drawn again
+    stale_views(s, &p.name);
     landed(s, p);
     s.note = "saved on this device, to send when the ship answers".into();
+}
+
+/// Marks every view drawn from a page's text as out of date, so the next
+/// sync draws it from the text there is now. They are kept by name and
+/// revision, and a save kept on this device has new text at the old
+/// revision. Each keeps what it had of the reader's own (a map's camera,
+/// a sheet's place), since it is still the same page.
+fn stale_views(s: &mut App, name: &str) {
+    const NEVER: u64 = u64::MAX;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        s.web.text += 1;
+    }
+    if let Some(m) = s.map.as_mut().filter(|m| m.name == name) {
+        m.rev = NEVER;
+    }
+    if let Some(v) = s.sheet.as_mut().filter(|v| v.name == name) {
+        v.rev = NEVER;
+    }
+    if let Some(r) = s.read_as.as_mut().filter(|r| r.0 == name) {
+        r.1 = NEVER;
+    }
+    if let Some(t) = s.tex_for.as_mut().filter(|t| t.0 == name) {
+        t.1 = NEVER;
+    }
+    if let Some(t) = s.scad_for.as_mut().filter(|t| t.0 == name) {
+        t.1 = NEVER;
+    }
+    for g in &mut s.tgroups {
+        if let Some(v) = g.view.as_mut().filter(|v| v.0 == name) {
+            v.1 = NEVER;
+        }
+    }
 }
 
 fn landed(s: &mut App, p: Page) {
@@ -4875,9 +5097,11 @@ const SYNC_LIVE: f64 = 300.0;
 
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
+    changed |= sync_draft(s);
     #[cfg(not(target_arch = "wasm32"))]
     {
         changed |= sync_web(s, tx);
+        changed |= sync_update(s, clock, tx);
     }
     // a link in the rich editor reads as its Markdown while the caret is in it, to be changed by typing,
     // and is a link again once the caret has left. The page's Markdown is the same either way
@@ -5004,7 +5228,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if let Some(r) = s.comments_req.take() {
         changed = true;
         match r {
-            Ok(list) => s.comments = list,
+            Ok((list, total)) => (s.comments, s.comments_total) = (list, total),
             Err(e) => s.note = format!("comments: {e}"),
         }
     }
@@ -5113,8 +5337,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     if let Some(r) = s.comets_req.take() {
         changed = true;
-        if let Ok((n, m)) = r {
-            s.comets.insert(n, m);
+        if let Ok((n, (mode, pending))) = r {
+            s.comets.insert(n.clone(), mode);
+            s.page_held.insert(n, pending);
         }
     }
     if let Some(r) = s.comments_on_req.take() {
@@ -5419,11 +5644,28 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         match r {
             Ok(op) => applied(s, op),
             // uploads, sharing, grants and the rest are not put by: a grant that seems to work and is refused an hour later is a surprise nobody wants
-            Err(e) if api::gone(&e) => {
-                s.offline.get_or_insert_with(String::new);
-                s.note = "not done: that needs the ship, and it does not answer".into();
+            Err(e) => not_done(s, &e),
+        }
+    }
+    if let Some(r) = s.comment_req.take() {
+        changed = true;
+        commented(s, r);
+    }
+    if let Some(r) = s.switch_req.take() {
+        changed = true;
+        switched(s, r);
+    }
+    if let Some(r) = s.thread_req.take() {
+        changed = true;
+        match r {
+            Ok((url, list)) => {
+                let ours = s.conn.as_ref().map(|c| c.ship().to_owned()).unwrap_or_default();
+                if let Some(t) = s.thread.as_mut().filter(|t| t.url == url) {
+                    t.list = list;
+                    settle_sent(t, &ours);
+                }
             }
-            Err(e) => s.note = format!("not done: {e}"),
+            Err(e) => s.note = format!("comments: {e}"),
         }
     }
     if let Some(r) = s.hist_req.take() {
@@ -5552,6 +5794,34 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         match r {
             Ok((url, got)) => urb_got(s, url, got),
             Err(e) => s.note = format!("address: {e}"),
+        }
+    }
+    // the engine's reads, each from a thread of its own: only the one last asked for is wanted
+    let read: Vec<_> = std::mem::take(&mut *s.anon_got.lock().unwrap_or_else(|e| e.into_inner()));
+    for (seq, r) in read {
+        if seq != s.anon_seq || s.anon_reading.is_none() {
+            continue;
+        }
+        changed = true;
+        s.anon_reading = None;
+        match r {
+            Ok((url, got)) => urb_got(s, url, got),
+            // the reader's own words are whole sentences
+            Err(e) => s.note = e,
+        }
+    }
+    // while the reader starts for a first read, what it is doing is said, and then that it reads
+    #[cfg(unix)]
+    if let Some(url) = &s.anon_reading {
+        let step = s.engine.as_ref().map(engine::Engine::step).unwrap_or_default();
+        let say = if step.is_empty() { format!("reading {url}\u{2026}") } else { format!("{step}\u{2026}") };
+        if s.note != say {
+            s.note = say;
+            changed = true;
+        }
+        if clock >= s.anon_tick {
+            s.anon_tick = clock + 0.3;
+            tx.wake_after(std::time::Duration::from_millis(300));
         }
     }
     if let Some(r) = s.keys_req.take() {
@@ -6866,6 +7136,8 @@ fn browse_step(s: &mut App, back: bool) {
 fn browse_show(s: &mut App, url: &str) {
     s.urb = TextEdit::new(url);
     if url.is_empty() {
+        // a read still on its way is for an address left behind
+        urb_cancel(s);
         (s.remote, s.open, s.urb_folder) = (None, None, None);
         s.shared_open = true;
         browse_home(s);
@@ -8794,6 +9066,13 @@ fn login_view(s: &App, k: &Kit) -> El {
     card = card
         .child(go)
         .child(Button::new("Browse sample pages").variant(ButtonVariant::Ghost).on_press(browse_sample).build(k).key("sample"));
+    // the one other way in: no node, and other ships' published pages read by this computer itself
+    #[cfg(unix)]
+    {
+        card = card
+            .child(text("No node? You can use lattice anonymously. You can browse pages people publish, but you can't save or host pages without a node.").key("anon-said").font(k.ty.small).color(c.text_muted).wrap())
+            .child(Button::new("Use anonymously").variant(ButtonVariant::Ghost).on_press(browse_anon).build(k).key("anon"));
+    }
     col().w_full().h_full().center().fill(c.bg_base).child(card)
 }
 
@@ -8812,7 +9091,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -8846,6 +9125,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::BoardDelete(name) => ("Delete this board?", text(format!("{name} and every thread on it are gone for everyone who reads it.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::ForumTags(t) => ("This thread's tags", field(t, "Up to five: lowercase letters, digits and dashes. None clears them"), "Set", ButtonVariant::Contrast),
         Prompt::ForumDelete(comment) => (if comment.is_some() { "Delete this comment?" } else { "Delete this thread?" }, text(if comment.is_some() { "It is gone for everyone who reads the board." } else { "The thread and its comments are gone for everyone who reads the board." }).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
+        Prompt::CommentRemove(page, _) => ("Remove this comment?", text(format!("It is gone from {page} for everyone who reads it, and cannot be brought back.")).key("comment-remove-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
         Prompt::MarkMove(_, t) => ("Move this bookmark to a folder", field(t, "A folder, or nothing for none"), "Move", ButtonVariant::Contrast),
         Prompt::LinkIn(_, t) => ("Move into my pages as", field(t, "a name, as notes/plan"), "Move", ButtonVariant::Contrast),
@@ -8923,6 +9203,8 @@ fn open_remote(s: &mut App, sh: Shared) {
 
 /// A shared page arrived: it shows in place of a page of this ship.
 fn show_remote(s: &mut App, sh: Shared, p: Page) {
+    // another ship's page is revision 0 each time it is read: its text may be new all the same
+    stale_views(s, &p.name);
     // the star says whether this page is kept, so the bookmarks are read if they were not yet
     if let Some(c) = s.conn.clone().filter(|_| s.marks.is_none()) {
         s.marks_req.request(c, |c| c.bookmarks());
@@ -8987,8 +9269,92 @@ fn link_back(s: &mut App) {
     s.op_req.request((c, name), |(c, name)| c.link_unmake(&name).map(|()| Op::Unlinked(name)));
 }
 
+/// Enters the app with no ship: the browser, reading through the urb engine as a comet of this computer's.
+#[cfg(unix)]
+fn browse_anon(s: &mut App) {
+    (s.sample, s.anon) = (true, true);
+    // what was starred with no ship is kept on this computer
+    s.marks = Some(anon_marks_load());
+    if s.engine.is_none() {
+        let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")));
+        s.engine = base.map(|b| engine::Engine::new(b.join("lattice-rune").join("urb")));
+    }
+    go_browser(s);
+    s.note = "Reading anonymously. You can browse published pages. Saving and hosting need a node.".into();
+}
+
+/// Reads an address with no ship, through the urb engine. A forum's boards are not read this way yet.
+#[cfg(unix)]
+fn urb_go_anon(s: &mut App, to: Option<String>) {
+    let Some(url) = to.or_else(|| api::urb_address(&s.urb.text)) else {
+        s.note = "an address is urb://~ship/path".into();
+        return;
+    };
+    if api::urb_is_forum(&url) {
+        s.note = "A forum needs a node to read for now.".into();
+        return;
+    }
+    let Some(e) = s.engine.clone() else {
+        s.note = "the reader has nowhere to keep its files: no home folder".into();
+        return;
+    };
+    s.note = format!("reading {url}\u{2026}");
+    s.anon_seq += 1;
+    s.anon_reading = Some(url.clone());
+    let (seq, got, waker) = (s.anon_seq, s.anon_got.clone(), s.waker.clone());
+    spawn(move || {
+        let read = || {
+            let (ship, path) = engine::place(&url).ok_or_else(|| "an address is urb://~ship/path".to_owned())?;
+            let p = e.read(&url, engine::BUDGET).map_err(|e| e.words())?;
+            Ok((url.clone(), api::Urb::Page { ship, path, kind: engine::kind_of(&p.mark).to_owned(), body: p.body, comments: Vec::new() }))
+        };
+        let r = read();
+        got.lock().unwrap_or_else(|e| e.into_inner()).push((seq, r));
+        if let Some(w) = waker {
+            w();
+        }
+    });
+}
+
+/// Lets go of a read on its way: what it answers is not wanted any more.
+fn urb_cancel(s: &mut App) {
+    s.urb_req.cancel();
+    s.anon_seq += 1;
+    s.anon_reading = None;
+}
+
+fn anon_marks_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+    Some(base.join("lattice-rune").join("anon-bookmarks.json"))
+}
+
+/// The bookmarks kept with no ship, on this computer.
+fn anon_marks_load() -> Vec<api::Bookmark> {
+    anon_marks_path().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn anon_marks_store(list: &[api::Bookmark]) -> Result<(), String> {
+    let p = anon_marks_path().ok_or("no home folder")?;
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&p, serde_json::to_vec(list).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+/// With no ship there is nowhere to write a page: said, where a sample page would be kept for the session.
+fn no_node(s: &mut App) -> bool {
+    if s.anon {
+        s.note = "Writing and hosting pages needs a node. Sign in to one to write.".into();
+    }
+    s.anon
+}
+
 /// Reads what stands at an address: the one typed, or one given (a folder's entry).
 fn urb_go(s: &mut App, to: Option<String>) {
+    #[cfg(unix)]
+    if s.anon {
+        return urb_go_anon(s, to);
+    }
     let Some(c) = s.conn.clone() else {
         s.note = "sample pages have no other ships to read".into();
         return;
@@ -9016,6 +9382,11 @@ fn urb_go(s: &mut App, to: Option<String>) {
 
 /// What was read at an address is shown: a page as another ship's page, a folder as a list under the address.
 fn urb_got(s: &mut App, url: String, got: api::Urb) {
+    // an answer that comes late must not take the page from under an edit begun meanwhile
+    if s.editing {
+        s.note = format!("{url} was read, but an edit is open: go to it again when the edit is done");
+        return;
+    }
     s.note.clear();
     // the bar follows what is showing, however it was come to (a bookmark, a row of shared with me)
     s.nav.go(&url);
@@ -9029,9 +9400,14 @@ fn urb_got(s: &mut App, url: String, got: api::Urb) {
     match got {
         api::Urb::Page { ship, path, kind, body, comments } => {
             let name = format!("{ship}/{path}");
-            if comments > 0 {
-                s.note = format!("{comments} comment{} on its public thread, not shown here", if comments == 1 { "" } else { "s" });
+            if !comments.is_empty() {
+                s.note = format!("{} comment{} on this page, in the Comments pane", comments.len(), if comments.len() == 1 { "" } else { "s" });
             }
+            // the thread is kept for the pane, and what was sent to it from here stays said until the thread shows it
+            let sent = s.thread.take().filter(|t| t.url == url).and_then(|t| t.sent);
+            let mut thread = Thread { url: url.clone(), ship: ship.clone(), page: path.clone(), list: comments, all: false, sent };
+            settle_sent(&mut thread, &s.conn.as_ref().map(|c| c.ship().to_owned()).unwrap_or_default());
+            s.thread = Some(thread);
             let note = std::mem::take(&mut s.note);
             show_remote(s, Shared { host: ship, path, mode: "published".into(), when: String::new() }, Page { name, body, kind, rev: 0 });
             s.note = note;
@@ -9086,7 +9462,7 @@ fn shared_view(s: &App, k: &Kit) -> El {
             })),
         );
         if s.visits.is_empty() {
-            seen = seen.child(text(if s.conn.is_some() { "No address has been visited yet." } else { "Sample pages have no other ships to visit." }).font(k.ty.small).color(c.text_faint));
+            seen = seen.child(text(if s.conn.is_some() { "No address has been visited yet." } else if s.anon { "What is read anonymously is not listed here." } else { "Sample pages have no other ships to visit." }).font(k.ty.small).color(c.text_faint));
         }
         for (i, v) in s.visits.iter().take(30).enumerate() {
             let (to, gone) = (v.url.clone(), v.url.clone());
@@ -9135,6 +9511,30 @@ fn load_comments(s: &mut App) {
     }
 }
 
+/// Another ship's page's public thread, read at its address.
+fn thread_of(c: &Conn, url: &str) -> Result<Vec<Comment>, String> {
+    match c.urb_read(url)? {
+        api::Urb::Page { comments, .. } => Ok(comments),
+        _ => Err("that address is no longer a page".into()),
+    }
+}
+
+/// Sends the comment typed in the pane to the page of another ship in front, as this ship.
+fn post_remote_comment(s: &mut App) {
+    let (Some(c), Some(t)) = (s.conn.clone(), thread_here(s).cloned()) else { return };
+    let body = s.comment.text.trim().to_owned();
+    if body.is_empty() || s.comment_sending {
+        return;
+    }
+    // the text stays in the field until the ship has answered
+    s.comment_sending = true;
+    s.note = format!("sending to {}\u{2026}", t.ship);
+    s.comment_req.request((c, t, body), |(c, t, body)| {
+        let told = c.comment_remote(&t.ship, &t.page, &body)?;
+        Ok(Op::SentRemote(t.url, body, told))
+    });
+}
+
 /// Posts the comment typed in the pane on the open page.
 fn post_comment(s: &mut App) {
     let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else {
@@ -9142,31 +9542,35 @@ fn post_comment(s: &mut App) {
         return;
     };
     let body = s.comment.text.trim().to_owned();
-    if body.is_empty() {
+    if body.is_empty() || s.comment_sending {
         return;
     }
-    s.comment = TextEdit::new("");
-    s.op_req.request((c, p.name.clone(), body), |(c, page, body)| {
+    // the text stays in the field until the ship has it: a post that fails loses nothing
+    s.comment_sending = true;
+    s.comment_req.request((c, p.name.clone(), body), |(c, page, body)| {
         c.comment(&page, &body)?;
         // the ship writes it in a step of its own behind the answer
         api::pause(std::time::Duration::from_millis(1500));
-        Ok(Op::Commented(format!("comment posted on {page}")))
+        Ok(Op::Posted(format!("comment posted on {page}"), page, body))
     });
 }
 
 /// One comment: who, when, what, and Remove. In the inbox it also names
 /// its page, which opens when pressed.
-fn comment_card(m: &Comment, k: &Kit, link: bool, held: bool) -> El {
+fn comment_card(m: &Comment, k: &Kit, link: bool, held: bool, busy: bool) -> El {
     let c = &k.c;
     let (page, id, to) = (m.page.clone(), m.id.clone(), m.page.clone());
     let when = Rev { rev: 0, updated: m.when.clone() }.when();
-    let mut top = row().w_full().gap(6.0).center_y().child(text(m.author.clone()).font(k.ty.small_medium).color(c.text_base)).child(text(when).font(k.ty.small).color(c.text_faint).grow(1.0));
+    // a comet's name is long: it is cut to the room there is, and said whole on hover. What can be done
+    // with the comment is on a row of its own, where a long name used to push it out of the pane
+    let top = row().w_full().gap(6.0).center_y().child(text(m.author.clone()).help(m.author.clone()).font(k.ty.small_medium).color(c.text_base).truncate().grow(1.0).min_w(0.0)).child(text(when).font(k.ty.small).color(c.text_faint));
+    let mut acts = row().w_full().gap(6.0).justify_end();
     if held {
         // a held comment is answered, not removed
         for approve in [true, false] {
             let (page, id) = (page.clone(), id.clone());
             let word = if approve { "approve" } else { "reject" };
-            top = top.child(Button::new(if approve { "Approve" } else { "Reject" }).control_size(ControlSize::Small).variant(if approve { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted }).on_press(move |s: &mut App| {
+            acts = acts.child(Button::new(if approve { "Approve" } else { "Reject" }).control_size(ControlSize::Small).variant(if approve { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted }).disabled(busy).on_press(move |s: &mut App| {
                 match s.conn.clone() {
                     Some(c) => s.op_req.request((c, page.clone(), id.clone()), move |(c, page, id)| {
                         c.held_answer(&page, &id, approve)?;
@@ -9177,14 +9581,13 @@ fn comment_card(m: &Comment, k: &Kit, link: bool, held: bool) -> El {
             }).build(k).key(format!("held-{word}-{}", m.id)));
         }
     }
-    let mut card = col().key(format!("{}-{}", if held { "held" } else { "comment" }, m.id)).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01).child(if held { top } else {
-        top
-            .child(Button::new("Remove").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(move |s: &mut App| {
-                let Some(c) = s.conn.clone() else { return };
-                s.op_req.request((c, page.clone(), id.clone()), |(c, page, id)| {
-                    c.comment_delete(&page, &id)?;
-                    Ok(Op::Commented(format!("removed a comment from {page}")))
-                });
+    let mut card = col().key(format!("{}-{}", if held { "held" } else { "comment" }, m.id)).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01).child(top).child(if held { acts } else {
+        acts
+            // asked first, as the web client asks: a comment removed cannot be brought back
+            .child(Button::new("Remove").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).disabled(busy).on_press(move |s: &mut App| {
+                if s.conn.is_some() {
+                    s.prompt = Some(Prompt::CommentRemove(page.clone(), id.clone()));
+                }
             }).build(k).key(format!("comment-del-{}", m.id)))
     });
     if link {
@@ -9281,9 +9684,11 @@ fn activity_view(s: &App, k: &Kit) -> El {
 /// Every page's comments, newest first, as the ship gives them.
 fn inbox_view(s: &App, k: &Kit) -> El {
     let c = &k.c;
+    // one answer at a time: a second press while the first is out would be a second request
+    let busy = s.op_req.is_pending();
     let mut list = col().key("inbox-list").w_full().gap(8.0);
     for m in &s.comments {
-        list = list.child(comment_card(m, k, true, false));
+        list = list.child(comment_card(m, k, true, false, busy));
     }
     if s.comments.is_empty() {
         list = list.child(text(if s.comments_req.is_pending() { "Reading the comments" } else { "No comments. They are off until switched on for a page, in its Comments pane." }).font(k.ty.small).color(c.text_muted).wrap());
@@ -9293,14 +9698,17 @@ fn inbox_view(s: &App, k: &Kit) -> El {
     if !s.held.is_empty() {
         waiting = waiting.child(text(format!("Held for your yes: {}", s.held.len())).font(k.ty.ui_medium).color(c.text_base));
         for m in &s.held {
-            waiting = waiting.child(comment_card(m, k, true, true));
+            waiting = waiting.child(comment_card(m, k, true, true, busy));
         }
     }
     let head = col()
         .gap(4.0)
         .child(text("Inbox").font(k.ty.body_medium).color(c.text_base))
-        .child(text("What waits for your yes, what happened, and every comment on your pages, newest first. The ship gives the newest 200 comments.").font(k.ty.small).color(c.text_muted).wrap());
-    let list = col().w_full().gap(8.0).child(text("Comments").font(k.ty.ui_medium).color(c.text_base)).child(list);
+        .child(text("What waits for your yes, what happened, and the comments on your pages, newest first.").font(k.ty.small).color(c.text_muted).wrap());
+    // how many of how many, as the web client says it: the ship sends the newest 200
+    let shown = s.comments.len() as u64;
+    let count = if s.comments_total > shown { format!("Comments: the newest {shown} of {}", s.comments_total) } else { "Comments".to_owned() };
+    let list = col().w_full().gap(8.0).child(text(count).key("inbox-count").font(k.ty.ui_medium).color(c.text_base)).child(list);
     col()
         .key("inbox")
         .w_full()
@@ -9317,6 +9725,12 @@ fn comments_view(s: &App, k: &Kit) -> El {
     let Some(p) = &s.open else {
         return col().key("comments").w_full().padding(12.0).child(text("Open a page to see its comments.").font(k.ty.small).color(c.text_muted).wrap());
     };
+    if let Some(t) = thread_here(s) {
+        return thread_view(t, s, k);
+    }
+    let busy = s.op_req.is_pending();
+    // one switch at a time: the one out is the one whose refusal is put back
+    let switching = s.switch_req.is_pending();
     let on = s.comments_on.get(&p.name).copied();
     let name = p.name.clone();
     let toggle = row()
@@ -9324,13 +9738,15 @@ fn comments_view(s: &App, k: &Kit) -> El {
         .w_full()
         .gap(8.0)
         .center_y()
-        .child(Switch::new(on.unwrap_or(false)).label("Comments on").on_toggle(move |s: &mut App| {
+        // not to be pressed until the ship has said which way it stands: flipped blind it could go the wrong way
+        .child(Switch::new(on.unwrap_or(false)).label("Comments on").disabled(on.is_none() || switching).on_toggle(move |s: &mut App| {
             let Some(c) = s.conn.clone() else { return };
-            let now = s.comments_on.get(&name).copied().unwrap_or(false);
+            let Some(now) = s.comments_on.get(&name).copied() else { return };
             s.comments_on.insert(name.clone(), !now);
-            s.op_req.request((c, name.clone()), move |(c, n)| {
+            s.comment_undo = Some(CommentUndo::On(name.clone(), now));
+            s.switch_req.request((c, name.clone()), move |(c, n)| {
                 c.set_comments(&n, !now)?;
-                Ok(Op::Commented(format!("comments are {} for {n}", if now { "off" } else { "on" })))
+                Ok(format!("comments are {} for {n}", if now { "off" } else { "on" }))
             });
         }).build(k).key("comments-toggle"));
     // comets cost nothing to make, so each page says what their comments do
@@ -9340,12 +9756,13 @@ fn comments_view(s: &App, k: &Kit) -> El {
         comets = comets.child(text("Comets").font(k.ty.small).color(c.text_muted));
         for (mode, label) in [("open", "Open"), ("held", "Held"), ("off", "Off")] {
             let name = p.name.clone();
-            comets = comets.child(Button::new(label).control_size(ControlSize::Small).variant(if now == mode { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
+            comets = comets.child(Button::new(label).control_size(ControlSize::Small).variant(if now == mode { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).disabled(switching).on_press(move |s: &mut App| {
                 let Some(c) = s.conn.clone() else { return };
-                s.comets.insert(name.clone(), mode.to_owned());
-                s.op_req.request((c, name.clone()), move |(c, n)| {
+                let was = s.comets.insert(name.clone(), mode.to_owned()).unwrap_or_else(|| "open".to_owned());
+                s.comment_undo = Some(CommentUndo::Comets(name.clone(), was));
+                s.switch_req.request((c, name.clone()), move |(c, n)| {
                     c.set_comets(&n, mode)?;
-                    Ok(Op::Commented(format!("comets' comments are {mode} for {n}")))
+                    Ok(format!("comets' comments are {mode} for {n}"))
                 });
             }).build(k).key(format!("comets-{mode}")));
         }
@@ -9353,19 +9770,30 @@ fn comments_view(s: &App, k: &Kit) -> El {
     let mine: Vec<&Comment> = s.comments.iter().filter(|m| m.page == p.name).collect();
     let mut list = col().key("comment-list").w_full().gap(8.0);
     for m in &mine {
-        list = list.child(comment_card(m, k, false, false));
+        list = list.child(comment_card(m, k, false, false, busy));
     }
     if mine.is_empty() {
         list = list.child(text(if s.comments_req.is_pending() { "Reading the comments" } else { "No comments on this page." }).font(k.ty.small).color(c.text_muted));
     }
-    let off = on == Some(false);
+    // this page's comets' comments that wait for a yes, as the web client has them beside the page
+    let held = s.page_held.get(&p.name).filter(|h| !h.is_empty());
+    if let Some(held) = held {
+        let mut waiting = col().key("page-held").w_full().gap(8.0).child(text(format!("Held for your yes: {}", held.len())).font(k.ty.small_medium).color(c.text_base));
+        for m in held {
+            waiting = waiting.child(comment_card(m, k, false, true, busy));
+        }
+        list = col().w_full().gap(8.0).child(waiting).child(list);
+    }
     let mut write = col().key("comment-write").w_full().gap(6.0);
-    if off {
-        write = write.child(text("Comments are off for this page.").font(k.ty.small).color(c.text_muted).wrap());
-    } else {
-        write = write
-            .child(TextArea::new(&s.comment).label("Your comment").placeholder("Say something").rows(3).on_edit(|s: &mut App| &mut s.comment).build(k).w_full().key("comment-field"))
-            .child(row().child(Button::new("Post").control_size(ControlSize::Small).variant(ButtonVariant::Contrast).on_press(post_comment).build(k).key("comment-post")));
+    match on {
+        // the ship has not said yet: a comment posted on a page with comments off would be dropped and called posted
+        None => write = write.child(text(if s.comments_on_req.is_pending() { "Reading whether comments are on" } else { "Whether comments are on is not known." }).font(k.ty.small).color(c.text_muted).wrap()),
+        Some(false) => write = write.child(text("Comments are off for this page.").font(k.ty.small).color(c.text_muted).wrap()),
+        Some(true) => {
+            write = write
+                .child(TextArea::new(&s.comment).label("Your comment").placeholder("Say something").rows(3).on_edit(|s: &mut App| &mut s.comment).build(k).w_full().key("comment-field"))
+                .child(row().child(Button::new(if s.comment_sending { "Posting\u{2026}" } else { "Post" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(s.comment_sending).on_press(post_comment).build(k).key("comment-post")));
+        }
     }
     col()
         .key("comments")
@@ -9377,6 +9805,62 @@ fn comments_view(s: &App, k: &Kit) -> El {
         .child(text("Comments").font(k.ty.ui_medium).color(c.text_base))
         .child(toggle)
         .child(comets)
+        .child(col().w_full().grow(1.0).min_h(0.0).child(list).scroll(ScrollSpec { stick_bottom: false }))
+        .child(write)
+}
+
+/// The Comments pane for a page of another ship read by address: its
+/// public thread, oldest first as its own reader shows it, and a field to
+/// send a comment as this ship. The host decides whether a comment lands.
+fn thread_view(t: &Thread, s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let hidden = if t.all { 0 } else { t.list.len().saturating_sub(THREAD_SHOWN) };
+    let mut list = col().key("thread-list").w_full().gap(8.0);
+    if hidden > 0 {
+        list = list.child(row().child(Button::new(format!("Show {hidden} older")).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+            if let Some(t) = &mut s.thread {
+                t.all = true;
+            }
+        }).build(k).key("thread-older")));
+    }
+    for (i, m) in t.list.iter().enumerate().skip(hidden) {
+        let when = Rev { rev: 0, updated: m.when.clone() }.when();
+        list = list.child(
+            col().key(format!("thread-{i}")).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01)
+                .child(row().w_full().gap(6.0).center_y().child(text(m.author.clone()).font(k.ty.small_medium).color(c.text_base)).child(text(when).font(k.ty.small).color(c.text_faint)))
+                .child(text(m.body.clone()).font(k.ty.ui).color(c.text_base).wrap().selectable(true)),
+        );
+    }
+    if t.list.is_empty() && t.sent.is_none() {
+        list = list.child(text("No comments on this page yet.").font(k.ty.small).color(c.text_muted));
+    }
+    // what was sent from here and is not in the thread yet, said as the ship's reader says it
+    if let Some((body, told, _)) = &t.sent {
+        let said = if *told { format!("Sent. It shows here once {} has it, or after its owner's yes if comments from you are held.", t.ship) } else { format!("{} did not say it took this within five seconds. It may still arrive.", t.ship) };
+        list = list.child(
+            col().key("thread-sent").w_full().padding(8.0).gap(4.0).radius(k.radius.sm).border(1.0, c.border_weak)
+                .child(text(said).font(k.ty.small).color(c.text_muted).wrap())
+                .child(text(body.clone()).font(k.ty.ui).color(c.text_muted).wrap()),
+        );
+    }
+    let url = t.url.clone();
+    let again = Button::new("Refresh").help("Read the thread again").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(s.thread_req.is_pending()).on_press(move |s: &mut App| {
+        if let Some(c) = s.conn.clone() {
+            s.thread_req.request((c, url.clone()), |(c, url)| thread_of(&c, &url).map(|l| (url, l)));
+        }
+    }).build(k).key("thread-again");
+    let write = col().key("comment-write").w_full().gap(6.0)
+        .child(TextArea::new(&s.comment).label(format!("Your comment to {}", t.ship)).placeholder("Say something").rows(3).on_edit(|s: &mut App| &mut s.comment).build(k).w_full().key("comment-field"))
+        .child(text(format!("Sent as your ship. {} decides whether it shows: comments may be off there, or held.", t.ship)).font(k.ty.small).color(c.text_faint).wrap())
+        .child(row().child(Button::new(if s.comment_sending { "Sending\u{2026}".to_owned() } else { format!("Send to {}", t.ship) }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(s.comment_sending).on_press(post_remote_comment).build(k).key("comment-send")));
+    col()
+        .key("comments")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .padding(12.0)
+        .gap(10.0)
+        .child(row().w_full().gap(8.0).center_y().child(text(format!("Comments on {}'s page", t.ship)).font(k.ty.ui_medium).color(c.text_base).truncate().grow(1.0).min_w(0.0)).child(again))
         .child(col().w_full().grow(1.0).min_h(0.0).child(list).scroll(ScrollSpec { stick_bottom: false }))
         .child(write)
 }
@@ -9826,6 +10310,9 @@ fn share_body(s: &App, k: &Kit) -> Option<(String, El)> {
 }
 
 fn ask_new(s: &mut App) {
+    if no_node(s) {
+        return;
+    }
     // a new page starts in the folder showing, or beside the open page
     let dir = match (&s.folder, &s.open) {
         (Some(f), None) => format!("{f}/"),
@@ -9911,6 +10398,7 @@ fn open_marks(s: &mut App) {
     s.over = Some(Over::Marks);
     match s.conn.clone() {
         Some(c) => s.marks_req.request(c, |c| c.bookmarks()),
+        None if s.anon => s.marks = Some(anon_marks_load()),
         None => s.marks = Some(SAMPLE_MARKS.iter().map(|(url, title, folder)| api::Bookmark { url: (*url).into(), title: (*title).into(), folder: (*folder).into() }).collect()),
     }
 }
@@ -9929,7 +10417,12 @@ fn mark_change(s: &mut App, change: marks::Change) {
         }),
         None => {
             let list = marks::after(s.marks.as_deref().unwrap_or_default(), &change);
+            // with no ship they are this computer's, and kept
+            let kept = if s.anon { anon_marks_store(&list) } else { Ok(()) };
             applied(s, Op::Marks(marks::said(&change), list));
+            if let Err(e) = kept {
+                s.note = format!("kept until the app closes, but not written to this computer: {e}");
+            }
         }
     }
 }
@@ -10270,7 +10763,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
             }
         }).build(k).key(tab.key));
     }
-    let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
+    let who = s.conn.as_ref().map_or(if s.anon { "anonymous" } else { "sample pages" }.to_owned(), |c| c.ship().to_owned());
     let theme = Button::new(match s.prefs.theme.as_str() {
         "dark" => "Dark",
         "light" => "Light",
@@ -10287,7 +10780,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .justify_between()
         .child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).grow(1.0).min_w(0.0).truncate())
         .child(theme)
-        .child(Button::new(if s.conn.is_some() { "Sign out" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
+        .child(Button::new(if s.conn.is_some() { "Sign out" } else if s.anon { "Leave" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
     // rune-kit keeps a band over the sidebar for its own toggle, level with the top bar. The toggle is the
     // ribbon's here, so the pane's tabs go up into the band, beside the top bar, and nothing is left blank
     let side = col().key("pages").w_full().grow(1.0).min_h(0.0).mt(-rune_kit::shell::TOOLBAR_HEIGHT).padding(8.0).gap(8.0).child(halves);
@@ -10475,7 +10968,7 @@ fn history_view(s: &App, k: &Kit) -> El {
                 list = list.child(line);
             }
         }
-        None => list = list.child(text(if s.conn.is_some() { "Reading the history" } else { "Sample pages keep no history" }).font(k.ty.small).color(c.text_muted)),
+        None => list = list.child(text(if s.conn.is_some() { "Reading the history" } else if s.anon { "A page read anonymously shows no history." } else { "Sample pages keep no history" }).font(k.ty.small).color(c.text_muted)),
     }
     col()
         .key("history")
@@ -10619,6 +11112,360 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
+/// A switch in the Comments pane as it was before it was flipped.
+#[derive(Clone, Debug, PartialEq)]
+enum CommentUndo {
+    On(String, bool),
+    Comets(String, String),
+}
+
+/// Another ship's page's public thread, and what this ship last sent to it.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Thread {
+    /// The address it was read at, its host, and the page's name there.
+    url: String,
+    ship: String,
+    page: String,
+    list: Vec<Comment>,
+    /// The older ones are shown too: fifty are until asked.
+    all: bool,
+    /// A comment sent from here that the thread does not show yet, whether the host took it, and how many like it the thread had.
+    sent: Option<(String, bool, usize)>,
+}
+
+/// What is said when the ship did not do what was asked.
+fn not_done(s: &mut App, e: &str) {
+    if api::gone(e) {
+        s.offline.get_or_insert_with(String::new);
+        s.note = "not done: that needs the ship, and it does not answer".into();
+    } else {
+        s.note = format!("not done: {e}");
+    }
+}
+
+/// A comment's post came back. One that did not go keeps its text.
+fn commented(s: &mut App, r: Result<Op, String>) {
+    s.comment_sending = false;
+    match r {
+        Ok(op) => applied(s, op),
+        Err(e) => not_done(s, &e),
+    }
+}
+
+/// A switch of the Comments pane came back. One the ship did not take goes back to where it was.
+fn switched(s: &mut App, r: Result<String, String>) {
+    let undo = s.comment_undo.take();
+    match r {
+        Ok(say) => {
+            s.note = say;
+            load_comments(s);
+        }
+        Err(e) => {
+            match undo {
+                Some(CommentUndo::On(n, was)) => drop(s.comments_on.insert(n, was)),
+                Some(CommentUndo::Comets(n, was)) => drop(s.comets.insert(n, was)),
+                None => {}
+            }
+            not_done(s, &e);
+        }
+    }
+}
+
+/// What the comment field's text is for: the thread of another ship's page in front, or this ship's page.
+fn comment_key(s: &App) -> String {
+    match (thread_here(s), &s.open) {
+        (Some(t), _) => t.url.clone(),
+        (None, Some(p)) if !s.memory && s.remote.is_none() => p.name.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Keeps the comment field's text with what it was typed for: text begun on one page is put by when
+/// another comes in front, and is there again on the way back. It was one text for every page, and
+/// words typed on a private page stood ready to be sent to another ship's.
+fn sync_draft(s: &mut App) -> bool {
+    let key = comment_key(s);
+    if key == s.comment_for {
+        return false;
+    }
+    let old = std::mem::replace(&mut s.comment_for, key.clone());
+    let typed = std::mem::take(&mut s.comment.text);
+    if !old.is_empty() && !typed.trim().is_empty() {
+        s.drafts.insert(old, typed);
+    }
+    s.comment = TextEdit::new(s.drafts.remove(&key).unwrap_or_default().as_str());
+    true
+}
+
+/// A comment that went: its text is let go where it still stands as it was sent. What was typed
+/// since is another comment, and stays.
+fn sent_draft(s: &mut App, key: &str, body: &str) {
+    if s.comment_for == key {
+        if s.comment.text.trim() == body {
+            s.comment = TextEdit::new("");
+        }
+    } else if s.drafts.get(key).is_some_and(|d| d.trim() == body) {
+        s.drafts.remove(key);
+    }
+}
+
+/// How many of a thread's comments are this ship's with this text. A host cuts a long one short.
+fn like_ours(list: &[Comment], ours: &str, body: &str) -> usize {
+    let body = body.trim();
+    list.iter().filter(|m| m.author == ours && (m.body.trim() == body || (m.body.len() >= 4000 && body.starts_with(m.body.trim())))).count()
+}
+
+/// What was sent from here is no longer waiting to show once the thread has one more like it.
+fn settle_sent(t: &mut Thread, ours: &str) {
+    if t.sent.as_ref().is_some_and(|(body, _, had)| like_ours(&t.list, ours, body) > *had) {
+        t.sent = None;
+    }
+}
+
+/// How many of a thread's comments show until the rest are asked for, as in the ship's own reader.
+const THREAD_SHOWN: usize = 50;
+
+/// The thread that belongs to the page of another ship in front, when it was read by address.
+fn thread_here(s: &App) -> Option<&Thread> {
+    // with no ship there is no thread read and nobody to send as
+    let sh = s.remote.as_ref().filter(|_| !s.anon)?;
+    s.thread.as_ref().filter(|t| t.ship == sh.host && t.page == sh.path)
+}
+
+/// How far along an update is.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, PartialEq)]
+enum UpdStage {
+    Idle,
+    Fetching,
+    /// The new version is in the old one's place and starts next time.
+    Installed(String),
+    Failed(String),
+}
+
+/// The app's own updates (`update.rs`).
+#[cfg(not(target_arch = "wasm32"))]
+struct Updater {
+    /// Whether this copy asks at all: a release build does, a build for working on does not.
+    on: bool,
+    flavor: update::Flavor,
+    endpoint: String,
+    key: String,
+    /// A test's files may be fetched from anywhere.
+    anywhere: bool,
+    /// When it next asks (app clock), and whether a wake is set for then.
+    next: f64,
+    armed: bool,
+    check_req: Latest<Result<Option<update::Offer>, String>>,
+    get_req: Latest<Result<(), String>>,
+    offer: Option<update::Offer>,
+    /// Versions put off for this run. A newer one is offered again.
+    later: Vec<String>,
+    /// The version put in this copy's place in this run: not offered again, whatever its banner was answered.
+    installed: Option<String>,
+    /// When the download's count is next looked at (app clock): one wake at a time.
+    tick: f64,
+    stage: UpdStage,
+    /// Hundredths of the file fetched so far.
+    pct: std::sync::Arc<std::sync::atomic::AtomicU8>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Updater {
+    fn new() -> Updater {
+        // a build for working on asks only when a test names where, and may then be given the test's own key.
+        // A release build reads neither: what it trusts is built into it
+        let test = if cfg!(debug_assertions) { std::env::var("LATTICE_RUNE_UPDATE_URL").ok().filter(|u| !u.is_empty()) } else { None };
+        let flavor = update::flavor(std::env::var("APPIMAGE").ok().as_deref(), std::env::var("APPDIR").ok().as_deref(), std::env::current_exe().ok().as_deref(), test.is_some());
+        // whoever would not have it ask says so
+        let off = std::env::var_os("LATTICE_RUNE_NO_UPDATE").is_some_and(|v| !v.is_empty());
+        let key = test.as_ref().and_then(|_| std::env::var("LATTICE_RUNE_UPDATE_KEY").ok()).unwrap_or_else(|| update::PUBKEY.to_owned());
+        Updater {
+            on: (!cfg!(debug_assertions) || test.is_some()) && !off,
+            flavor,
+            anywhere: test.is_some(),
+            next: if test.is_some() { 1.0 } else { update::FIRST_CHECK },
+            endpoint: test.unwrap_or_else(|| update::ENDPOINT.to_owned()),
+            key,
+            armed: false,
+            check_req: Latest::default(),
+            get_req: Latest::default(),
+            offer: None,
+            later: Vec::new(),
+            installed: None,
+            tick: 0.0,
+            stage: UpdStage::Idle,
+            pct: Default::default(),
+        }
+    }
+}
+
+/// Asks whether a newer release is out when it is time to, and takes the
+/// answer and the fetched file as they come. Nothing here waits on the network.
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_update(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
+    if !s.upd.on {
+        return false;
+    }
+    let mut changed = false;
+    if clock >= s.upd.next {
+        s.upd.next = clock + update::PERIOD;
+        s.upd.armed = false;
+        let (endpoint, flavor, anywhere) = (s.upd.endpoint.clone(), s.upd.flavor.clone(), s.upd.anywhere);
+        s.upd.check_req.request((endpoint, flavor), move |(e, f)| update::check(&e, &f, anywhere));
+    }
+    if !s.upd.armed {
+        s.upd.armed = true;
+        tx.wake_after(std::time::Duration::from_secs_f64((s.upd.next - clock).max(0.1)));
+    }
+    // offline, GitHub away, no release yet: asked again next time, and nothing said
+    if let Some(Ok(Some(o))) = s.upd.check_req.take() {
+        changed |= update_offered(&mut s.upd, o);
+    }
+    if let Some(got) = s.upd.get_req.take() {
+        changed = true;
+        update_fetched(&mut s.upd, got);
+    }
+    if s.upd.stage == UpdStage::Fetching && clock >= s.upd.tick {
+        // the count moves as the file comes. One wake stands at a time: a wake set on every pass made a chain for each
+        changed = true;
+        s.upd.tick = clock + 0.25;
+        tx.wake_after(std::time::Duration::from_millis(250));
+    }
+    changed
+}
+
+/// A newer release was found. It is offered when nothing else of the update is showing: not a version
+/// put off or already put in place in this run, and not over a download, its failure, or what was installed.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_offered(u: &mut Updater, o: update::Offer) -> bool {
+    let known = u.later.contains(&o.version) || u.installed.as_deref() == Some(o.version.as_str());
+    if known || u.stage != UpdStage::Idle || u.offer.as_ref() == Some(&o) {
+        return false;
+    }
+    u.offer = Some(o);
+    true
+}
+
+/// The download and the swap came back. A failure keeps the offer, to be tried again.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_fetched(u: &mut Updater, got: Result<(), String>) {
+    let version = u.offer.as_ref().map(|o| o.version.clone()).unwrap_or_default();
+    u.stage = match got {
+        Ok(()) => {
+            (u.offer, u.installed) = (None, Some(version.clone()));
+            UpdStage::Installed(version)
+        }
+        Err(e) => UpdStage::Failed(format!("Could not update to lattice-rune {version}: {e}. Nothing was changed.")),
+    };
+}
+
+/// Fetches the offered file. It is checked against its signature before anything is written.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_now(s: &mut App) {
+    let Some((url, sig, named)) = s.upd.offer.as_ref().and_then(|o| o.file.clone()) else { return };
+    let update::Flavor::AppImage(at) = s.upd.flavor.clone() else { return };
+    let (key, pct) = (s.upd.key.clone(), s.upd.pct.clone());
+    // how far is not known until the first of it comes
+    pct.store(UNKNOWN, std::sync::atomic::Ordering::Relaxed);
+    (s.upd.stage, s.upd.tick) = (UpdStage::Fetching, 0.0);
+    // fetched, checked and written on the worker's thread: the window does not wait on the disk
+    s.upd.get_req.request((url, sig, key, named, at), move |(url, sig, key, named, at)| {
+        let bytes = update::fetch(&url, &sig, &key, named.as_deref(), &|p| pct.store(p, std::sync::atomic::Ordering::Relaxed))?;
+        update::install(&at, &bytes)
+    });
+}
+
+/// The download's count before anything of it has come.
+#[cfg(not(target_arch = "wasm32"))]
+const UNKNOWN: u8 = u8::MAX;
+
+/// Puts the offer off for this run.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_later(s: &mut App) {
+    match s.upd.stage {
+        // the new version still starts next time, and is not offered again. A failure put aside leaves its offer, to be tried again
+        UpdStage::Installed(_) | UpdStage::Failed(_) => s.upd.stage = UpdStage::Idle,
+        UpdStage::Idle => {
+            if let Some(o) = s.upd.offer.take() {
+                s.upd.later.push(o.version);
+            }
+        }
+        UpdStage::Fetching => {}
+    }
+}
+
+/// Starts the new version in this one's place, once what is being written has been sent.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_restart(s: &mut App) {
+    let update::Flavor::AppImage(at) = s.upd.flavor.clone() else { return };
+    if !leave_edit(s) {
+        return;
+    }
+    if s.save_req.is_pending() || s.drain_req.is_pending() {
+        s.note = "Saving first. Press Restart again in a moment".into();
+        return;
+    }
+    match update::restart_after_exit(&at) {
+        Ok(()) => {
+            // what a window closed by hand would do first
+            closing(s);
+            std::process::exit(0)
+        }
+        Err(e) => s.note = format!("could not restart: {e}. The new version starts the next time the app does"),
+    }
+}
+
+/// What is done before the program goes, however it goes: the reader's engine closes its store, so
+/// what libmesa holds is written.
+fn closing(s: &mut App) {
+    #[cfg(unix)]
+    if let Some(e) = s.engine.take() {
+        e.close();
+    }
+    let _ = s;
+}
+
+/// The update's own line across the top of the page area: the offer, how
+/// far the file has come, that it is in, or what went wrong.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_banner(s: &App, k: &Kit) -> Option<El> {
+    let small = |label: &str| Button::new(label.to_owned()).control_size(ControlSize::Small);
+    let later = |label: &str| small(label).variant(ButtonVariant::Ghost).on_press(update_later).build(k).key("update-later");
+    let line = |say: String| row().key("update-banner").role("status").w_full().px(16.0).py(8.0).gap(12.0).center_y().fill(k.c.layer_01).child(text(say).key("update-said").font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0));
+    match (&s.upd.stage, &s.upd.offer) {
+        (UpdStage::Fetching, o) => {
+            let pct = s.upd.pct.load(std::sync::atomic::Ordering::Relaxed);
+            let v = o.as_ref().map(|o| o.version.as_str()).unwrap_or_default();
+            Some(line(match pct {
+                UNKNOWN => format!("Downloading lattice-rune {v}\u{2026}"),
+                100.. => format!("Checking and installing lattice-rune {v}\u{2026}"),
+                _ => format!("Downloading lattice-rune {v}\u{2026} {pct}%"),
+            }))
+        }
+        (UpdStage::Installed(v), _) => Some(
+            line(format!("lattice-rune {v} is installed and starts the next time the app does."))
+                .child(small("Restart now").variant(ButtonVariant::Contrast).on_press(update_restart).build(k).key("update-restart"))
+                .child(later("Later")),
+        ),
+        (UpdStage::Failed(e), _) => Some(line(e.clone()).child(small("Try again").variant(ButtonVariant::Contrast).on_press(update_now).build(k).key("update-again")).child(later("Dismiss"))),
+        (UpdStage::Idle, Some(o)) => {
+            let act = if o.file.is_some() {
+                small("Update").variant(ButtonVariant::Contrast).on_press(update_now).build(k).key("update-now")
+            } else {
+                small("Open release page").variant(ButtonVariant::Contrast).on_press_tx(|s: &mut App, tx| {
+                    if let Err(e) = tx.open_url(update::RELEASES_PAGE) {
+                        s.note = format!("could not open {}: {e:?}", update::RELEASES_PAGE);
+                    }
+                    update_later(s);
+                }).build(k).key("update-page")
+            };
+            Some(line(update::offer_text(o, update::VERSION)).child(act).child(later("Later")))
+        }
+        (UpdStage::Idle, None) => None,
+    }
+}
+
 /// An HTML page drawn as a browser shows it.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
@@ -10642,13 +11489,18 @@ struct WebShow {
     held: usize,
     /// Bands for what is in view are still to come.
     painting: bool,
+    /// Counted up when a page's text is new at the revision it had (`htmlview::Key::text`).
+    text: u64,
+    /// A page the engine failed on: it is read as a document.
+    broken: Option<htmlview::Key>,
 }
 
 /// The HTML page to show as a web page, when one is in front to be read and that is how it is wanted.
 #[cfg(not(target_arch = "wasm32"))]
 fn web_page(s: &App) -> Option<&Page> {
     let screen = s.settings.is_some() || s.access || s.forum.is_some() || s.shared_open || s.inbox || s.folder.is_some();
-    s.open.as_ref().filter(|p| p.kind == "html" && !s.prefs.html_plain && !s.editing && !s.memory && s.old.is_none() && !screen)
+    let broken = |p: &Page| s.web.broken.as_ref().is_some_and(|k| k.name == p.name && k.rev == p.rev && k.text == s.web.text);
+    s.open.as_ref().filter(|p| p.kind == "html" && !s.prefs.html_plain && !s.editing && !s.memory && s.old.is_none() && !screen && !broken(p))
 }
 
 /// Keeps the drawn HTML page in step with what is in front: asks for it
@@ -10657,7 +11509,7 @@ fn web_page(s: &App) -> Option<&Page> {
 fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
     let mut changed = false;
     let (scale, dark) = s.web.env.get();
-    let ask = web_page(s).filter(|_| s.web.room > 0.0).map(|p| htmlview::Ask { key: htmlview::Key { name: p.name.clone(), rev: p.rev }, width: htmlview::width_for(s.web.room), scale: scale.clamp(1.0, 3.0), dark, outside: s.prefs.outside.contains(&p.name) });
+    let ask = web_page(s).filter(|_| s.web.room > 0.0).map(|p| htmlview::Ask { key: htmlview::Key { name: p.name.clone(), rev: p.rev, text: s.web.text }, width: htmlview::width_for(s.web.room), scale: scale.clamp(1.0, 3.0), dark, outside: s.prefs.outside.contains(&p.name) });
     if let (Some(ask), Some(html)) = (&ask, &s.web.html) {
         if s.web.asked.as_ref() != Some(ask) {
             // a page let to load outside content is read afresh: what it held back is fetched as it is parsed
@@ -10672,6 +11524,12 @@ fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
             html.show(ask.clone(), body);
             s.web.asked = Some(ask.clone());
         }
+    }
+    // no HTML page is in front: the pictures of the last one are let go, not held under every other page
+    if web_page(s).is_none() && s.web.asked.is_some() {
+        (s.web.asked, s.web.laid, s.web.painting) = (None, None, false);
+        s.web.bands.clear();
+        s.web.was.clear();
     }
     let outs = s.web.html.as_ref().map(htmlview::Html::take).unwrap_or_default();
     let mut link = None;
@@ -10697,7 +11555,22 @@ fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
                 }
             }
             htmlview::Out::Hot(on) => s.web.hot = on,
-            htmlview::Out::Rest(rest) => s.web.painting = !rest,
+            htmlview::Out::Rest(rest) => {
+                s.web.painting = !rest;
+                if rest {
+                    // the turn before's bands that this turn has no band for are of a page that was taller
+                    let bands = &s.web.bands;
+                    s.web.was.retain(|i, _| bands.contains_key(i));
+                }
+            }
+            htmlview::Out::Failed => {
+                // the engine could not draw it: it is read as a document, and said once
+                s.web.broken = s.web.asked.take().map(|a| a.key);
+                (s.web.laid, s.web.painting) = (None, false);
+                s.web.bands.clear();
+                s.web.was.clear();
+                s.note = "This page could not be drawn as a web page. It is shown as a document.".into();
+            }
             htmlview::Out::Link(href) => link = Some(href),
         }
     }
@@ -11059,7 +11932,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // the name it was given when there is one, with its path beside it
     let named = path.and_then(|p| s.dnames.get(p).filter(|_| !s.memory && s.remote.is_none()).map(|d| format!("{d}  ({p})")));
     let title = if s.settings.is_some() { "Settings" } else if s.forum.is_some() { "Forum" } else if s.inbox { "Inbox" } else if s.shared_open { "Browser" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
-    let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending();
+    let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending() || s.drain_req.is_pending();
     let mut layer = Vec::new();
     let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox;
     let remote = s.remote.as_ref().filter(|_| page);
@@ -11129,7 +12002,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
                 }).build(&k).key("edit"))
                 .child(side("Read", !editing).help("Edit / Read (Ctrl+E)").on_press(|s: &mut App| {
                     if s.editing {
-                        save(s);
+                        to_read(s);
                     }
                 }).build(&k).key("read")),
         );
@@ -11226,7 +12099,11 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // the room the groups have is noted as it is laid out: a split is refused when it is too little for two
     // while browsing, the browser's bar is the header: its own Back and Forward, the address, and the star
     let head = if browsing(s) && !s.editing { browser_bar(s, &k).pt(6.0) } else { head };
-    let main = col().w_full().h_full().min_h(0.0).child(head).child(wait_line(busy || web_waiting(s), &k)).child(col().key("groups").w_full().grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.groups_room = (r[2], r[3])).child(main));
+    #[cfg(not(target_arch = "wasm32"))]
+    let offer = update_banner(s, &k);
+    #[cfg(target_arch = "wasm32")]
+    let offer: Option<El> = None;
+    let main = col().w_full().h_full().min_h(0.0).children(offer).child(head).child(wait_line(busy || web_waiting(s), &k)).child(col().key("groups").w_full().grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.groups_room = (r[2], r[3])).child(main));
     let inset = cx.titlebar_inset();
     let right = IconButton::new(&topbar::PANE_RIGHT).variant(if s.inspector.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help("Right pane").on_press(toggle_right).build(&k).key("pane-right");
     let shell = SplitView::new(main)
@@ -11346,7 +12223,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
                 let n = s.tabs.len();
                 switch_tab(s, if next { (s.tab + 1) % n } else { (s.tab + n - 1) % n });
             }
-            Chord::Read => save(s),
+            Chord::Read => to_read(s),
             Chord::Files => {
                 s.sidebar.set_open(true);
                 tx.focus_when_shown("filter", false);
@@ -11467,7 +12344,8 @@ pub fn run() {
         fonts,
         ..AppSpec::new("lattice", (1120.0, 720.0), init, view)
     })
-    .chrome(chrome);
+    .chrome(chrome)
+    .on_close(|s: &mut App, _| closing(s));
     app.run();
 }
 
@@ -13035,6 +13913,167 @@ mod tests {
     }
 
     /// The sample pages with `name` open, and no ship.
+    #[test]
+    fn read_leaves_the_editor_at_once_and_sends_nothing_for_text_not_changed() {
+        let mut s = sample("welcome");
+        let (rev, body) = (s.open.as_ref().unwrap().rev, s.open.as_ref().unwrap().body.clone());
+        start_edit(&mut s);
+        assert!(s.editing);
+        to_read(&mut s);
+        assert!(!s.editing, "the reader is back with no wait");
+        assert_eq!((s.open.as_ref().unwrap().rev, &s.open.as_ref().unwrap().body), (rev, &body), "and nothing was saved: the text is as it was");
+        assert!(!s.save_req.is_pending() && !s.drain_req.is_pending() && !s.read_save);
+        // text that changed is in the reader as soon as Read is pressed
+        start_edit(&mut s);
+        s.edit = TextEdit::new("changed text\n");
+        to_read(&mut s);
+        assert!(!s.editing);
+        assert_eq!(s.open.as_ref().unwrap().body, "changed text\n");
+    }
+
+    #[test]
+    fn a_comment_that_fails_keeps_its_text_and_a_refused_switch_goes_back() {
+        let mut s = sample("welcome");
+        // a post on its way: the text is there until the ship has it
+        assert!(sync_draft(&mut s) && s.comment_for == "welcome");
+        s.comment = TextEdit::new("my words");
+        s.comment_sending = true;
+        commented(&mut s, Err("500: no".into()));
+        assert_eq!((s.comment.text.as_str(), s.comment_sending, s.note.as_str()), ("my words", false, "not done: 500: no"), "it did not go: the text stays and Post can be pressed again");
+        s.comment_sending = true;
+        commented(&mut s, Ok(Op::Posted("comment posted on welcome".into(), "welcome".into(), "my words".into())));
+        assert_eq!((s.comment.text.as_str(), s.comment_sending), ("", false), "landed: only now is the field emptied");
+        // what was typed while it was on its way is another comment, and stays
+        s.comment = TextEdit::new("a second thought");
+        commented(&mut s, Ok(Op::Posted("comment posted on welcome".into(), "welcome".into(), "my words".into())));
+        assert_eq!(s.comment.text, "a second thought");
+        // a switch the ship takes stands, and one it refuses goes back. Nothing else's failure touches it
+        s.comments_on.insert("welcome".into(), false);
+        s.comment_undo = Some(CommentUndo::On("welcome".into(), true));
+        switched(&mut s, Ok("comments are off for welcome".into()));
+        assert_eq!((s.comments_on.get("welcome"), &s.comment_undo), (Some(&false), &None));
+        not_done(&mut s, "500: a rename refused");
+        assert_eq!(s.comments_on.get("welcome"), Some(&false), "another action's failure is not this switch's");
+        s.comments_on.insert("welcome".into(), true);
+        s.comment_undo = Some(CommentUndo::On("welcome".into(), false));
+        switched(&mut s, Err("500: no".into()));
+        assert_eq!((s.comments_on.get("welcome"), &s.comment_undo), (Some(&false), &None));
+    }
+
+    #[test]
+    fn a_comment_begun_on_one_page_is_not_in_the_field_of_another() {
+        let mut s = sample("welcome");
+        sync_draft(&mut s);
+        s.comment = TextEdit::new("for my own page");
+        open_page(&mut s, "notes/today");
+        assert!(sync_draft(&mut s));
+        assert_eq!((s.comment.text.as_str(), s.comment_for.as_str()), ("", "notes/today"));
+        open_page(&mut s, "welcome");
+        sync_draft(&mut s);
+        assert_eq!(s.comment.text, "for my own page", "and it is there again on the way back");
+        assert!(!sync_draft(&mut s), "nothing moves while the same page is in front");
+    }
+
+    #[test]
+    fn another_ships_thread_belongs_to_the_page_it_was_read_with() {
+        let mut s = sample("welcome");
+        let m = |who: &str, body: &str| Comment { page: String::new(), id: String::new(), author: who.into(), when: "~2026.1.1".into(), body: body.into() };
+        urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: vec![m("~bus", "one"), m("~wex", "two")] });
+        let t = thread_here(&s).expect("the page in front has its thread");
+        assert_eq!((t.url.as_str(), t.ship.as_str(), t.page.as_str(), t.list.len(), t.all, &t.sent), ("urb://~nec/notes/a", "~nec", "notes/a", 2, false, &None));
+        assert!(s.note.contains("2 comments"));
+        // what was sent from here stays said across a read of the same address, and goes with another page
+        s.thread.as_mut().unwrap().sent = Some(("mine".into(), true, 0));
+        urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: Vec::new() });
+        assert_eq!(thread_here(&s).unwrap().sent, Some(("mine".into(), true, 0)));
+        urb_got(&mut s, "urb://~nec/notes/b".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/b".into(), kind: "md".into(), body: "# B\n".into(), comments: Vec::new() });
+        assert_eq!(thread_here(&s).unwrap().sent, None);
+        // one of this ship's own pages has no such thread
+        open_page(&mut s, "welcome");
+        assert!(thread_here(&s).is_none());
+    }
+
+    #[test]
+    fn text_kept_at_the_old_revision_is_what_the_reader_draws() {
+        let mut s = sample("welcome");
+        s.open = Some(Page { name: "g".into(), body: "# Old\n".into(), kind: "gmi".into(), rev: 4 });
+        sync_sheet(&mut s);
+        assert!(read_md(&s, s.open.as_ref().unwrap()).unwrap().contains("Old"));
+        // as a save kept on this device leaves it: new text, the revision the ship last gave
+        s.open.as_mut().unwrap().body = "# New\n".into();
+        sync_sheet(&mut s);
+        assert!(read_md(&s, s.open.as_ref().unwrap()).unwrap().contains("Old"), "by revision alone it is not seen to have changed");
+        let was = s.web.text;
+        stale_views(&mut s, "g");
+        sync_sheet(&mut s);
+        assert!(read_md(&s, s.open.as_ref().unwrap()).unwrap().contains("New"));
+        assert_eq!(s.web.text, was + 1, "and an HTML page is asked for again");
+    }
+
+    #[test]
+    fn an_update_is_offered_once_tried_again_after_a_failure_and_not_offered_once_installed() {
+        let offer = |v: &str| update::Offer { version: v.into(), notes: String::new(), file: Some(("u".into(), "s".into(), None)) };
+        let mut s = sample("welcome");
+        assert!(update_offered(&mut s.upd, offer("2.0.0")));
+        assert!(!update_offered(&mut s.upd, offer("2.0.0")), "the same one again changes nothing");
+        // a download that fails keeps the offer: Try again has something to try, and Dismiss does not put the version off
+        s.upd.stage = UpdStage::Fetching;
+        assert!(!update_offered(&mut s.upd, offer("2.0.1")), "not over a download");
+        update_fetched(&mut s.upd, Err("the signature does not hold".into()));
+        assert!(matches!(&s.upd.stage, UpdStage::Failed(e) if e.contains("2.0.0") && e.contains("does not hold")));
+        assert_eq!(s.upd.offer, Some(offer("2.0.0")));
+        update_later(&mut s);
+        assert_eq!((&s.upd.stage, s.upd.offer.is_some(), s.upd.later.is_empty()), (&UpdStage::Idle, true, true));
+        // installed: Later leaves it installed, and the next check does not offer it again
+        s.upd.stage = UpdStage::Fetching;
+        update_fetched(&mut s.upd, Ok(()));
+        assert_eq!((&s.upd.stage, &s.upd.offer, s.upd.installed.as_deref()), (&UpdStage::Installed("2.0.0".into()), &None, Some("2.0.0")));
+        assert!(!update_offered(&mut s.upd, offer("2.0.1")), "not over the word that one is installed");
+        update_later(&mut s);
+        assert_eq!(s.upd.stage, UpdStage::Idle);
+        assert!(!update_offered(&mut s.upd, offer("2.0.0")), "what is installed is not offered");
+        assert!(update_offered(&mut s.upd, offer("2.0.1")), "a later one is");
+        // Later puts that version off for the run
+        update_later(&mut s);
+        assert!(!update_offered(&mut s.upd, offer("2.0.1")) && update_offered(&mut s.upd, offer("2.0.2")));
+    }
+
+    #[test]
+    fn a_link_in_another_ships_page_leads_to_an_address() {
+        let to = |url: &str| remote_link("~nec", "notes/plan", url);
+        assert_eq!(to("urb://~bud/x").as_deref(), Some("urb://~bud/x"));
+        assert_eq!(to("trips").as_deref(), Some("urb://~nec/notes/trips"), "a name beside the page");
+        assert_eq!(to("./trips/rome#food").as_deref(), Some("urb://~nec/notes/trips/rome"));
+        assert_eq!(to("../index").as_deref(), Some("urb://~nec/index"));
+        assert_eq!(to("/recipes/bread").as_deref(), Some("urb://~nec/recipes/bread"));
+        assert_eq!(to("/apps/lattice/page/notes/other").as_deref(), Some("urb://~nec/notes/other"), "a link as lattice writes one to its own page");
+        for web in ["https://example.com/x", "mailto:a@b.c", "#part", "", "//example.com/x"] {
+            assert_eq!(to(web), None, "{web}");
+        }
+    }
+
+    #[test]
+    fn with_no_ship_nothing_pretends_to_be_written_and_a_late_read_is_not_shown() {
+        let mut s = init();
+        s.conn = None;
+        (s.sample, s.anon) = (true, true);
+        for write in [capture as fn(&mut App), open_today, ask_new, start_edit] {
+            s.note.clear();
+            write(&mut s);
+            assert!(s.note.contains("needs a node") && s.open.is_none() && !s.editing && s.prompt.is_none());
+        }
+        // an answer for an asking that was let go is not shown
+        s.anon_seq = 3;
+        s.anon_reading = Some("urb://~nec/a".into());
+        urb_cancel(&mut s);
+        assert_eq!((s.anon_seq, &s.anon_reading), (4, &None));
+        // and one that lands under an edit begun meanwhile leaves the edit alone
+        let mut s = sample("welcome");
+        start_edit(&mut s);
+        urb_got(&mut s, "urb://~nec/a".into(), api::Urb::Page { ship: "~nec".into(), path: "a".into(), kind: "md".into(), body: "x".into(), comments: Vec::new() });
+        assert!(s.editing && s.open.as_ref().unwrap().name == "welcome" && s.remote.is_none() && s.note.contains("an edit is open"));
+    }
+
     fn sample(name: &str) -> App {
         let mut s = init();
         s.conn = None;

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds target/bundle/lattice-rune-<version>-x86_64.AppImage: the AppImage
 # runtime with a squashfs of the app after it. The binary should be one
-# built on an old system (build-in-debian.sh), named by LATTICE_RUNE_BIN,
+# built on an old system (CI builds on Ubuntu 22.04), named by LATTICE_RUNE_BIN,
 # or the AppImage runs only where the glibc is as new as this machine's.
 #
 # Fetched once: the AppImage project's static runtime (type2-runtime,
