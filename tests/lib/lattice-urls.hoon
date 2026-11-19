@@ -252,6 +252,14 @@
     (expect-eq !>(desk-base:lu) !>((known-base:lu k ~bud)))
     (expect-eq !>(desk-base:lu) !>((known-base:lu k ~wes)))
   ==
+++  test-shell-moved
+  =/  r=path  /page/temp/notes/code
+  ;:  weld
+    (expect-eq !>(`(weld desk-base:lu r)) !>((shell-moved:lu (weld desk-base-old:lu r))))
+    ::  never onto another layout, nor from the current spelling
+    (expect-eq !>(~) !>((shell-moved:lu (weld app-base:lu r))))
+    (expect-eq !>(~) !>((shell-moved:lu (weld desk-base:lu r))))
+  ==
 ++  test-moved-path
   =/  old=path  (weld desk-base-old:lu /page/temp/notes/code)
   =/  new=path  (weld desk-base:lu /page/temp/notes/code)

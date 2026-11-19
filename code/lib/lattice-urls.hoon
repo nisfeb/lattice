@@ -81,6 +81,15 @@
   ?~  r  $(bs t.bs)
   =/  np=path  (weld to u.r)
   ?:(=(np p) ~ `np)
+::  +shell-moved: `p` under the shell's current spelling, for a path
+::  under +desk-base-old: the kernel's rename of /apps/shell.shell to
+::  /apps/shell, which moves the same data and leaves no copy behind.
+::  ~ for any other path.
+++  shell-moved
+  |=  p=path
+  ^-  (unit path)
+  =/  r=(unit path)  (strip-prefix desk-base-old p)
+  ?~(r ~ `(weld desk-base u.r))
 ::  +save-moved: whether a /remote-save write that failed with `code` is
 ::  tried once more where the peer's lattice lives now (+moved-path). Only
 ::  a write that reached no one, a 504 with nothing sent (`sent` |), at a

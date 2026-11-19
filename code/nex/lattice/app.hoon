@@ -1684,13 +1684,16 @@
   ;<  ex=?  bind:m  (peek-exists:fio (rv up (weld /page tp)))
   ;<  lx=?  bind:m  (peek-exists:fio (link-road up tp))
   ?:  |(ex lx)  (send-err eyre-id 409 'destination exists')
-  ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek u.hp u.pp)
+  ::  the link names the path the page read at, the host's moved one for
+  ::  an entry from before its shell moved (+link-peek-moved)
+  ;<  got=(unit [pax=path kind=@ta body=@t rev=@ud])  bind:m
+    (link-peek-moved u.hp u.pp)
   ?~  got
     %^  send-err  eyre-id  504
     (crip "{(scow %p u.hp)} is unreachable, try again when it's online")
   ;<  now=@da  bind:m  bowl-now
   =/  l=link:ll
-    :*  %ship  u.hp  u.pp  mode.u.en
+    :*  %ship  u.hp  pax.u.got  mode.u.en
         kind.u.got  body.u.got  rev.u.got  (met 3 body.u.got)  [& now]
     ==
   ;<  ~  bind:m  (poke-eval [%link-new tp l])
@@ -1763,6 +1766,26 @@
   :+  ?~(un %hoon builder.u.un)
     ?~(un u.txt body.u.un)
   ud.cass.u.ms
+::  +link-peek-moved: +link-peek, and when the host does not answer at
+::  `pax`, once more at the same path under the shell's current spelling
+::  (+desk-base:lu): a share or link made before the host's kernel moved
+::  the shell names /apps/shell.shell. The path it read at comes back
+::  with what it read, so the caller can rewrite what it keeps.
+::  ponytail: one respelling, not +peer-moved's asking of every layout,
+::  which costs an offline host up to 24s on a read bounded at 5s
+++  link-peek-moved
+  |=  [host=@p pax=path]
+  =/  m  (fiber:fiber:nexus ,(unit [pax=path kind=@ta body=@t rev=@ud]))
+  ^-  form:m
+  ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek host pax)
+  ?^  got  (pure:m `[pax u.got])
+  ::  only the shell's own rename: any other layout may hold another
+  ::  copy of the page, and a link must not move onto it
+  =/  np=(unit path)  (shell-moved:lu pax)
+  ?~  np  (pure:m ~)
+  ;<  gn=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek host u.np)
+  ?~  gn  (pure:m ~)
+  (pure:m `[u.np u.gn])
 ::  +link-road: where the link at page path pax lives. Never under /page:
 ::  see the /links row of the loader.
 ++  link-road
@@ -1845,10 +1868,20 @@
   =/  m  (fiber:fiber:nexus ,(each [body=@t rev=@ud kind=@ta] @t))
   ^-  form:m
   ?.  ?=(%ship -.l)  (pure:m |+'not a link to another ship')
-  ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek host.l pax.l)
-  ;<  ~  bind:m  (link-note lpath l got)
-  ?~  got  (pure:m |+(link-fail-msg host.l))
-  (pure:m &+[body.u.got rev.u.got kind.l])
+  ;<  gp=(unit [pax=path kind=@ta body=@t rev=@ud])  bind:m
+    (link-peek-moved host.l pax.l)
+  ?~  gp
+    ;<  ~  bind:m  (link-note lpath l ~)
+    (pure:m |+(link-fail-msg host.l))
+  ?:  =(pax.u.gp pax.l)
+    ;<  ~  bind:m  (link-note lpath l `+.u.gp)
+    (pure:m &+[body.u.gp rev.u.gp kind.l])
+  ::  it read at the host's moved path: the link keeps that one from now on
+  ;<  now=@da  bind:m  bowl-now
+  ;<  ~  bind:m
+    %-  poke-eval
+    [%link-put lpath (refresh:ll l(pax pax.u.gp) kind.u.gp body.u.gp rev.u.gp now)]
+  (pure:m &+[body.u.gp rev.u.gp kind.l])
 ::  +link-write: a save through the link at lpath, the /remote-save write
 ::  (+remote-write) with 5s deadlines. `base` is the owner's rev the writer
 ::  read: a write against a page that moved past it is a 409, and nothing is
@@ -3284,6 +3317,7 @@
     ;<  ms=(unit view:nexus)  bind:m
       (peek-remote-wait [%& %& (scag k u.np) (snag k u.np)] u.shp)
     ?~  ms  (send-err eyre-id 504 'unreachable or denied')
+    ;<  ~  bind:m  (heal-share u.shp p.pp u.np)
     (browse-file-respond eyre-id u.ms)
   ::  remote-save: overwrite a file on ANOTHER ship. The editor's save button
   ::  pointed across ames. POST /remote-save?ship=~nec&path=/a/b/c, body = the
@@ -13388,6 +13422,32 @@
   ;<  pb=(unit path)  bind:m  (peer-base-remember shp)
   ?~  pb  (pure:m ~)
   (pure:m (moved-path:lu u.pb p))
+::  +heal-share: a shared-with-me entry for `host`'s `old` that read at
+::  `new` instead (+peer-moved) is listed at `new` from now on, at its
+::  mode, so its next open goes straight there and does not wait out the
+::  old path first. Nothing when no entry names `old`. Through
+::  /shares.sig, the one writer of /shared.
+::
+::  Only the shell's own rename (+shell-moved:lu): +peer-moved may also
+::  land on another layout (a ball instance beside a desk), which can
+::  hold another copy of the page, and that read stays a one-off. An
+::  entry the host already lists at `new` keeps its own mode, since the
+::  host's newer notice is the truth. The new entry is put before the old
+::  one goes, so a failure between the two leaves both, never neither.
+++  heal-share
+  |=  [host=@p old=path new=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  =(`new (shell-moved:lu old))  (pure:m ~)
+  ;<  sh=shared:ls  bind:m  read-shared
+  =/  md=(unit @t)  (entry-mode sh host old)
+  ?~  md  (pure:m ~)
+  ;<  ~  bind:m
+    ?.  =(~ (entry-mode sh host new))  (pure:m ~)
+    %+  poke:io  (rf up / %'shares.sig')
+    [[/lattice %share-notice] `action:ls`[%put host new u.md]]
+  %+  poke:io  (rf up / %'shares.sig')
+  [[/lattice %share-notice] `action:ls`[%del host old]]
 ::  +peek-remote-wait: peek a remote road, but give up after remote-timeout. ~ on
 ::  timeout or veto. `seen otherwise. This is peek-remote (nonce + %peek dart +
 ::  take-peek) with a concurrent timer, resolving on whichever lands first.
