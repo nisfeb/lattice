@@ -56,7 +56,7 @@ pub struct Suggest {
 }
 
 /// An address the reader visited: when last, and how often.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct Visit {
     #[serde(default)]
     pub url: String,
@@ -404,12 +404,20 @@ pub struct Notice {
     pub host: String,
     #[serde(default, rename = "where")]
     pub place: String,
+    /// The thread a forum notice is about, or 0.
+    #[serde(default)]
+    pub post: u64,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub body: String,
     #[serde(default)]
     pub read: bool,
+}
+
+/// Whether text is a board's name as the ship writes one: a term.
+fn board_name(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_lowercase()) && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// What pressing Open on a notice shows here.
@@ -421,7 +429,12 @@ pub enum Opens {
     Shared(Shared),
     /// The Access screen, where an ask is answered.
     Access,
-    /// Somewhere this client has no screen for yet (a forum, a folder).
+    /// A forum thread: the board's key as the forum screen has it (its name, or `~host/name` for
+    /// another ship's), and the thread. The board itself when the notice names no thread.
+    Thread(String, Option<u64>),
+    /// An address to read in the browser: a followed folder on its host.
+    Address(String),
+    /// Nothing this client can show.
     Nothing,
 }
 
@@ -449,6 +462,13 @@ impl Notice {
             "comment" => Opens::Page(self.place.clone()),
             "ask" => Opens::Access,
             "share" | "reshare" | "asked" if !self.place.ends_with('/') => Opens::Shared(Shared { host: self.host.clone(), path: self.place.clone(), mode: "read".into(), when: String::new() }),
+            // a reply on a board of this ship's, or on another's: as the web goes to `/forum/<where>/<post>` and `/forum-remote/<host>/...`
+            "reply" | "remote" if board_name(&self.place) => {
+                let key = if self.kind == "remote" { format!("{}/{}", self.host, self.place) } else { self.place.clone() };
+                Opens::Thread(key, (self.post > 0).then_some(self.post))
+            }
+            // a followed folder's news: the folder on its host
+            "folder" if self.place.starts_with('/') && self.host.starts_with('~') => Opens::Address(format!("urb://{}{}/", self.host, self.place.trim_end_matches('/'))),
             _ => Opens::Nothing,
         }
     }
@@ -624,6 +644,58 @@ struct Rendered {
     /// Said only of `orrery/map`: whether orrery keeps it.
     #[serde(default)]
     kept: Option<bool>,
+}
+
+/// Whether an address is a picture's, as the ship's forum reckons it (`+is-image-url` in
+/// `lattice-forum-render.hoon`): on the web, and ending as a picture's name ends.
+pub fn is_image_url(url: &str) -> bool {
+    let u = url.trim().to_lowercase();
+    (u.starts_with("http://") || u.starts_with("https://")) && [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp"].iter().any(|e| u.ends_with(e))
+}
+
+/// The pictures a forum post's text names, in the order they come, each once and eight at most: a
+/// Markdown image, a link to a picture, or a picture's address on its own. Only an address
+/// `is_image_url` takes, so nothing that is not plainly a picture on the web is ever offered.
+pub fn text_images(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut fenced = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        for word in line.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | '[' | ']' | '"' | '\'')) {
+            let at = word.find("https://").or_else(|| word.find("http://"));
+            let Some(url) = at.map(|i| word[i..].trim_end_matches(['.', ',', ';', ':', '!', '?'])) else { continue };
+            if is_image_url(url) && !out.iter().any(|u| u == url) && out.len() < 8 {
+                out.push(url.to_owned());
+            }
+        }
+    }
+    out
+}
+
+/// A date as the ship writes one (`~2026.11.17..17.25.11..b165`), in seconds since 1970. None for
+/// what is not one. Dates are compared by this, never as text: as text the 9th comes after the 10th.
+pub fn da_secs(da: &str) -> Option<i64> {
+    let mut parts = da.trim().strip_prefix('~')?.split("..");
+    let mut date = parts.next()?.split('.').map(|n| n.parse::<i64>().ok());
+    let (y, m, d) = (date.next()??, date.next()??, date.next()??);
+    let mut time = parts.next().unwrap_or("0.0.0").split('.').map(|n| n.parse::<i64>().ok());
+    let (h, min, sec) = (time.next()??, time.next().flatten().unwrap_or(0), time.next().flatten().unwrap_or(0));
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || !(0..24).contains(&h) || !(0..60).contains(&min) || !(0..60).contains(&sec) {
+        return None;
+    }
+    // days since 1970 of a date in the calendar in use, by the usual count of eras of 400 years
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    Some(days * 86_400 + h * 3600 + min * 60 + sec)
 }
 
 /// One stored revision of a page.
@@ -3082,6 +3154,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_pictures_a_post_names_are_found_once_each() {
+        let text = "See ![a cat](https://x.test/cat.png) and [this](https://x.test/dog.JPG), or https://x.test/bird.webp.\n\
+            Again https://x.test/cat.png and a page https://x.test/page.html and urb://~zod/pic.png.\n\
+            ```\nhttps://x.test/in-code.png\n```\n<https://x.test/last.gif>";
+        assert_eq!(text_images(text), ["https://x.test/cat.png", "https://x.test/dog.JPG", "https://x.test/bird.webp", "https://x.test/last.gif"]);
+        assert!(text_images("no pictures here, only words").is_empty());
+        let many: String = (0..12).map(|i| format!("https://x.test/{i}.png ")).collect();
+        assert_eq!(text_images(&many).len(), 8);
+    }
+
+    #[test]
     fn enc_keeps_unreserved_and_escapes_the_rest() {
         assert_eq!(enc("notes/a b&c.md"), "notes%2Fa%20b%26c.md");
         assert_eq!(enc("é"), "%C3%A9");
@@ -3221,6 +3304,26 @@ mod tests {
     }
 
     #[test]
+    fn a_pictures_address_is_known_by_its_end() {
+        assert!(is_image_url("https://example.com/a/cat.PNG") && is_image_url("http://x.org/p.jpeg") && is_image_url(" https://x.org/p.webp "));
+        for no in ["https://example.com/cat.png?x=1", "https://example.com/page", "urb://~nec/cat.png", "/cat.png", "ftp://x/cat.png", ""] {
+            assert!(!is_image_url(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn a_ships_date_is_read_as_a_moment() {
+        assert_eq!(da_secs("~1970.1.1"), Some(0));
+        assert_eq!(da_secs("~1970.1.2..0.0.1"), Some(86_401));
+        assert_eq!(da_secs("~2026.11.17..17.25.11..b165"), Some(1_794_936_311));
+        assert_eq!(da_secs("~2024.2.29..12.0.0"), Some(1_709_208_000), "a leap day");
+        assert!(da_secs("~2026.11.9..9.0.0") < da_secs("~2026.11.10..8.0.0"), "the 9th is before the 10th, which as text it is not");
+        for bad in ["", "2026.11.17", "~2026.13.1", "~2026.11", "~x.y.z", "~2026.11.17..25.0.0"] {
+            assert_eq!(da_secs(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn a_notice_says_what_it_is_about_and_where_it_opens() {
         let n: Notices = serde_json::from_str(
             r#"{"unread":2,"items":[
@@ -3238,7 +3341,13 @@ mod tests {
         assert_eq!(n.items[0].opens(), Opens::Page("notes/today".into()));
         assert!(matches!(n.items[1].opens(), Opens::Shared(s) if s.host == "~bus" && s.name() == "plans/trip"));
         assert_eq!(n.items[2].opens(), Opens::Access);
-        assert!(n.items[3..].iter().all(|i| i.opens() == Opens::Nothing));
+        assert_eq!(n.items[3].opens(), Opens::Thread("~bus/tech".into(), Some(7)), "a reply on another ship's board");
+        assert_eq!(n.items[4].opens(), Opens::Nothing, "what is no longer shared has nothing to open");
+        assert_eq!(n.items[5].opens(), Opens::Address("urb://~bus/notes/".into()));
+        assert_eq!(n.items[6].opens(), Opens::Nothing);
+        let reply = |place: &str, post: u64| Notice { kind: "reply".into(), host: "~zod".into(), place: place.into(), post, ..Notice::default() }.opens();
+        assert_eq!((reply("chat", 3), reply("chat", 0)), (Opens::Thread("chat".into(), Some(3)), Opens::Thread("chat".into(), None)));
+        assert_eq!(reply("../x", 3), Opens::Nothing, "a board's name is a term, whatever a notice says");
         assert_eq!(Rev { rev: 0, updated: n.items[0].when.clone() }.when(), "2026-11-17 20:36");
         let w: Waiting = serde_json::from_str(r#"{"held":1,"unread":2}"#).unwrap();
         assert_eq!((w.held, w.unread), (1, 2));

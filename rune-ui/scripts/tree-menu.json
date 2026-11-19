@@ -1,0 +1,11 @@
+{"events": [
+  {"t": 1.0, "type": "tap", "key": "notes/today"},
+  {"t": 1.8, "type": "mark", "name": "opened"},
+  {"t": 2.0, "type": "secondary-click", "key": "budget"},
+  {"t": 2.6, "type": "tap", "key": "tree-menu-item2"},
+  {"t": 3.0, "type": "file-dialog", "path": "/tmp/lr-tm/budget.out"},
+  {"t": 4.0, "type": "secondary-click", "key": "notes"},
+  {"t": 4.8, "type": "mark", "name": "folder"},
+  {"t": 5.0, "type": "tap", "key": "tree-menu-item2"},
+  {"t": 6.0, "type": "mark", "name": "delete"}
+]}

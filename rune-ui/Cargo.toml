@@ -49,6 +49,9 @@ urb-gateway = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "3f584bf3
 # libmesa's urcrypt carries the same files: two of every symbol, and the link fails. `pure` is the crate
 # without them, in Rust alone. Nothing here calls blake3 itself
 blake3 = { version = "1", features = ["pure"] }
+# the reader identity's file (`src/cometid.rs`) is sealed with ring, as the desktop app seals it. ring is in
+# the build already, under rustls
+ring = "0.17"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Rune's own, already in the lock: the browser's entry point, clock, requests and storage

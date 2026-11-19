@@ -1,0 +1,12 @@
+{"events": [
+  {"t": 1.0, "hold": "cmd+ctrl"},
+  {"t": 1.2, "type": "tap", "key": "notes/today"},
+  {"t": 1.6, "hold": ""},
+  {"t": 2.0, "type": "mark", "name": "ctrl"},
+  {"t": 2.2, "type": "tap", "key": "budget", "button": "middle"},
+  {"t": 3.0, "type": "mark", "name": "middle"},
+  {"t": 3.2, "type": "tap", "key": "places"},
+  {"t": 4.0, "type": "mark", "name": "plain"},
+  {"t": 4.2, "type": "tap", "key": "notes", "button": "middle"},
+  {"t": 5.0, "type": "mark", "name": "folder"}
+]}

@@ -1,0 +1,14 @@
+{"events": [
+  {"t": 1.0, "type": "tap", "key": "anon"},
+  {"t": 2.0, "type": "tap", "key": "id-import"},
+  {"t": 2.5, "type": "file-dialog", "path": "/tmp/lr-id/out/me.latticeid"},
+  {"t": 3.2, "type": "type", "text": "wrong passphrase"},
+  {"t": 4.0, "type": "tap", "key": "prompt-ok"},
+  {"t": 9.0, "type": "mark", "name": "wrong"},
+  {"t": 9.2, "type": "tap", "key": "id-import"},
+  {"t": 9.7, "type": "file-dialog", "path": "/tmp/lr-id/out/me.latticeid"},
+  {"t": 10.4, "type": "type", "text": "short but long enough"},
+  {"t": 11.2, "type": "tap", "key": "prompt-ok"},
+  {"t": 16.0, "type": "mark", "name": "ask"},
+  {"t": 16.5, "type": "tap", "key": "prompt-ok"}
+]}

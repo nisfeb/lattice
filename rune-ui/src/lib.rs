@@ -49,6 +49,8 @@ mod htmlview;
 mod update;
 #[cfg(unix)]
 mod engine;
+#[cfg(unix)]
+mod cometid;
 mod vim;
 
 use std::collections::HashMap;
@@ -199,6 +201,10 @@ struct Forum {
     sort: ForumSort,
     /// The tags the board's threads are shown by: those that carry every one.
     tags: Vec<String>,
+    /// What is typed to find a tag among the board's.
+    tag_find: TextEdit,
+    /// The pictures asked to be shown: each a link's address, fetched from its site at that press.
+    shown: Vec<String>,
     /// A board being made: its name, title and description, and what those with no role of their own may do.
     making: Option<(Box<[TextEdit; 3]>, &'static str)>,
     /// The board showing being changed: its title and description.
@@ -215,6 +221,9 @@ struct Forum {
     /// A comment being written on the thread showing, and the comment it answers when it answers one.
     comment: TextEdit,
     reply: Option<u64>,
+    /// Something done to a thread from the board's list is on its way: the list's buttons wait, so
+    /// a second press is not a second vote.
+    acting: bool,
     /// What was written is on its way to the ship: it is kept until the ship has it.
     sending: bool,
 }
@@ -251,7 +260,9 @@ enum ModAct {
 
 #[derive(Clone, Copy, Default, PartialEq)]
 enum ForumSort {
+    /// What is voted up and new, as the web's forum opens.
     #[default]
+    Hot,
     New,
     Active,
     Top,
@@ -269,13 +280,30 @@ enum ForumGot {
     Changed(Vec<api::Board>),
 }
 
-/// A board's threads as they are listed: the pinned ones first, then by the order asked for.
-fn forum_sorted(posts: &[api::ForumPost], sort: ForumSort) -> Vec<&api::ForumPost> {
+/// How hot a thread is, as the ship scores one (`+hot-score` in `lattice-forum-rules.hoon`): its
+/// votes up less its votes down, never under nothing, over the square of the whole hours since it
+/// was made and two more. A pair to compare by multiplying across, as the ship does, never as a fraction.
+fn hot_score(p: &api::ForumPost, now: i64) -> (u128, u128) {
+    let made = api::da_secs(&p.created).unwrap_or(now);
+    let hours = 2 + ((now - made).max(0) / 3600) as u128;
+    (p.up.saturating_sub(p.down) as u128, hours * hours)
+}
+
+/// A board's threads as they are listed: the pinned ones first, then by the order asked for. `now`
+/// is the moment, in seconds since 1970, that hot is reckoned at.
+fn forum_sorted(posts: &[api::ForumPost], sort: ForumSort, now: i64) -> Vec<&api::ForumPost> {
     let mut v: Vec<&api::ForumPost> = posts.iter().collect();
+    // by the moment a date names, and by its text only where it names none
+    let at = |da: &str| (api::da_secs(da), da.to_owned());
     match sort {
-        // the ship's dates sort as text: the same shape, most significant first
-        ForumSort::New => v.sort_by(|a, b| b.created.cmp(&a.created)),
-        ForumSort::Active => v.sort_by(|a, b| b.active.cmp(&a.active)),
+        ForumSort::Hot => {
+            // each scored once, then the higher first and the newer first of two the same, as `+hot-before`
+            let mut scored: Vec<((u128, u128), (Option<i64>, String), &api::ForumPost)> = v.into_iter().map(|p| (hot_score(p, now), at(&p.created), p)).collect();
+            scored.sort_by(|a, b| (b.0.0 * a.0.1).cmp(&(a.0.0 * b.0.1)).then_with(|| b.1.cmp(&a.1)));
+            v = scored.into_iter().map(|x| x.2).collect();
+        }
+        ForumSort::New => v.sort_by_cached_key(|p| std::cmp::Reverse(at(&p.created))),
+        ForumSort::Active => v.sort_by_cached_key(|p| std::cmp::Reverse(at(&p.active))),
         ForumSort::Top => v.sort_by_key(|p| std::cmp::Reverse(p.up as i64 - p.down as i64)),
     }
     v.sort_by_key(|p| !p.pinned);
@@ -309,6 +337,15 @@ struct SheetView {
 /// A question the window is asking: a name for a new page, a new name for
 /// the open one, or whether to delete it.
 enum Prompt {
+    /// The anonymous identity to be exported to this file: the passphrase, and the passphrase again.
+    #[cfg(unix)]
+    IdOut(std::path::PathBuf, Box<[TextEdit; 2]>),
+    /// An identity file to open, and its passphrase.
+    #[cfg(unix)]
+    IdIn(std::path::PathBuf, TextEdit),
+    /// An identity read from a file, to use in place of this computer's, which is named if there is one.
+    #[cfg(unix)]
+    IdUse(Box<cometid::Identity>, Option<String>),
     New(TextEdit),
     Rename(String, TextEdit),
     Delete(String),
@@ -328,6 +365,8 @@ enum Prompt {
     ForumTags(TextEdit),
     /// A forum thread to delete, or one comment of the thread showing.
     ForumDelete(Option<u64>),
+    /// Deleting a thread from its board's list: the board and the thread.
+    ForumRowDelete(String, u64),
     /// Removing a comment from one of this ship's pages: the page and the comment.
     CommentRemove(String, String),
     /// A board to delete, with every thread on it.
@@ -463,6 +502,16 @@ struct App {
     /// When the engine's start is next looked at (app clock): one wake at a time.
     anon_tick: f64,
     anon_got: std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<(String, api::Urb), String>)>>>,
+    /// What a move of the anonymous identity came to. Sealing a file takes seconds and the engine
+    /// closes for the copy, so each step has a thread of its own and an answer no other request drops.
+    #[cfg(unix)]
+    id_got: std::sync::Arc<std::sync::Mutex<Vec<IdDone>>>,
+    /// What is being done to the identity now, in words, or nothing.
+    #[cfg(unix)]
+    id_busy: &'static str,
+    /// The identity this computer has, and whether an export of it was made, as last read from its files.
+    #[cfg(unix)]
+    id_known: (Option<String>, bool),
     url: TextEdit,
     code: TextEdit,
     login_err: String,
@@ -648,6 +697,9 @@ struct App {
     /// The forum, when it is what shows.
     forum: Option<Forum>,
     forum_req: Latest<Result<ForumGot, String>>,
+    /// The board whose theme was looked for, and its stylesheet: empty when it has none.
+    board_theme: Option<(String, String)>,
+    board_theme_req: Latest<Result<(String, String), String>>,
     /// The settings showing, when they are.
     settings: Option<Settings>,
     /// The ship's change stream: what its listener heard since the last look, what the stamps stood at, and the flag that stops a listener whose session ended.
@@ -721,6 +773,8 @@ struct App {
     /// what the fetching threads bring back, and the page they are for.
     image_cache: Option<std::rc::Rc<rune::ImageCache>>,
     pics: HashMap<String, rune::Image>,
+    /// Pictures asked for that did not come.
+    pics_failed: std::collections::HashSet<String>,
     pics_asked: std::collections::HashSet<String>,
     pics_in: std::sync::Arc<std::sync::Mutex<Vec<(String, Result<Vec<u8>, String>)>>>,
     pics_for: Option<(String, u64)>,
@@ -758,6 +812,8 @@ struct App {
     search_at: Option<usize>,
     /// The page menu in the tab header is open.
     page_menu: bool,
+    /// The tree row a right-click landed on, and where: its menu shows there.
+    tree_menu: Option<(String, rune::PointerPress)>,
     /// The top bar's tabs while one is pressed or dragged.
     tab_drag: rune_kit::shell::TabDragState,
     /// The bookmarks the reader keeps, once read.
@@ -988,6 +1044,12 @@ fn init() -> App {
         anon_seq: 0,
         anon_tick: 0.0,
         anon_got: Default::default(),
+        #[cfg(unix)]
+        id_got: Default::default(),
+        #[cfg(unix)]
+        id_busy: "",
+        #[cfg(unix)]
+        id_known: (None, false),
         url,
         code: TextEdit::new(""),
         login_err: String::new(),
@@ -1124,6 +1186,8 @@ fn init() -> App {
         vault_req: Latest::default(),
         vault_said: String::new(),
         forum_req: Latest::default(),
+        board_theme: None,
+        board_theme_req: Latest::default(),
         notes_req: Latest::default(),
 
         sheet: None,
@@ -1148,6 +1212,7 @@ fn init() -> App {
         find_at: 0,
         image_cache: None,
         pics: HashMap::new(),
+        pics_failed: std::collections::HashSet::new(),
         pics_asked: std::collections::HashSet::new(),
         pics_in: Default::default(),
         pics_for: None,
@@ -1171,6 +1236,7 @@ fn init() -> App {
         sskipped: 0,
         search_at: None,
         page_menu: false,
+        tree_menu: None,
         tab_drag: rune_kit::shell::TabDragState::new(),
         marks: None,
         marks_req: Latest::default(),
@@ -1422,6 +1488,7 @@ fn sign_out(s: &mut App) {
     #[cfg(unix)]
     {
         fresh.engine = s.engine.take();
+        (fresh.id_got, fresh.id_busy) = (s.id_got.clone(), s.id_busy);
     }
     // the listener of the session that ended stops, and every request this window keeps is woken as before
     s.beacon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1435,6 +1502,11 @@ fn sign_out(s: &mut App) {
 /// Asks the ship for the change the open prompt names.
 fn confirm(s: &mut App) {
     let Some(p) = s.prompt.take() else { return };
+    #[cfg(unix)]
+    let p = match id_confirm(s, p) {
+        Some(p) => p,
+        None => return,
+    };
     if let Prompt::Ask(sh, t) = &p {
         let (sh, note) = (sh.clone(), t.text.clone());
         match s.conn.clone() {
@@ -1510,6 +1582,10 @@ fn confirm(s: &mut App) {
     }
     if let Prompt::ForumDelete(comment) = &p {
         forum_act(s, ForumAct::Delete(*comment));
+        return;
+    }
+    if let Prompt::ForumRowDelete(board, post) = &p {
+        forum_list_act(s, board.clone(), *post, ForumAct::Delete(None));
         return;
     }
     if let Prompt::CommentRemove(page, id) = &p {
@@ -2036,6 +2112,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.templates_req.set_waker(waker.clone());
     s.back_req.set_waker(waker.clone());
     s.forum_req.set_waker(waker.clone());
+    s.board_theme_req.set_waker(waker.clone());
     s.keys_req.set_waker(waker.clone());
     s.urb_req.set_waker(waker.clone());
     s.set_req.set_waker(waker.clone());
@@ -2203,7 +2280,8 @@ fn follow(s: &mut App, url: &str, tx: &mut Tx) {
     match md::page_of(url) {
         Some(name) if s.names.contains(&name) => {
             s.files.reveal(&name, tx);
-            open_page(s, &name);
+            // with Ctrl (Cmd on a Mac) the link opens in a new tab
+            if tx.mods().cmd { tab_for(s, &name) } else { open_page(s, &name) }
         }
         // a link to a page not written yet starts it, named, ready to type in
         Some(name) if api::valid_name(&name) => {
@@ -3743,7 +3821,10 @@ fn take_pics(s: &mut App) -> bool {
             (Ok(bytes), Some(cache)) => {
                 s.pics.insert(src, cache.load(bytes));
             }
-            (Err(e), _) => s.note = format!("an image did not load: {e}"),
+            (Err(e), _) => {
+                s.note = format!("an image did not load: {e}");
+                s.pics_failed.insert(src);
+            }
             _ => {}
         }
     }
@@ -4983,6 +5064,9 @@ fn drained(s: &mut App, (did, out): Drained) {
             load_tree(s);
         }
     }
+    if hist {
+        load_history(s);
+    }
     s.note = said.join(". ");
     if !stopped {
         drain(s);
@@ -5386,8 +5470,30 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             _ => {}
         }
     }
+    if let Some(r) = s.board_theme_req.take() {
+        changed = true;
+        // a sheet that could not be read leaves the board in the window's own look
+        if let Ok((board, css)) = r {
+            if s.board_theme.as_ref().is_some_and(|t| t.0 == board) {
+                s.board_theme = Some((board, css));
+            }
+        }
+    }
+    board_theme_sync(s);
     if let Some(r) = s.forum_req.take() {
         changed = true;
+        if let Some(f) = &mut s.forum {
+            f.acting = false;
+        }
+        // an answer about a board on another ship may come with a refusal of what was just sent there
+        let away = match &r {
+            Ok(ForumGot::Board(b)) => b.board.starts_with('~'),
+            Ok(ForumGot::Thread(t)) => t.board.starts_with('~'),
+            _ => false,
+        };
+        if away && !s.notes_req.is_pending() {
+            forum_notes(s);
+        }
         // an answer that lands after the forum was left is dropped
         match (r, &mut s.forum) {
             (Ok(ForumGot::Boards(b)), Some(f)) => f.boards = Some(b),
@@ -5809,6 +5915,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             // the reader's own words are whole sentences
             Err(e) => s.note = e,
         }
+    }
+    #[cfg(unix)]
+    if id_drained(s) {
+        changed = true;
     }
     // while the reader starts for a first read, what it is doing is said, and then that it reads
     #[cfg(unix)]
@@ -6779,6 +6889,16 @@ fn restore_tabs(s: &mut App) -> bool {
     true
 }
 
+/// A page asked for in a tab of its own, by Ctrl or a middle click: marked in the tree and opened
+/// there. Memories have no tabs, so one opens where it is.
+fn tab_for(s: &mut App, name: &str) {
+    if s.memory {
+        return open_page(s, name);
+    }
+    s.files.select(name);
+    open_in_tab(s, name);
+}
+
 /// Opens a page in a new tab, in front.
 fn open_in_tab(s: &mut App, name: &str) {
     if !leave_edit(s) {
@@ -7259,10 +7379,20 @@ fn forum_go(s: &mut App) {
 /// Reads a board of the forum, or with a number one of its threads, and shows it when it lands.
 fn forum_open(s: &mut App, board: String, post: Option<u64>) {
     let Some(c) = s.conn.clone() else { return };
+    // what other ships refused is read with whatever of the forum is opened, however it was come to:
+    // by an address or a notice the boards screen, which read it, is never passed
+    forum_notes(s);
     s.forum_req.request((c, board, post), |(c, board, post)| match post {
         Some(id) => c.forum_thread(&board, id).map(ForumGot::Thread),
         None => c.forum_board(&board).map(ForumGot::Board),
     });
+}
+
+/// Reads what other ships' boards refused of this ship's, for the count the forum shows.
+fn forum_notes(s: &mut App) {
+    if let Some(c) = s.conn.clone() {
+        s.notes_req.request(c, |c| c.forum_notes().map(ForumGot::Notes));
+    }
 }
 
 /// What is done to the forum thread showing.
@@ -7279,19 +7409,197 @@ enum ForumAct {
 fn forum_act(s: &mut App, act: ForumAct) {
     let Some(th) = s.forum.as_ref().and_then(|f| f.thread.as_ref()) else { return };
     let Some(c) = s.conn.clone() else { return };
-    let (board, post) = (th.board.clone(), th.post.id);
+    let (board, post, before) = (th.board.clone(), th.post.id, (th.post.up, th.post.down));
     s.forum_req.request((c, board, act), move |(c, board, act)| {
-        match &act {
-            ForumAct::Vote => c.forum_vote(&board, post)?,
-            ForumAct::Pin(on) => c.forum_pin(&board, post, *on)?,
-            ForumAct::Tags(tags) => c.forum_set_tags(&board, post, tags)?,
-            ForumAct::Delete(comment) => c.forum_delete(&board, post, *comment)?,
+        forum_send(&c, &board, post, &act)?;
+        if let ForumAct::Delete(None) = act {
+            let b = c.forum_board(&board)?;
+            forum_taken(&board, forum_took(&act, before, b.posts.iter().find(|p| p.id == post), &[]))?;
+            return Ok(ForumGot::Board(b));
         }
-        match act {
-            ForumAct::Delete(None) => c.forum_board(&board).map(ForumGot::Board),
-            _ => c.forum_thread(&board, post).map(ForumGot::Thread),
-        }
+        let th = c.forum_thread(&board, post)?;
+        let ids: Vec<u64> = th.comments.iter().map(|c| c.id).collect();
+        forum_taken(&board, forum_took(&act, before, Some(&th.post), &ids))?;
+        Ok(ForumGot::Thread(th))
     });
+}
+
+/// Does to a thread from its board's list what the thread's own screen does, and reads the board again.
+fn forum_list_act(s: &mut App, board: String, post: u64, act: ForumAct) {
+    let Some(c) = s.conn.clone() else { return };
+    let Some(f) = &mut s.forum else { return };
+    f.acting = true;
+    let before = f.board.as_ref().and_then(|b| b.posts.iter().find(|p| p.id == post)).map_or((0, 0), |p| (p.up, p.down));
+    s.forum_req.request((c, board, act), move |(c, board, act)| {
+        forum_send(&c, &board, post, &act)?;
+        let b = c.forum_board(&board)?;
+        forum_taken(&board, forum_took(&act, before, b.posts.iter().find(|p| p.id == post), &[]))?;
+        Ok(ForumGot::Board(b))
+    });
+}
+
+fn forum_send(c: &Conn, board: &str, post: u64, act: &ForumAct) -> Result<(), String> {
+    match act {
+        ForumAct::Vote => c.forum_vote(board, post),
+        ForumAct::Pin(on) => c.forum_pin(board, post, *on),
+        ForumAct::Tags(tags) => c.forum_set_tags(board, post, tags),
+        ForumAct::Delete(comment) => c.forum_delete(board, post, *comment),
+    }
+}
+
+/// Whether the board did what was asked, by the thread as it was and as it is read back. The ship
+/// answers a form it refuses as it answers one it takes: this is the only way to tell. `before` is
+/// the thread's votes up and down, `after` the thread now (none when it is gone), `comments` its
+/// comments' numbers now.
+fn forum_took(act: &ForumAct, before: (u64, u64), after: Option<&api::ForumPost>, comments: &[u64]) -> bool {
+    match act {
+        ForumAct::Vote => after.is_some_and(|p| (p.up, p.down) != before),
+        ForumAct::Pin(on) => after.is_some_and(|p| p.pinned == *on),
+        ForumAct::Tags(tags) => after.is_some_and(|p| {
+            let (mut want, mut have) = (tags.clone(), p.tags.clone());
+            want.sort();
+            have.sort();
+            want == have
+        }),
+        ForumAct::Delete(None) => after.is_none(),
+        ForumAct::Delete(Some(id)) => !comments.contains(id),
+    }
+}
+
+/// A board of this ship's that did not do what was asked says so. One on another ship takes what
+/// it is sent in its own time, and says what it refused under Refusals: there, nothing is known yet.
+fn forum_taken(board: &str, took: bool) -> Result<(), String> {
+    if took || board.starts_with('~') { Ok(()) } else { Err("the board did not take that. It may not be yours to do there".into()) }
+}
+
+/// What this ship may do to a thread or a comment on a board, as the ship's own rules have it
+/// (`lattice-forum-rules.hoon`): its author may delete it and set its tags, and a mod may do that
+/// to anyone's and pin. The host of a board is a mod of it. On another ship's board the reader's
+/// role is not in what the ship sends (`+urb-forum-json`), so only what an author may is offered there.
+#[derive(Debug, PartialEq)]
+struct ForumMay {
+    pin: bool,
+    /// Delete, and for a thread its tags.
+    change: bool,
+}
+
+fn forum_may(board: &str, ours: &str, author: &str) -> ForumMay {
+    let host = !board.contains('/');
+    ForumMay { pin: host, change: host || (!ours.is_empty() && author == ours) }
+}
+
+/// Shows or hides the picture a thread's link is. Showing it fetches it from its site, which then
+/// learns the reader's address: the press is the yes, as it is on the web's forum, where a picture
+/// sits folded until it is opened (`+image-preview`).
+fn forum_image(s: &mut App, url: String) {
+    let Some(f) = &mut s.forum else { return };
+    if let Some(i) = f.shown.iter().position(|u| *u == url) {
+        f.shown.remove(i);
+        return;
+    }
+    f.shown.push(url.clone());
+    // one that failed is tried again by asking again
+    if s.pics_failed.remove(&url) {
+        s.pics_asked.remove(&url);
+    }
+    if !s.pics_asked.insert(url.clone()) {
+        return;
+    }
+    let (Some(waker), back) = (s.waker.clone(), s.pics_in.clone()) else { return };
+    spawn(move || {
+        let got = api::fetch_bytes(&url, None);
+        if let Ok(mut list) = back.lock() {
+            list.push((url, got));
+        }
+        waker();
+    });
+}
+
+/// A thread's link when it is a picture: the way to show it, and the picture once asked for,
+/// no wider than the page and no taller than a screen's better part.
+fn forum_preview(f: &Forum, pics: &Pics, link: Option<&str>, id: u64, k: &Kit) -> Option<El> {
+    let url = link.filter(|l| api::is_image_url(l))?.trim().to_owned();
+    Some(picture_fold(f, pics, url, "post-image", &id.to_string(), k))
+}
+
+/// The pictures a post's or a comment's text names, each folded under the text as a thread's own
+/// picture is: nothing is fetched until its Show image is pressed.
+fn forum_text_previews(f: &Forum, pics: &Pics, text: &str, slot: &str, k: &Kit) -> Vec<El> {
+    api::text_images(text).into_iter().enumerate().map(|(i, url)| picture_fold(f, pics, url, "text-image", &format!("{slot}-{i}"), k)).collect()
+}
+
+/// One picture, folded: the button that shows or hides it, and the picture when it is shown.
+fn picture_fold(f: &Forum, pics: &Pics, url: String, base: &str, id: &str, k: &Kit) -> El {
+    let on = f.shown.contains(&url);
+    let u = url.clone();
+    let mut out = col().key(format!("{base}-{id}")).px(8.0).gap(4.0).child(
+        row().child(
+            Button::new(if on { "Hide image" } else { "Show image" })
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::GhostMuted)
+                .help("Fetches the picture from its own site, which then learns your address")
+                .on_press(move |s: &mut App| forum_image(s, u.clone()))
+                .build(k)
+                .key(format!("{base}-toggle-{id}")),
+        ),
+    );
+    if on {
+        out = out.child(match (pics.had.get(&url).filter(|p| p.is_ready()).and_then(|p| Some((p, p.size()?))), pics.failed.contains(&url)) {
+            (Some((pic, [w, h])), _) => {
+                let scale = (560.0 / w.max(1) as f32).min(420.0 / h.max(1) as f32).min(1.0);
+                el().key(format!("{base}-pic-{id}")).size(w as f32 * scale, h as f32 * scale).radius(k.radius.sm).pixels(pic.pixels()).role("img").label("A picture this thread names")
+            }
+            (None, true) => text("The picture did not load.").font(k.ty.small).color(k.c.text_muted),
+            (None, false) => text("Loading the picture\u{2026}").font(k.ty.small).color(k.c.text_muted),
+        });
+    }
+    out
+}
+
+/// The pictures had and the ones that did not come, for a view that is given no more of the app.
+struct Pics<'a> {
+    had: &'a HashMap<String, rune::Image>,
+    failed: &'a std::collections::HashSet<String>,
+}
+
+/// The link a thread is about, when it is one to follow: the web, or an address on the network. As
+/// the web's forum keeps a title's link to what is safe to follow (`safe-href`), nothing else is.
+fn forum_link(link: Option<&str>) -> Option<String> {
+    let l = link?.trim();
+    (l.starts_with("https://") || l.starts_with("http://") || l.starts_with("urb://")).then(|| l.to_owned())
+}
+
+/// The tags offered to show a board's threads by, as the web's filter has them
+/// (`lattice-forum-render.hoon`): the thirty most used, or with something typed every tag that
+/// holds it. A tag that is picked is always among them, so it can be let go.
+fn forum_tags_shown(all: &[(String, usize)], find: &str, picked: &[String]) -> Vec<(String, usize)> {
+    let q = find.trim().trim_start_matches('#').to_lowercase();
+    let mut out: Vec<(String, usize)> = if q.is_empty() { all.iter().take(30).cloned().collect() } else { all.iter().filter(|(t, _)| t.contains(&q)).cloned().collect() };
+    for t in picked {
+        if !out.iter().any(|(x, _)| x == t) {
+            out.push((t.clone(), all.iter().find(|(x, _)| x == t).map_or(0, |x| x.1)));
+        }
+    }
+    out
+}
+
+/// The board's tags to offer while a thread's are typed, as the web's field suggests them: those
+/// that hold the word being typed, most used first, without the ones typed already. Eight at most.
+fn tag_suggest(all: &[(String, usize)], typed: &str) -> Vec<String> {
+    let part = |c: char| c == ',' || c.is_whitespace();
+    let last = if typed.ends_with(part) { "" } else { typed.rsplit(part).next().unwrap_or_default() }.trim_start_matches('#').to_lowercase();
+    let have: Vec<&str> = typed.split(part).map(|t| t.trim_start_matches('#')).filter(|t| !t.is_empty() && *t != last).collect();
+    if have.len() >= 5 {
+        return Vec::new();
+    }
+    all.iter().map(|(t, _)| t).filter(|t| t.contains(&last) && **t != last && !have.contains(&t.as_str())).take(8).cloned().collect()
+}
+
+/// What is typed for a thread's tags with the word being typed made the tag picked.
+fn tag_complete(typed: &str, tag: &str) -> String {
+    let part = |c: char| c == ',' || c.is_whitespace();
+    let kept = if typed.ends_with(part) { typed } else { &typed[..typed.rfind(part).map_or(0, |i| i + 1)] };
+    format!("{kept}{tag} ")
 }
 
 /// The tags a board's threads carry, most used first, then by name.
@@ -7568,11 +7876,36 @@ fn forum_back(s: &mut App) {
             (f.board, f.moding) = (None, None);
             f.tags.clear();
         }
+        // back from a thread that was come to directly: the boards were never read
+        if f.board.is_none() && f.boards.is_none() {
+            if let Some(c) = s.conn.clone() {
+                s.forum_req.request(c, |c| c.forum_boards().map(ForumGot::Boards));
+            }
+        }
     }
 }
 
+/// The way to what other ships refused, with how many there are. On the boards screen it is always
+/// there. On a board or a thread it shows only when there is something to see, as the web's badge does.
+fn refusals(f: &Forum, k: &Kit, always: bool) -> Option<El> {
+    let refused = f.notes.as_ref().map_or(0, Vec::len);
+    (always || refused > 0).then(|| {
+        Button::new(if refused == 0 { "Refusals".to_owned() } else { format!("Refusals {refused}") })
+            .control_size(ControlSize::Small)
+            .variant(if refused == 0 { ButtonVariant::GhostMuted } else { ButtonVariant::Ghost })
+            .help("Posts another ship's board did not take, and why")
+            .on_press(|s: &mut App| {
+                if let Some(f) = &mut s.forum {
+                    f.notes_open = true;
+                }
+            })
+            .build(k)
+            .key("notes-open")
+    })
+}
+
 /// The forum: the boards, a board's threads, or a thread with its comments under what they answer.
-fn forum_view(f: &Forum, k: &Kit) -> El {
+fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
     let c = &k.c;
     let when = |da: &str| Rev { rev: 0, updated: da.to_owned() }.when();
     let muted = |t: String| text(t).font(k.ty.small).color(c.text_muted);
@@ -7592,8 +7925,10 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
         }
         return page;
     }
-    if f.board.is_some() {
-        page = page.child(row().child(Button::new(if f.thread.is_some() { "\u{2039} Back to the board" } else { "\u{2039} Boards" }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(forum_back).build(k).key("forum-back")));
+    // a thread come to by a notice or an address has no board behind it: the way back is to the boards
+    if f.board.is_some() || f.thread.is_some() {
+        let back = if f.thread.is_some() && f.board.is_some() { "\u{2039} Back to the board" } else { "\u{2039} Boards" };
+        page = page.child(row().w_full().center_y().child(Button::new(back).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(forum_back).build(k).key("forum-back")).child(el().grow(1.0)).children(refusals(f, k, false)));
     }
     if let Some(th) = &f.thread {
         let p = &th.post;
@@ -7605,26 +7940,32 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
         // what may be done to the thread. The ship holds the rule on who may: what it refuses leaves the thread as it was
         let act = |label: String, key: &str, help: &str| Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(help.to_owned());
         let (pinned, tags) = (p.pinned, p.tags.join(" "));
-        page = page.child(
-            row()
-                .key("forum-acts")
-                .gap(4.0)
-                .flex_wrap()
-                .child(act("\u{25b2} Point".into(), "forum-vote", "Give this thread your point").on_press(|s: &mut App| forum_act(s, ForumAct::Vote)).build(k).key("forum-vote"))
-                .child(act(if pinned { "Unpin".into() } else { "Pin".into() }, "forum-pin", "Keep this thread at the top of its board").on_press(move |s: &mut App| forum_act(s, ForumAct::Pin(!pinned))).build(k).key("forum-pin"))
+        // only what this ship may do here is offered, as the web shows its buttons by role
+        let may = forum_may(&th.board, ours, &p.author);
+        let mut acts = row().key("forum-acts").gap(4.0).flex_wrap().child(act("\u{25b2} Point".into(), "forum-vote", "Give this thread your point").on_press(|s: &mut App| forum_act(s, ForumAct::Vote)).build(k).key("forum-vote"));
+        if may.pin {
+            acts = acts.child(act(if pinned { "Unpin".into() } else { "Pin".into() }, "forum-pin", "Keep this thread at the top of its board").on_press(move |s: &mut App| forum_act(s, ForumAct::Pin(!pinned))).build(k).key("forum-pin"));
+        }
+        if may.change {
+            acts = acts
                 .child(act("Tags".into(), "forum-tags", "Set this thread's tags").on_press(move |s: &mut App| {
                     let mut t = TextEdit::new(tags.as_str());
                     t.focused = true;
                     s.prompt = Some(Prompt::ForumTags(t));
                 }).build(k).key("forum-tags"))
-                .child(act("Delete".into(), "forum-delete", "Delete this thread").on_press(|s: &mut App| s.prompt = Some(Prompt::ForumDelete(None))).build(k).key("forum-delete")),
-        );
+                .child(act("Delete".into(), "forum-delete", "Delete this thread").on_press(|s: &mut App| s.prompt = Some(Prompt::ForumDelete(None))).build(k).key("forum-delete"));
+        }
+        page = page.child(acts);
         // the link and the text are the poster's Markdown: read as a page is, with no picture fetched
         if let Some(link) = p.link.as_deref().filter(|l| !l.is_empty()) {
             page = page.child(Markdown::new(format!("<{link}>")).selectable(true).on_link_tx(follow).build(k).key("forum-link"));
+            // and when the link is a picture, the way to see it here
+            page = page.children(forum_preview(f, pics, Some(link), p.id, k));
         }
         if let Some(body) = p.body.as_deref().filter(|b| !b.trim().is_empty()) {
             page = page.child(Markdown::new(body.to_owned()).selectable(true).on_link_tx(follow).build(k).key("forum-body"));
+            // the pictures the text names, folded under it as the web folds them
+            page = page.children(forum_text_previews(f, pics, body, &format!("p{}", p.id), k));
         }
         page = page.child(Divider::horizontal().build(k)).child(muted(format!("{} comment{}", th.comments.len(), if th.comments.len() == 1 { "" } else { "s" })));
         for (depth, cm) in api::comment_order(&th.comments) {
@@ -7643,9 +7984,10 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                                 f.reply = Some(id);
                                 f.comment.focused = true;
                             }
-                        }).build(k).key(format!("reply-{id}"))).child(Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Delete this comment").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumDelete(Some(id)))).build(k).key(format!("comment-delete-{id}")))
+                        }).build(k).key(format!("reply-{id}"))).children(forum_may(&th.board, ours, &cm.author).change.then(|| Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Delete this comment").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumDelete(Some(id)))).build(k).key(format!("comment-delete-{id}"))))
                     })
-                    .child(Markdown::new(cm.body.clone()).selectable(true).on_link_tx(follow).build(k)),
+                    .child(Markdown::new(cm.body.clone()).selectable(true).on_link_tx(follow).build(k))
+                    .children(forum_text_previews(f, pics, &cm.body, &format!("c{}", cm.id), k)),
             );
         }
         // the comment box: what is written goes under the thread, or under the comment being answered
@@ -7677,7 +8019,7 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                 }
             }).build(k).key(key.to_owned())
         };
-        page = page.child(row().key("forum-sort").gap(4.0).child(sort("New", "fsort-new", ForumSort::New)).child(sort("Active", "fsort-active", ForumSort::Active)).child(sort("Top", "fsort-top", ForumSort::Top)));
+        page = page.child(row().key("forum-sort").gap(4.0).child(sort("Hot", "fsort-hot", ForumSort::Hot)).child(sort("New", "fsort-new", ForumSort::New)).child(sort("Active", "fsort-active", ForumSort::Active)).child(sort("Top", "fsort-top", ForumSort::Top)));
         // the board itself: its title and description changed, shown to all or to its members, or deleted
         let (title, description, public, name) = (b.title.clone(), b.description.clone(), b.public, b.board.clone());
         match &f.editing {
@@ -7731,8 +8073,20 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
         // the board's tags, most used first: pressed, only the threads that carry every one pressed are listed
         let board_tags = forum_board_tags(&b.posts);
         if !board_tags.is_empty() {
+            // more tags than are shown: one can be looked for, as with the web's "find a tag"
+            if board_tags.len() > 30 || !f.tag_find.text.is_empty() {
+                page = page.child(
+                    TextInput::new(&f.tag_find)
+                        .placeholder(format!("Find a tag among {}", board_tags.len()))
+                        .on_edit(|s: &mut App| &mut s.forum.as_mut().expect("the forum is showing").tag_find)
+                        .build(k)
+                        .w(240.0)
+                        .label("Find a tag")
+                        .key("ftag-find"),
+                );
+            }
             let mut chips = row().key("forum-tag-filter").gap(2.0).flex_wrap();
-            for (tag, n) in board_tags.iter().take(30) {
+            for (tag, n) in &forum_tags_shown(&board_tags, &f.tag_find.text, &f.tags) {
                 let (on, tag2) = (f.tags.contains(tag), tag.clone());
                 chips = chips.child(Button::new(format!("#{tag} {n}")).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted }).on_press(move |s: &mut App| {
                     if let Some(f) = &mut s.forum {
@@ -7744,6 +8098,13 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                         }
                     }
                 }).build(k).key(format!("ftag-{tag}")));
+            }
+            if !f.tags.is_empty() {
+                chips = chips.child(Button::new("Clear").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Show every thread again").on_press(|s: &mut App| {
+                    if let Some(f) = &mut s.forum {
+                        f.tags.clear();
+                    }
+                }).build(k).key("ftag-clear"));
             }
             page = page.child(chips);
         }
@@ -7772,6 +8133,21 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                         .child(line(1, "Link", "A link, if it is about one", "draft-link"))
                         .child(TextArea::new(&d[2]).label("Text (Markdown)").placeholder("The text, if it has one").rows(5).on_edit(|s: &mut App| draft_field(s, 2)).build(k).w_full().key("draft-body"))
                         .child(line(3, "Tags", "Up to five: lowercase letters, digits and dashes", "draft-tags"))
+                        // the board's own tags that hold what is being typed: pressed, the word becomes the tag
+                        .child({
+                            let mut offer = row().key("draft-tag-offer").gap(2.0).flex_wrap();
+                            for tag in tag_suggest(&board_tags, &d[3].text) {
+                                let t = tag.clone();
+                                offer = offer.child(Button::new(format!("#{tag}")).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Use this tag").on_press(move |s: &mut App| {
+                                    if let Some(d) = s.forum.as_mut().and_then(|f| f.draft.as_mut()) {
+                                        let now = tag_complete(&d[3].text, &t);
+                                        d[3] = TextEdit::new(now.as_str());
+                                        d[3].focused = true;
+                                    }
+                                }).build(k).key(format!("draft-tag-{tag}")));
+                            }
+                            offer
+                        })
                         .child(
                             row()
                                 .gap(6.0)
@@ -7788,13 +8164,14 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
         if b.posts.is_empty() {
             page = page.child(muted("No threads yet.".into()));
         }
-        let shown: Vec<&api::ForumPost> = forum_sorted(&b.posts, f.sort).into_iter().filter(|p| f.tags.iter().all(|t| p.tags.contains(t))).collect();
+        let shown: Vec<&api::ForumPost> = forum_sorted(&b.posts, f.sort, api::since_epoch().map_or(0, |d| d.as_secs() as i64)).into_iter().filter(|p| f.tags.iter().all(|t| p.tags.contains(t))).collect();
         if shown.is_empty() && !b.posts.is_empty() {
             page = page.child(muted("No thread carries every tag picked.".into()));
         }
         for p in shown {
             let (board, id) = (b.board.clone(), p.id);
             let points = p.up as i64 - p.down as i64;
+            let to = board.clone();
             let mut line = col()
                 .key(format!("post-{id}"))
                 .w_full()
@@ -7803,34 +8180,39 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                 .radius(k.radius.md)
                 .hover(c.layer_01)
                 .cursor(rune::Cursor::Pointer)
-                .on_press(move |s: &mut App| forum_open(s, board.clone(), Some(id)))
-                .label(format!("Open the thread {}", p.title))
-                .child(text(if p.pinned { format!("\u{2022} {}", p.title) } else { p.title.clone() }).font(k.ty.ui_medium).color(c.text_base).wrap());
+                .on_press(move |s: &mut App| forum_open(s, to.clone(), Some(id)))
+                .label(format!("Open the thread {}", p.title));
+            // a thread about a link: its title leads to the link, as on the web, and what is under it opens the thread
+            let out = forum_link(p.link.as_deref());
+            let title = text(if p.pinned { format!("\u{2022} {}", p.title) } else { p.title.clone() }).font(k.ty.ui_medium).wrap();
+            let lead = out.map(|url| {
+                row().px(8.0).pt(6.0).child(
+                    title.clone().key(format!("post-link-{id}")).color(c.text_accent).cursor(rune::Cursor::Pointer).role("link").label(format!("{}, a link to {url}", p.title)).on_press_tx(move |s: &mut App, tx| follow(s, &url, tx)),
+                )
+            });
+            line = if lead.is_none() { line.child(title.color(c.text_base)) } else { line.pt(2.0) };
             let host = p.link.as_deref().and_then(|l| l.split("://").nth(1)).and_then(|r| r.split('/').next()).map(|h| format!(" \u{b7} {h}")).unwrap_or_default();
             line = line.child(muted(format!("{} \u{b7} {} \u{b7} {points} point{} \u{b7} {} comment{}{host}{}", p.author, when(&p.created), if points == 1 { "" } else { "s" }, p.comments, if p.comments == 1 { "" } else { "s" }, if p.pinned { " \u{b7} pinned" } else { "" })));
             if !p.tags.is_empty() {
                 line = line.child(muted(p.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ")));
             }
-            page = page.child(line);
+            // what the web's list has on each row: a vote, and for those who may, pin and delete. They sit
+            // beside what opens the thread, not inside it, so a press on one does not open it too
+            let small = |label: &str, help: &str| Button::new(label.to_owned()).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(help.to_owned()).disabled(f.acting);
+            let (vb, pb, db, pinned) = (board.clone(), board.clone(), board.clone(), p.pinned);
+            let may = forum_may(&board, ours, &p.author);
+            let mut acts = row().px(4.0).gap(2.0).child(small("Vote", "Vote this thread up, or take the vote back").on_press(move |s: &mut App| forum_list_act(s, vb.clone(), id, ForumAct::Vote)).build(k).key(format!("row-vote-{id}")));
+            if may.pin {
+                acts = acts.child(small(if pinned { "Unpin" } else { "Pin" }, "Keep this thread at the top of the board, or let it go").on_press(move |s: &mut App| forum_list_act(s, pb.clone(), id, ForumAct::Pin(!pinned))).build(k).key(format!("row-pin-{id}")));
+            }
+            if may.change {
+                acts = acts.child(small("Delete", "Delete this thread").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumRowDelete(db.clone(), id))).build(k).key(format!("row-delete-{id}")));
+            }
+            page = page.child(col().key(format!("post-row-{id}")).w_full().children(lead).child(line).children(forum_preview(f, pics, p.link.as_deref(), id, k)).child(acts));
         }
         return page;
     }
-    let refused = f.notes.as_ref().map_or(0, Vec::len);
-    page = page.child(
-        row().w_full().gap(8.0).center_y().child(text("Boards").font(k.ty.body_medium).color(c.text_base).grow(1.0)).child(
-            Button::new(if refused == 0 { "Refusals".to_owned() } else { format!("Refusals {refused}") })
-                .control_size(ControlSize::Small)
-                .variant(if refused == 0 { ButtonVariant::GhostMuted } else { ButtonVariant::Ghost })
-                .help("Posts another ship's board did not take, and why")
-                .on_press(|s: &mut App| {
-                    if let Some(f) = &mut s.forum {
-                        f.notes_open = true;
-                    }
-                })
-                .build(k)
-                .key("notes-open"),
-        ),
-    );
+    page = page.child(row().w_full().gap(8.0).center_y().child(text("Boards").font(k.ty.body_medium).color(c.text_base).grow(1.0)).children(refusals(f, k, true)));
     page = page.child(
         row()
             .key("board-away")
@@ -9091,7 +9473,9 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                #[cfg(unix)]
+                Prompt::IdOut(..) | Prompt::IdIn(..) | Prompt::IdUse(..) => unreachable!("it has fields of its own"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -9099,6 +9483,34 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .key("prompt-field")
     };
     let (title, body, verb, variant) = match p {
+        #[cfg(unix)]
+        Prompt::IdOut(path, t) => {
+            let line = |i: usize, label: &str, key: &str| TextInput::new(&t[i]).label(label).placeholder(label).secure().on_edit(move |s: &mut App| id_field(s, i)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key(key.to_owned());
+            let body = col()
+                .w_full()
+                .gap(10.0)
+                .child(text(format!("The file {} will hold the key to this identity, locked with a passphrase of {} characters or more. Without the passphrase the file cannot be opened, and lattice cannot bring it back.", path.display(), cometid::MIN_PASSPHRASE)).key("id-out-said").font(k.ty.ui).color(k.c.text_muted).wrap())
+                .child(line(0, "Passphrase", "prompt-field"))
+                .child(line(1, "Passphrase again", "id-pass-again"));
+            ("Export your anonymous identity", body, "Export", ButtonVariant::Contrast)
+        }
+        #[cfg(unix)]
+        Prompt::IdIn(path, t) => {
+            let body = col()
+                .w_full()
+                .gap(10.0)
+                .child(text(format!("{}", path.display())).key("id-in-said").font(k.ty.ui).color(k.c.text_muted).wrap())
+                .child(TextInput::new(t).label("The file's passphrase").placeholder("The file's passphrase").secure().on_edit(|s: &mut App| id_field(s, 0)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key("prompt-field"));
+            ("Use an existing anonymous identity", body, "Open", ButtonVariant::Contrast)
+        }
+        #[cfg(unix)]
+        Prompt::IdUse(id, old) => {
+            let mut body = col().key("id-use-ask").w_full().gap(10.0);
+            for para in id_question(old.as_deref(), &id.ship) {
+                body = body.child(text(para).font(k.ty.ui).color(k.c.text_muted).wrap());
+            }
+            ("Use this anonymous identity?", body, "Use it", ButtonVariant::Danger)
+        }
         Prompt::New(t) => ("New page", field(t, "folder/name"), "Create", ButtonVariant::Contrast),
         Prompt::NewFolder(t) => ("New folder", field(t, "A folder's name, as notes or notes/sub"), "Create", ButtonVariant::Contrast),
         Prompt::Rename(_, t) => ("Rename or move", field(t, "folder/name"), "Rename", ButtonVariant::Contrast),
@@ -9125,6 +9537,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::BoardDelete(name) => ("Delete this board?", text(format!("{name} and every thread on it are gone for everyone who reads it.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::ForumTags(t) => ("This thread's tags", field(t, "Up to five: lowercase letters, digits and dashes. None clears them"), "Set", ButtonVariant::Contrast),
         Prompt::ForumDelete(comment) => (if comment.is_some() { "Delete this comment?" } else { "Delete this thread?" }, text(if comment.is_some() { "It is gone for everyone who reads the board." } else { "The thread and its comments are gone for everyone who reads the board." }).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
+        Prompt::ForumRowDelete(..) => ("Delete this thread?", text("The thread and its comments are gone for everyone who reads the board.").font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::CommentRemove(page, _) => ("Remove this comment?", text(format!("It is gone from {page} for everyone who reads it, and cannot be brought back.")).key("comment-remove-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
         Prompt::MarkMove(_, t) => ("Move this bookmark to a folder", field(t, "A folder, or nothing for none"), "Move", ButtonVariant::Contrast),
@@ -9273,12 +9686,15 @@ fn link_back(s: &mut App) {
 #[cfg(unix)]
 fn browse_anon(s: &mut App) {
     (s.sample, s.anon) = (true, true);
-    // what was starred with no ship is kept on this computer
+    // what was starred and what was read with no ship are kept on this computer
     s.marks = Some(anon_marks_load());
+    s.visits = anon_visits_load();
     if s.engine.is_none() {
         let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")));
         s.engine = base.map(|b| engine::Engine::new(b.join("lattice-rune").join("urb")));
     }
+    #[cfg(unix)]
+    id_refresh(s);
     go_browser(s);
     s.note = "Reading anonymously. You can browse published pages. Saving and hosting need a node.".into();
 }
@@ -9316,11 +9732,284 @@ fn urb_go_anon(s: &mut App, to: Option<String>) {
     });
 }
 
+/// What a step of moving the anonymous identity came to: the file an export was written to, an
+/// identity read out of a file, or the name now in use and the folder the old one was moved to.
+#[cfg(unix)]
+enum IdDone {
+    Out(Result<String, String>),
+    Opened(Result<cometid::Identity, String>),
+    In(Result<(String, Option<std::path::PathBuf>), String>),
+}
+
+/// A comet's name at a length a button and a file name can hold: its last two parts.
+fn id_short(ship: &str) -> String {
+    let s = ship.trim_start_matches('~');
+    let tail: Vec<&str> = s.rsplit('-').filter(|w| !w.is_empty()).take(2).collect();
+    if s.len() > 14 && tail.len() == 2 { format!("~{}-{}", tail[1], tail[0]) } else { format!("~{s}") }
+}
+
+/// Whether an export's passphrase will do: long enough, and typed the same twice.
+fn id_pass_ok(pass: &str, again: &str, least: usize) -> Result<(), String> {
+    if pass.chars().count() < least {
+        return Err(format!("Pick a passphrase of at least {least} characters."));
+    }
+    if pass != again {
+        return Err("The two passphrases are not the same.".into());
+    }
+    Ok(())
+}
+
+/// What is asked before an identity from a file is used, naming both: a paragraph each.
+fn id_question(old: Option<&str>, new: &str) -> [String; 2] {
+    let now = match old {
+        Some(o) => format!("Replace this computer's anonymous identity {o} with {new}? {o} is set aside on this computer, not deleted, but lattice stops using it."),
+        None => format!("Use {new} as this computer's anonymous identity?"),
+    };
+    [now, format!("Stop using {new} on the computer it came from. Two computers running one identity at once lose each other's messages. And import from a fresh export: an older file can make your next messages go missing.")]
+}
+
+/// Reads again which identity this computer has, and whether it was exported.
+#[cfg(unix)]
+fn id_refresh(s: &mut App) {
+    s.id_known = s.engine.as_ref().map_or((None, false), |e| (e.identity(), e.exported()));
+}
+
+/// The field being typed in of the identity prompt that is open.
+#[cfg(unix)]
+fn id_field(s: &mut App, i: usize) -> &mut TextEdit {
+    match s.prompt.as_mut().expect("a prompt is open") {
+        Prompt::IdOut(_, t) => &mut t[i],
+        Prompt::IdIn(_, t) => t,
+        _ => unreachable!("an identity prompt is open"),
+    }
+}
+
+/// Runs one step of an identity's move on a thread of its own, and wakes the window with its answer.
+#[cfg(unix)]
+fn id_run(s: &mut App, said: &'static str, f: impl FnOnce() -> IdDone + Send + 'static) {
+    s.id_busy = said;
+    s.note = format!("{said}\u{2026}");
+    let (got, waker) = (s.id_got.clone(), s.waker.clone());
+    spawn(move || {
+        let r = f();
+        got.lock().unwrap_or_else(|e| e.into_inner()).push(r);
+        if let Some(w) = waker {
+            w();
+        }
+    });
+}
+
+/// Export: the file is named first, in the save dialog, and then the passphrase is asked for.
+#[cfg(unix)]
+fn id_export_ask(s: &mut App, tx: &mut Tx) {
+    if !s.id_busy.is_empty() {
+        return;
+    }
+    id_refresh(s);
+    let Some(ship) = s.id_known.0.clone() else {
+        s.note = "There is no anonymous identity on this computer yet. Read an address once to make one.".into();
+        return;
+    };
+    let options = rune::FileDialogOptions { title: "Export your anonymous identity".into(), file_name: Some(format!("lattice-identity-{}.{}", id_short(&ship).trim_start_matches('~'), cometid::EXTENSION)), ..Default::default() };
+    tx.save_file(options.filter("lattice identity", &[cometid::EXTENSION]), |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => {
+            let mut t = [TextEdit::new(""), TextEdit::new("")];
+            t[0].focused = true;
+            s.prompt = Some(Prompt::IdOut(path, Box::new(t)));
+        }
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
+/// Import: the file is picked first, and then its passphrase is asked for.
+#[cfg(unix)]
+fn id_import_ask(s: &mut App, tx: &mut Tx) {
+    if !s.id_busy.is_empty() {
+        return;
+    }
+    let options = rune::FileDialogOptions { title: "Use an existing anonymous identity".into(), ..Default::default() };
+    tx.open_file(options.filter("lattice identity", &[cometid::EXTENSION]), |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => {
+            let mut t = TextEdit::new("");
+            t.focused = true;
+            s.prompt = Some(Prompt::IdIn(path, t));
+        }
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
+/// An identity prompt said yes to. Any other prompt is handed back.
+#[cfg(unix)]
+fn id_confirm(s: &mut App, p: Prompt) -> Option<Prompt> {
+    let Some(e) = s.engine.clone() else { return Some(p) };
+    match p {
+        Prompt::IdOut(path, t) => {
+            if let Err(why) = id_pass_ok(&t[0].text, &t[1].text, cometid::MIN_PASSPHRASE) {
+                s.note = why;
+                s.prompt = Some(Prompt::IdOut(path, t));
+                return None;
+            }
+            let pass = t[0].text.clone();
+            id_run(s, "Exporting the identity", move || {
+                IdDone::Out((|| {
+                    let id = e.export_identity()?;
+                    let file = cometid::seal(&id, &pass)?;
+                    cometid::write_private(&path, &file).map_err(|e| format!("could not write {e}"))?;
+                    cometid::mark_exported(e.dir())?;
+                    Ok(path.display().to_string())
+                })())
+            });
+            None
+        }
+        Prompt::IdIn(path, t) => {
+            let pass = t.text.clone();
+            id_run(s, "Opening the identity file", move || {
+                IdDone::Opened((|| {
+                    let size = std::fs::metadata(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?.len();
+                    if size > cometid::MAX_FILE {
+                        return Err(cometid::OpenError::NotIdentity.to_string());
+                    }
+                    let bytes = std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+                    cometid::open(&bytes, &pass).map_err(|e| e.to_string())
+                })())
+            });
+            None
+        }
+        Prompt::IdUse(id, _) => {
+            id_run(s, "Changing the identity", move || IdDone::In(e.import_identity(&id).map(|aside| (id.ship.clone(), aside))));
+            None
+        }
+        p => Some(p),
+    }
+}
+
+/// Takes what the identity's threads answered. True when something changed.
+#[cfg(unix)]
+fn id_drained(s: &mut App) -> bool {
+    let got: Vec<_> = std::mem::take(&mut *s.id_got.lock().unwrap_or_else(|e| e.into_inner()));
+    let any = !got.is_empty();
+    for r in got {
+        s.id_busy = "";
+        match r {
+            IdDone::Out(Ok(path)) => s.note = format!("The identity is exported to {path}. Keep the file and its passphrase: one is no use without the other."),
+            IdDone::Opened(Ok(id)) => {
+                id_refresh(s);
+                let old = s.id_known.0.clone();
+                if old.as_deref() == Some(id.ship.as_str()) {
+                    s.note = format!("This computer already uses {}. Nothing changed.", id.ship);
+                } else {
+                    s.note.clear();
+                    s.prompt = Some(Prompt::IdUse(Box::new(id), old));
+                }
+            }
+            IdDone::In(Ok((ship, aside))) => {
+                // what was being read was asked for as the old identity
+                urb_cancel(s);
+                s.note = match aside {
+                    Some(a) => format!("This computer now reads as {ship}. The identity used before is kept in {}.", a.display()),
+                    None => format!("This computer now reads as {ship}."),
+                };
+            }
+            IdDone::Out(Err(e)) | IdDone::Opened(Err(e)) | IdDone::In(Err(e)) => s.note = e,
+        }
+    }
+    if any {
+        id_refresh(s);
+    }
+    any
+}
+
+/// The anonymous identity on the browser's start: its name, whether it has been exported, and the
+/// two ways it moves between computers.
+#[cfg(unix)]
+fn id_section(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let ship = s.engine.as_ref().and_then(engine::Engine::our).or_else(|| s.id_known.0.clone());
+    let busy = !s.id_busy.is_empty();
+    let said = match (&ship, s.id_known.1) {
+        _ if busy => format!("{}\u{2026}", s.id_busy),
+        (None, _) => "None yet. One is made the first time you read an address, and other ships see it as the reader.".to_owned(),
+        (Some(_), true) => "An export of it has been made. Export again after using it, so the file is fresh.".to_owned(),
+        (Some(_), false) => "It lives on this computer only. Export it to keep it, or to use it on another computer.".to_owned(),
+    };
+    col()
+        .key("anon-id")
+        .w_full()
+        .gap(6.0)
+        .child(text("Anonymous identity").font(k.ty.body_medium).color(c.text_base))
+        .children(ship.as_ref().map(|n| text(n.clone()).key("anon-id-name").font(k.ty.ui_medium).color(c.text_base).truncate()))
+        .child(text(said).key("anon-id-said").font(k.ty.small).color(c.text_muted).wrap())
+        .child(
+            row()
+                .gap(8.0)
+                .child(Button::new("Export").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Save this identity to a file locked with a passphrase").disabled(busy || ship.is_none()).on_press_tx(id_export_ask).build(k).key("id-export"))
+                .child(Button::new("Use an existing identity").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Open an identity file exported from another computer").disabled(busy).on_press_tx(id_import_ask).build(k).key("id-import")),
+        )
+}
+
 /// Lets go of a read on its way: what it answers is not wanted any more.
 fn urb_cancel(s: &mut App) {
     s.urb_req.cancel();
     s.anon_seq += 1;
     s.anon_reading = None;
+}
+
+/// How many addresses read with no ship are remembered.
+const ANON_VISITS: usize = 200;
+
+/// The visits with one more read noted: the address comes to the front with the moment and one more
+/// to its count, as the ship's own history keeps a visit, and the oldest go past the limit.
+fn visit_noted(list: &[api::Visit], url: &str, title: &str, when: &str) -> Vec<api::Visit> {
+    let before = list.iter().find(|v| v.url == url);
+    let mut out = vec![api::Visit { url: url.to_owned(), title: if title.is_empty() { before.map(|v| v.title.clone()).unwrap_or_default() } else { title.to_owned() }, last: when.to_owned(), hits: before.map_or(0, |v| v.hits) + 1 }];
+    out.extend(list.iter().filter(|v| v.url != url).take(ANON_VISITS - 1).cloned());
+    out
+}
+
+/// What a page read at an address is called in the list of visits: its first heading, or nothing.
+fn visit_title(kind: &str, body: &str) -> String {
+    if !matches!(kind, "md" | "gmi") {
+        return String::new();
+    }
+    body.lines().take(40).find_map(|l| l.strip_prefix('#')).map(|h| h.trim_start_matches('#').trim().chars().take(80).collect()).unwrap_or_default()
+}
+
+fn anon_visits_path() -> Option<std::path::PathBuf> {
+    Some(anon_marks_path()?.with_file_name("anon-history.json"))
+}
+
+/// The addresses read with no ship, kept on this computer and sent nowhere.
+fn anon_visits_load() -> Vec<api::Visit> {
+    anon_visits_path().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn anon_visits_store(list: &[api::Visit]) {
+    // a test's visits are not this computer's
+    if cfg!(test) {
+        return;
+    }
+    let Some(p) = anon_visits_path() else { return };
+    let _ = p.parent().map(std::fs::create_dir_all);
+    // readable by its owner alone: it is where someone has been
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.mode(0o600);
+    }
+    if let (Ok(mut f), Ok(bytes)) = (open.open(&p), serde_json::to_vec(list)) {
+        use std::io::Write;
+        // one that was there already and looser is tightened
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
+        let _ = f.write_all(&bytes);
+    }
 }
 
 fn anon_marks_path() -> Option<std::path::PathBuf> {
@@ -9397,6 +10086,12 @@ fn urb_got(s: &mut App, url: String, got: api::Urb) {
         let seen = url.clone();
         spawn(move || drop(c.visit(&seen)));
     }
+    // with no ship the visits are this computer's own list
+    if let (true, api::Urb::Page { kind, body, .. }) = (s.anon, &got) {
+        let when = api::since_epoch().map_or(String::new(), |d| api::da_of_ms(d.as_millis() as i64));
+        s.visits = visit_noted(&s.visits, &url, &visit_title(kind, body), &when);
+        anon_visits_store(&s.visits);
+    }
     match got {
         api::Urb::Page { ship, path, kind, body, comments } => {
             let name = format!("{ship}/{path}");
@@ -9462,7 +10157,7 @@ fn shared_view(s: &App, k: &Kit) -> El {
             })),
         );
         if s.visits.is_empty() {
-            seen = seen.child(text(if s.conn.is_some() { "No address has been visited yet." } else if s.anon { "What is read anonymously is not listed here." } else { "Sample pages have no other ships to visit." }).font(k.ty.small).color(c.text_faint));
+            seen = seen.child(text(if s.conn.is_some() { "No address has been visited yet." } else if s.anon { "No address has been read yet. What you read is listed here, on this computer only." } else { "Sample pages have no other ships to visit." }).font(k.ty.small).color(c.text_faint));
         }
         for (i, v) in s.visits.iter().take(30).enumerate() {
             let (to, gone) = (v.url.clone(), v.url.clone());
@@ -9473,9 +10168,13 @@ fn shared_view(s: &App, k: &Kit) -> El {
             );
         }
         page = page
-            .child(text("Type an address above, as urb://~sampel-palnet/notes, to read what another ship publishes or shares with you. Anything else is looked for among your own pages.").font(k.ty.small).color(c.text_muted).wrap())
+            .child(text(if s.anon { "Type an address above, as urb://~sampel-palnet/notes, to read what a ship publishes." } else { "Type an address above, as urb://~sampel-palnet/notes, to read what another ship publishes or shares with you. Anything else is looked for among your own pages." }).font(k.ty.small).color(c.text_muted).wrap())
             .child(saved)
             .child(seen);
+        #[cfg(unix)]
+        if s.anon {
+            page = page.child(id_section(s, k));
+        }
     }
     col().key("shared").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page)).scroll(ScrollSpec { stick_bottom: false })
 }
@@ -9485,6 +10184,9 @@ fn forget_visit(s: &mut App, url: Option<String>) {
     match &url {
         Some(u) => s.visits.retain(|v| v.url != *u),
         None => s.visits.clear(),
+    }
+    if s.anon {
+        anon_visits_store(&s.visits);
     }
     if let Some(c) = s.conn.clone() {
         s.visits_req.request((c, url), |(c, url)| {
@@ -9635,10 +10337,42 @@ fn open_notice(s: &mut App, n: &Notice) {
             s.forum = None;
             load_groups(s);
         }
+        Opens::Thread(board, post) => {
+            if s.conn.is_none() {
+                s.note = "sample pages have no forum to open".into();
+                return;
+            }
+            if !leave_edit(s) {
+                return;
+            }
+            (s.inbox, s.access, s.shared_open, s.settings) = (false, false, false, None);
+            s.forum = Some(Forum::default());
+            s.note = format!("reading {board}\u{2026}");
+            forum_open(s, board, post);
+        }
+        Opens::Address(url) => {
+            if s.conn.is_none() {
+                s.note = "sample pages have no other ships to read".into();
+                return;
+            }
+            urb_go(s, Some(url));
+        }
         Opens::Nothing => return,
     }
     if !n.read {
-        mark_read(s, Some(n.id.clone()));
+        match s.conn.clone() {
+            // marked behind what was opened, and said by the mark going: its answer has nothing to add, and on the
+            // request the other actions share it took the place of whatever the opening had to say
+            Some(c) => {
+                let id = n.id.clone();
+                spawn(move || drop(c.notice_read(Some(&id))));
+                for x in s.notices.iter_mut().filter(|x| x.id == n.id) {
+                    x.read = true;
+                }
+                s.waiting.unread = s.waiting.unread.saturating_sub(1);
+            }
+            None => mark_read(s, Some(n.id.clone())),
+        }
     }
 }
 
@@ -10323,6 +11057,93 @@ fn ask_new(s: &mut App) {
     s.prompt = Some(Prompt::New(t));
 }
 
+/// What a tree row's menu offers: its command and its words. A folder has no one file to download.
+fn tree_menu_items(dir: bool) -> Vec<(&'static str, &'static str)> {
+    let mut out = vec![("rename", "Rename"), ("move", "Move")];
+    if !dir {
+        out.push(("download", "Download"));
+    }
+    out.push(("delete", "Delete"));
+    out
+}
+
+/// The name a rename or a move starts from, with the part to change marked so typing replaces it:
+/// the last part for a rename, and the folder before it for a move.
+fn tree_menu_edit(path: &str, mv: bool) -> TextEdit {
+    let mut t = TextEdit::new(path);
+    t.focused = true;
+    let at = path.rfind('/').map_or(0, |i| i + 1);
+    if mv { t.set_selection(0, at) } else { t.set_selection(at, path.len()) }
+    t
+}
+
+/// Runs one command of a tree row's menu on that row, whether or not it is the page in front.
+fn tree_menu_run(s: &mut App, path: &str, id: &str, tx: &mut Tx) {
+    s.tree_menu = None;
+    match id {
+        "rename" | "move" => {
+            if !no_node(s) {
+                s.prompt = Some(Prompt::Rename(path.to_owned(), tree_menu_edit(path, id == "move")));
+            }
+        }
+        "delete" => {
+            if !no_node(s) {
+                s.prompt = Some(Prompt::Delete(path.to_owned()));
+            }
+        }
+        "download" => tree_download(s, path, tx),
+        _ => {}
+    }
+}
+
+/// Saves a page from the tree to a file on this machine. The page in front goes as it stands, with
+/// what is being typed. Any other is saved from what is kept of it, or read from the ship first.
+fn tree_download(s: &mut App, path: &str, tx: &mut Tx) {
+    if s.open.as_ref().is_some_and(|p| p.name == path) {
+        return ask_download(s, tx);
+    }
+    let kind = s.cache.get(path).map(|p| p.kind.clone()).or_else(|| s.files.get(path).and_then(|n| n.data.as_ref()).map(|n| n.kind.clone())).unwrap_or_default();
+    let (kept, conn, name) = (s.cache.get(path).map(|p| p.body.clone()), s.conn.clone().filter(|_| !s.memory), path.to_owned());
+    if kept.is_none() && conn.is_none() {
+        s.note = format!("{path} has no text here to download");
+        return;
+    }
+    let options = rune::FileDialogOptions { title: "Download this page".into(), file_name: Some(upload::download_name(path, &kind, s.memory)), ..Default::default() };
+    tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(to)) => match (conn.clone(), kept.clone()) {
+            // the ship's copy is the newest
+            (Some(c), _) => {
+                s.note = format!("reading {name}");
+                s.op_req.request((c, name.clone(), to), |(c, name, to)| {
+                    let p = c.page(&name)?;
+                    Ok(Op::Said(match std::fs::write(&to, p.body) {
+                        Ok(()) => format!("saved to {}", to.display()),
+                        Err(e) => format!("not saved to {}: {e}", to.display()),
+                    }))
+                });
+            }
+            (None, Some(body)) => write_file(s, to, body),
+            (None, None) => {}
+        },
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
+/// The left pane with the menu of the tree row that was right-clicked, shown where the pointer was.
+fn tree_menu_view(s: &App, k: &Kit, side: El, layer: &mut Vec<El>) -> El {
+    let dir = s.tree_menu.as_ref().is_some_and(|(p, _)| s.files.get(p).is_none_or(|n| n.dir));
+    let mut menu = rune_kit::context_menu("tree-menu", side, s.tree_menu.as_ref().map(|m| m.1)).on_close(|s: &mut App| s.tree_menu = None);
+    for (id, label) in tree_menu_items(dir) {
+        menu = menu.item(MenuItem::new(label).danger(id == "delete").on_select_tx(move |s: &mut App, tx| {
+            if let Some((path, _)) = s.tree_menu.clone() {
+                tree_menu_run(s, &path, id, tx);
+            }
+        }));
+    }
+    menu.build(k, layer)
+}
+
 fn ask_rename(s: &mut App) {
     if let Some(p) = &s.open {
         let mut t = TextEdit::new(p.name.clone());
@@ -10799,6 +11620,19 @@ fn sidebar(s: &App, k: &Kit) -> El {
             let (muted, hover) = (k.c.text_muted, k.c.hover);
             move |n, r| {
                 let item = TreeItem::file(n, r).highlight(q.clone());
+                // the tree has no right-click of its own for a row, so a row of this ship's carries a clear
+                // sheet over itself that takes one. It has no press, so a click still reaches the row
+                let item = if swm::is_ours(&n.path) {
+                    item
+                } else {
+                    let (at, mid, page) = (n.path.clone(), n.path.clone(), !n.dir);
+                    let sheet = el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).on_secondary_press(move |s: &mut App, p, _| {
+                        s.files.select(&at);
+                        s.tree_menu = Some((at.clone(), p));
+                    });
+                    // a middle click on a page opens it in a new tab, as a browser opens a link
+                    item.trailing(if page { sheet.on_middle_press(move |s: &mut App, _| tab_for(s, &mid)) } else { sheet })
+                };
                 if links.contains(&n.path) {
                     // a page that is another ship's, moved here as a link
                     return item.icon(&tabhead::OUT);
@@ -10813,7 +11647,11 @@ fn sidebar(s: &App, k: &Kit) -> El {
             }
         })
         // one click opens a page, as the web client's tree does
-        .on_select(|s: &mut App, id, _| {
+        .on_select(|s: &mut App, id, tx| {
+            // with Ctrl (Cmd on a Mac) a page opens in a new tab
+            if tx.mods().cmd && !swm::is_ours(id) && s.files.get(id).is_some_and(|n| !n.dir) {
+                return tab_for(s, id);
+            }
             if swm::is_ours(id) {
                 // a page or a folder another ship shared. The folder itself and a ship's only fold
                 open_shared(s, id);
@@ -11656,7 +12494,13 @@ fn page_body(s: &App, k: &Kit) -> El {
         return access_view(s, k);
     }
     if let Some(f) = s.forum.as_ref().filter(|_| !s.editing) {
-        return col().key("forum-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(forum_view(f, k))).scroll(ScrollSpec { stick_bottom: false });
+        // a board of this ship's wears its own theme, on its own ground, as its pages do on the web
+        let own = board_kit(s, k);
+        let (k, ground) = match &own {
+            Some(bk) => (bk, bk.c.bg_base),
+            None => (k, rune::Color::TRANSPARENT),
+        };
+        return col().key("forum-pane").w_full().h_full().min_h(0.0).fill(ground).child(col().w_full().items_center().child(forum_view(f, s.conn.as_ref().map_or("", |c| c.ship()), &Pics { had: &s.pics, failed: &s.pics_failed }, k))).scroll(ScrollSpec { stick_bottom: false });
     }
     if s.shared_open && !s.editing {
         return shared_view(s, k);
@@ -11884,15 +12728,68 @@ fn font_of(worn: &theme::Worn) -> String {
     }
 }
 
+/// The board of this ship's that the forum is showing, a thread's board with it.
+fn board_showing(s: &App) -> Option<&str> {
+    let f = s.forum.as_ref()?;
+    let name = f.thread.as_ref().map(|t| t.board.as_str()).or(f.board.as_ref().map(|b| b.board.as_str()))?;
+    (!name.starts_with('~')).then_some(name)
+}
+
+/// Whether a page is published to the web, by its own setting or by the nearest folder's that has one.
+fn on_clearweb(s: &App, name: &str) -> bool {
+    if let Some(mode) = s.shares.get(name) {
+        return mode == "clearweb";
+    }
+    let mut dir = name;
+    while let Some((up, _)) = dir.rsplit_once('/') {
+        if let Some(mode) = s.dshares.get(up) {
+            return mode == "clearweb";
+        }
+        dir = up;
+    }
+    false
+}
+
+/// The page that dresses a board: the nearest `theme` at or above its folder that is a stylesheet
+/// published to the web, as the ship picks it for the board's own pages.
+fn board_theme_page(s: &App, board: &str) -> Option<String> {
+    theme::board_theme_names(board).into_iter().find(|n| s.files.get(n).and_then(|f| f.data.as_ref()).is_some_and(|d| d.kind == "css") && on_clearweb(s, n))
+}
+
+/// Reads the theme of the board showing, once for each board. Another ship's board has none
+/// that can be read here: its tree is not this ship's to look in.
+fn board_theme_sync(s: &mut App) {
+    let Some(board) = board_showing(s).map(str::to_owned) else { return };
+    if s.board_theme.as_ref().is_some_and(|t| t.0 == board) {
+        return;
+    }
+    s.board_theme = Some((board.clone(), String::new()));
+    if let (Some(c), Some(page)) = (s.conn.clone(), board_theme_page(s, &board)) {
+        s.board_theme_req.request((c, board, page), |(c, board, page)| c.page(&page).map(|p| (board, p.body)));
+    }
+}
+
+/// The kit a board is drawn with: its own theme's, or the window's when it has none.
+fn board_kit(s: &App, k: &Kit) -> Option<Kit> {
+    let board = board_showing(s)?;
+    let (_, css) = s.board_theme.as_ref().filter(|t| t.0 == board && !t.1.is_empty())?;
+    let look = theme::css_look(css, k.dark);
+    look.bg.is_some().then(|| kit_from(look, k.dark))
+}
+
 /// The kit the window is drawn with: the theme the ship says is worn,
 /// and the accent over it, as the web client wears them. With no theme
 /// it is the built-in look, light or dark as the mode picked says.
 fn kit_of(prefs: &api::Prefs, system_dark: bool) -> Kit {
-    let look = prefs.worn.look();
+    kit_from(prefs.worn.look(), prefs.dark(system_dark))
+}
+
+/// A kit for a look. One that brings no ground of its own is the built-in look, dark or light as told.
+fn kit_from(look: theme::Look, dark: bool) -> Kit {
     let mut k = match (look.bg, look.text) {
         // a theme brings its own light or dark: the mode picked is for the built-in look
         (Some(bg), Some(fg)) => Kit::from_palette(rune_kit::PaletteSeed { bg, fg, accent: look.accent.unwrap_or(fg) }),
-        _ => Kit::neutral(prefs.dark(system_dark)),
+        _ => Kit::neutral(dark),
     };
     let c = &mut k.c;
     if let Some(muted) = look.muted {
@@ -12107,7 +13004,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let inset = cx.titlebar_inset();
     let right = IconButton::new(&topbar::PANE_RIGHT).variant(if s.inspector.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help("Right pane").on_press(toggle_right).build(&k).key("pane-right");
     let shell = SplitView::new(main)
-        .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
+        .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, tree_menu_view(s, &k, sidebar(s, &k), &mut layer))
         .inspector(&s.inspector, |s: &mut App| &mut s.inspector, right_pane(s, &k))
         .toolbar(Toolbar::new().leading(tab_strip(s, &k)).trailing(right))
         // the left pane's toggle is the ribbon's first icon, as on the web
@@ -12354,6 +13251,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_tree_row_menu_fits_the_row_and_marks_the_part_to_change() {
+        assert_eq!(tree_menu_items(false).iter().map(|i| i.0).collect::<Vec<_>>(), ["rename", "move", "download", "delete"]);
+        assert_eq!(tree_menu_items(true).iter().map(|i| i.0).collect::<Vec<_>>(), ["rename", "move", "delete"]);
+        assert_eq!(tree_menu_edit("notes/plans/today", false).selected(), "today");
+        assert_eq!(tree_menu_edit("notes/plans/today", true).selected(), "notes/plans/");
+        assert_eq!(tree_menu_edit("today", false).selected(), "today");
+        assert_eq!(tree_menu_edit("today", true).selected(), "");
+    }
+
+    #[test]
+    fn an_export_passphrase_is_long_enough_and_typed_the_same_twice() {
+        assert!(id_pass_ok("seven77", "seven77", 8).unwrap_err().contains("at least 8"));
+        assert!(id_pass_ok("eight888", "eight889", 8).unwrap_err().contains("not the same"));
+        assert_eq!(id_pass_ok("eight888", "eight888", 8), Ok(()));
+        // letters are counted, not bytes
+        assert_eq!(id_pass_ok("\u{e9}\u{e9}\u{e9}\u{e9}", "\u{e9}\u{e9}\u{e9}\u{e9}", 4), Ok(()));
+    }
+
+    #[test]
+    fn a_comet_is_named_short_and_the_question_names_both() {
+        assert_eq!(id_short("~sampel-palnet"), "~sampel-palnet");
+        assert_eq!(id_short("~dozzod-dozzod-dozzod-dozzod--dozzod-dozzod-ricsul-bilwyt"), "~ricsul-bilwyt");
+        let [first, second] = id_question(Some("~old"), "~new");
+        assert!(first.contains("~old") && first.contains("~new") && first.contains("not deleted"));
+        assert!(second.contains("Stop using ~new"));
+        assert!(!id_question(None, "~new")[0].contains("Replace"));
+    }
+
+    #[test]
     fn the_switcher_ranks_tight_early_matches_first_and_drops_misses() {
         let names: Vec<String> = ["notes/today", "journal/2026-11-17", "notes/ideas/maps", "welcome"].map(String::from).to_vec();
         assert_eq!(matches(&names, "maps"), ["notes/ideas/maps"]);
@@ -12595,14 +13521,84 @@ mod tests {
     }
 
     #[test]
+    fn a_boards_controls_are_what_this_ship_may_do_and_a_refusal_is_seen() {
+        // on a board of one's own everything, as its host. On another ship's only what an author may
+        assert_eq!(forum_may("chat", "~zod", "~bus"), ForumMay { pin: true, change: true });
+        assert_eq!(forum_may("~nec/chat", "~zod", "~zod"), ForumMay { pin: false, change: true });
+        assert_eq!(forum_may("~nec/chat", "~zod", "~bus"), ForumMay { pin: false, change: false });
+        assert_eq!(forum_may("~nec/chat", "", ""), ForumMay { pin: false, change: false }, "no name known is no author");
+        // whether the board did what was asked, read from the thread as it comes back
+        let post = |up: u64, pinned: bool, tags: &[&str]| api::ForumPost { id: 1, up, pinned, tags: tags.iter().map(|t| (*t).to_owned()).collect(), ..api::ForumPost::default() };
+        assert!(forum_took(&ForumAct::Vote, (2, 0), Some(&post(3, false, &[])), &[]) && !forum_took(&ForumAct::Vote, (2, 0), Some(&post(2, false, &[])), &[]));
+        assert!(forum_took(&ForumAct::Pin(true), (0, 0), Some(&post(0, true, &[])), &[]) && !forum_took(&ForumAct::Pin(true), (0, 0), Some(&post(0, false, &[])), &[]));
+        assert!(forum_took(&ForumAct::Tags(vec!["b".into(), "a".into()]), (0, 0), Some(&post(0, false, &["a", "b"])), &[]), "in whatever order the ship keeps them");
+        assert!(!forum_took(&ForumAct::Tags(vec!["a".into()]), (0, 0), Some(&post(0, false, &[])), &[]));
+        assert!(forum_took(&ForumAct::Delete(None), (0, 0), None, &[]) && !forum_took(&ForumAct::Delete(None), (0, 0), Some(&post(0, false, &[])), &[]));
+        assert!(forum_took(&ForumAct::Delete(Some(4)), (0, 0), Some(&post(0, false, &[])), &[3, 5]) && !forum_took(&ForumAct::Delete(Some(4)), (0, 0), Some(&post(0, false, &[])), &[3, 4]));
+        // a board of this ship's says so. One elsewhere is not yet known to have refused
+        assert!(forum_taken("chat", false).unwrap_err().contains("did not take that"));
+        assert_eq!((forum_taken("chat", true), forum_taken("~nec/chat", false)), (Ok(()), Ok(())));
+    }
+
+    #[test]
+    fn a_threads_link_is_followed_only_when_it_is_one_to_follow() {
+        assert_eq!(forum_link(Some(" https://example.com/x ")).as_deref(), Some("https://example.com/x"));
+        assert_eq!(forum_link(Some("urb://~nec/notes")).as_deref(), Some("urb://~nec/notes"));
+        for no in [None, Some(""), Some("javascript:alert(1)"), Some("file:///etc/passwd"), Some("example.com")] {
+            assert_eq!(forum_link(no), None, "{no:?}");
+        }
+    }
+
+    #[test]
+    fn a_boards_tags_are_found_and_offered_as_a_threads_are_typed() {
+        let all: Vec<(String, usize)> = (0..40).map(|i| (format!("tag{i:02}"), 100 - i)).chain([("bug-report".to_owned(), 2), ("debug".to_owned(), 1)]).collect();
+        // thirty until one is looked for, then every tag that holds what is typed
+        assert_eq!(forum_tags_shown(&all, "", &[]).len(), 30);
+        assert_eq!(forum_tags_shown(&all, " #BUG ", &[]).iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["bug-report", "debug"]);
+        // one that is picked stays to be let go, though it is past the thirty or not what is looked for
+        assert!(forum_tags_shown(&all, "", &["debug".into()]).contains(&("debug".to_owned(), 1)));
+        assert_eq!(forum_tags_shown(&all, "bug-r", &["tag00".into()]).iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["bug-report", "tag00"]);
+        assert!(forum_tags_shown(&[], "x", &[]).is_empty());
+        // while a thread's tags are typed: those that hold the word being typed, without the ones had
+        assert_eq!(tag_suggest(&all, "bug"), ["bug-report", "debug"]);
+        assert_eq!(tag_suggest(&all, "debug, bu"), ["bug-report"], "what is typed already is not offered again");
+        assert_eq!(tag_suggest(&all, "").len(), 8, "the most used, before anything is typed");
+        assert_eq!(tag_suggest(&all, "tag00 ")[0], "tag01", "after a space a new word begins");
+        assert!(tag_suggest(&all, "a b c d e f").is_empty(), "five are all a thread carries");
+        assert!(tag_suggest(&all, "debug").iter().all(|t| t != "debug"), "a tag typed whole needs no offer");
+        assert_eq!(tag_complete("debug, bu", "bug-report"), "debug, bug-report ");
+        assert_eq!(tag_complete("bu", "bug-report"), "bug-report ");
+        assert_eq!(tag_complete("debug ", "ui"), "debug ui ");
+        assert_eq!(tag_complete("", "ui"), "ui ");
+    }
+
+    #[test]
     fn the_forum_orders_threads_steps_back_and_gives_way_to_a_page() {
         let post = |id: u64, created: &str, active: &str, up: u64, pinned: bool| api::ForumPost { id, created: created.into(), active: active.into(), up, pinned, ..api::ForumPost::default() };
         let posts = [post(1, "~2026.11.1", "~2026.11.9", 5, false), post(2, "~2026.11.2", "~2026.11.2", 1, false), post(3, "~2026.10.1", "~2026.10.1", 0, true), post(4, "~2026.11.3", "~2026.11.3", 9, false)];
-        let ids = |sort| forum_sorted(&posts, sort).into_iter().map(|p| p.id).collect::<Vec<_>>();
+        let ids = |sort| forum_sorted(&posts, sort, 0).into_iter().map(|p| p.id).collect::<Vec<_>>();
         // the pinned thread is first whatever the order, then newest, latest spoken in, or most points
         assert_eq!(ids(ForumSort::New), [3, 4, 2, 1]);
         assert_eq!(ids(ForumSort::Active), [3, 1, 4, 2]);
         assert_eq!(ids(ForumSort::Top), [3, 4, 1, 2]);
+        // dates are compared as moments: as text the 9th came after the 10th, and at 9 o'clock after 10
+        let dated = [post(1, "~2026.11.9..9.0.0", "~2026.11.9..9.0.0", 0, false), post(2, "~2026.11.10..8.0.0", "~2026.11.9..10.0.0", 0, false)];
+        let order = |sort| forum_sorted(&dated, sort, 0).into_iter().map(|p| p.id).collect::<Vec<_>>();
+        assert_eq!((order(ForumSort::New), order(ForumSort::Active)), (vec![2, 1], vec![2, 1]));
+        // hot, the order a board opens in: votes over the square of the hours since and two more
+        assert!(ForumSort::default() == ForumSort::Hot);
+        let now = api::da_secs("~2026.11.20..12.0.0").unwrap();
+        let hot = [
+            post(1, "~2026.11.20..11.0.0", "", 3, false),  // an hour old, 3 points: 3/9
+            post(2, "~2026.11.19..12.0.0", "", 40, false), // a day old, 40 points: 40/676
+            post(3, "~2026.11.20..2.0.0", "", 30, false),  // ten hours old, 30 points: 30/144
+            post(4, "~2026.11.20..11.30.0", "", 0, false), // new, no points
+            post(5, "~2026.11.20..10.0.0", "", 0, false),  // older, no points
+            post(6, "~2026.11.1..0.0.0", "", 1, true),     // pinned
+        ];
+        assert_eq!(forum_sorted(&hot, ForumSort::Hot, now).into_iter().map(|p| p.id).collect::<Vec<_>>(), [6, 1, 3, 2, 4, 5]);
+        let down = api::ForumPost { up: 1, down: 5, created: "~2026.11.20..11.0.0".into(), ..api::ForumPost::default() };
+        assert_eq!(hot_score(&down, now), (0, 9), "voted under nothing counts as nothing, as on the ship");
         let mut s = sample("welcome");
         go_forum(&mut s);
         assert!(s.forum.as_ref().is_some_and(|f| f.boards.as_ref().is_some_and(Vec::is_empty)), "with no ship there are no boards, and it says so");
@@ -14036,6 +15032,40 @@ mod tests {
         // Later puts that version off for the run
         update_later(&mut s);
         assert!(!update_offered(&mut s.upd, offer("2.0.1")) && update_offered(&mut s.upd, offer("2.0.2")));
+    }
+
+    #[test]
+    fn what_is_read_with_no_ship_is_listed_newest_first_and_counted() {
+        let v = visit_noted(&[], "urb://~nec/a", "A", "~2026.11.19..1.0.0");
+        let v = visit_noted(&v, "urb://~nec/b", "", "~2026.11.19..2.0.0");
+        let v = visit_noted(&v, "urb://~nec/a", "", "~2026.11.19..3.0.0");
+        assert_eq!(v.iter().map(|x| (x.url.as_str(), x.title.as_str(), x.hits)).collect::<Vec<_>>(), [("urb://~nec/a", "A", 2), ("urb://~nec/b", "", 1)], "read again it comes to the front, counted, and keeps the name it had");
+        assert_eq!(v[0].last, "~2026.11.19..3.0.0");
+        // the oldest go past the limit
+        let mut many = Vec::new();
+        for i in 0..ANON_VISITS + 20 {
+            many = visit_noted(&many, &format!("urb://~nec/p{i}"), "", "");
+        }
+        assert_eq!((many.len(), many[0].url.as_str()), (ANON_VISITS, "urb://~nec/p219"));
+        assert!(!many.iter().any(|x| x.url == "urb://~nec/p0"));
+        // a page read with no ship is noted, and one read through a ship is not this list's
+        let mut s = init();
+        s.conn = None;
+        (s.sample, s.anon) = (true, true);
+        let page = |body: &str| api::Urb::Page { ship: "~nec".into(), path: "a".into(), kind: "md".into(), body: body.into(), comments: Vec::new() };
+        urb_got(&mut s, "urb://~nec/a".into(), page("# Alpha\n"));
+        urb_got(&mut s, "urb://~nec/a".into(), page("# Alpha\n"));
+        assert_eq!(s.visits.iter().map(|x| (x.url.as_str(), x.title.as_str(), x.hits)).collect::<Vec<_>>(), [("urb://~nec/a", "Alpha", 2)]);
+        assert!(s.visits[0].last.starts_with('~'));
+        forget_visit(&mut s, Some("urb://~nec/a".into()));
+        assert!(s.visits.is_empty());
+        let mut signed = sample("welcome");
+        urb_got(&mut signed, "urb://~nec/a".into(), page("# Alpha\n"));
+        assert!(signed.visits.is_empty());
+        // a page is called by its first heading
+        assert_eq!(visit_title("md", "intro\n## The plan  \ntext"), "The plan");
+        assert_eq!(visit_title("gmi", "# Gem\n=> x"), "Gem");
+        assert_eq!((visit_title("md", "no heading"), visit_title("html", "# not a heading here")), (String::new(), String::new()));
     }
 
     #[test]

@@ -220,22 +220,104 @@ impl Engine {
         }
     }
 
-    /// Closes the store and ends the thread, waiting a moment for it.
-    pub fn close(&self) {
+    /// Closes the store and ends the thread, waiting a moment for it. `false` when it did not
+    /// stop in that time.
+    pub fn close(&self) -> bool {
         let run = {
             let mut g = self.inner.lock().unwrap();
             g.status = Status::Off;
             g.run.take()
         };
-        let Some(run) = run else { return };
+        let Some(run) = run else { return true };
         let (tx, rx) = channel();
-        if run.jobs.send(Job::Close(tx)).is_ok() {
-            if let Some(w) = &run.waker {
-                let _ = w.send(Event::Wake);
-            }
-            let _ = rx.recv_timeout(Duration::from_secs(5));
+        if run.jobs.send(Job::Close(tx)).is_err() {
+            return true;
         }
+        if let Some(w) = &run.waker {
+            let _ = w.send(Event::Wake);
+        }
+        rx.recv_timeout(Duration::from_secs(5)).is_ok()
     }
+
+    /// The identity this computer has: the one running, or the one its keyfile names. `None` before
+    /// one is made. A fake identity has no file to move, so it is not named here.
+    pub fn identity(&self) -> Option<String> {
+        if self.fake.is_some() {
+            return None;
+        }
+        self.our().or_else(|| comet_of_keyfile(std::fs::read_to_string(self.dir.join("comet.key")).ok()?.trim()))
+    }
+
+    /// Whether an export of the identity here has been made.
+    pub fn exported(&self) -> bool {
+        self.dir.join("comet.key").exists() && crate::cometid::exported_at(&self.dir).is_some()
+    }
+
+    /// Where the identity's files are.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Closed for a move of the identity: refused while a start is in progress (it may be mining
+    /// or opening the store) and for a fake ship. True when it was running, to start it again after.
+    fn close_for_move(&self) -> Result<bool, String> {
+        if self.fake.is_some() {
+            return Err("a fake test identity cannot be moved".into());
+        }
+        let was = match self.status() {
+            Status::Booting => return Err("The anonymous identity is still starting. Try again in a moment.".into()),
+            Status::Ready { .. } => true,
+            _ => false,
+        };
+        if !self.close() {
+            return Err("The anonymous identity did not stop in time. Try again in a moment.".into());
+        }
+        Ok(was)
+    }
+
+    /// The identity, for an export file: the engine closed first, so the store is copied whole,
+    /// and started again after if it ran.
+    pub fn export_identity(&self) -> Result<crate::cometid::Identity, String> {
+        let was = self.close_for_move()?;
+        let got = crate::cometid::read_dir(&self.dir, comet_of_keyfile);
+        if was {
+            self.start();
+        }
+        got
+    }
+
+    /// Makes `id` (from an export file) the reader identity, in place of whatever was here, which
+    /// is moved aside and never deleted (`cometid::install`). The engine is closed for it and
+    /// started again as the new identity if it ran: an engine that was off starts at the next read,
+    /// as it always does. `Some(folder)` names where the old one went.
+    pub fn import_identity(&self, id: &crate::cometid::Identity) -> Result<Option<PathBuf>, String> {
+        if comet_of_keyfile(&id.keyfile).as_deref() != Some(id.ship.as_str()) {
+            return Err("That identity file does not hold an anonymous identity.".into());
+        }
+        let was = self.close_for_move()?;
+        let aside = crate::cometid::install(&self.dir, id)?;
+        {
+            let mut g = self.inner.lock().unwrap();
+            g.failed_at = None;
+            if matches!(g.status, Status::Failed(_)) {
+                g.status = Status::Off;
+            }
+        }
+        if let Some(a) = &aside {
+            log_line(&format!("identity replaced by {}, the old one kept in {}", id.ship, a.display()));
+        }
+        if was {
+            self.start();
+        }
+        Ok(aside)
+    }
+}
+
+/// The comet a keyfile names, or `None` when it is not a comet's keyfile (a comet is the one rank
+/// wider than 64 bits).
+pub fn comet_of_keyfile(text: &str) -> Option<String> {
+    let (ship, _, _) = urb_engine::engine::keyfile_ship(text)?;
+    (ship.1 != 0).then(|| urb_engine::engine::ship_text(ship))
 }
 
 fn make_dir(dir: &Path) -> Result<(), String> {
@@ -295,11 +377,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         Err(e) => return fail(e),
     };
     let fake = fake.as_deref();
-    // a damaged folder is said, not mended: the desktop app sets damage aside and makes a new comet,
-    // which is a choice about an identity that this first cut does not make for anyone
-    let found = match state::find(dir, "", false, fake.unwrap_or("")) {
+    let found = match find_state(dir, fake.unwrap_or("")) {
         Ok(f) => f,
-        // another copy holding the store is said as that. Anything else is the files: where they are is said, since nothing here mends them
+        // another copy holding the store is said as that. Anything else that could not be mended says where the files are
         Err(e) if e.ends_with("is in use by another process") => return fail(e),
         Err(e) => return fail(format!("{e}. Its files are in {}: move that folder aside to start again with a new identity", dir.display())),
     };
@@ -359,6 +439,69 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         });
         host.turn();
     }
+}
+
+/// `state::find`, and when a file in the folder is damaged (a keyfile cut short by a crash while
+/// it was mined, a store SQLite cannot open, a port file that is not a number), the damage set
+/// aside and one more try, as the desktop app's engine does. A damaged port costs only the port,
+/// and the identity is kept. A damaged keyfile or store costs the identity: the keyfile and every
+/// store in the folder go into `damaged-<ms>/`, never deleted, and a new comet is made. A store
+/// held by another copy of the app is not damage and is left alone.
+fn find_state(dir: &Path, fake: &str) -> Result<state::Found, String> {
+    let e = match state::find(dir, "", false, fake) {
+        Ok(f) => return Ok(f),
+        Err(e) => e,
+    };
+    let what = damage(&e);
+    if what == Damage::None {
+        return Err(e);
+    }
+    log_line(&format!("state damaged ({e}), setting it aside"));
+    set_aside(dir, what)?;
+    state::find(dir, "", false, fake)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Damage {
+    None,
+    /// a `.db.port` file that is not a port
+    Port,
+    /// the keyfile or a store
+    Identity,
+}
+
+/// What a `state::find` failure says is damaged, by urb-gateway's and libmesa's own words.
+fn damage(e: &str) -> Damage {
+    if e.ends_with("is in use by another process") || e.ends_with("can't open lockfile") {
+        Damage::None
+    } else if e.starts_with("strconv.Atoi: parsing") || e.starts_with("invalid port") {
+        Damage::Port
+    } else if e.ends_with(": mesa: not a keyfile") || e.ends_with(": can't open database") || e.ends_with(": can't initialize database") || e.ends_with(": can't prepare statements") {
+        Damage::Identity
+    } else {
+        Damage::None
+    }
+}
+
+/// Moves the damaged files out of the way, into a folder of their own beside them.
+fn set_aside(dir: &Path, what: Damage) -> Result<(), String> {
+    let names: Vec<String> = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+    let gone = |n: &str| match what {
+        Damage::Port => n.ends_with(".db.port"),
+        Damage::Identity => n == "comet.key" || [".db", ".db-wal", ".db-shm", ".db.port"].iter().any(|x| n.ends_with(x)),
+        Damage::None => false,
+    };
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    let aside = dir.join(format!("damaged-{stamp}"));
+    for n in names.iter().filter(|n| gone(n)) {
+        // a port file that reads as a port is not the damaged one
+        if what == Damage::Port && std::fs::read_to_string(dir.join(n)).is_ok_and(|t| t.trim().parse::<u16>().is_ok()) {
+            continue;
+        }
+        std::fs::create_dir_all(&aside).map_err(|e| format!("{}: {e}", aside.display()))?;
+        std::fs::rename(dir.join(n), aside.join(n)).map_err(|e| format!("{n}: {e}"))?;
+    }
+    Ok(())
 }
 
 /// The one request this engine makes: a page's content.
@@ -437,6 +580,160 @@ mod tests {
         for no in ["Poke", "Comment", "ForumCall", "FurumCall"] {
             assert!(!code.contains(no), "{no} has no place in a reader");
         }
+    }
+
+    fn engine_at(dir: PathBuf, fake: Option<&str>, status: Status) -> Engine {
+        Engine { dir, fake: fake.map(str::to_string), inner: Arc::new(Mutex::new(Inner { status, failed_at: None, step: "", run: None })) }
+    }
+
+    #[test]
+    fn an_identity_is_not_moved_while_it_starts_or_when_it_is_fake() {
+        let d = temp("move");
+        let e = engine_at(d.clone(), None, Status::Booting);
+        assert!(e.export_identity().unwrap_err().contains("still starting"));
+        assert!(matches!(e.status(), Status::Booting), "and the start is left alone");
+        let e = engine_at(d.clone(), Some("new-moon-of:~zod"), Status::Off);
+        assert!(e.export_identity().unwrap_err().contains("fake"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_import_that_is_not_a_comet_is_refused_and_nothing_is_touched() {
+        let d = temp("import");
+        std::fs::write(d.join("comet.key"), "kept").unwrap();
+        let e = engine_at(d.clone(), None, Status::Off);
+        let id = crate::cometid::Identity { ship: "~zod".into(), keyfile: "not a keyfile".into(), db: vec![1], wal: vec![], exported: 0, my_posts: vec![] };
+        assert!(e.import_identity(&id).unwrap_err().contains("does not hold"));
+        assert_eq!(std::fs::read_to_string(d.join("comet.key")).unwrap(), "kept");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1, "nothing was set aside");
+        assert!(comet_of_keyfile("").is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A comet's keyfile, mined here from fixed bytes under a star. Nothing is asked of any network,
+    /// and the comet is never started.
+    fn mined(seed: u8) -> (String, String) {
+        let key = urb_engine::engine::mine_comet_under(&[0x100], &[seed; 64]).expect("a comet is mined");
+        (comet_of_keyfile(&key).expect("and it is a comet"), key)
+    }
+
+    #[test]
+    fn an_identity_moves_from_one_folder_to_another_through_a_sealed_file() {
+        let (a, b) = (temp("move-a"), temp("move-b"));
+        let ((one, one_key), (two, two_key)) = (mined(1), mined(2));
+        assert_ne!(one, two);
+        for (d, name, key) in [(&a, &one, &one_key), (&b, &two, &two_key)] {
+            std::fs::write(d.join("comet.key"), key).unwrap();
+            std::fs::write(d.join(format!("{}.db", name.trim_start_matches('~'))), format!("store of {name}")).unwrap();
+        }
+        let first = engine_at(a.clone(), None, Status::Off);
+        assert_eq!(first.identity().as_deref(), Some(one.as_str()));
+        assert!(!first.exported());
+        let id = first.export_identity().unwrap();
+        let file = crate::cometid::seal(&id, "a long passphrase").unwrap();
+        crate::cometid::mark_exported(first.dir()).unwrap();
+        assert!(first.exported());
+
+        let second = engine_at(b.clone(), None, Status::Off);
+        let opened = crate::cometid::open(&file, "a long passphrase").unwrap();
+        let aside = second.import_identity(&opened).unwrap().expect("the old identity is set aside");
+        assert_eq!(second.identity().as_deref(), Some(one.as_str()));
+        assert!(matches!(second.status(), Status::Off), "an engine that was off is not started by an import");
+        assert!(!second.exported(), "the copy here has not been exported from here");
+        assert_eq!(std::fs::read(b.join(format!("{}.db", one.trim_start_matches('~')))).unwrap(), format!("store of {one}").into_bytes());
+        assert_eq!(std::fs::read_to_string(aside.join("comet.key")).unwrap().trim(), two_key.trim(), "the old keyfile is kept");
+        assert!(aside.join(format!("{}.db", two.trim_start_matches('~'))).exists(), "with its store");
+        for d in [a, b] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// Puts a mined comet and a stand-in store in `LATTICE_ID_SCRATCH`, for a headless run of the
+    /// export and import screens. The comet is never started.
+    #[test]
+    #[ignore = "a fixture: LATTICE_ID_SCRATCH names the folder"]
+    fn a_scratch_identity_for_a_headless_run() {
+        let Ok(dir) = std::env::var("LATTICE_ID_SCRATCH") else { return };
+        let seed = std::env::var("LATTICE_ID_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(7u8);
+        let (d, (name, key)) = (PathBuf::from(dir), mined(seed));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("comet.key"), key).unwrap();
+        std::fs::write(d.join(format!("{}.db", name.trim_start_matches('~'))), format!("store of {name}")).unwrap();
+        eprintln!("scratch identity {name}");
+    }
+
+    #[test]
+    fn export_with_no_identity_says_so() {
+        let d = temp("none");
+        let e = engine_at(d.clone(), None, Status::Off);
+        assert!(e.export_identity().is_err());
+        assert!(matches!(e.status(), Status::Off), "an engine that was off is not started by an export");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn nothing_starts_the_engine_ahead_of_a_read() {
+        // the desktop app starts its engine at launch and so must drop a comet nobody used when a
+        // ship is signed in. Here a comet is made only by a read someone asked for, so there is
+        // none to drop: the engine starts from a read, and again after a move if it ran before it
+        let src = include_str!("engine.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        assert_eq!(code.matches("self.start()").count(), 3, "a read, and the restart after an export and an import");
+        assert!(code.contains("if was {\n            self.start();"), "a restart only of an engine that ran");
+        let app = include_str!("lib.rs");
+        assert!(!app.contains("e.start()") && !app.contains("engine.start()") && !app.contains("Engine::start"), "the app never starts it itself");
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("lattice-rune-engine-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn damage_is_told_from_a_store_in_use() {
+        assert_eq!(damage("/x/a.db is in use by another process"), Damage::None);
+        assert_eq!(damage("/x/a.db.lock: can't open lockfile"), Damage::None);
+        assert_eq!(damage("strconv.Atoi: parsing \"x\": invalid syntax"), Damage::Port);
+        assert_eq!(damage("invalid port 99999"), Damage::Port);
+        for e in ["/x/comet.key: mesa: not a keyfile", "/x/a.db: can't open database", "/x/a.db: can't initialize database", "/x/a.db: can't prepare statements"] {
+            assert_eq!(damage(e), Damage::Identity, "{e}");
+        }
+        assert_eq!(damage("Get \"https://bootstrap.urbit.org\": no route"), Damage::None, "no network is not damage");
+    }
+
+    #[test]
+    fn a_damaged_port_costs_only_the_port_and_a_damaged_store_the_identity() {
+        let d = temp("aside");
+        let put = |n: &str, t: &str| std::fs::write(d.join(n), t).unwrap();
+        let names = |p: &Path| {
+            let mut v: Vec<String> = std::fs::read_dir(p).unwrap().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+            v.sort();
+            v
+        };
+        for n in ["comet.key", "~sampel.db", "~sampel.db-wal", "keys.txt"] {
+            put(n, "x");
+        }
+        // a port file that is not a number goes, and one that is stays
+        put("~sampel.db.port", "not a port");
+        put("~other.db.port", "40123");
+        set_aside(&d, Damage::Port).unwrap();
+        let left = names(&d);
+        assert!(left.contains(&"comet.key".to_owned()) && left.contains(&"~sampel.db".to_owned()) && left.contains(&"~other.db.port".to_owned()) && !left.contains(&"~sampel.db.port".to_owned()));
+        let aside = left.iter().find(|n| n.starts_with("damaged-")).unwrap().clone();
+        assert_eq!(names(&d.join(&aside)), ["~sampel.db.port"], "set aside, never deleted");
+        std::fs::remove_dir_all(d.join(&aside)).unwrap();
+        // a damaged store takes the keyfile and every store with it, and leaves what is not the identity's
+        set_aside(&d, Damage::Identity).unwrap();
+        let left = names(&d);
+        let aside = left.iter().find(|n| n.starts_with("damaged-")).unwrap().clone();
+        assert_eq!(left.iter().filter(|n| !n.starts_with("damaged-")).collect::<Vec<_>>(), ["keys.txt"]);
+        assert_eq!(names(&d.join(&aside)), ["comet.key", "~other.db.port", "~sampel.db", "~sampel.db-wal"]);
+        // nothing damaged, nothing moved
+        set_aside(&d, Damage::None).unwrap();
+        assert_eq!(names(&d).len(), 2);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

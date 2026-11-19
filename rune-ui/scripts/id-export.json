@@ -1,0 +1,15 @@
+{"events": [
+  {"t": 1.0, "type": "tap", "key": "anon"},
+  {"t": 2.0, "type": "tap", "key": "id-export"},
+  {"t": 2.5, "type": "file-dialog", "path": "/tmp/lr-id/out/me.latticeid"},
+  {"t": 3.2, "type": "type", "text": "short"},
+  {"t": 3.8, "type": "tap", "key": "id-pass-again"},
+  {"t": 4.2, "type": "type", "text": "short"},
+  {"t": 4.8, "type": "tap", "key": "prompt-ok"},
+  {"t": 5.3, "type": "mark", "name": "short"},
+  {"t": 5.5, "type": "tap", "key": "prompt-field"},
+  {"t": 6.0, "type": "type", "text": " but long enough"},
+  {"t": 6.6, "type": "tap", "key": "id-pass-again"},
+  {"t": 7.0, "type": "type", "text": " but long enough"},
+  {"t": 7.8, "type": "tap", "key": "prompt-ok"}
+]}

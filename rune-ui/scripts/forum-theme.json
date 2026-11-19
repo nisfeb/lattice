@@ -1,0 +1,11 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "forum-open"},
+  {"t": 4.5, "type": "tap", "key": "board-chat"},
+  {"t": 7.0, "type": "mark", "name": "board"},
+  {"t": 7.5, "type": "tap", "key": "post-1"},
+  {"t": 10.0, "type": "mark", "name": "thread"},
+  {"t": 10.5, "type": "tap", "key": "forum-back"},
+  {"t": 11.5, "type": "tap", "key": "forum-back"},
+  {"t": 12.5, "type": "tap", "key": "board-away"},
+  {"t": 15.0, "type": "mark", "name": "away"}
+]}

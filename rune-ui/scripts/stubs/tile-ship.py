@@ -53,12 +53,16 @@ class H(BaseHTTPRequestHandler):
         if p == 'streams': return self.send(200, json.dumps({"base": "/stub", "streams": {}}))
         if p == 'page-dump':
             nodes = [{"path":n,"page":True,"kind":v[1],"rev":v[2],"body":v[0]} for n, v in PAGES.items()]
+            # LR_BOARD_THEME: a stylesheet published to the web at forum/theme, which every board of this ship's wears
+            if os.environ.get('LR_BOARD_THEME'): nodes.append({"path":"forum/theme","page":True,"kind":"css","rev":1,"share":"clearweb"})
             # a link is in the tree with no text, as the ship sends one
             nodes += [{"path":n,"page":True,"kind":"md","rev":l["rev"],"readonly":l["mode"]=="read","link":{"host":l["host"],"path":l["path"],"mode":l["mode"],"kind":"md"}} for n, l in LINKS.items()]
             return self.send(200, json.dumps({"nodes":nodes,"since":"s1"}))
         if p == 'page-source':
             l = LINKS.get(q.get('name', [''])[0])
             if l: return self.send(200, json.dumps({"body":l["body"],"kind":"md","rev":l["rev"],"mtime":"~2026.11.17"}))
+            if q.get('name', [''])[0] == 'forum/theme' and os.environ.get('LR_BOARD_THEME'):
+                return self.send(200, json.dumps({"body":open(os.environ['LR_BOARD_THEME']).read(),"kind":"css","rev":1,"mtime":"~2026.11.17"}))
             v = PAGES.get(q.get('name', [''])[0])
             if not v: return self.send(404, '{"error":"no such page"}')
             return self.send(200, json.dumps({"body":v[0],"kind":v[1],"rev":v[2],"mtime":"~2026.11.17","comments":COMMENTS_ON.get(q.get('name', [''])[0], os.environ.get('LR_COMMENTS', '1') == '1')}))
@@ -66,6 +70,10 @@ class H(BaseHTTPRequestHandler):
         if p == 'comments-inbox': return self.send(200, json.dumps({"items": COMMENTS, "total": len(COMMENTS) + int(os.environ.get('LR_MORE', '0'))}))
         if p == 'held-comments': return self.send(200, json.dumps({"items": []}))
         if p == 'page-comets': return self.send(200, json.dumps({"mode": "held", "pending": PENDING}))
+        # a picture on "another site", for a forum thread that links to one
+        if u.path == '/pic.png':
+            sys.stderr.write("picture fetched\n")
+            return self.send(200, png(3, 1, 2), 'image/png')
         if p == 'tile-status': return self.send(200, json.dumps({"token":True,"orrery":False,"max":17,"styles":["streets","outdoors","satellite","dark"]}))
         if p.startswith('tile/'):
             _, style, z, x, y = p.split('/')
@@ -82,6 +90,19 @@ class H(BaseHTTPRequestHandler):
             url = q.get('url', [''])[0]
             if url.rstrip('/') == 'urb://~sampel-palnet/notes':
                 return self.send(200, json.dumps({"kind":"folder","path":"/notes","entries":[{"name":"plan","url":"urb://~sampel-palnet/notes/plan","folder":False},{"name":"trips","url":"urb://~sampel-palnet/notes/trips/","folder":True}]}))
+            # a board of four threads, made at hours before now so the hot order can be seen
+            # (another ship's board has the same threads, the first of them by someone else)
+            if url.rstrip('/').endswith('/forum/chat') or url.rstrip('/').endswith('/forum/tech'):
+                away = '~zod' not in url
+                def da(hours_ago):
+                    t = time.gmtime(time.time() - hours_ago * 3600)
+                    return "~%d.%d.%d..%d.%d.%d" % (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec)
+                posts = [{"id":t["id"],"title":t["title"],"author":"~bus" if away and t["id"] == 1 else "~zod","created":da(t["ago"]),"active":da(t["ago"]),"body":"","up":t["up"],"down":0,"comments":0,"pinned":t["pinned"],"tags":t.get("tags", []),"link":t.get("link")} for t in THREADS]
+                return self.send(200, json.dumps({"kind":"board","board":"tech" if away else "chat","title":"Tech" if away else "Chat","description":"","public":True,"count":len(posts),"posts":posts}))
+            # a forum thread, as the ship answers one: enough of it to be shown
+            if '/forum/' in url and url.rsplit('/', 1)[-1].isdigit():
+                n = int(url.rsplit('/', 1)[-1])
+                return self.send(200, json.dumps({"kind":"thread","board":url.split('/forum/')[1].split('/')[0],"title":"Thread %d" % n,"post":{"id":n,"title":"Thread %d" % n,"author":"~sampel-palnet","created":"~2026.11.17..9.0.0","active":"~2026.11.18..9.0.0","body":os.environ.get("LR_POST_TEXT", "The thread a notice led to."),"up":2,"down":0,"comments":1,"pinned":False,"tags":[]},"comments":[{"id":1,"author":"~bus","created":"~2026.11.18..9.0.0","body":os.environ.get("LR_REPLY_TEXT", "A reply."),"parent":0}]}))
             if url == 'urb://~sampel-palnet/notes/plan':
                 return self.send(200, json.dumps({"comments":THREAD,"kind":"page","ship":"~sampel-palnet","path":"/notes/plan","mode":"md","body":"# The plan\n\nPublished by ~sampel-palnet. See [the trips](urb://~sampel-palnet/notes/trips/).\n"}))
             return self.send(404, 'nothing is published there')
@@ -99,6 +120,11 @@ class H(BaseHTTPRequestHandler):
             e = next((e for e in SHARED if e["host"] == q.get('ship', [''])[0] and e["path"] == q.get('path', [''])[0]), None)
             if not e or e["path"].endswith('/dir-index'): return self.send(404, 'not a file')
             return self.send(200, json.dumps({"body":e["body"],"mark":"page","builder":"md","editable":True,"rev":e["rev"]}))
+        # activity: a reply on another ship's board, one on a board of this ship's, and a followed folder's news
+        # the forum: the index page the boards are read from, and no notes of refusal
+        if p == 'forum': return self.send(200, '<a href="/apps/lattice/forum/chat">chat</a>', 'text/html')
+        if p == 'forum-notes': return self.send(200, os.environ.get('LR_NOTES_HTML', ''), 'text/html')
+        if p == 'notify': return self.send(200, json.dumps({"unread": sum(1 for n in NOTICES if not n["read"]), "items": NOTICES}))
         if p == 'notify-count': return self.send(200, '{"held":0,"unread":0}')
         self.send(404, '{"error":"not in the stub"}')
 # a save is taken and answered as the ship answers one, so a change made in the window lands
@@ -115,6 +141,14 @@ SHARED = [] if os.environ.get('LR_SHARED') != '1' else [
 LINKS = {}
 MARKS = [{"url": "urb://~sampel-palnet/notes", "title": "Sampel's notes", "folder": ""}]
 HISTORY = []
+THREADS = [{"id":1,"title":"DayOldForty","ago":24,"up":40,"pinned":False}, {"id":2,"title":"HourOldThree","ago":1,"up":3,"pinned":False}, {"id":3,"title":"NewNone","ago":0.2,"up":0,"pinned":False}, {"id":4,"title":"TenHoursThirty","ago":10,"up":30,"pinned":False}, {"id":5,"title":"AboutALink","ago":2,"up":1,"pinned":False,"link":"urb://~sampel-palnet/notes/plan"}, {"id":6,"title":"APicture","ago":3,"up":0,"pinned":False,"link":"http://127.0.0.1:8379/pic.png"}]
+# LR_MANY_TAGS: twelve more threads with four tags each, so a board has more tags than its filter shows
+if os.environ.get('LR_MANY_TAGS'):
+    THREADS += [{"id":10+i,"title":"Tagged %d" % i,"ago":30+i,"up":0,"pinned":False,"tags":["g%d-%s" % (i, w) for w in ("alpha", "beta", "gamma", "delta")]} for i in range(12)]
+NOTICES = [
+    {"id":"0v1.n","kind":"remote","when":1795000000000,"who":"~bus","host":"~sampel-palnet","where":"tech","post":7,"title":"Rune","body":"I think so too.","read":False},
+    {"id":"0v2.n","kind":"reply","when":1794990000000,"who":"~bus","host":"~zod","where":"chat","post":3,"title":"Hello","body":"Welcome.","read":False},
+    {"id":"0v3.n","kind":"folder","when":1794980000000,"who":"~sampel-palnet","host":"~sampel-palnet","where":"/notes","post":0,"title":"2 new pages in notes from ~sampel-palnet","body":"","read":False}]
 COMMENTS = [{"page": os.environ.get('LR_NAME', 'places'), "id": "0v1.a", "author": "~sampel-palnet", "when": "~2026.11.17..9.30.0", "body": "A first comment."}]
 COMMENTS_ON = {}
 PENDING = [{"id": "0v9.held", "author": "~doznec-salfun-naptul-habrys--todlux-mosmep-linsub-binzod", "when": 1795000000000, "body": "A comet's comment, held."}]
@@ -126,6 +160,28 @@ def do_POST(self):
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
     # comments, as the ship answers each. LR_COMMENT_FAIL refuses a post and a switch, to see that nothing typed is lost
     if p in ('comment', 'page-comments', 'comment-remote') and os.environ.get('LR_COMMENT_FAIL'): return self.send(500, 'the ship could not do that')
+    # the forum's forms on the board chat, each answered as the ship answers a form: by sending the reader back
+    if p.startswith('forum/chat/'):
+        rest = p.split('/')[2:]
+        form = parse_qs(body)
+        # LR_FORUM_REFUSE: the board answers as ever and does nothing, as a ship does for one with no right to it
+        if os.environ.get('LR_FORUM_REFUSE'): rest = ['refused'] + rest
+        if rest == ['vote']:
+            n = int(form['target'][0].split('-')[1])
+            for t in THREADS:
+                if t["id"] == n: t["up"] += 1
+        elif len(rest) == 2 and rest[1] == 'pin':
+            for t in THREADS:
+                if t["id"] == int(rest[0]): t["pinned"] = form['pinned'][0] == 'true'
+        elif len(rest) == 2 and rest[1] == 'delete':
+            THREADS[:] = [t for t in THREADS if t["id"] != int(rest[0])]
+        sys.stderr.write("forum %s %s\n" % ('/'.join(rest), body))
+        return redirect(self, '/apps/lattice/forum/chat')
+    if p == 'notify-read':
+        for n in NOTICES:
+            if 'id' not in q or n["id"] == q['id'][0]: n["read"] = True
+        sys.stderr.write("notice read %s\n" % q.get('id', ['all'])[0])
+        return self.send(200, '{"ok":true}')
     if p == 'comment':
         COMMENTS.insert(0, {"page": q['page'][0], "id": "0v2.%d" % len(COMMENTS), "author": "~zod", "when": "~2026.11.18..10.0.0", "body": parse_qs(body).get('body', [''])[0]})
         sys.stderr.write("comment on %s\n" % q['page'][0])
@@ -224,6 +280,8 @@ def do_POST(self):
     self.send(404, '{"error":"not in the stub"}')
 # a poke of %settings on a channel, as the theme controls send one
 SETTINGS = {}
+# LR_TALON names a file of JSON: Talon's ui-prefs bucket (themes, accent, fonts), as a ship that wears a Talon theme answers
+if os.environ.get('LR_TALON'): SETTINGS['talon'] = json.load(open(os.environ['LR_TALON']))
 def do_PUT(self):
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
     for act in json.loads(body or '[]'):
