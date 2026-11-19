@@ -276,6 +276,8 @@ def do_POST(self):
     self.send(404, '{"error":"not in the stub"}')
 # a poke of %settings on a channel, as the theme controls send one
 SETTINGS = {}
+# LR_TALON names a file of JSON: Talon's ui-prefs bucket (themes, accent, fonts), as a ship that wears a Talon theme answers
+if os.environ.get('LR_TALON'): SETTINGS['talon'] = json.load(open(os.environ['LR_TALON']))
 def do_PUT(self):
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
     for act in json.loads(body or '[]'):
