@@ -6,7 +6,7 @@ GEO = json.dumps({"type":"FeatureCollection","features":[
  {"type":"Feature","geometry":{"type":"Point","coordinates":[-73.9442,40.6782]},"properties":{"name":"Brooklyn"}},
  {"type":"Feature","geometry":{"type":"LineString","coordinates":[[-73.9857,40.7484],[-73.97,40.72],[-73.9442,40.6782]]},"properties":{"name":"A walk"}}]})
 # LR_GEO names a file to serve as the map page instead
-import os
+import os, time
 if os.environ.get('LR_GEO'): GEO = open(os.environ['LR_GEO']).read()
 # LR_KIND is the kind of that page, a map unless said
 KIND = os.environ.get('LR_KIND', 'geojson')
@@ -170,6 +170,8 @@ def do_POST(self):
         sys.stderr.write("saved through link %s rev %d %r\n" % (q['name'][0], l["rev"], body[:60]))
         return self.send(200, json.dumps({"rev": l["rev"], "conflicted": False, "kept": ""}))
     if p == 'page-save':
+        # LR_SLOW: seconds a save takes to be answered, as a ship far away or busy
+        if os.environ.get('LR_SLOW'): time.sleep(float(os.environ['LR_SLOW']))
         # LR_SAVE_502: a save is answered as something in between answers when it cannot reach the ship
         if os.environ.get('LR_SAVE_502'): return self.send(502, 'bad gateway')
         name = q['name'][0]; kind = q.get('type', ['md'])[0]; old = PAGES.get(name)

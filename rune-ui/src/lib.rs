@@ -442,6 +442,8 @@ struct App {
     conn: Option<Conn>,
     /// Browsing the built-in pages with no ship.
     sample: bool,
+    /// The save now being sent was made by a press of Read, with the ship answering: it is said as "saved".
+    read_save: bool,
     /// Using the app with no ship: other ships' published pages are read by the urb engine, as a comet.
     /// It stands on `sample` for everything a ship would be asked, with no pages of its own.
     anon: bool,
@@ -947,6 +949,7 @@ fn init() -> App {
     App {
         sample: false,
         anon: false,
+        read_save: false,
         #[cfg(unix)]
         engine: None,
         url,
@@ -4642,6 +4645,24 @@ fn autosave_tick(s: &mut App, clock: f64) -> bool {
 }
 
 /// Save, pressed. It closes the editor, and autosave may run again.
+/// Goes from the editor to the reading of the page at once, as the web
+/// client does, where Read only hides the editor. The text is kept on this
+/// device and sent behind the switch, so the reader does not wait for the
+/// ship's answer, and text that was not changed is not sent at all. What
+/// cannot be left that way is saved in the open, as before: another
+/// ship's page, a page that changed elsewhere, and a save already on its way.
+fn to_read(s: &mut App) {
+    if s.remote.is_some() || s.stale || s.save_req.is_pending() {
+        return save(s);
+    }
+    if leave_edit(s) && s.drain_req.is_pending() {
+        // said as a save, which is what it is to the one who pressed Read
+        s.note = "saving\u{2026}".into();
+        // a memory's save moves the memories' list, which is read again as before
+        s.read_save = !s.memory;
+    }
+}
+
 fn save(s: &mut App) {
     s.auto_held = false;
     // a save of autosave's is on the wire: this one follows it, on its rev
@@ -4741,6 +4762,8 @@ type Drained = (Vec<(api::QueuedOp, Result<(), String>)>, Vec<(String, api::Queu
 /// meanwhile, and that newer save then goes. A conflict or a refusal is
 /// said with the name its other text is kept under.
 fn drained(s: &mut App, (did, out): Drained) {
+    // taken whatever comes of it: it speaks for this sending and no later one
+    let read_save = std::mem::take(&mut s.read_save);
     let (mut gone_to_ship, mut stopped, mut said) = (0, false, Vec::new());
     for (op, r) in did {
         let what = match &op {
@@ -4814,12 +4837,18 @@ fn drained(s: &mut App, (did, out): Drained) {
         said.push(format!("the list of what waits could not be written: {e}"));
     }
     if gone_to_ship > 0 {
-        said.insert(0, format!("sent {gone_to_ship} saved on this device"));
-        // the memories too: one of them may have been among what went
-        load_know(s);
-        // the whole tree is read again: revisions moved, and a kept copy may have been made
-        s.since.clear();
-        load_tree(s);
+        // one save sent behind a press of Read was never waiting for the ship: it is said as the save it is
+        // and when the ship took it as it was, with nothing kept aside, the page's new revision is all that moved:
+        // it is set above, and the tree and the memories are not read again for it
+        let plain = read_save && gone_to_ship == 1 && said.is_empty() && !stopped;
+        said.insert(0, if plain { "saved".to_owned() } else { format!("sent {gone_to_ship} saved on this device") });
+        if !plain {
+            // the memories too: one of them may have been among what went
+            load_know(s);
+            // the whole tree is read again: revisions moved, and a kept copy may have been made
+            s.since.clear();
+            load_tree(s);
+        }
     }
     s.note = said.join(". ");
     if !stopped {
@@ -11394,7 +11423,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
                 }).build(&k).key("edit"))
                 .child(side("Read", !editing).help("Edit / Read (Ctrl+E)").on_press(|s: &mut App| {
                     if s.editing {
-                        save(s);
+                        to_read(s);
                     }
                 }).build(&k).key("read")),
         );
@@ -11615,7 +11644,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
                 let n = s.tabs.len();
                 switch_tab(s, if next { (s.tab + 1) % n } else { (s.tab + n - 1) % n });
             }
-            Chord::Read => save(s),
+            Chord::Read => to_read(s),
             Chord::Files => {
                 s.sidebar.set_open(true);
                 tx.focus_when_shown("filter", false);
@@ -13304,6 +13333,24 @@ mod tests {
     }
 
     /// The sample pages with `name` open, and no ship.
+    #[test]
+    fn read_leaves_the_editor_at_once_and_sends_nothing_for_text_not_changed() {
+        let mut s = sample("welcome");
+        let (rev, body) = (s.open.as_ref().unwrap().rev, s.open.as_ref().unwrap().body.clone());
+        start_edit(&mut s);
+        assert!(s.editing);
+        to_read(&mut s);
+        assert!(!s.editing, "the reader is back with no wait");
+        assert_eq!((s.open.as_ref().unwrap().rev, &s.open.as_ref().unwrap().body), (rev, &body), "and nothing was saved: the text is as it was");
+        assert!(!s.save_req.is_pending() && !s.drain_req.is_pending() && !s.read_save);
+        // text that changed is in the reader as soon as Read is pressed
+        start_edit(&mut s);
+        s.edit = TextEdit::new("changed text\n");
+        to_read(&mut s);
+        assert!(!s.editing);
+        assert_eq!(s.open.as_ref().unwrap().body, "changed text\n");
+    }
+
     fn sample(name: &str) -> App {
         let mut s = init();
         s.conn = None;
