@@ -102,7 +102,7 @@ class H(BaseHTTPRequestHandler):
             # a forum thread, as the ship answers one: enough of it to be shown
             if '/forum/' in url and url.rsplit('/', 1)[-1].isdigit():
                 n = int(url.rsplit('/', 1)[-1])
-                return self.send(200, json.dumps({"kind":"thread","board":url.split('/forum/')[1].split('/')[0],"title":"Thread %d" % n,"post":{"id":n,"title":"Thread %d" % n,"author":"~sampel-palnet","created":"~2026.11.17..9.0.0","active":"~2026.11.18..9.0.0","body":"The thread a notice led to.","up":2,"down":0,"comments":1,"pinned":False,"tags":[]},"comments":[{"id":1,"author":"~bus","created":"~2026.11.18..9.0.0","body":"A reply.","parent":0}]}))
+                return self.send(200, json.dumps({"kind":"thread","board":url.split('/forum/')[1].split('/')[0],"title":"Thread %d" % n,"post":{"id":n,"title":"Thread %d" % n,"author":"~sampel-palnet","created":"~2026.11.17..9.0.0","active":"~2026.11.18..9.0.0","body":os.environ.get("LR_POST_TEXT", "The thread a notice led to."),"up":2,"down":0,"comments":1,"pinned":False,"tags":[]},"comments":[{"id":1,"author":"~bus","created":"~2026.11.18..9.0.0","body":os.environ.get("LR_REPLY_TEXT", "A reply."),"parent":0}]}))
             if url == 'urb://~sampel-palnet/notes/plan':
                 return self.send(200, json.dumps({"comments":THREAD,"kind":"page","ship":"~sampel-palnet","path":"/notes/plan","mode":"md","body":"# The plan\n\nPublished by ~sampel-palnet. See [the trips](urb://~sampel-palnet/notes/trips/).\n"}))
             return self.send(404, 'nothing is published there')

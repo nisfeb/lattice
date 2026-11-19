@@ -7519,9 +7519,20 @@ fn forum_image(s: &mut App, url: String) {
 /// no wider than the page and no taller than a screen's better part.
 fn forum_preview(f: &Forum, pics: &Pics, link: Option<&str>, id: u64, k: &Kit) -> Option<El> {
     let url = link.filter(|l| api::is_image_url(l))?.trim().to_owned();
+    Some(picture_fold(f, pics, url, "post-image", &id.to_string(), k))
+}
+
+/// The pictures a post's or a comment's text names, each folded under the text as a thread's own
+/// picture is: nothing is fetched until its Show image is pressed.
+fn forum_text_previews(f: &Forum, pics: &Pics, text: &str, slot: &str, k: &Kit) -> Vec<El> {
+    api::text_images(text).into_iter().enumerate().map(|(i, url)| picture_fold(f, pics, url, "text-image", &format!("{slot}-{i}"), k)).collect()
+}
+
+/// One picture, folded: the button that shows or hides it, and the picture when it is shown.
+fn picture_fold(f: &Forum, pics: &Pics, url: String, base: &str, id: &str, k: &Kit) -> El {
     let on = f.shown.contains(&url);
     let u = url.clone();
-    let mut out = col().key(format!("post-image-{id}")).px(8.0).gap(4.0).child(
+    let mut out = col().key(format!("{base}-{id}")).px(8.0).gap(4.0).child(
         row().child(
             Button::new(if on { "Hide image" } else { "Show image" })
                 .control_size(ControlSize::Small)
@@ -7529,20 +7540,20 @@ fn forum_preview(f: &Forum, pics: &Pics, link: Option<&str>, id: u64, k: &Kit) -
                 .help("Fetches the picture from its own site, which then learns your address")
                 .on_press(move |s: &mut App| forum_image(s, u.clone()))
                 .build(k)
-                .key(format!("post-image-toggle-{id}")),
+                .key(format!("{base}-toggle-{id}")),
         ),
     );
     if on {
         out = out.child(match (pics.had.get(&url).filter(|p| p.is_ready()).and_then(|p| Some((p, p.size()?))), pics.failed.contains(&url)) {
             (Some((pic, [w, h])), _) => {
                 let scale = (560.0 / w.max(1) as f32).min(420.0 / h.max(1) as f32).min(1.0);
-                el().key(format!("post-image-pic-{id}")).size(w as f32 * scale, h as f32 * scale).radius(k.radius.sm).pixels(pic.pixels()).role("img").label("The picture this thread links to")
+                el().key(format!("{base}-pic-{id}")).size(w as f32 * scale, h as f32 * scale).radius(k.radius.sm).pixels(pic.pixels()).role("img").label("A picture this thread names")
             }
             (None, true) => text("The picture did not load.").font(k.ty.small).color(k.c.text_muted),
             (None, false) => text("Loading the picture\u{2026}").font(k.ty.small).color(k.c.text_muted),
         });
     }
-    Some(out)
+    out
 }
 
 /// The pictures had and the ones that did not come, for a view that is given no more of the app.
@@ -7953,6 +7964,8 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
         }
         if let Some(body) = p.body.as_deref().filter(|b| !b.trim().is_empty()) {
             page = page.child(Markdown::new(body.to_owned()).selectable(true).on_link_tx(follow).build(k).key("forum-body"));
+            // the pictures the text names, folded under it as the web folds them
+            page = page.children(forum_text_previews(f, pics, body, &format!("p{}", p.id), k));
         }
         page = page.child(Divider::horizontal().build(k)).child(muted(format!("{} comment{}", th.comments.len(), if th.comments.len() == 1 { "" } else { "s" })));
         for (depth, cm) in api::comment_order(&th.comments) {
@@ -7973,7 +7986,8 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
                             }
                         }).build(k).key(format!("reply-{id}"))).children(forum_may(&th.board, ours, &cm.author).change.then(|| Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Delete this comment").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumDelete(Some(id)))).build(k).key(format!("comment-delete-{id}"))))
                     })
-                    .child(Markdown::new(cm.body.clone()).selectable(true).on_link_tx(follow).build(k)),
+                    .child(Markdown::new(cm.body.clone()).selectable(true).on_link_tx(follow).build(k))
+                    .children(forum_text_previews(f, pics, &cm.body, &format!("c{}", cm.id), k)),
             );
         }
         // the comment box: what is written goes under the thread, or under the comment being answered

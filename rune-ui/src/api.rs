@@ -653,6 +653,31 @@ pub fn is_image_url(url: &str) -> bool {
     (u.starts_with("http://") || u.starts_with("https://")) && [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp"].iter().any(|e| u.ends_with(e))
 }
 
+/// The pictures a forum post's text names, in the order they come, each once and eight at most: a
+/// Markdown image, a link to a picture, or a picture's address on its own. Only an address
+/// `is_image_url` takes, so nothing that is not plainly a picture on the web is ever offered.
+pub fn text_images(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut fenced = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        for word in line.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | '[' | ']' | '"' | '\'')) {
+            let at = word.find("https://").or_else(|| word.find("http://"));
+            let Some(url) = at.map(|i| word[i..].trim_end_matches(['.', ',', ';', ':', '!', '?'])) else { continue };
+            if is_image_url(url) && !out.iter().any(|u| u == url) && out.len() < 8 {
+                out.push(url.to_owned());
+            }
+        }
+    }
+    out
+}
+
 /// A date as the ship writes one (`~2026.11.17..17.25.11..b165`), in seconds since 1970. None for
 /// what is not one. Dates are compared by this, never as text: as text the 9th comes after the 10th.
 pub fn da_secs(da: &str) -> Option<i64> {
@@ -3127,6 +3152,17 @@ pub fn enc(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pictures_a_post_names_are_found_once_each() {
+        let text = "See ![a cat](https://x.test/cat.png) and [this](https://x.test/dog.JPG), or https://x.test/bird.webp.\n\
+            Again https://x.test/cat.png and a page https://x.test/page.html and urb://~zod/pic.png.\n\
+            ```\nhttps://x.test/in-code.png\n```\n<https://x.test/last.gif>";
+        assert_eq!(text_images(text), ["https://x.test/cat.png", "https://x.test/dog.JPG", "https://x.test/bird.webp", "https://x.test/last.gif"]);
+        assert!(text_images("no pictures here, only words").is_empty());
+        let many: String = (0..12).map(|i| format!("https://x.test/{i}.png ")).collect();
+        assert_eq!(text_images(&many).len(), 8);
+    }
 
     #[test]
     fn enc_keeps_unreserved_and_escapes_the_rest() {
