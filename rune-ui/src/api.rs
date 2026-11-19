@@ -1683,9 +1683,14 @@ pub struct ForumComment {
     pub created: String,
     #[serde(default)]
     pub body: String,
+    /// The points it was given and those taken from it. None from a ship that does not send them (before desk 140).
+    #[serde(default)]
+    pub up: Option<u64>,
+    #[serde(default)]
+    pub down: Option<u64>,
 }
 
-/// A board: what it is called, and its threads, newest first, a hundred at most.
+/// A board: what it is called, and its threads, newest first, a hundred to a page.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct Board {
     pub board: String,
@@ -1699,9 +1704,17 @@ pub struct Board {
     pub count: u64,
     #[serde(default)]
     pub posts: Vec<ForumPost>,
-    /// The text the board keeps beside its threads. Not in what the ship gives of a board: `forum_board` reads it from the moderation page.
-    #[serde(skip)]
+    /// The text the board keeps beside its threads. A ship that does not send it (before desk 140) has it
+    /// on the moderation page of its own boards, where `forum_board` then reads it.
+    #[serde(default)]
     pub sidebar: String,
+    /// This ship's own role on the board, as the board's ship works it out: `mod`, `poster` or `reader`.
+    /// None from a ship that does not send it.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Which hundred of the threads this is, from 1. None from a ship that sends only the newest hundred.
+    #[serde(default)]
+    pub page: Option<u64>,
 }
 
 /// One thread with its text and its comments, oldest first.
@@ -1713,6 +1726,9 @@ pub struct Thread {
     pub post: ForumPost,
     #[serde(default)]
     pub comments: Vec<ForumComment>,
+    /// This ship's own role on the thread's board, when the ship sends it.
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 /// The names of the boards the forum's own index page links to, in its
@@ -2656,10 +2672,22 @@ impl Conn {
     pub fn forum_board(&self, board: &str) -> Result<Board, String> {
         let mut b = self.board_bare(board)?;
         // the moderation page is the only place the ship gives that text, and only of its own boards. A board read without it is still read
-        if !board.contains('/') {
+        if !board.contains('/') && b.role.is_none() {
             b.sidebar = self.forum_mod(board).map(|m| m.sidebar).unwrap_or_default();
         }
         Ok(b)
+    }
+
+    /// The next hundred of a board's threads: page 2 is the hundred after the newest.
+    pub fn forum_board_page(&self, board: &str, page: u64) -> Result<Board, String> {
+        let mut b: Board = serde_json::from_str(&self.call_in(60, "GET", &format!("urb-read?url={}&page={page}", enc(&self.board_url(board))), None)?).map_err(|e| e.to_string())?;
+        b.board = board.to_owned();
+        Ok(b)
+    }
+
+    /// Gives a comment this ship's point, by the form a thread's page has beside each.
+    pub fn forum_vote_comment(&self, board: &str, post: u64, comment: u64) -> Result<(), String> {
+        self.forum_form(&format!("{board}/vote"), &[("target", &format!("comment-{post}-{comment}"))])
     }
 
     /// The address of a board: this ship's by its name, another ship's as `~ship/board`.

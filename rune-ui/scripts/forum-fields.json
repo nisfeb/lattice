@@ -1,0 +1,14 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "forum-open"},
+  {"t": 6.0, "type": "tap", "key": "board-chat"},
+  {"t": 9.0, "type": "tap", "key": "fsort-new"},
+  {"t": 10.0, "type": "mark", "name": "board"},
+  {"t": 10.2, "type": "wheel", "x": 560, "y": 400, "dy": -9000},
+  {"t": 11.0, "type": "tap", "key": "forum-more"},
+  {"t": 14.0, "type": "wheel", "x": 560, "y": 400, "dy": -9000},
+  {"t": 15.0, "type": "mark", "name": "more"},
+  {"t": 15.5, "type": "tap", "key": "post-1"},
+  {"t": 19.0, "type": "mark", "name": "thread"},
+  {"t": 19.5, "type": "tap", "key": "cvote-0"},
+  {"t": 24.0, "type": "mark", "name": "voted"}
+]}
