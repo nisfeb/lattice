@@ -363,6 +363,8 @@ enum Prompt {
     Ask(Shared, TextEdit),
     /// A tag to put on the memory in front.
     Tag(TextEdit),
+    /// The kind of the page in front, to change: Markdown, gemtext, HTML and the rest.
+    Kind(TextEdit),
     /// The tags of the forum thread showing, to set.
     ForumTags(TextEdit),
     /// A forum thread to delete, or one comment of the thread showing.
@@ -1596,6 +1598,24 @@ fn confirm(s: &mut App) {
                 c.comment_delete(&page, &id)?;
                 Ok(Op::Commented(format!("removed a comment from {page}")))
             });
+        }
+        return;
+    }
+    if let Prompt::Kind(t) = &p {
+        let kind = kind_typed(&t.text);
+        let Some(open) = s.open.clone() else { return };
+        match kind {
+            None => {
+                s.note = format!("a page is one of: {}", PAGE_KINDS.join(", "));
+                s.prompt = Some(p);
+            }
+            Some(k) if k == open.kind => s.note = format!("{} is {} already", open.name, kind_said(k)),
+            Some(k) => {
+                // the same text, kept as another kind: the ship takes the kind a save names
+                s.note = format!("{} is now {}", open.name, kind_said(k));
+                let body = open.body.clone();
+                save_body(s, Page { kind: k.to_owned(), ..open }, body);
+            }
         }
         return;
     }
@@ -9306,6 +9326,8 @@ fn usable(s: &App, id: &str) -> bool {
         "download" | "copy-name" => page,
         "duplicate" | "copy-link" | "pdf" => own && !s.memory && !s.editing,
         "tex" => own && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "tex"),
+        // a sheet, a document and a map are files of their own shape: their kind is not one to type over
+        "kind" => own && !s.memory && !s.editing && s.open.as_ref().is_some_and(|p| PAGE_KINDS.contains(&p.kind.as_str()) && s.links.get(&p.name).is_none()),
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "find" => page && find_where(s) != FindIn::Nothing,
         "reload" | "map-token" => s.conn.is_some(),
@@ -9342,6 +9364,14 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
     save_prefs(s);
     match id {
         "new" => ask_new(s),
+        "kind" => {
+            if let Some(p) = &s.open {
+                let mut t = TextEdit::new(p.kind.clone());
+                t.focused = true;
+                t.set_selection(0, p.kind.len());
+                s.prompt = Some(Prompt::Kind(t));
+            }
+        }
         "template" => ask_template(s),
         "upload" => ask_upload(s, false, tx),
         "upload-folder" => ask_upload(s, true, tx),
@@ -9530,7 +9560,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
+                Prompt::Kind(t) | Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
                 Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
                 #[cfg(unix)]
                 Prompt::IdOut(..) | Prompt::IdIn(..) | Prompt::IdUse(..) => unreachable!("it has fields of its own"),
@@ -9598,6 +9628,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::ForumRowDelete(..) => ("Delete this thread?", text("The thread and its comments are gone for everyone who reads the board.").font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::CommentRemove(page, _) => ("Remove this comment?", text(format!("It is gone from {page} for everyone who reads it, and cannot be brought back.")).key("comment-remove-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
+        Prompt::Kind(t) => ("This page's kind", field(t, "md, gmi, html, text, js, css, tex, geojson or scad"), "Change", ButtonVariant::Contrast),
         Prompt::MarkMove(_, t) => ("Move this bookmark to a folder", field(t, "A folder, or nothing for none"), "Move", ButtonVariant::Contrast),
         Prompt::LinkIn(_, t) => ("Move into my pages as", field(t, "a name, as notes/plan"), "Move", ButtonVariant::Contrast),
         Prompt::Forget(sh) => ("Remove from shared with me?", text(format!("{} from {}. Nothing is deleted: it is {}'s, and their grant to you stays. It comes back here if they share it again.", swm::name(&sh.path), sh.host, sh.host)).key("swm-forget-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
@@ -11200,6 +11231,44 @@ fn tree_menu_view(s: &App, k: &Kit, side: El, layer: &mut Vec<El>) -> El {
         }));
     }
     menu.build(k, layer)
+}
+
+/// The kinds a page of text can be changed between by typing one. Sheets, documents and maps are
+/// not among them: each is a file of its own shape.
+const PAGE_KINDS: [&str; 9] = ["md", "gmi", "html", "text", "js", "css", "tex", "geojson", "scad"];
+
+/// The kind typed, as the ship names it: its own name, or a word people use for it.
+fn kind_typed(typed: &str) -> Option<&'static str> {
+    let t = typed.trim().trim_start_matches('.').to_lowercase();
+    let k = match t.as_str() {
+        "markdown" => "md",
+        "gemtext" | "gemini" => "gmi",
+        "htm" => "html",
+        "txt" | "plain" => "text",
+        "javascript" => "js",
+        "latex" => "tex",
+        "openscad" => "scad",
+        other => other,
+    };
+    PAGE_KINDS.iter().copied().find(|p| *p == k)
+}
+
+/// A kind in words.
+fn kind_said(kind: &str) -> &str {
+    match kind {
+        "md" => "Markdown",
+        "gmi" => "gemtext",
+        "html" => "HTML",
+        "text" => "plain text",
+        "js" => "JavaScript",
+        "css" => "CSS",
+        "tex" => "LaTeX",
+        "geojson" => "a map",
+        "scad" => "OpenSCAD",
+        "fods" => "a sheet",
+        "fodt" => "a document",
+        other => other,
+    }
 }
 
 fn ask_rename(s: &mut App) {
@@ -12894,6 +12963,11 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // the Edit and Read switch: a page shows it, a screen that is no page (the forum, the inbox, a folder) does not
     let (editing, can_edit) = (page && s.editing, remote.is_none_or(Shared::editable));
     let mut trailing = row().gap(6.0).center_y();
+    // a page that is not Markdown says what it is, since it is read and edited by that kind's rules. Pressed, it asks for another
+    if let Some(p) = s.open.as_ref().filter(|p| page && remote.is_none() && !s.memory && p.kind != "md" && s.old.is_none()) {
+        let can = usable(s, "kind");
+        trailing = trailing.child(Button::new(kind_said(&p.kind).to_owned()).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(if can { "This page's kind. Press to change it" } else { "This page's kind" }).disabled(!can).on_press_tx(|s: &mut App, tx| run_command(s, "kind", tx)).build(&k).key("page-kind"));
+    }
     // an HTML page is shown as a web page, or read as a document: one press goes between them
     #[cfg(not(target_arch = "wasm32"))]
     if page && !s.editing && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "html") {
@@ -12907,12 +12981,15 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         if s.prefs.vim && !s.rich {
             trailing = trailing.child(text(s.vim.indicator()).key("vim-mode").font(k.ty.small_medium).color(k.c.text_muted));
         }
-        trailing = trailing
-            .child(Button::new(if s.rich { "Source" } else { "Rich text" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press_tx(|s: &mut App, tx| {
+        // rich text and the preview are Markdown's: a page of another kind is its source and nothing else
+        let is_md = s.open.as_ref().is_some_and(|p| p.kind == "md");
+        if is_md {
+            trailing = trailing.child(Button::new(if s.rich { "Source" } else { "Rich text" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press_tx(|s: &mut App, tx| {
                 flip_mode(s);
                 tx.focus_when_shown(FIELD, false);
             }).build(&k).key("mode"));
-        if !s.rich {
+        }
+        if !s.rich && is_md {
             trailing = trailing.child(Button::new(if s.preview { "Hide preview" } else { "Preview" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| s.preview ^= true).build(&k).key("preview-toggle"));
         }
         trailing = trailing
@@ -13436,6 +13513,35 @@ mod tests {
             eprintln!("{section}: {} of {n} as the spec has them{}", n - wrong.len(), if wrong.is_empty() { String::new() } else { format!(". Not: {}", wrong.join("; ")) });
         }
         eprintln!("ALL: {} of {all}", all - bad);
+    }
+
+    #[test]
+    fn a_page_kind_is_typed_by_its_name_or_a_word_for_it() {
+        assert_eq!(kind_typed(" Markdown "), Some("md"));
+        assert_eq!(kind_typed(".md"), Some("md"));
+        assert_eq!(kind_typed("gemtext"), Some("gmi"));
+        assert_eq!(kind_typed("txt"), Some("text"));
+        assert_eq!(kind_typed("fods"), None, "a sheet is not typed into being");
+        assert_eq!(kind_typed("nonsense"), None);
+        assert_eq!((kind_said("gmi"), kind_said("md")), ("gemtext", "Markdown"));
+    }
+
+    #[test]
+    fn a_page_changes_kind_and_keeps_its_text() {
+        let mut s = sample("welcome");
+        let before = s.open.clone().unwrap();
+        assert_eq!(before.kind, "md");
+        s.prompt = Some(Prompt::Kind(TextEdit::new("nonsense")));
+        confirm(&mut s);
+        assert!(matches!(s.prompt, Some(Prompt::Kind(_))) && s.note.contains("one of"), "a kind that is none is asked for again");
+        s.prompt = Some(Prompt::Kind(TextEdit::new("gemtext")));
+        confirm(&mut s);
+        let after = s.open.clone().unwrap();
+        assert_eq!((after.kind.as_str(), &after.body, after.rev), ("gmi", &before.body, before.rev + 1));
+        assert!(s.prompt.is_none());
+        s.prompt = Some(Prompt::Kind(TextEdit::new("md")));
+        confirm(&mut s);
+        assert_eq!(s.open.as_ref().unwrap().kind, "md");
     }
 
     #[test]
