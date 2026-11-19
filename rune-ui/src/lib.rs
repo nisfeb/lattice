@@ -272,6 +272,8 @@ enum ForumSort {
 enum ForumGot {
     Boards(Vec<api::Board>),
     Board(api::Board),
+    /// A later hundred of the threads of the board showing.
+    More(api::Board),
     Thread(api::Thread),
     Notes(Vec<(String, String)>),
     /// A board's moderation, and what to say of what was just done to it.
@@ -5497,6 +5499,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         // an answer that lands after the forum was left is dropped
         match (r, &mut s.forum) {
             (Ok(ForumGot::Boards(b)), Some(f)) => f.boards = Some(b),
+            (Ok(ForumGot::More(more)), Some(f)) => {
+                if let Some(b) = f.board.as_mut().filter(|b| b.board == more.board) {
+                    b.posts = forum_joined(&b.posts, more.posts);
+                    b.count = more.count;
+                }
+            }
             (Ok(ForumGot::Notes(n)), Some(f)) => f.notes = Some(n),
             (Ok(ForumGot::Changed(b)), Some(f)) => {
                 (f.boards, f.board, f.thread, f.making, f.editing, f.sending) = (Some(b), None, None, None, None, false);
@@ -7398,6 +7406,8 @@ fn forum_notes(s: &mut App) {
 /// What is done to the forum thread showing.
 enum ForumAct {
     Vote,
+    /// A point for one comment of the thread.
+    VoteComment(u64),
     Pin(bool),
     Tags(Vec<String>),
     /// The thread, or with a number one comment of it.
@@ -7424,6 +7434,27 @@ fn forum_act(s: &mut App, act: ForumAct) {
     });
 }
 
+/// Reads the next hundred of the board's threads and puts them after those held.
+fn forum_more(s: &mut App) {
+    let Some(c) = s.conn.clone() else { return };
+    let Some(f) = &mut s.forum else { return };
+    let Some(b) = &f.board else { return };
+    let (board, next) = (b.board.clone(), b.posts.len() as u64 / 100 + 1);
+    f.acting = true;
+    s.forum_req.request((c, board), move |(c, board)| c.forum_board_page(&board, next).map(ForumGot::More));
+}
+
+/// The threads held with a later page's put after them, each thread once.
+fn forum_joined(held: &[api::ForumPost], more: Vec<api::ForumPost>) -> Vec<api::ForumPost> {
+    let mut out = held.to_vec();
+    for p in more {
+        if !out.iter().any(|x| x.id == p.id) {
+            out.push(p);
+        }
+    }
+    out
+}
+
 /// Does to a thread from its board's list what the thread's own screen does, and reads the board again.
 fn forum_list_act(s: &mut App, board: String, post: u64, act: ForumAct) {
     let Some(c) = s.conn.clone() else { return };
@@ -7441,6 +7472,7 @@ fn forum_list_act(s: &mut App, board: String, post: u64, act: ForumAct) {
 fn forum_send(c: &Conn, board: &str, post: u64, act: &ForumAct) -> Result<(), String> {
     match act {
         ForumAct::Vote => c.forum_vote(board, post),
+        ForumAct::VoteComment(id) => c.forum_vote_comment(board, post, *id),
         ForumAct::Pin(on) => c.forum_pin(board, post, *on),
         ForumAct::Tags(tags) => c.forum_set_tags(board, post, tags),
         ForumAct::Delete(comment) => c.forum_delete(board, post, *comment),
@@ -7454,6 +7486,8 @@ fn forum_send(c: &Conn, board: &str, post: u64, act: &ForumAct) -> Result<(), St
 fn forum_took(act: &ForumAct, before: (u64, u64), after: Option<&api::ForumPost>, comments: &[u64]) -> bool {
     match act {
         ForumAct::Vote => after.is_some_and(|p| (p.up, p.down) != before),
+        // a comment's points before are not kept to hold against: the thread read back shows them
+        ForumAct::VoteComment(_) => true,
         ForumAct::Pin(on) => after.is_some_and(|p| p.pinned == *on),
         ForumAct::Tags(tags) => after.is_some_and(|p| {
             let (mut want, mut have) = (tags.clone(), p.tags.clone());
@@ -7474,8 +7508,10 @@ fn forum_taken(board: &str, took: bool) -> Result<(), String> {
 
 /// What this ship may do to a thread or a comment on a board, as the ship's own rules have it
 /// (`lattice-forum-rules.hoon`): its author may delete it and set its tags, and a mod may do that
-/// to anyone's and pin. The host of a board is a mod of it. On another ship's board the reader's
-/// role is not in what the ship sends (`+urb-forum-json`), so only what an author may is offered there.
+/// to anyone's and pin. The host of a board is a mod of it. `role` is this ship's own on the board
+/// as the board's ship sends it (`+urb-forum-json`, from desk 140). A ship that does not send it
+/// leaves only this to go by: a board of this ship's is its to moderate, and on another's only what
+/// an author may is offered.
 #[derive(Debug, PartialEq)]
 struct ForumMay {
     pin: bool,
@@ -7483,9 +7519,9 @@ struct ForumMay {
     change: bool,
 }
 
-fn forum_may(board: &str, ours: &str, author: &str) -> ForumMay {
-    let host = !board.contains('/');
-    ForumMay { pin: host, change: host || (!ours.is_empty() && author == ours) }
+fn forum_may(board: &str, role: Option<&str>, ours: &str, author: &str) -> ForumMay {
+    let moderates = role.map_or(!board.contains('/'), |r| r == "mod");
+    ForumMay { pin: moderates, change: moderates || (!ours.is_empty() && author == ours) }
 }
 
 /// Shows or hides the picture a thread's link is. Showing it fetches it from its site, which then
@@ -7941,7 +7977,7 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
         let act = |label: String, key: &str, help: &str| Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(help.to_owned());
         let (pinned, tags) = (p.pinned, p.tags.join(" "));
         // only what this ship may do here is offered, as the web shows its buttons by role
-        let may = forum_may(&th.board, ours, &p.author);
+        let may = forum_may(&th.board, th.role.as_deref(), ours, &p.author);
         let mut acts = row().key("forum-acts").gap(4.0).flex_wrap().child(act("\u{25b2} Point".into(), "forum-vote", "Give this thread your point").on_press(|s: &mut App| forum_act(s, ForumAct::Vote)).build(k).key("forum-vote"));
         if may.pin {
             acts = acts.child(act(if pinned { "Unpin".into() } else { "Pin".into() }, "forum-pin", "Keep this thread at the top of its board").on_press(move |s: &mut App| forum_act(s, ForumAct::Pin(!pinned))).build(k).key("forum-pin"));
@@ -7979,12 +8015,19 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
                     .gap(2.0)
                     .child({
                         let id = cm.id;
-                        row().gap(6.0).center_y().child(muted(format!("{} \u{b7} {}", cm.author, when(&cm.created)))).child(Button::new("Reply").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Answer this comment").on_press(move |s: &mut App| {
+                        row().gap(6.0).center_y().child(muted(match cm.up {
+                            // points as the web counts them: those given less those taken
+                            Some(up) => {
+                                let n = up as i64 - cm.down.unwrap_or(0) as i64;
+                                format!("{} \u{b7} {} \u{b7} {n} point{}", cm.author, when(&cm.created), if n == 1 { "" } else { "s" })
+                            }
+                            None => format!("{} \u{b7} {}", cm.author, when(&cm.created)),
+                        })).children(cm.up.is_some().then(|| Button::new("\u{25b2} Point").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Give this comment your point").on_press(move |s: &mut App| forum_act(s, ForumAct::VoteComment(id))).build(k).key(format!("cvote-{id}")))).child(Button::new("Reply").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Answer this comment").on_press(move |s: &mut App| {
                             if let Some(f) = &mut s.forum {
                                 f.reply = Some(id);
                                 f.comment.focused = true;
                             }
-                        }).build(k).key(format!("reply-{id}"))).children(forum_may(&th.board, ours, &cm.author).change.then(|| Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Delete this comment").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumDelete(Some(id)))).build(k).key(format!("comment-delete-{id}"))))
+                        }).build(k).key(format!("reply-{id}"))).children(forum_may(&th.board, th.role.as_deref(), ours, &cm.author).change.then(|| Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Delete this comment").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumDelete(Some(id)))).build(k).key(format!("comment-delete-{id}"))))
                     })
                     .child(Markdown::new(cm.body.clone()).selectable(true).on_link_tx(follow).build(k))
                     .children(forum_text_previews(f, pics, &cm.body, &format!("c{}", cm.id), k)),
@@ -8200,7 +8243,7 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
             // beside what opens the thread, not inside it, so a press on one does not open it too
             let small = |label: &str, help: &str| Button::new(label.to_owned()).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(help.to_owned()).disabled(f.acting);
             let (vb, pb, db, pinned) = (board.clone(), board.clone(), board.clone(), p.pinned);
-            let may = forum_may(&board, ours, &p.author);
+            let may = forum_may(&board, b.role.as_deref(), ours, &p.author);
             let mut acts = row().px(4.0).gap(2.0).child(small("Vote", "Vote this thread up, or take the vote back").on_press(move |s: &mut App| forum_list_act(s, vb.clone(), id, ForumAct::Vote)).build(k).key(format!("row-vote-{id}")));
             if may.pin {
                 acts = acts.child(small(if pinned { "Unpin" } else { "Pin" }, "Keep this thread at the top of the board, or let it go").on_press(move |s: &mut App| forum_list_act(s, pb.clone(), id, ForumAct::Pin(!pinned))).build(k).key(format!("row-pin-{id}")));
@@ -8209,6 +8252,11 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
                 acts = acts.child(small("Delete", "Delete this thread").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumRowDelete(db.clone(), id))).build(k).key(format!("row-delete-{id}")));
             }
             page = page.child(col().key(format!("post-row-{id}")).w_full().children(lead).child(line).children(forum_preview(f, pics, p.link.as_deref(), id, k)).child(acts));
+        }
+        // a board with more threads than are held gives the next hundred when asked, from a ship that pages
+        if b.page.is_some() && (b.posts.len() as u64) < b.count {
+            let left = b.count - b.posts.len() as u64;
+            page = page.child(row().child(Button::new(format!("More threads ({left} older)")).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(f.acting).on_press(forum_more).build(k).key("forum-more")));
         }
         return page;
     }
@@ -13261,6 +13309,13 @@ mod tests {
     }
 
     #[test]
+    fn a_later_page_of_threads_goes_after_those_held_each_once() {
+        let post = |id: u64| api::ForumPost { id, ..Default::default() };
+        let joined = forum_joined(&[post(9), post(8)], vec![post(8), post(7), post(6)]);
+        assert_eq!(joined.iter().map(|p| p.id).collect::<Vec<_>>(), [9, 8, 7, 6]);
+    }
+
+    #[test]
     fn an_export_passphrase_is_long_enough_and_typed_the_same_twice() {
         assert!(id_pass_ok("seven77", "seven77", 8).unwrap_err().contains("at least 8"));
         assert!(id_pass_ok("eight888", "eight889", 8).unwrap_err().contains("not the same"));
@@ -13523,10 +13578,15 @@ mod tests {
     #[test]
     fn a_boards_controls_are_what_this_ship_may_do_and_a_refusal_is_seen() {
         // on a board of one's own everything, as its host. On another ship's only what an author may
-        assert_eq!(forum_may("chat", "~zod", "~bus"), ForumMay { pin: true, change: true });
-        assert_eq!(forum_may("~nec/chat", "~zod", "~zod"), ForumMay { pin: false, change: true });
-        assert_eq!(forum_may("~nec/chat", "~zod", "~bus"), ForumMay { pin: false, change: false });
-        assert_eq!(forum_may("~nec/chat", "", ""), ForumMay { pin: false, change: false }, "no name known is no author");
+        assert_eq!(forum_may("chat", None, "~zod", "~bus"), ForumMay { pin: true, change: true });
+        assert_eq!(forum_may("~nec/chat", None, "~zod", "~zod"), ForumMay { pin: false, change: true });
+        assert_eq!(forum_may("~nec/chat", None, "~zod", "~bus"), ForumMay { pin: false, change: false });
+        assert_eq!(forum_may("~nec/chat", None, "", ""), ForumMay { pin: false, change: false }, "no name known is no author");
+        // the role the board's ship sends decides, wherever the board is
+        assert_eq!(forum_may("~nec/chat", Some("mod"), "~zod", "~bus"), ForumMay { pin: true, change: true }, "a mod of another ship's board");
+        assert_eq!(forum_may("~nec/chat", Some("poster"), "~zod", "~bus"), ForumMay { pin: false, change: false });
+        assert_eq!(forum_may("~nec/chat", Some("reader"), "~zod", "~zod"), ForumMay { pin: false, change: true }, "an author still may");
+        assert_eq!(forum_may("chat", Some("mod"), "~zod", "~bus"), ForumMay { pin: true, change: true });
         // whether the board did what was asked, read from the thread as it comes back
         let post = |up: u64, pinned: bool, tags: &[&str]| api::ForumPost { id: 1, up, pinned, tags: tags.iter().map(|t| (*t).to_owned()).collect(), ..api::ForumPost::default() };
         assert!(forum_took(&ForumAct::Vote, (2, 0), Some(&post(3, false, &[])), &[]) && !forum_took(&ForumAct::Vote, (2, 0), Some(&post(2, false, &[])), &[]));
