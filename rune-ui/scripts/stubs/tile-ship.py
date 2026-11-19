@@ -83,12 +83,14 @@ class H(BaseHTTPRequestHandler):
             if url.rstrip('/') == 'urb://~sampel-palnet/notes':
                 return self.send(200, json.dumps({"kind":"folder","path":"/notes","entries":[{"name":"plan","url":"urb://~sampel-palnet/notes/plan","folder":False},{"name":"trips","url":"urb://~sampel-palnet/notes/trips/","folder":True}]}))
             # a board of four threads, made at hours before now so the hot order can be seen
-            if url.rstrip('/').endswith('/forum/chat'):
+            # (another ship's board has the same threads, the first of them by someone else)
+            if url.rstrip('/').endswith('/forum/chat') or url.rstrip('/').endswith('/forum/tech'):
+                away = '~zod' not in url
                 def da(hours_ago):
                     t = time.gmtime(time.time() - hours_ago * 3600)
                     return "~%d.%d.%d..%d.%d.%d" % (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec)
-                posts = [{"id":t["id"],"title":t["title"],"author":"~zod","created":da(t["ago"]),"active":da(t["ago"]),"body":"","up":t["up"],"down":0,"comments":0,"pinned":t["pinned"],"tags":[]} for t in THREADS]
-                return self.send(200, json.dumps({"kind":"board","board":"chat","title":"Chat","description":"","public":True,"count":len(posts),"posts":posts}))
+                posts = [{"id":t["id"],"title":t["title"],"author":"~bus" if away and t["id"] == 1 else "~zod","created":da(t["ago"]),"active":da(t["ago"]),"body":"","up":t["up"],"down":0,"comments":0,"pinned":t["pinned"],"tags":[]} for t in THREADS]
+                return self.send(200, json.dumps({"kind":"board","board":"tech" if away else "chat","title":"Tech" if away else "Chat","description":"","public":True,"count":len(posts),"posts":posts}))
             # a forum thread, as the ship answers one: enough of it to be shown
             if '/forum/' in url and url.rsplit('/', 1)[-1].isdigit():
                 n = int(url.rsplit('/', 1)[-1])
@@ -151,6 +153,8 @@ def do_POST(self):
     if p.startswith('forum/chat/'):
         rest = p.split('/')[2:]
         form = parse_qs(body)
+        # LR_FORUM_REFUSE: the board answers as ever and does nothing, as a ship does for one with no right to it
+        if os.environ.get('LR_FORUM_REFUSE'): rest = ['refused'] + rest
         if rest == ['vote']:
             n = int(form['target'][0].split('-')[1])
             for t in THREADS:
