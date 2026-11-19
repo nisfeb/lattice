@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-//  updater-manifest.mjs — write the desktop self-updater's latest.json.
+//  updater-manifest.mjs — write a self-updater's manifest: the desktop
+//  app's latest.json, and the Rune client's latest-rune.json, each from
+//  its own signatures (release.yml).
 //
 //    node scripts/updater-manifest.mjs <version> <base-url> <notes-file> <file.sig>...
 //

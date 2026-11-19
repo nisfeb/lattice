@@ -5,7 +5,7 @@
 # shipped desktop app's package (lattice), never in place of it.
 set -eu
 cd "$(dirname "$0")/../.."
-# LATTICE_RUNE_BIN names a binary built elsewhere, as build-in-debian.sh builds one
+# LATTICE_RUNE_BIN names a binary built elsewhere, as dist.sh hands it one
 bin=${LATTICE_RUNE_BIN:-}
 if [ -z "$bin" ]; then
     cargo build --release

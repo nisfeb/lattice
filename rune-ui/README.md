@@ -127,7 +127,7 @@ Debug builds render headless with the same renderer:
 
 On Linux and macOS the sign-in screen has a second way in, "Use anonymously". The app then reads pages other ships publish through the urb engine: urb-fetch's Rust core over libmesa, linked into the program, running as a comet this computer makes once and keeps in `~/.config/lattice-rune/urb/`. It is the engine the desktop app has, at the same commit, and it is not the desktop app's comet. Type an `urb://~ship/path` address in the browser. This first cut reads pages and nothing else: no folders, no forum boards, no comments, no start list or history, and no way to move the comet to another computer. With a ship signed in, reads go over the ship as before. Windows builds without it.
 
-Building needs clang 18 or newer (libmesa is C23) and libmesa's two C sources, fetched once: `sh scripts/mesa-deps.sh`. `scripts/bundle/build-in-debian.sh` does not have either yet, so a deb or AppImage made that way fails to build: use `scripts/bundle/dist.sh` on a machine with a new clang, as CI does. A build for working on takes `LATTICE_ENGINE_FAKE=new-moon-of:~ship` to run as a moon on a fake network, and `LATTICE_LOG=1` prints the engine's words.
+Building needs clang 18 or newer (libmesa is C23) and libmesa's two C sources, fetched once: `sh scripts/mesa-deps.sh`. The packages are made by `scripts/bundle/dist.sh`, on a machine with such a clang, as CI makes them. A build for working on takes `LATTICE_ENGINE_FAKE=new-moon-of:~ship` to run as a moon on a fake network, and `LATTICE_LOG=1` prints the engine's words.
 
 ## Updates
 
@@ -135,8 +135,8 @@ A release build asks 20 seconds after it starts, and every 6 hours after, whethe
 
 ## Bundles
 
-- A deb: `sh scripts/bundle/build-in-debian.sh` builds the release inside Debian 12 (docker), then `LATTICE_RUNE_BIN=target/debian/lattice-rune sh scripts/bundle/deb.sh` writes `target/bundle/lattice-rune_<version>_amd64.deb`. Without `LATTICE_RUNE_BIN` the deb holds this machine's own build, which runs only on a system with a glibc as new.
-- An AppImage: `LATTICE_RUNE_BIN=target/debian/lattice-rune sh scripts/bundle/appimage.sh` writes `target/bundle/lattice-rune-<version>-x86_64.AppImage`. It fetches the AppImage runtime once (0.9 MB) unless `APPIMAGE_RUNTIME` names one.
+- A deb and an AppImage: `sh scripts/bundle/dist.sh x86_64-unknown-linux-gnu out/` builds the release and writes both into `out/`, as CI and the release do. The glibc the build asks for is the oldest it runs on, so CI builds on Ubuntu 22.04. `deb.sh` and `appimage.sh` pack a binary built elsewhere, named by `LATTICE_RUNE_BIN`.
+- The AppImage step fetches the AppImage runtime once (0.9 MB) unless `APPIMAGE_RUNTIME` names one.
 
 ## Web build
 

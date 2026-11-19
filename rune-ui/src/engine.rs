@@ -36,8 +36,11 @@ use urb_gateway::state::{self, GatewayUdp};
 pub const MAX_BODY: usize = 4 * 1024 * 1024;
 /// A start that failed is not tried again for this long.
 pub const RETRY_AFTER: Duration = Duration::from_secs(5);
-/// How long a read may take: the first one makes the comet and meets the ship.
+/// How long a read may take once the engine runs.
 pub const BUDGET: Duration = Duration::from_secs(45);
+/// How long the engine may take to start before a read gives up on it. The first start makes the
+/// comet, which is not the ship's being away and is not counted against the read.
+pub const BOOT: Duration = Duration::from_secs(120);
 
 /// A page as the engine read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -156,7 +159,16 @@ impl Engine {
         g.run = Some(Running { jobs: jobs_tx, waker: None });
         drop(g);
         let (dir, fake, inner) = (self.dir.clone(), self.fake.clone(), self.inner.clone());
-        let spawned = std::thread::Builder::new().name("urb-engine".into()).spawn(move || host_thread(&dir, fake.as_deref(), &inner, jobs_rx));
+        let spawned = std::thread::Builder::new().name("urb-engine".into()).spawn(move || {
+            // a panic in the engine is a failed start, said and tried again, not a reader that waits for ever
+            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host_thread(&dir, fake.as_deref(), &inner, jobs_rx)));
+            if ran.is_err() {
+                let mut g = inner.lock().unwrap_or_else(|e| e.into_inner());
+                g.status = Status::Failed("the reader stopped unexpectedly".into());
+                g.failed_at = Some(Instant::now());
+                g.run = None;
+            }
+        });
         if let Err(e) = spawned {
             let mut g = self.inner.lock().unwrap();
             g.status = Status::Failed(format!("no thread for the reader: {e}"));
@@ -183,14 +195,28 @@ impl Engine {
                 let _ = w.send(Event::Wake);
             }
         }
-        match rx.recv_timeout(budget) {
-            Ok(r) => r,
-            Err(RecvTimeoutError::Timeout) => Err(ReadError::Unreachable(format!("No answer within {} seconds. The ship may be away: try again.", budget.as_secs()))),
-            // the thread ended: its start failed, or it was closed
-            Err(RecvTimeoutError::Disconnected) => match self.status() {
-                Status::Failed(m) => Err(boot_error(&m)),
-                _ => Err(ReadError::Failed("the reader stopped".into())),
-            },
+        // the read's time starts when the engine runs: while it starts, only the start's own limit counts
+        let (began, slice) = (Instant::now(), Duration::from_millis(250));
+        let mut ready_at: Option<Instant> = None;
+        loop {
+            match rx.recv_timeout(slice) {
+                Ok(r) => return r,
+                Err(RecvTimeoutError::Timeout) => match self.status() {
+                    Status::Booting if began.elapsed() > BOOT => return Err(ReadError::Failed("The reader is taking too long to start. Check your connection and try again.".into())),
+                    Status::Booting => {}
+                    _ if ready_at.get_or_insert_with(Instant::now).elapsed() > budget => {
+                        return Err(ReadError::Unreachable(format!("No answer within {} seconds. The ship may be away: try again.", budget.as_secs())));
+                    }
+                    _ => {}
+                },
+                // the thread ended: its start failed, or it was closed
+                Err(RecvTimeoutError::Disconnected) => {
+                    return match self.status() {
+                        Status::Failed(m) => Err(boot_error(&m)),
+                        _ => Err(ReadError::Failed("the reader stopped".into())),
+                    };
+                }
+            }
         }
     }
 
@@ -273,7 +299,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     // which is a choice about an identity that this first cut does not make for anyone
     let found = match state::find(dir, "", false, fake.unwrap_or("")) {
         Ok(f) => f,
-        Err(e) => return fail(e),
+        // another copy holding the store is said as that. Anything else is the files: where they are is said, since nothing here mends them
+        Err(e) if e.ends_with("is in use by another process") => return fail(e),
+        Err(e) => return fail(format!("{e}. Its files are in {}: move that folder aside to start again with a new identity", dir.display())),
     };
     let udp = GatewayUdp { fake: fake.is_some(), port: found.port, log: log.clone(), udp: None };
     let io = NetIo::new(Box::new(udp), Box::new(found.store), log);
@@ -292,7 +320,16 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         Err(f) => return fail(f.message),
     };
     log_line(&format!("running as {our}"));
-    inner.lock().unwrap().status = Status::Ready { our };
+    {
+        let mut g = inner.lock().unwrap();
+        // closed while it was starting: it does not come up as ready with nobody to hand it work
+        if g.run.is_none() {
+            drop(g);
+            let _ = host.close();
+            return;
+        }
+        g.status = Status::Ready { our };
+    }
     let mut pending: Vec<(u64, Answer, String, Instant)> = Vec::new();
     loop {
         loop {
@@ -375,14 +412,13 @@ pub fn place(url: &str) -> Option<(String, String)> {
 
 /// The page kind the app knows a mark by. What it does not know is shown as text.
 pub fn kind_of(mark: &str) -> &'static str {
+    // the kinds the app has a view for, or colours as source
+    const KNOWN: &[&str] = &["md", "html", "gmi", "geojson", "scad", "tex", "fods", "fodt", "svg", "csv", "json", "js", "css", "hoon", "txt"];
     match mark {
-        "md" | "markdown" => "md",
-        "html" | "htm" => "html",
-        "gmi" | "gemini" => "gmi",
-        "geojson" => "geojson",
-        "scad" => "scad",
-        "tex" => "tex",
-        _ => "txt",
+        "markdown" => "md",
+        "htm" => "html",
+        "gemini" => "gmi",
+        m => KNOWN.iter().copied().find(|k| *k == m).unwrap_or("txt"),
     }
 }
 
@@ -415,7 +451,8 @@ mod tests {
     #[test]
     fn a_mark_is_a_kind_the_app_knows_or_text() {
         assert_eq!((kind_of("md"), kind_of("gmi"), kind_of("html"), kind_of("geojson")), ("md", "gmi", "html", "geojson"));
-        assert_eq!((kind_of("txt"), kind_of("hoon"), kind_of("")), ("txt", "txt", "txt"));
+        assert_eq!((kind_of("fods"), kind_of("hoon"), kind_of("svg")), ("fods", "hoon", "svg"), "a published sheet is a sheet, not its XML");
+        assert_eq!((kind_of("txt"), kind_of("weird"), kind_of("")), ("txt", "txt", "txt"));
     }
 
     #[test]

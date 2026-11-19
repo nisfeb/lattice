@@ -110,7 +110,7 @@ pub struct Page {
 /// A bookmark the reader keeps on the ship: an address on the network
 /// or the web, the title it was kept under, and the folder it is in,
 /// empty for none (`bookmarks-json`).
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct Bookmark {
     #[serde(default)]
     pub url: String,

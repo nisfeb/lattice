@@ -1,0 +1,8 @@
+{
+  "name": "lattice-rune-signer",
+  "private": true,
+  "description": "Tauri's signer at one version, with a lockfile, for release.yml to sign the Rune AppImage",
+  "dependencies": {
+    "@tauri-apps/cli": "2.12.6"
+  }
+}

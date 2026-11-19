@@ -13,8 +13,19 @@ set -u
 opts="-o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120"
 try=1
 while :; do
-    if sudo timeout 180 apt-get $opts update && sudo timeout 420 apt-get $opts install -y "$@"; then
-        exit 0
+    # -k: one that does not stop when told is stopped. And nothing may ask a question no one is there to answer
+    log=$(mktemp)
+    ok=yes
+    sudo timeout -k 30 180 apt-get $opts update || ok=no
+    if [ "$ok" = yes ]; then
+        sudo timeout -k 30 420 env DEBIAN_FRONTEND=noninteractive apt-get $opts install -y "$@" > "$log" 2>&1 || ok=no
+        cat "$log"
+    fi
+    [ "$ok" = yes ] && exit 0
+    # a name apt does not know is not the mirror's doing: trying again cannot help
+    if grep -q 'Unable to locate package\|has no installation candidate' "$log"; then
+        echo "::error::apt-get does not know a package asked for" >&2
+        exit 1
     fi
     [ "$try" -lt 5 ] || { echo "::error::apt-get failed or stalled $try times" >&2; exit 1; }
     echo "apt-get failed or stalled, try $((try + 1)) of 5, from archive.ubuntu.com" >&2

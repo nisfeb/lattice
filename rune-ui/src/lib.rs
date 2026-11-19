@@ -456,6 +456,13 @@ struct App {
     /// The urb engine, made the first time the app is used with no ship.
     #[cfg(unix)]
     engine: Option<engine::Engine>,
+    /// The address the engine is reading, and which asking of it this is. A read has a thread of its
+    /// own: on the workers every request shares, four slow ones held them all and nothing else was answered.
+    anon_reading: Option<String>,
+    anon_seq: u64,
+    /// When the engine's start is next looked at (app clock): one wake at a time.
+    anon_tick: f64,
+    anon_got: std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<(String, api::Urb), String>)>>>,
     url: TextEdit,
     code: TextEdit,
     login_err: String,
@@ -977,6 +984,10 @@ fn init() -> App {
         read_save: false,
         #[cfg(unix)]
         engine: None,
+        anon_reading: None,
+        anon_seq: 0,
+        anon_tick: 0.0,
+        anon_got: Default::default(),
         url,
         code: TextEdit::new(""),
         login_err: String::new(),
@@ -2183,6 +2194,12 @@ fn step(s: &mut App, by: isize) {
 /// Follows a link in a page: to a page of this ship, to a prompt that makes
 /// the page when there is none yet, or to the web.
 fn follow(s: &mut App, url: &str, tx: &mut Tx) {
+    // an address on the network is read here, in the browser, not handed to the system
+    let there = s.remote.as_ref().filter(|r| r.mode == "published").and_then(|sh| remote_link(&sh.host, sh.name(), url));
+    let to = there.or_else(|| url.starts_with("urb://").then(|| url.to_owned()));
+    if let Some(to) = to.filter(|_| s.conn.is_some() || s.anon) {
+        return urb_go(s, Some(to));
+    }
     match md::page_of(url) {
         Some(name) if s.names.contains(&name) => {
             s.files.reveal(&name, tx);
@@ -2200,6 +2217,31 @@ fn follow(s: &mut App, url: &str, tx: &mut Tx) {
             }
         }
     }
+}
+
+/// Where a link in a page another ship publishes leads, as an address: a wiki link or a path of its
+/// own is a page of that ship, and a name beside it is a page beside it. None for what is not the
+/// network's (the web, mail, a place in the same page).
+fn remote_link(host: &str, page: &str, url: &str) -> Option<String> {
+    if url.starts_with("urb://") {
+        return Some(url.to_owned());
+    }
+    if let Some(name) = md::page_of(url) {
+        return Some(format!("urb://{host}/{name}"));
+    }
+    if url.is_empty() || url.starts_with('#') || url.contains(':') || url.starts_with("//") {
+        return None;
+    }
+    // beside the page, or from the ship's top when it starts with a slash
+    let mut at: Vec<&str> = if url.starts_with('/') { Vec::new() } else { page.split('/').collect::<Vec<_>>().split_last().map(|(_, dir)| dir.to_vec()).unwrap_or_default() };
+    for seg in url.split(['#', '?']).next().unwrap_or_default().split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => drop(at.pop()),
+            seg => at.push(seg),
+        }
+    }
+    (!at.is_empty()).then(|| format!("urb://{host}/{}", at.join("/")))
 }
 
 /// Keeps `s.map` in step with the open page: built when a map page opens
@@ -4427,6 +4469,9 @@ fn kept_by_orrery(s: &App) -> bool {
 }
 
 fn start_edit(s: &mut App) {
+    if no_node(s) {
+        return;
+    }
     s.old = None;
     if kept_by_orrery(s) {
         s.note = "orrery keeps this map, so it is read-only here. Draw on orrery/map-notes".into();
@@ -4580,7 +4625,7 @@ fn format_bar(s: &App, k: &Kit) -> El {
 /// Starts a page with no question asked: named in the inbox by the
 /// date, open in the editor, and kept by its first save.
 fn capture(s: &mut App) {
-    if !leave_edit(s) {
+    if no_node(s) || !leave_edit(s) {
         return;
     }
     if s.memory {
@@ -4595,9 +4640,10 @@ fn capture(s: &mut App) {
 /// Starts a page that is not written yet under a name it already has,
 /// open in the editor. Its first save makes it.
 fn start_named(s: &mut App, name: String) {
-    if !leave_edit(s) {
+    if no_node(s) || !leave_edit(s) {
         return;
     }
+    urb_cancel(s);
     if s.memory {
         flip(s);
     }
@@ -4614,7 +4660,7 @@ fn start_named(s: &mut App, name: String) {
 /// Today's journal page: the one there is, under any of its names, or a
 /// new one started at the name the ship's journal pass uses.
 fn open_today(s: &mut App) {
-    if !leave_edit(s) {
+    if no_node(s) || !leave_edit(s) {
         return;
     }
     if s.memory {
@@ -5747,20 +5793,36 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         match r {
             Ok((url, got)) => urb_got(s, url, got),
-            // the reader's own words are whole sentences
-            Err(e) if s.anon => s.note = e,
             Err(e) => s.note = format!("address: {e}"),
         }
     }
-    // while the reader starts for a first read, what it is doing is said
+    // the engine's reads, each from a thread of its own: only the one last asked for is wanted
+    let read: Vec<_> = std::mem::take(&mut *s.anon_got.lock().unwrap_or_else(|e| e.into_inner()));
+    for (seq, r) in read {
+        if seq != s.anon_seq || s.anon_reading.is_none() {
+            continue;
+        }
+        changed = true;
+        s.anon_reading = None;
+        match r {
+            Ok((url, got)) => urb_got(s, url, got),
+            // the reader's own words are whole sentences
+            Err(e) => s.note = e,
+        }
+    }
+    // while the reader starts for a first read, what it is doing is said, and then that it reads
     #[cfg(unix)]
-    if s.anon && s.urb_req.is_pending() {
+    if let Some(url) = &s.anon_reading {
         let step = s.engine.as_ref().map(engine::Engine::step).unwrap_or_default();
-        if !step.is_empty() && !s.note.starts_with(step) {
-            s.note = format!("{step}\u{2026}");
+        let say = if step.is_empty() { format!("reading {url}\u{2026}") } else { format!("{step}\u{2026}") };
+        if s.note != say {
+            s.note = say;
             changed = true;
         }
-        tx.wake_after(std::time::Duration::from_millis(300));
+        if clock >= s.anon_tick {
+            s.anon_tick = clock + 0.3;
+            tx.wake_after(std::time::Duration::from_millis(300));
+        }
     }
     if let Some(r) = s.keys_req.take() {
         changed = true;
@@ -7074,6 +7136,8 @@ fn browse_step(s: &mut App, back: bool) {
 fn browse_show(s: &mut App, url: &str) {
     s.urb = TextEdit::new(url);
     if url.is_empty() {
+        // a read still on its way is for an address left behind
+        urb_cancel(s);
         (s.remote, s.open, s.urb_folder) = (None, None, None);
         s.shared_open = true;
         browse_home(s);
@@ -9209,6 +9273,8 @@ fn link_back(s: &mut App) {
 #[cfg(unix)]
 fn browse_anon(s: &mut App) {
     (s.sample, s.anon) = (true, true);
+    // what was starred with no ship is kept on this computer
+    s.marks = Some(anon_marks_load());
     if s.engine.is_none() {
         let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")));
         s.engine = base.map(|b| engine::Engine::new(b.join("lattice-rune").join("urb")));
@@ -9233,11 +9299,54 @@ fn urb_go_anon(s: &mut App, to: Option<String>) {
         return;
     };
     s.note = format!("reading {url}\u{2026}");
-    s.urb_req.request((e, url), |(e, url)| {
-        let (ship, path) = engine::place(&url).ok_or_else(|| "an address is urb://~ship/path".to_owned())?;
-        let p = e.read(&url, engine::BUDGET).map_err(|e| e.words())?;
-        Ok((url, api::Urb::Page { ship, path, kind: engine::kind_of(&p.mark).to_owned(), body: p.body, comments: Vec::new() }))
+    s.anon_seq += 1;
+    s.anon_reading = Some(url.clone());
+    let (seq, got, waker) = (s.anon_seq, s.anon_got.clone(), s.waker.clone());
+    spawn(move || {
+        let read = || {
+            let (ship, path) = engine::place(&url).ok_or_else(|| "an address is urb://~ship/path".to_owned())?;
+            let p = e.read(&url, engine::BUDGET).map_err(|e| e.words())?;
+            Ok((url.clone(), api::Urb::Page { ship, path, kind: engine::kind_of(&p.mark).to_owned(), body: p.body, comments: Vec::new() }))
+        };
+        let r = read();
+        got.lock().unwrap_or_else(|e| e.into_inner()).push((seq, r));
+        if let Some(w) = waker {
+            w();
+        }
     });
+}
+
+/// Lets go of a read on its way: what it answers is not wanted any more.
+fn urb_cancel(s: &mut App) {
+    s.urb_req.cancel();
+    s.anon_seq += 1;
+    s.anon_reading = None;
+}
+
+fn anon_marks_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+    Some(base.join("lattice-rune").join("anon-bookmarks.json"))
+}
+
+/// The bookmarks kept with no ship, on this computer.
+fn anon_marks_load() -> Vec<api::Bookmark> {
+    anon_marks_path().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn anon_marks_store(list: &[api::Bookmark]) -> Result<(), String> {
+    let p = anon_marks_path().ok_or("no home folder")?;
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&p, serde_json::to_vec(list).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+/// With no ship there is nowhere to write a page: said, where a sample page would be kept for the session.
+fn no_node(s: &mut App) -> bool {
+    if s.anon {
+        s.note = "Writing and hosting pages needs a node. Sign in to one to write.".into();
+    }
+    s.anon
 }
 
 /// Reads what stands at an address: the one typed, or one given (a folder's entry).
@@ -9273,6 +9382,11 @@ fn urb_go(s: &mut App, to: Option<String>) {
 
 /// What was read at an address is shown: a page as another ship's page, a folder as a list under the address.
 fn urb_got(s: &mut App, url: String, got: api::Urb) {
+    // an answer that comes late must not take the page from under an edit begun meanwhile
+    if s.editing {
+        s.note = format!("{url} was read, but an edit is open: go to it again when the edit is done");
+        return;
+    }
     s.note.clear();
     // the bar follows what is showing, however it was come to (a bookmark, a row of shared with me)
     s.nav.go(&url);
@@ -9348,7 +9462,7 @@ fn shared_view(s: &App, k: &Kit) -> El {
             })),
         );
         if s.visits.is_empty() {
-            seen = seen.child(text(if s.conn.is_some() { "No address has been visited yet." } else { "Sample pages have no other ships to visit." }).font(k.ty.small).color(c.text_faint));
+            seen = seen.child(text(if s.conn.is_some() { "No address has been visited yet." } else if s.anon { "What is read anonymously is not listed here." } else { "Sample pages have no other ships to visit." }).font(k.ty.small).color(c.text_faint));
         }
         for (i, v) in s.visits.iter().take(30).enumerate() {
             let (to, gone) = (v.url.clone(), v.url.clone());
@@ -10196,6 +10310,9 @@ fn share_body(s: &App, k: &Kit) -> Option<(String, El)> {
 }
 
 fn ask_new(s: &mut App) {
+    if no_node(s) {
+        return;
+    }
     // a new page starts in the folder showing, or beside the open page
     let dir = match (&s.folder, &s.open) {
         (Some(f), None) => format!("{f}/"),
@@ -10281,6 +10398,7 @@ fn open_marks(s: &mut App) {
     s.over = Some(Over::Marks);
     match s.conn.clone() {
         Some(c) => s.marks_req.request(c, |c| c.bookmarks()),
+        None if s.anon => s.marks = Some(anon_marks_load()),
         None => s.marks = Some(SAMPLE_MARKS.iter().map(|(url, title, folder)| api::Bookmark { url: (*url).into(), title: (*title).into(), folder: (*folder).into() }).collect()),
     }
 }
@@ -10299,7 +10417,12 @@ fn mark_change(s: &mut App, change: marks::Change) {
         }),
         None => {
             let list = marks::after(s.marks.as_deref().unwrap_or_default(), &change);
+            // with no ship they are this computer's, and kept
+            let kept = if s.anon { anon_marks_store(&list) } else { Ok(()) };
             applied(s, Op::Marks(marks::said(&change), list));
+            if let Err(e) = kept {
+                s.note = format!("kept until the app closes, but not written to this computer: {e}");
+            }
         }
     }
 }
@@ -10640,7 +10763,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
             }
         }).build(k).key(tab.key));
     }
-    let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
+    let who = s.conn.as_ref().map_or(if s.anon { "anonymous" } else { "sample pages" }.to_owned(), |c| c.ship().to_owned());
     let theme = Button::new(match s.prefs.theme.as_str() {
         "dark" => "Dark",
         "light" => "Light",
@@ -10657,7 +10780,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .justify_between()
         .child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).grow(1.0).min_w(0.0).truncate())
         .child(theme)
-        .child(Button::new(if s.conn.is_some() { "Sign out" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
+        .child(Button::new(if s.conn.is_some() { "Sign out" } else if s.anon { "Leave" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
     // rune-kit keeps a band over the sidebar for its own toggle, level with the top bar. The toggle is the
     // ribbon's here, so the pane's tabs go up into the band, beside the top bar, and nothing is left blank
     let side = col().key("pages").w_full().grow(1.0).min_h(0.0).mt(-rune_kit::shell::TOOLBAR_HEIGHT).padding(8.0).gap(8.0).child(halves);
@@ -10845,7 +10968,7 @@ fn history_view(s: &App, k: &Kit) -> El {
                 list = list.child(line);
             }
         }
-        None => list = list.child(text(if s.conn.is_some() { "Reading the history" } else { "Sample pages keep no history" }).font(k.ty.small).color(c.text_muted)),
+        None => list = list.child(text(if s.conn.is_some() { "Reading the history" } else if s.anon { "A page read anonymously shows no history." } else { "Sample pages keep no history" }).font(k.ty.small).color(c.text_muted)),
     }
     col()
         .key("history")
@@ -13913,6 +14036,42 @@ mod tests {
         // Later puts that version off for the run
         update_later(&mut s);
         assert!(!update_offered(&mut s.upd, offer("2.0.1")) && update_offered(&mut s.upd, offer("2.0.2")));
+    }
+
+    #[test]
+    fn a_link_in_another_ships_page_leads_to_an_address() {
+        let to = |url: &str| remote_link("~nec", "notes/plan", url);
+        assert_eq!(to("urb://~bud/x").as_deref(), Some("urb://~bud/x"));
+        assert_eq!(to("trips").as_deref(), Some("urb://~nec/notes/trips"), "a name beside the page");
+        assert_eq!(to("./trips/rome#food").as_deref(), Some("urb://~nec/notes/trips/rome"));
+        assert_eq!(to("../index").as_deref(), Some("urb://~nec/index"));
+        assert_eq!(to("/recipes/bread").as_deref(), Some("urb://~nec/recipes/bread"));
+        assert_eq!(to("/apps/lattice/page/notes/other").as_deref(), Some("urb://~nec/notes/other"), "a link as lattice writes one to its own page");
+        for web in ["https://example.com/x", "mailto:a@b.c", "#part", "", "//example.com/x"] {
+            assert_eq!(to(web), None, "{web}");
+        }
+    }
+
+    #[test]
+    fn with_no_ship_nothing_pretends_to_be_written_and_a_late_read_is_not_shown() {
+        let mut s = init();
+        s.conn = None;
+        (s.sample, s.anon) = (true, true);
+        for write in [capture as fn(&mut App), open_today, ask_new, start_edit] {
+            s.note.clear();
+            write(&mut s);
+            assert!(s.note.contains("needs a node") && s.open.is_none() && !s.editing && s.prompt.is_none());
+        }
+        // an answer for an asking that was let go is not shown
+        s.anon_seq = 3;
+        s.anon_reading = Some("urb://~nec/a".into());
+        urb_cancel(&mut s);
+        assert_eq!((s.anon_seq, &s.anon_reading), (4, &None));
+        // and one that lands under an edit begun meanwhile leaves the edit alone
+        let mut s = sample("welcome");
+        start_edit(&mut s);
+        urb_got(&mut s, "urb://~nec/a".into(), api::Urb::Page { ship: "~nec".into(), path: "a".into(), kind: "md".into(), body: "x".into(), comments: Vec::new() });
+        assert!(s.editing && s.open.as_ref().unwrap().name == "welcome" && s.remote.is_none() && s.note.contains("an edit is open"));
     }
 
     fn sample(name: &str) -> App {
