@@ -1,6 +1,8 @@
 [package]
 name = "lattice-rune"
-version = "0.0.1"
+# the release it goes out in: release.yml refuses a tag that this does not match, and the app offers
+# itself whatever release names a later one (`src/update.rs`)
+version = "1.0.35"
 edition = "2024"
 publish = false
 description = "An experimental native client for lattice, drawn with Rune. Not the shipped desktop app."
@@ -31,6 +33,10 @@ blitz-traits = "=0.3.0-beta.4"
 anyrender = "=0.14.0"
 anyrender_vello_cpu = "=0.18.0"
 data-url = "0.3"
+# the app's own updates (`src/update.rs`): a release file is taken only with a minisign signature that holds.
+# minisign-verify has no dependencies of its own, and base64 is already in the build
+minisign-verify = "0.2"
+base64 = "0.22"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Rune's own, already in the lock: the browser's entry point, clock, requests and storage

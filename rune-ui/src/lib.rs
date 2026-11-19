@@ -45,6 +45,8 @@ mod vault;
 mod view3d;
 #[cfg(not(target_arch = "wasm32"))]
 mod htmlview;
+#[cfg(not(target_arch = "wasm32"))]
+mod update;
 mod vim;
 
 use std::collections::HashMap;
@@ -733,6 +735,9 @@ struct App {
     /// An HTML page drawn as a browser shows it: the thread that lays it out, and what it has sent.
     #[cfg(not(target_arch = "wasm32"))]
     web: WebShow,
+    /// The app's own updates: what is asked, what was offered, and how far along it is.
+    #[cfg(not(target_arch = "wasm32"))]
+    upd: Updater,
     /// The link of the rich editor that is open to its Markdown, while the caret is in it.
     link_open: Option<linkedit::Open>,
     /// A theme being made or changed in the settings: its id, light or dark, and its name, five colours and six more as typed.
@@ -1121,6 +1126,8 @@ fn init() -> App {
         link_open: None,
         #[cfg(not(target_arch = "wasm32"))]
         web: WebShow::default(),
+        #[cfg(not(target_arch = "wasm32"))]
+        upd: Updater::new(),
         marks_bad: false,
         marks_q: TextEdit::new(""),
         palette: None,
@@ -1901,6 +1908,8 @@ fn setup(s: &mut App, waker: Waker) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         s.web.html = Some(htmlview::Html::start(waker.clone()));
+        s.upd.check_req.set_waker(waker.clone());
+        s.upd.get_req.set_waker(waker.clone());
     }
     s.waker = Some(waker.clone());
     s.tree_req.set_waker(waker.clone());
@@ -4878,6 +4887,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
         changed |= sync_web(s, tx);
+        changed |= sync_update(s, clock, tx);
     }
     // a link in the rich editor reads as its Markdown while the caret is in it, to be changed by typing,
     // and is a link again once the caret has left. The page's Markdown is the same either way
@@ -10619,6 +10629,187 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
+/// How far along an update is.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, PartialEq)]
+enum UpdStage {
+    Idle,
+    Fetching,
+    /// The new version is in the old one's place and starts next time.
+    Installed(String),
+    Failed(String),
+}
+
+/// The app's own updates (`update.rs`).
+#[cfg(not(target_arch = "wasm32"))]
+struct Updater {
+    /// Whether this copy asks at all: a release build does, a build for working on does not.
+    on: bool,
+    flavor: update::Flavor,
+    endpoint: String,
+    key: String,
+    /// A test's files may be fetched from anywhere.
+    anywhere: bool,
+    /// When it next asks (app clock), and whether a wake is set for then.
+    next: f64,
+    armed: bool,
+    check_req: Latest<Result<Option<update::Offer>, String>>,
+    get_req: Latest<Result<Vec<u8>, String>>,
+    offer: Option<update::Offer>,
+    /// Versions put off for this run. A newer one is offered again.
+    later: Vec<String>,
+    stage: UpdStage,
+    /// Hundredths of the file fetched so far.
+    pct: std::sync::Arc<std::sync::atomic::AtomicU8>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Updater {
+    fn new() -> Updater {
+        let flavor = update::flavor(std::env::var("APPIMAGE").ok().as_deref());
+        // a build for working on asks only when a test names where, and may then be given the test's own key.
+        // A release build reads neither: what it trusts is built into it
+        let test = if cfg!(debug_assertions) { std::env::var("LATTICE_RUNE_UPDATE_URL").ok().filter(|u| !u.is_empty()) } else { None };
+        let key = test.as_ref().and_then(|_| std::env::var("LATTICE_RUNE_UPDATE_KEY").ok()).unwrap_or_else(|| update::PUBKEY.to_owned());
+        Updater {
+            on: !cfg!(debug_assertions) || test.is_some(),
+            flavor,
+            anywhere: test.is_some(),
+            next: if test.is_some() { 1.0 } else { update::FIRST_CHECK },
+            endpoint: test.unwrap_or_else(|| update::ENDPOINT.to_owned()),
+            key,
+            armed: false,
+            check_req: Latest::default(),
+            get_req: Latest::default(),
+            offer: None,
+            later: Vec::new(),
+            stage: UpdStage::Idle,
+            pct: Default::default(),
+        }
+    }
+}
+
+/// Asks whether a newer release is out when it is time to, and takes the
+/// answer and the fetched file as they come. Nothing here waits on the network.
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_update(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
+    if !s.upd.on {
+        return false;
+    }
+    let mut changed = false;
+    if clock >= s.upd.next {
+        s.upd.next = clock + update::PERIOD;
+        s.upd.armed = false;
+        let (endpoint, flavor, anywhere) = (s.upd.endpoint.clone(), s.upd.flavor.clone(), s.upd.anywhere);
+        s.upd.check_req.request((endpoint, flavor), move |(e, f)| update::check(&e, &f, anywhere));
+    }
+    if !s.upd.armed {
+        s.upd.armed = true;
+        tx.wake_after(std::time::Duration::from_secs_f64((s.upd.next - clock).max(0.1)));
+    }
+    // offline, GitHub away, no release yet: asked again next time, and nothing said
+    if let Some(Ok(Some(o))) = s.upd.check_req.take() {
+        let known = s.upd.later.contains(&o.version) || matches!(&s.upd.stage, UpdStage::Installed(v) if *v == o.version);
+        if !known && s.upd.stage != UpdStage::Fetching && s.upd.offer.as_ref() != Some(&o) {
+            s.upd.offer = Some(o);
+            changed = true;
+        }
+    }
+    if let Some(got) = s.upd.get_req.take() {
+        changed = true;
+        let version = s.upd.offer.take().map(|o| o.version).unwrap_or_default();
+        s.upd.stage = match (got, &s.upd.flavor) {
+            (Ok(bytes), update::Flavor::AppImage(at)) => match update::install(at, &bytes) {
+                Ok(()) => UpdStage::Installed(version),
+                Err(e) => UpdStage::Failed(format!("Could not update to lattice-rune {version}: {e}. Nothing was changed.")),
+            },
+            (Ok(_), _) => UpdStage::Idle,
+            (Err(e), _) => UpdStage::Failed(format!("Could not update to lattice-rune {version}: {e}. Nothing was changed, and it will be offered again.")),
+        };
+    }
+    if s.upd.stage == UpdStage::Fetching {
+        // the count moves as the file comes
+        changed = true;
+        tx.wake_after(std::time::Duration::from_millis(250));
+    }
+    changed
+}
+
+/// Fetches the offered file. It is checked against its signature before anything is written.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_now(s: &mut App) {
+    let Some((url, sig)) = s.upd.offer.as_ref().and_then(|o| o.file.clone()) else { return };
+    let (key, pct) = (s.upd.key.clone(), s.upd.pct.clone());
+    pct.store(0, std::sync::atomic::Ordering::Relaxed);
+    s.upd.stage = UpdStage::Fetching;
+    s.upd.get_req.request((url, sig, key), move |(url, sig, key)| update::fetch(&url, &sig, &key, &|p| pct.store(p, std::sync::atomic::Ordering::Relaxed)));
+}
+
+/// Puts the offer off for this run.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_later(s: &mut App) {
+    if let Some(o) = s.upd.offer.take() {
+        s.upd.later.push(o.version);
+    }
+    if matches!(s.upd.stage, UpdStage::Installed(_) | UpdStage::Failed(_)) {
+        // the new version still starts next time
+        s.upd.stage = UpdStage::Idle;
+    }
+}
+
+/// Starts the new version in this one's place, once what is being written has been sent.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_restart(s: &mut App) {
+    let update::Flavor::AppImage(at) = s.upd.flavor.clone() else { return };
+    if !leave_edit(s) {
+        return;
+    }
+    if s.save_req.is_pending() || s.drain_req.is_pending() {
+        s.note = "Saving first. Press Restart again in a moment".into();
+        return;
+    }
+    match update::restart_after_exit(&at) {
+        Ok(()) => std::process::exit(0),
+        Err(e) => s.note = format!("could not restart: {e}. The new version starts the next time the app does"),
+    }
+}
+
+/// The update's own line across the top of the page area: the offer, how
+/// far the file has come, that it is in, or what went wrong.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_banner(s: &App, k: &Kit) -> Option<El> {
+    let small = |label: &str| Button::new(label.to_owned()).control_size(ControlSize::Small);
+    let later = |label: &str| small(label).variant(ButtonVariant::Ghost).on_press(update_later).build(k).key("update-later");
+    let line = |say: String| row().key("update-banner").role("status").w_full().px(16.0).py(8.0).gap(12.0).center_y().fill(k.c.layer_01).child(text(say).key("update-said").font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0));
+    match (&s.upd.stage, &s.upd.offer) {
+        (UpdStage::Fetching, o) => {
+            let pct = s.upd.pct.load(std::sync::atomic::Ordering::Relaxed);
+            let v = o.as_ref().map(|o| o.version.as_str()).unwrap_or_default();
+            Some(line(if pct >= 100 { format!("Checking the signature of lattice-rune {v}\u{2026}") } else { format!("Downloading lattice-rune {v}\u{2026} {pct}%") }))
+        }
+        (UpdStage::Installed(v), _) => Some(
+            line(format!("lattice-rune {v} is installed and starts the next time the app does."))
+                .child(small("Restart now").variant(ButtonVariant::Contrast).on_press(update_restart).build(k).key("update-restart"))
+                .child(later("Later")),
+        ),
+        (UpdStage::Failed(e), _) => Some(line(e.clone()).child(later("Dismiss"))),
+        (UpdStage::Idle, Some(o)) => {
+            let act = if o.file.is_some() {
+                small("Update").variant(ButtonVariant::Contrast).on_press(update_now).build(k).key("update-now")
+            } else {
+                small("Open release page").variant(ButtonVariant::Contrast).on_press_tx(|s: &mut App, tx| {
+                    if let Err(e) = tx.open_url(update::RELEASES_PAGE) {
+                        s.note = format!("could not open {}: {e:?}", update::RELEASES_PAGE);
+                    }
+                    update_later(s);
+                }).build(k).key("update-page")
+            };
+            Some(line(update::offer_text(o, update::VERSION)).child(act).child(later("Later")))
+        }
+        (UpdStage::Idle, None) => None,
+    }
+}
+
 /// An HTML page drawn as a browser shows it.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
@@ -11226,7 +11417,11 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // the room the groups have is noted as it is laid out: a split is refused when it is too little for two
     // while browsing, the browser's bar is the header: its own Back and Forward, the address, and the star
     let head = if browsing(s) && !s.editing { browser_bar(s, &k).pt(6.0) } else { head };
-    let main = col().w_full().h_full().min_h(0.0).child(head).child(wait_line(busy || web_waiting(s), &k)).child(col().key("groups").w_full().grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.groups_room = (r[2], r[3])).child(main));
+    #[cfg(not(target_arch = "wasm32"))]
+    let offer = update_banner(s, &k);
+    #[cfg(target_arch = "wasm32")]
+    let offer: Option<El> = None;
+    let main = col().w_full().h_full().min_h(0.0).children(offer).child(head).child(wait_line(busy || web_waiting(s), &k)).child(col().key("groups").w_full().grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.groups_room = (r[2], r[3])).child(main));
     let inset = cx.titlebar_inset();
     let right = IconButton::new(&topbar::PANE_RIGHT).variant(if s.inspector.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help("Right pane").on_press(toggle_right).build(&k).key("pane-right");
     let shell = SplitView::new(main)

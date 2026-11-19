@@ -123,6 +123,10 @@ Debug builds render headless with the same renderer:
     cargo test                                             # unit tests
     LATTICE_URL=.. LATTICE_COOKIE=.. cargo test -- --ignored   # against a ship, needs a page named rune-probe
 
+## Updates
+
+A release build asks 20 seconds after it starts, and every 6 hours after, whether a newer release is out (`latest-rune.json` on the newest GitHub release). It offers the version with its notes in a line across the top of the page area. An AppImage fetches the new one, checks its minisign signature against the key built into the app (the desktop app's own key), puts it in its own place and offers to restart. A deb, or the program run from a folder, is shown the release page. macOS and Windows copies are shown the release page too. A build made with `cargo build` asks nothing, unless `LATTICE_RUNE_UPDATE_URL` names a list to read, with `LATTICE_RUNE_UPDATE_KEY` for a test key: a release build reads neither. The crate's version is the release's: `release.yml` refuses a tag it does not match.
+
 ## Bundles
 
 - A deb: `sh scripts/bundle/build-in-debian.sh` builds the release inside Debian 12 (docker), then `LATTICE_RUNE_BIN=target/debian/lattice-rune sh scripts/bundle/deb.sh` writes `target/bundle/lattice-rune_<version>_amd64.deb`. Without `LATTICE_RUNE_BIN` the deb holds this machine's own build, which runs only on a system with a glibc as new.
