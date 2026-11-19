@@ -744,6 +744,53 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// The ships signed in on this computer, and the one in front. None in a test, which never reads
+/// the sessions of whoever runs it, and none in a browser, where the ship is the page's own.
+pub fn ships() -> Vec<Ship> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !cfg!(test) {
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let all = crate::accounts::load_at(dir, now_secs());
+            return all.list.iter().map(|a| Ship { url: a.url.clone(), name: a.name().to_owned(), ship: a.ship().to_owned(), expired: a.expired, front: all.front.as_deref() == Some(a.url.as_str()) }).collect();
+        }
+    }
+    Vec::new()
+}
+
+/// One ship signed in, as the window lists it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Ship {
+    pub url: String,
+    /// What it is called: the owner's label, or the ship's name.
+    pub name: String,
+    pub ship: String,
+    pub expired: bool,
+    pub front: bool,
+}
+
+/// Brings another ship signed in to the front, for the next `Conn::load`. False when it is not signed in.
+pub fn ship_bring(url: &str) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !cfg!(test) {
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let mut all = crate::accounts::load_at(dir, now_secs());
+            return all.bring(url, now_secs()) && crate::accounts::store_at(dir, &all).is_ok();
+        }
+    }
+    let _ = url;
+    false
+}
+
+/// Signs out of every ship.
+pub fn ships_forget() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !cfg!(test) {
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let _ = crate::accounts::store_at(dir, &crate::accounts::Accounts::default());
+        }
+    }
+}
+
 /// Where a signed-in session is kept between runs: the app's own file,
 /// readable by its owner alone.
 fn session_path() -> Option<std::path::PathBuf> {
@@ -1495,20 +1542,56 @@ pub struct Prefs {
     /// The pin chosen here for a feature of a map that is not written to, as orrery's: by the body it names.
     #[serde(default)]
     pub pins: std::collections::BTreeMap<String, String>,
+    /// The address of the ship these are kept for. Empty with no ship: the computer's own alone.
+    #[serde(skip)]
+    pub of: String,
 }
 
 impl Prefs {
-    fn path() -> Option<std::path::PathBuf> {
-        Some(session_path()?.with_file_name("prefs.json"))
+    /// Where they are kept: a file for each ship's address, and `prefs.json` for what is the
+    /// computer's whichever ship is in front.
+    fn path_for(of: &str) -> Option<std::path::PathBuf> {
+        if of.is_empty() {
+            return Some(session_path()?.with_file_name("prefs.json"));
+        }
+        let name: String = of.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        Some(session_path()?.with_file_name(format!("prefs-{name}.json")))
     }
 
-    /// The kept preferences, or the defaults when there are none or they do not read.
+    /// What is the computer's, not a ship's, taken from `from`: light or dark, the editor's font,
+    /// vim keys, autosave, how HTML is shown, and how the tree and a split are laid out.
+    pub fn take_device(&mut self, from: &Prefs) {
+        (self.theme, self.font, self.vim, self.no_autosave) = (from.theme.clone(), from.font.clone(), from.vim, from.no_autosave);
+        (self.html_plain, self.sort_desc, self.split_down) = (from.html_plain, from.sort_desc, from.split_down);
+    }
+
+    /// The kept preferences with no ship in front.
     pub fn load() -> Prefs {
+        Prefs::load_for("")
+    }
+
+    /// The preferences for the ship at `of`: its own (the last page, tabs, pins, the theme it wears),
+    /// with the computer's laid over them. A ship with none of its own yet starts from what was
+    /// kept before ships had their own, so the first ship keeps its tabs through the change.
+    pub fn load_for(of: &str) -> Prefs {
         #[cfg(target_arch = "wasm32")]
-        let kept = web::storage().and_then(|st| st.get_item(web::PREFS).ok().flatten());
+        {
+            let kept = web::storage().and_then(|st| st.get_item(web::PREFS).ok().flatten());
+            let mut p: Prefs = kept.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+            p.of = of.to_owned();
+            p
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        let kept = Prefs::path().and_then(|p| std::fs::read_to_string(p).ok());
-        kept.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        {
+            let read = |of: &str| Prefs::path_for(of).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Prefs>(&t).ok());
+            let device = read("");
+            let mut p = if of.is_empty() { device.clone().unwrap_or_default() } else { read(of).or_else(|| device.clone()).unwrap_or_default() };
+            if let (false, Some(d)) = (of.is_empty(), &device) {
+                p.take_device(d);
+            }
+            p.of = of.to_owned();
+            p
+        }
     }
 
     /// Keeps them. A failure is not worth a message: they are a convenience.
@@ -1519,9 +1602,21 @@ impl Prefs {
             let _ = st.set_item(web::PREFS, &t);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let (Some(p), Ok(t)) = (Prefs::path(), serde_json::to_string(self)) {
-            let _ = p.parent().map(std::fs::create_dir_all);
-            let _ = std::fs::write(p, t);
+        {
+            let put = |of: &str, p: &Prefs| {
+                if let (Some(path), Ok(t)) = (Prefs::path_for(of), serde_json::to_string(p)) {
+                    let _ = path.parent().map(std::fs::create_dir_all);
+                    let _ = std::fs::write(path, t);
+                }
+            };
+            put(&self.of, self);
+            // and the computer's part where every ship reads it: that alone, so a ship added later
+            // does not start with another ship's tabs
+            if !self.of.is_empty() {
+                let mut device = Prefs::default();
+                device.take_device(self);
+                put("", &device);
+            }
         }
     }
 
@@ -2204,8 +2299,6 @@ impl Conn {
             let mut all = crate::accounts::load_at(dir, now_secs());
             if let Some(front) = all.front.clone() {
                 all.remove(&front);
-                // sign out leaves nobody in front: the window goes to its sign-in, not to another ship
-                all.front = None;
                 let _ = crate::accounts::store_at(dir, &all);
             }
         }
@@ -3203,6 +3296,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn what_is_the_computers_goes_with_every_ship_and_what_is_a_ships_stays_with_it() {
+        let on = Prefs { theme: "dark".into(), font: "serif".into(), vim: true, no_autosave: true, html_plain: true, sort_desc: true, split_down: true, last: "notes/today".into(), tabs: vec!["a".into()], ..Prefs::default() };
+        let mut other = Prefs { last: "elsewhere".into(), of: "https://bus.test".into(), ..Prefs::default() };
+        other.take_device(&on);
+        assert_eq!((other.theme.as_str(), other.font.as_str(), other.vim, other.no_autosave, other.html_plain, other.sort_desc, other.split_down), ("dark", "serif", true, true, true, true, true));
+        assert_eq!((other.last.as_str(), other.tabs.len(), other.of.as_str()), ("elsewhere", 0, "https://bus.test"), "the page it was on and its tabs are its own");
+        // the ship a set belongs to is not written into the file: the file's own name says it
+        assert!(!serde_json::to_string(&other).unwrap().contains("bus.test"));
+    }
+
+    #[test]
     fn the_pictures_a_post_names_are_found_once_each() {
         let text = "See ![a cat](https://x.test/cat.png) and [this](https://x.test/dog.JPG), or https://x.test/bird.webp.\n\
             Again https://x.test/cat.png and a page https://x.test/page.html and urb://~zod/pic.png.\n\
@@ -3234,7 +3338,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new() }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert!(back.sort_desc);
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");

@@ -566,6 +566,12 @@ struct App {
     auto_held: bool,
     /// What is kept between runs, and whether the last page was opened again.
     prefs: Prefs,
+    /// The ships signed in on this computer, as they were when the window's state was last built.
+    ships: Vec<api::Ship>,
+    /// The list of ships is showing, to go to another, add one or sign out.
+    ships_open: bool,
+    /// Another ship is being signed in to, with the one in front left as it is until that is done.
+    adding: bool,
     restored: bool,
     /// The page asked for whose text has not come yet: a page just made,
     /// or one opened before the first tree arrived. Its answer is shown.
@@ -1087,7 +1093,10 @@ fn init() -> App {
         autosaving: false,
         save_again: false,
         auto_held: false,
-        prefs: Prefs::load(),
+        prefs: Prefs::load_for(conn.as_ref().map_or("", |c| c.url.as_str())),
+        ships: api::ships(),
+        ships_open: false,
+        adding: false,
         restored: false,
         want: None,
         folder: None,
@@ -1456,10 +1465,47 @@ fn sign_in(s: &mut App) {
     s.login_req.request((s.url.text.clone(), s.code.text.clone()), |(u, c)| Conn::login(&u, &c));
 }
 
+/// Signs out of the ship in front. Another ship signed in comes to the front in its place: the
+/// one used most lately. With none, the window is at its sign-in.
 fn sign_out(s: &mut App) {
     Conn::forget();
+    reset(s, true);
+}
+
+/// Signs out of every ship.
+fn sign_out_all(s: &mut App) {
+    api::ships_forget();
+    reset(s, false);
+}
+
+/// Goes to another ship signed in: its tree, its tabs and its last page, as they were left.
+fn switch_ship(s: &mut App, url: &str) {
+    if s.conn.as_ref().is_some_and(|c| c.url == url) {
+        s.ships_open = false;
+        return;
+    }
+    // what is being typed is saved or kept first, as before any other page is opened
+    if !leave_edit(s) {
+        return;
+    }
+    if !api::ship_bring(url) {
+        s.note = "that ship is not signed in on this computer any more".into();
+        return;
+    }
+    reset(s, true);
+    if let Some(c) = &s.conn {
+        s.note = format!("now on {}", c.ship());
+    }
+}
+
+/// Builds the window's state again from what is kept: for the ship now in front when `signed`,
+/// or for no ship. Everything the window held of the ship before is let go.
+fn reset(s: &mut App, signed: bool) {
     let mut fresh = init();
-    fresh.conn = None;
+    if !signed {
+        fresh.conn = None;
+        fresh.prefs = Prefs::load();
+    }
     // the wakers were set once, on the requests this window keeps
     fresh.tree_req = std::mem::take(&mut s.tree_req);
     fresh.page_req = std::mem::take(&mut s.page_req);
@@ -5766,13 +5812,16 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         match r {
             Ok(c) => {
-                // signed in again, or to another ship: what the window held of the one before is let go first
-                if s.conn.is_some() {
-                    sign_out(s);
+                // signed in again, or to another ship: what the window held of the one before is let go first.
+                // The ship that was in front stays signed in, and can be gone back to
+                if s.conn.is_some() || s.adding {
+                    reset(s, false);
                 }
                 if let Err(e) = c.remember() {
                     s.note = format!("signed in, but the session was not kept: {e}");
                 }
+                s.prefs = Prefs::load_for(&c.url);
+                s.ships = api::ships();
                 s.code = TextEdit::new("");
                 s.queue = c.queue();
                 s.ops = c.ops();
@@ -9545,7 +9594,66 @@ fn login_view(s: &App, k: &Kit) -> El {
             .child(text("No node? You can use lattice anonymously. You can browse pages people publish, but you can't save or host pages without a node.").key("anon-said").font(k.ty.small).color(c.text_muted).wrap())
             .child(Button::new("Use anonymously").variant(ButtonVariant::Ghost).on_press(browse_anon).build(k).key("anon"));
     }
+    // adding a ship beside the one in front: a way back to it
+    if let (true, Some(now)) = (s.adding, &s.conn) {
+        card = card.child(Button::new(format!("Back to {}", now.ship())).variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.adding = false).build(k).key("add-back"));
+    }
     col().w_full().h_full().center().fill(c.bg_base).child(card)
+}
+
+/// The ships signed in on this computer: go to one, add one, or sign out.
+fn ships_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
+    if !s.ships_open {
+        return;
+    }
+    let c = &k.c;
+    let mut list = col().key("ship-list").w_full().gap(4.0);
+    for (i, sh) in s.ships.iter().enumerate() {
+        let url = sh.url.clone();
+        let host = sh.url.split("://").nth(1).unwrap_or(&sh.url).to_owned();
+        let said = if sh.expired { format!("{host} \u{b7} sign in again") } else if sh.front { format!("{host} \u{b7} in front") } else { host };
+        list = list.child(
+            row()
+                .key(format!("ship-{i}"))
+                .role("button")
+                .label(format!("{}, {said}", sh.name))
+                .w_full()
+                .px(10.0)
+                .py(6.0)
+                .gap(8.0)
+                .center_y()
+                .radius(k.radius.sm)
+                .fill(if sh.front { c.layer_01 } else { rune::Color::TRANSPARENT })
+                .hover(c.hover)
+                .on_press(move |s: &mut App| switch_ship(s, &url))
+                .child(col().grow(1.0).min_w(0.0).gap(1.0).child(text(sh.name.clone()).font(k.ty.ui_medium).color(c.text_base).truncate()).child(text(said).font(k.ty.small).color(c.text_muted).truncate())),
+        );
+    }
+    if s.ships.is_empty() {
+        list = list.child(text("No ship is signed in on this computer.").font(k.ty.small).color(c.text_muted));
+    }
+    let front = s.conn.as_ref().map(|c| c.ship().to_owned());
+    let mut acts = row().w_full().gap(8.0).flex_wrap().child(Button::new("Add a ship").variant(ButtonVariant::Contrast).help("Sign in to another ship. This one stays signed in").on_press(|s: &mut App| {
+        if leave_edit(s) {
+            (s.ships_open, s.adding) = (false, true);
+            (s.url, s.code) = (TextEdit::new(""), TextEdit::new(""));
+            s.url.focused = true;
+            s.login_err.clear();
+        }
+    }).build(k).key("ship-add"));
+    if let Some(name) = front {
+        acts = acts.child(Button::new(format!("Sign out of {name}")).variant(ButtonVariant::Ghost).on_press(sign_out).build(k).key("ship-out"));
+    }
+    if s.ships.len() > 1 {
+        acts = acts.child(Button::new("Sign out of every ship").variant(ButtonVariant::Ghost).on_press(sign_out_all).build(k).key("ship-out-all"));
+    }
+    Dialog::new("ships", "Ships")
+        .open(true)
+        .width(440.0)
+        .fit()
+        .on_close(|s: &mut App| s.ships_open = false)
+        .child(col().w_full().gap(14.0).child(list).child(acts))
+        .build(k, layer);
 }
 
 /// One of the open feature prompt's fields: its name, kind or note.
@@ -11728,7 +11836,16 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .w_full()
         .center_y()
         .justify_between()
-        .child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).grow(1.0).min_w(0.0).truncate())
+        .child(if s.conn.is_some() && !cfg!(target_arch = "wasm32") {
+            // the ship in front, and the way to the others signed in
+            let more = s.ships.len().saturating_sub(1);
+            row().role("button").label(if more > 0 { format!("{who}, and {more} more signed in. Ships") } else { format!("{who}. Ships") }).help("Ships signed in: go to another, add one, or sign out").grow(1.0).min_w(0.0).px(4.0).py(2.0).radius(k.radius.sm).hover(k.c.hover).on_press(|s: &mut App| {
+                s.ships = api::ships();
+                s.ships_open = true;
+            }).child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).truncate()).key("ship-switch")
+        } else {
+            row().grow(1.0).min_w(0.0).child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).truncate())
+        })
         .child(theme)
         .child(Button::new(if s.conn.is_some() { "Sign out" } else if s.anon { "Leave" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
     // rune-kit keeps a band over the sidebar for its own toggle, level with the top bar. The toggle is the
@@ -12951,7 +13068,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let k = kit_of(&s.prefs, cx.system_dark());
     #[cfg(not(target_arch = "wasm32"))]
     s.web.env.set((cx.env().scale, k.dark));
-    if s.conn.is_none() && !s.sample {
+    if (s.conn.is_none() && !s.sample) || s.adding {
         return login_view(s, &k);
     }
     let path = s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref());
@@ -13063,6 +13180,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     palette_view(s, &k, &mut layer);
     template_view(s, &k, &mut layer);
     prompt_view(s, &k, &mut layer);
+    ships_view(s, &k, &mut layer);
     share_view(s, &k, &mut layer);
     let nav = |key: &str, icon: &'static rune::Icon, name: &str, by: isize, on: bool| IconButton::new(icon).variant(IconButtonVariant::GhostMuted).help(name).disabled(!on).on_press(move |s: &mut App| step(s, by)).build(&k).key(key.to_owned());
     let name = text(title.to_owned()).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate();
@@ -13323,7 +13441,7 @@ pub fn run() {
     // where its tables are wrong, before Rune looks for the family itself. A font first worn in this
     // run is found by Rune, and is read this way from the next launch
     #[cfg(not(target_arch = "wasm32"))]
-    let fonts: &'static [&'static [u8]] = match api::Prefs::load().worn.font() {
+    let fonts: &'static [&'static [u8]] = match api::Prefs::load_for(Conn::load().as_ref().map_or("", |c| c.url.as_str())).worn.font() {
         Some(theme::Font::Named(f)) => Box::leak(fonts::of_family(&f).into_iter().map(|b| &*Box::leak(b.into_boxed_slice())).collect::<Vec<&'static [u8]>>().into_boxed_slice()),
         _ => &[],
     };

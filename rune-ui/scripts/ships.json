@@ -1,0 +1,21 @@
+{"events": [
+  {"t": 2.5, "type": "tap", "key": "places"},
+  {"t": 3.5, "type": "mark", "name": "on-zod"},
+  {"t": 4.0, "type": "tap", "key": "ship-switch"},
+  {"t": 5.0, "type": "mark", "name": "one-ship"},
+  {"t": 5.2, "type": "tap", "key": "ship-add"},
+  {"t": 6.0, "type": "tap", "key": "url"},
+  {"t": 6.4, "type": "type", "text": "http://127.0.0.1:8380"},
+  {"t": 7.2, "type": "tap", "key": "code"},
+  {"t": 7.6, "type": "type", "text": "lidlut-tabwed"},
+  {"t": 8.4, "type": "tap", "key": "sign-in"},
+  {"t": 11.0, "type": "tap", "key": "onbus"},
+  {"t": 12.5, "type": "mark", "name": "on-bus"},
+  {"t": 13.0, "type": "tap", "key": "ship-switch"},
+  {"t": 14.0, "type": "mark", "name": "two-ships"},
+  {"t": 14.2, "type": "tap", "key": "ship-0"},
+  {"t": 17.0, "type": "mark", "name": "back-on-zod"},
+  {"t": 17.5, "type": "tap", "key": "ship-switch"},
+  {"t": 18.3, "type": "tap", "key": "ship-out"},
+  {"t": 21.0, "type": "mark", "name": "signed-out-of-zod"}
+]}

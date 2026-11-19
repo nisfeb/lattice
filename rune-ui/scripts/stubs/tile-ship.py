@@ -157,6 +157,11 @@ def redirect(self, to):
     self.send_response(303); self.send_header('location', to); self.send_header('content-length', '0'); self.end_headers()
 def do_POST(self):
     u = urlparse(self.path); p = u.path.replace('/apps/lattice/', '', 1); q = parse_qs(u.query)
+    # a sign-in, as eyre answers a code it takes: the session cookie on the answer itself
+    if u.path == '/~/login':
+        self.rfile.read(int(self.headers.get('Content-Length') or 0))
+        self.send_response(204); self.send_header('set-cookie', 'urbauth-%s=0v1.stub; Path=/; Max-Age=604800' % os.environ.get('LR_SHIP', '~zod')); self.send_header('content-length', '0'); self.end_headers()
+        return
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
     # comments, as the ship answers each. LR_COMMENT_FAIL refuses a post and a switch, to see that nothing typed is lost
     if p in ('comment', 'page-comments', 'comment-remote') and os.environ.get('LR_COMMENT_FAIL'): return self.send(500, 'the ship could not do that')
@@ -292,4 +297,5 @@ def do_PUT(self):
     self.send(204, '')
 H.do_PUT = do_PUT
 H.do_POST = do_POST
-HTTPServer(('127.0.0.1', 8379), H).serve_forever()
+# LR_PORT: another port, so two stand-in ships can run at once, and LR_SHIP: the name this one signs a session as
+HTTPServer(('127.0.0.1', int(os.environ.get('LR_PORT', '8379'))), H).serve_forever()
