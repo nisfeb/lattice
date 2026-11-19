@@ -89,7 +89,7 @@ class H(BaseHTTPRequestHandler):
                 def da(hours_ago):
                     t = time.gmtime(time.time() - hours_ago * 3600)
                     return "~%d.%d.%d..%d.%d.%d" % (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec)
-                posts = [{"id":t["id"],"title":t["title"],"author":"~bus" if away and t["id"] == 1 else "~zod","created":da(t["ago"]),"active":da(t["ago"]),"body":"","up":t["up"],"down":0,"comments":0,"pinned":t["pinned"],"tags":t.get("tags", [])} for t in THREADS]
+                posts = [{"id":t["id"],"title":t["title"],"author":"~bus" if away and t["id"] == 1 else "~zod","created":da(t["ago"]),"active":da(t["ago"]),"body":"","up":t["up"],"down":0,"comments":0,"pinned":t["pinned"],"tags":t.get("tags", []),"link":t.get("link")} for t in THREADS]
                 return self.send(200, json.dumps({"kind":"board","board":"tech" if away else "chat","title":"Tech" if away else "Chat","description":"","public":True,"count":len(posts),"posts":posts}))
             # a forum thread, as the ship answers one: enough of it to be shown
             if '/forum/' in url and url.rsplit('/', 1)[-1].isdigit():
@@ -133,7 +133,7 @@ SHARED = [] if os.environ.get('LR_SHARED') != '1' else [
 LINKS = {}
 MARKS = [{"url": "urb://~sampel-palnet/notes", "title": "Sampel's notes", "folder": ""}]
 HISTORY = []
-THREADS = [{"id":1,"title":"DayOldForty","ago":24,"up":40,"pinned":False}, {"id":2,"title":"HourOldThree","ago":1,"up":3,"pinned":False}, {"id":3,"title":"NewNone","ago":0.2,"up":0,"pinned":False}, {"id":4,"title":"TenHoursThirty","ago":10,"up":30,"pinned":False}]
+THREADS = [{"id":1,"title":"DayOldForty","ago":24,"up":40,"pinned":False}, {"id":2,"title":"HourOldThree","ago":1,"up":3,"pinned":False}, {"id":3,"title":"NewNone","ago":0.2,"up":0,"pinned":False}, {"id":4,"title":"TenHoursThirty","ago":10,"up":30,"pinned":False}, {"id":5,"title":"AboutALink","ago":2,"up":1,"pinned":False,"link":"urb://~sampel-palnet/notes/plan"}]
 # LR_MANY_TAGS: twelve more threads with four tags each, so a board has more tags than its filter shows
 if os.environ.get('LR_MANY_TAGS'):
     THREADS += [{"id":10+i,"title":"Tagged %d" % i,"ago":30+i,"up":0,"pinned":False,"tags":["g%d-%s" % (i, w) for w in ("alpha", "beta", "gamma", "delta")]} for i in range(12)]

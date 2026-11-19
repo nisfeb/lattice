@@ -7413,6 +7413,13 @@ fn forum_may(board: &str, ours: &str, author: &str) -> ForumMay {
     ForumMay { pin: host, change: host || (!ours.is_empty() && author == ours) }
 }
 
+/// The link a thread is about, when it is one to follow: the web, or an address on the network. As
+/// the web's forum keeps a title's link to what is safe to follow (`safe-href`), nothing else is.
+fn forum_link(link: Option<&str>) -> Option<String> {
+    let l = link?.trim();
+    (l.starts_with("https://") || l.starts_with("http://") || l.starts_with("urb://")).then(|| l.to_owned())
+}
+
 /// The tags offered to show a board's threads by, as the web's filter has them
 /// (`lattice-forum-render.hoon`): the thirty most used, or with something typed every tag that
 /// holds it. A tag that is picked is always among them, so it can be let go.
@@ -8020,8 +8027,16 @@ fn forum_view(f: &Forum, ours: &str, k: &Kit) -> El {
                 .hover(c.layer_01)
                 .cursor(rune::Cursor::Pointer)
                 .on_press(move |s: &mut App| forum_open(s, to.clone(), Some(id)))
-                .label(format!("Open the thread {}", p.title))
-                .child(text(if p.pinned { format!("\u{2022} {}", p.title) } else { p.title.clone() }).font(k.ty.ui_medium).color(c.text_base).wrap());
+                .label(format!("Open the thread {}", p.title));
+            // a thread about a link: its title leads to the link, as on the web, and what is under it opens the thread
+            let out = forum_link(p.link.as_deref());
+            let title = text(if p.pinned { format!("\u{2022} {}", p.title) } else { p.title.clone() }).font(k.ty.ui_medium).wrap();
+            let lead = out.map(|url| {
+                row().px(8.0).pt(6.0).child(
+                    title.clone().key(format!("post-link-{id}")).color(c.text_accent).cursor(rune::Cursor::Pointer).role("link").label(format!("{}, a link to {url}", p.title)).on_press_tx(move |s: &mut App, tx| follow(s, &url, tx)),
+                )
+            });
+            line = if lead.is_none() { line.child(title.color(c.text_base)) } else { line.pt(2.0) };
             let host = p.link.as_deref().and_then(|l| l.split("://").nth(1)).and_then(|r| r.split('/').next()).map(|h| format!(" \u{b7} {h}")).unwrap_or_default();
             line = line.child(muted(format!("{} \u{b7} {} \u{b7} {points} point{} \u{b7} {} comment{}{host}{}", p.author, when(&p.created), if points == 1 { "" } else { "s" }, p.comments, if p.comments == 1 { "" } else { "s" }, if p.pinned { " \u{b7} pinned" } else { "" })));
             if !p.tags.is_empty() {
@@ -8039,7 +8054,7 @@ fn forum_view(f: &Forum, ours: &str, k: &Kit) -> El {
             if may.change {
                 acts = acts.child(small("Delete", "Delete this thread").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumRowDelete(db.clone(), id))).build(k).key(format!("row-delete-{id}")));
             }
-            page = page.child(col().key(format!("post-row-{id}")).w_full().child(line).child(acts));
+            page = page.child(col().key(format!("post-row-{id}")).w_full().children(lead).child(line).child(acts));
         }
         return page;
     }
@@ -12858,6 +12873,15 @@ mod tests {
         // a board of this ship's says so. One elsewhere is not yet known to have refused
         assert!(forum_taken("chat", false).unwrap_err().contains("did not take that"));
         assert_eq!((forum_taken("chat", true), forum_taken("~nec/chat", false)), (Ok(()), Ok(())));
+    }
+
+    #[test]
+    fn a_threads_link_is_followed_only_when_it_is_one_to_follow() {
+        assert_eq!(forum_link(Some(" https://example.com/x ")).as_deref(), Some("https://example.com/x"));
+        assert_eq!(forum_link(Some("urb://~nec/notes")).as_deref(), Some("urb://~nec/notes"));
+        for no in [None, Some(""), Some("javascript:alert(1)"), Some("file:///etc/passwd"), Some("example.com")] {
+            assert_eq!(forum_link(no), None, "{no:?}");
+        }
     }
 
     #[test]
