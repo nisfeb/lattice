@@ -199,6 +199,8 @@ struct Forum {
     sort: ForumSort,
     /// The tags the board's threads are shown by: those that carry every one.
     tags: Vec<String>,
+    /// What is typed to find a tag among the board's.
+    tag_find: TextEdit,
     /// A board being made: its name, title and description, and what those with no role of their own may do.
     making: Option<(Box<[TextEdit; 3]>, &'static str)>,
     /// The board showing being changed: its title and description.
@@ -7411,6 +7413,39 @@ fn forum_may(board: &str, ours: &str, author: &str) -> ForumMay {
     ForumMay { pin: host, change: host || (!ours.is_empty() && author == ours) }
 }
 
+/// The tags offered to show a board's threads by, as the web's filter has them
+/// (`lattice-forum-render.hoon`): the thirty most used, or with something typed every tag that
+/// holds it. A tag that is picked is always among them, so it can be let go.
+fn forum_tags_shown(all: &[(String, usize)], find: &str, picked: &[String]) -> Vec<(String, usize)> {
+    let q = find.trim().trim_start_matches('#').to_lowercase();
+    let mut out: Vec<(String, usize)> = if q.is_empty() { all.iter().take(30).cloned().collect() } else { all.iter().filter(|(t, _)| t.contains(&q)).cloned().collect() };
+    for t in picked {
+        if !out.iter().any(|(x, _)| x == t) {
+            out.push((t.clone(), all.iter().find(|(x, _)| x == t).map_or(0, |x| x.1)));
+        }
+    }
+    out
+}
+
+/// The board's tags to offer while a thread's are typed, as the web's field suggests them: those
+/// that hold the word being typed, most used first, without the ones typed already. Eight at most.
+fn tag_suggest(all: &[(String, usize)], typed: &str) -> Vec<String> {
+    let part = |c: char| c == ',' || c.is_whitespace();
+    let last = if typed.ends_with(part) { "" } else { typed.rsplit(part).next().unwrap_or_default() }.trim_start_matches('#').to_lowercase();
+    let have: Vec<&str> = typed.split(part).map(|t| t.trim_start_matches('#')).filter(|t| !t.is_empty() && *t != last).collect();
+    if have.len() >= 5 {
+        return Vec::new();
+    }
+    all.iter().map(|(t, _)| t).filter(|t| t.contains(&last) && **t != last && !have.contains(&t.as_str())).take(8).cloned().collect()
+}
+
+/// What is typed for a thread's tags with the word being typed made the tag picked.
+fn tag_complete(typed: &str, tag: &str) -> String {
+    let part = |c: char| c == ',' || c.is_whitespace();
+    let kept = if typed.ends_with(part) { typed } else { &typed[..typed.rfind(part).map_or(0, |i| i + 1)] };
+    format!("{kept}{tag} ")
+}
+
 /// The tags a board's threads carry, most used first, then by name.
 fn forum_board_tags(posts: &[api::ForumPost]) -> Vec<(String, usize)> {
     let mut count: HashMap<&str, usize> = HashMap::new();
@@ -7877,8 +7912,20 @@ fn forum_view(f: &Forum, ours: &str, k: &Kit) -> El {
         // the board's tags, most used first: pressed, only the threads that carry every one pressed are listed
         let board_tags = forum_board_tags(&b.posts);
         if !board_tags.is_empty() {
+            // more tags than are shown: one can be looked for, as with the web's "find a tag"
+            if board_tags.len() > 30 || !f.tag_find.text.is_empty() {
+                page = page.child(
+                    TextInput::new(&f.tag_find)
+                        .placeholder(format!("Find a tag among {}", board_tags.len()))
+                        .on_edit(|s: &mut App| &mut s.forum.as_mut().expect("the forum is showing").tag_find)
+                        .build(k)
+                        .w(240.0)
+                        .label("Find a tag")
+                        .key("ftag-find"),
+                );
+            }
             let mut chips = row().key("forum-tag-filter").gap(2.0).flex_wrap();
-            for (tag, n) in board_tags.iter().take(30) {
+            for (tag, n) in &forum_tags_shown(&board_tags, &f.tag_find.text, &f.tags) {
                 let (on, tag2) = (f.tags.contains(tag), tag.clone());
                 chips = chips.child(Button::new(format!("#{tag} {n}")).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted }).on_press(move |s: &mut App| {
                     if let Some(f) = &mut s.forum {
@@ -7890,6 +7937,13 @@ fn forum_view(f: &Forum, ours: &str, k: &Kit) -> El {
                         }
                     }
                 }).build(k).key(format!("ftag-{tag}")));
+            }
+            if !f.tags.is_empty() {
+                chips = chips.child(Button::new("Clear").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Show every thread again").on_press(|s: &mut App| {
+                    if let Some(f) = &mut s.forum {
+                        f.tags.clear();
+                    }
+                }).build(k).key("ftag-clear"));
             }
             page = page.child(chips);
         }
@@ -7918,6 +7972,21 @@ fn forum_view(f: &Forum, ours: &str, k: &Kit) -> El {
                         .child(line(1, "Link", "A link, if it is about one", "draft-link"))
                         .child(TextArea::new(&d[2]).label("Text (Markdown)").placeholder("The text, if it has one").rows(5).on_edit(|s: &mut App| draft_field(s, 2)).build(k).w_full().key("draft-body"))
                         .child(line(3, "Tags", "Up to five: lowercase letters, digits and dashes", "draft-tags"))
+                        // the board's own tags that hold what is being typed: pressed, the word becomes the tag
+                        .child({
+                            let mut offer = row().key("draft-tag-offer").gap(2.0).flex_wrap();
+                            for tag in tag_suggest(&board_tags, &d[3].text) {
+                                let t = tag.clone();
+                                offer = offer.child(Button::new(format!("#{tag}")).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Use this tag").on_press(move |s: &mut App| {
+                                    if let Some(d) = s.forum.as_mut().and_then(|f| f.draft.as_mut()) {
+                                        let now = tag_complete(&d[3].text, &t);
+                                        d[3] = TextEdit::new(now.as_str());
+                                        d[3].focused = true;
+                                    }
+                                }).build(k).key(format!("draft-tag-{tag}")));
+                            }
+                            offer
+                        })
                         .child(
                             row()
                                 .gap(6.0)
@@ -12789,6 +12858,29 @@ mod tests {
         // a board of this ship's says so. One elsewhere is not yet known to have refused
         assert!(forum_taken("chat", false).unwrap_err().contains("did not take that"));
         assert_eq!((forum_taken("chat", true), forum_taken("~nec/chat", false)), (Ok(()), Ok(())));
+    }
+
+    #[test]
+    fn a_boards_tags_are_found_and_offered_as_a_threads_are_typed() {
+        let all: Vec<(String, usize)> = (0..40).map(|i| (format!("tag{i:02}"), 100 - i)).chain([("bug-report".to_owned(), 2), ("debug".to_owned(), 1)]).collect();
+        // thirty until one is looked for, then every tag that holds what is typed
+        assert_eq!(forum_tags_shown(&all, "", &[]).len(), 30);
+        assert_eq!(forum_tags_shown(&all, " #BUG ", &[]).iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["bug-report", "debug"]);
+        // one that is picked stays to be let go, though it is past the thirty or not what is looked for
+        assert!(forum_tags_shown(&all, "", &["debug".into()]).contains(&("debug".to_owned(), 1)));
+        assert_eq!(forum_tags_shown(&all, "bug-r", &["tag00".into()]).iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["bug-report", "tag00"]);
+        assert!(forum_tags_shown(&[], "x", &[]).is_empty());
+        // while a thread's tags are typed: those that hold the word being typed, without the ones had
+        assert_eq!(tag_suggest(&all, "bug"), ["bug-report", "debug"]);
+        assert_eq!(tag_suggest(&all, "debug, bu"), ["bug-report"], "what is typed already is not offered again");
+        assert_eq!(tag_suggest(&all, "").len(), 8, "the most used, before anything is typed");
+        assert_eq!(tag_suggest(&all, "tag00 ")[0], "tag01", "after a space a new word begins");
+        assert!(tag_suggest(&all, "a b c d e f").is_empty(), "five are all a thread carries");
+        assert!(tag_suggest(&all, "debug").iter().all(|t| t != "debug"), "a tag typed whole needs no offer");
+        assert_eq!(tag_complete("debug, bu", "bug-report"), "debug, bug-report ");
+        assert_eq!(tag_complete("bu", "bug-report"), "bug-report ");
+        assert_eq!(tag_complete("debug ", "ui"), "debug ui ");
+        assert_eq!(tag_complete("", "ui"), "ui ");
     }
 
     #[test]
