@@ -646,6 +646,13 @@ struct Rendered {
     kept: Option<bool>,
 }
 
+/// Whether an address is a picture's, as the ship's forum reckons it (`+is-image-url` in
+/// `lattice-forum-render.hoon`): on the web, and ending as a picture's name ends.
+pub fn is_image_url(url: &str) -> bool {
+    let u = url.trim().to_lowercase();
+    (u.starts_with("http://") || u.starts_with("https://")) && [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp"].iter().any(|e| u.ends_with(e))
+}
+
 /// A date as the ship writes one (`~2026.11.17..17.25.11..b165`), in seconds since 1970. None for
 /// what is not one. Dates are compared by this, never as text: as text the 9th comes after the 10th.
 pub fn da_secs(da: &str) -> Option<i64> {
@@ -3258,6 +3265,14 @@ mod tests {
         assert_eq!(Rev { rev: 0, updated: held.items[0].when.clone() }.when(), "2026-11-17 20:36");
         let inbox: Inbox = serde_json::from_str(r#"{"items":[{"page":"a","id":"0v1","when":"~2026.11.17..20.36.35..0722"}]}"#).unwrap();
         assert_eq!(inbox.items[0].when, "~2026.11.17..20.36.35..0722");
+    }
+
+    #[test]
+    fn a_pictures_address_is_known_by_its_end() {
+        assert!(is_image_url("https://example.com/a/cat.PNG") && is_image_url("http://x.org/p.jpeg") && is_image_url(" https://x.org/p.webp "));
+        for no in ["https://example.com/cat.png?x=1", "https://example.com/page", "urb://~nec/cat.png", "/cat.png", "ftp://x/cat.png", ""] {
+            assert!(!is_image_url(no), "{no}");
+        }
     }
 
     #[test]

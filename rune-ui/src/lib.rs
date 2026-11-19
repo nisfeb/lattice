@@ -201,6 +201,8 @@ struct Forum {
     tags: Vec<String>,
     /// What is typed to find a tag among the board's.
     tag_find: TextEdit,
+    /// The pictures asked to be shown: each a link's address, fetched from its site at that press.
+    shown: Vec<String>,
     /// A board being made: its name, title and description, and what those with no role of their own may do.
     making: Option<(Box<[TextEdit; 3]>, &'static str)>,
     /// The board showing being changed: its title and description.
@@ -747,6 +749,8 @@ struct App {
     /// what the fetching threads bring back, and the page they are for.
     image_cache: Option<std::rc::Rc<rune::ImageCache>>,
     pics: HashMap<String, rune::Image>,
+    /// Pictures asked for that did not come.
+    pics_failed: std::collections::HashSet<String>,
     pics_asked: std::collections::HashSet<String>,
     pics_in: std::sync::Arc<std::sync::Mutex<Vec<(String, Result<Vec<u8>, String>)>>>,
     pics_for: Option<(String, u64)>,
@@ -1174,6 +1178,7 @@ fn init() -> App {
         find_at: 0,
         image_cache: None,
         pics: HashMap::new(),
+        pics_failed: std::collections::HashSet::new(),
         pics_asked: std::collections::HashSet::new(),
         pics_in: Default::default(),
         pics_for: None,
@@ -3773,7 +3778,10 @@ fn take_pics(s: &mut App) -> bool {
             (Ok(bytes), Some(cache)) => {
                 s.pics.insert(src, cache.load(bytes));
             }
-            (Err(e), _) => s.note = format!("an image did not load: {e}"),
+            (Err(e), _) => {
+                s.note = format!("an image did not load: {e}");
+                s.pics_failed.insert(src);
+            }
             _ => {}
         }
     }
@@ -7413,6 +7421,69 @@ fn forum_may(board: &str, ours: &str, author: &str) -> ForumMay {
     ForumMay { pin: host, change: host || (!ours.is_empty() && author == ours) }
 }
 
+/// Shows or hides the picture a thread's link is. Showing it fetches it from its site, which then
+/// learns the reader's address: the press is the yes, as it is on the web's forum, where a picture
+/// sits folded until it is opened (`+image-preview`).
+fn forum_image(s: &mut App, url: String) {
+    let Some(f) = &mut s.forum else { return };
+    if let Some(i) = f.shown.iter().position(|u| *u == url) {
+        f.shown.remove(i);
+        return;
+    }
+    f.shown.push(url.clone());
+    // one that failed is tried again by asking again
+    if s.pics_failed.remove(&url) {
+        s.pics_asked.remove(&url);
+    }
+    if !s.pics_asked.insert(url.clone()) {
+        return;
+    }
+    let (Some(waker), back) = (s.waker.clone(), s.pics_in.clone()) else { return };
+    spawn(move || {
+        let got = api::fetch_bytes(&url, None);
+        if let Ok(mut list) = back.lock() {
+            list.push((url, got));
+        }
+        waker();
+    });
+}
+
+/// A thread's link when it is a picture: the way to show it, and the picture once asked for,
+/// no wider than the page and no taller than a screen's better part.
+fn forum_preview(f: &Forum, pics: &Pics, link: Option<&str>, id: u64, k: &Kit) -> Option<El> {
+    let url = link.filter(|l| api::is_image_url(l))?.trim().to_owned();
+    let on = f.shown.contains(&url);
+    let u = url.clone();
+    let mut out = col().key(format!("post-image-{id}")).px(8.0).gap(4.0).child(
+        row().child(
+            Button::new(if on { "Hide image" } else { "Show image" })
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::GhostMuted)
+                .help("Fetches the picture from its own site, which then learns your address")
+                .on_press(move |s: &mut App| forum_image(s, u.clone()))
+                .build(k)
+                .key(format!("post-image-toggle-{id}")),
+        ),
+    );
+    if on {
+        out = out.child(match (pics.had.get(&url).filter(|p| p.is_ready()).and_then(|p| Some((p, p.size()?))), pics.failed.contains(&url)) {
+            (Some((pic, [w, h])), _) => {
+                let scale = (560.0 / w.max(1) as f32).min(420.0 / h.max(1) as f32).min(1.0);
+                el().key(format!("post-image-pic-{id}")).size(w as f32 * scale, h as f32 * scale).radius(k.radius.sm).pixels(pic.pixels()).role("img").label("The picture this thread links to")
+            }
+            (None, true) => text("The picture did not load.").font(k.ty.small).color(k.c.text_muted),
+            (None, false) => text("Loading the picture\u{2026}").font(k.ty.small).color(k.c.text_muted),
+        });
+    }
+    Some(out)
+}
+
+/// The pictures had and the ones that did not come, for a view that is given no more of the app.
+struct Pics<'a> {
+    had: &'a HashMap<String, rune::Image>,
+    failed: &'a std::collections::HashSet<String>,
+}
+
 /// The link a thread is about, when it is one to follow: the web, or an address on the network. As
 /// the web's forum keeps a title's link to what is safe to follow (`safe-href`), nothing else is.
 fn forum_link(link: Option<&str>) -> Option<String> {
@@ -7756,7 +7827,7 @@ fn refusals(f: &Forum, k: &Kit, always: bool) -> Option<El> {
 }
 
 /// The forum: the boards, a board's threads, or a thread with its comments under what they answer.
-fn forum_view(f: &Forum, ours: &str, k: &Kit) -> El {
+fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
     let c = &k.c;
     let when = |da: &str| Rev { rev: 0, updated: da.to_owned() }.when();
     let muted = |t: String| text(t).font(k.ty.small).color(c.text_muted);
@@ -7810,6 +7881,8 @@ fn forum_view(f: &Forum, ours: &str, k: &Kit) -> El {
         // the link and the text are the poster's Markdown: read as a page is, with no picture fetched
         if let Some(link) = p.link.as_deref().filter(|l| !l.is_empty()) {
             page = page.child(Markdown::new(format!("<{link}>")).selectable(true).on_link_tx(follow).build(k).key("forum-link"));
+            // and when the link is a picture, the way to see it here
+            page = page.children(forum_preview(f, pics, Some(link), p.id, k));
         }
         if let Some(body) = p.body.as_deref().filter(|b| !b.trim().is_empty()) {
             page = page.child(Markdown::new(body.to_owned()).selectable(true).on_link_tx(follow).build(k).key("forum-body"));
@@ -8054,7 +8127,7 @@ fn forum_view(f: &Forum, ours: &str, k: &Kit) -> El {
             if may.change {
                 acts = acts.child(small("Delete", "Delete this thread").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumRowDelete(db.clone(), id))).build(k).key(format!("row-delete-{id}")));
             }
-            page = page.child(col().key(format!("post-row-{id}")).w_full().children(lead).child(line).child(acts));
+            page = page.child(col().key(format!("post-row-{id}")).w_full().children(lead).child(line).children(forum_preview(f, pics, p.link.as_deref(), id, k)).child(acts));
         }
         return page;
     }
@@ -11917,7 +11990,7 @@ fn page_body(s: &App, k: &Kit) -> El {
         return access_view(s, k);
     }
     if let Some(f) = s.forum.as_ref().filter(|_| !s.editing) {
-        return col().key("forum-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(forum_view(f, s.conn.as_ref().map_or("", |c| c.ship()), k))).scroll(ScrollSpec { stick_bottom: false });
+        return col().key("forum-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(forum_view(f, s.conn.as_ref().map_or("", |c| c.ship()), &Pics { had: &s.pics, failed: &s.pics_failed }, k))).scroll(ScrollSpec { stick_bottom: false });
     }
     if s.shared_open && !s.editing {
         return shared_view(s, k);

@@ -66,6 +66,10 @@ class H(BaseHTTPRequestHandler):
         if p == 'comments-inbox': return self.send(200, json.dumps({"items": COMMENTS, "total": len(COMMENTS) + int(os.environ.get('LR_MORE', '0'))}))
         if p == 'held-comments': return self.send(200, json.dumps({"items": []}))
         if p == 'page-comets': return self.send(200, json.dumps({"mode": "held", "pending": PENDING}))
+        # a picture on "another site", for a forum thread that links to one
+        if u.path == '/pic.png':
+            sys.stderr.write("picture fetched\n")
+            return self.send(200, png(3, 1, 2), 'image/png')
         if p == 'tile-status': return self.send(200, json.dumps({"token":True,"orrery":False,"max":17,"styles":["streets","outdoors","satellite","dark"]}))
         if p.startswith('tile/'):
             _, style, z, x, y = p.split('/')
@@ -133,7 +137,7 @@ SHARED = [] if os.environ.get('LR_SHARED') != '1' else [
 LINKS = {}
 MARKS = [{"url": "urb://~sampel-palnet/notes", "title": "Sampel's notes", "folder": ""}]
 HISTORY = []
-THREADS = [{"id":1,"title":"DayOldForty","ago":24,"up":40,"pinned":False}, {"id":2,"title":"HourOldThree","ago":1,"up":3,"pinned":False}, {"id":3,"title":"NewNone","ago":0.2,"up":0,"pinned":False}, {"id":4,"title":"TenHoursThirty","ago":10,"up":30,"pinned":False}, {"id":5,"title":"AboutALink","ago":2,"up":1,"pinned":False,"link":"urb://~sampel-palnet/notes/plan"}]
+THREADS = [{"id":1,"title":"DayOldForty","ago":24,"up":40,"pinned":False}, {"id":2,"title":"HourOldThree","ago":1,"up":3,"pinned":False}, {"id":3,"title":"NewNone","ago":0.2,"up":0,"pinned":False}, {"id":4,"title":"TenHoursThirty","ago":10,"up":30,"pinned":False}, {"id":5,"title":"AboutALink","ago":2,"up":1,"pinned":False,"link":"urb://~sampel-palnet/notes/plan"}, {"id":6,"title":"APicture","ago":3,"up":0,"pinned":False,"link":"http://127.0.0.1:8379/pic.png"}]
 # LR_MANY_TAGS: twelve more threads with four tags each, so a board has more tags than its filter shows
 if os.environ.get('LR_MANY_TAGS'):
     THREADS += [{"id":10+i,"title":"Tagged %d" % i,"ago":30+i,"up":0,"pinned":False,"tags":["g%d-%s" % (i, w) for w in ("alpha", "beta", "gamma", "delta")]} for i in range(12)]
