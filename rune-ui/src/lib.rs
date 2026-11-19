@@ -365,6 +365,8 @@ enum Prompt {
     Ask(Shared, TextEdit),
     /// A tag to put on the memory in front.
     Tag(TextEdit),
+    /// Signing out of the ship in front, or of every ship, while folders of theirs are mounted.
+    ShipOut(bool),
     /// The kind of the page in front, to change: Markdown, gemtext, HTML and the rest.
     Kind(TextEdit),
     /// The tags of the forum thread showing, to set.
@@ -1465,6 +1467,24 @@ fn sign_in(s: &mut App) {
     s.login_req.request((s.url.text.clone(), s.code.text.clone()), |(u, c)| Conn::login(&u, &c));
 }
 
+/// The folders mounted over HTTP with the session of the ship in front, or of any ship signed in.
+/// A ship mounted by its own socket on this computer needs no session, and is not among them.
+fn ship_mounts(s: &App, all: bool) -> Vec<mounts::MountSpec> {
+    let front = s.conn.as_ref().map(|c| c.url.as_str());
+    s.mounts.iter().filter(|m| !m.url.is_empty() && (all || Some(m.url.as_str()) == front)).cloned().collect()
+}
+
+/// Sign out, asked for: at once when nothing of the ship's is mounted, and after a question when
+/// something is, since its folder goes with its session.
+fn sign_out_asked(s: &mut App, all: bool) {
+    s.ships_open = false;
+    if ship_mounts(s, all).is_empty() {
+        if all { sign_out_all(s) } else { sign_out(s) }
+    } else {
+        s.prompt = Some(Prompt::ShipOut(all));
+    }
+}
+
 /// Signs out of the ship in front. Another ship signed in comes to the front in its place: the
 /// one used most lately. With none, the window is at its sign-in.
 fn sign_out(s: &mut App) {
@@ -1665,6 +1685,20 @@ fn confirm(s: &mut App) {
                 save_body(s, Page { kind: k.to_owned(), ..open }, body);
             }
         }
+        return;
+    }
+    if let Prompt::ShipOut(all) = &p {
+        let all = *all;
+        // the folders are let go of first, so the next start finds none to make again with a session that is gone
+        let gone = ship_mounts(s, all);
+        let rest: Vec<mounts::MountSpec> = s.mounts.iter().filter(|m| !gone.contains(m)).cloned().collect();
+        let _ = mounts::save(&rest);
+        spawn(move || {
+            for m in gone {
+                let _ = mounts::stop(&m);
+            }
+        });
+        if all { sign_out_all(s) } else { sign_out(s) }
         return;
     }
     if let Prompt::Tag(t) = &p {
@@ -2223,8 +2257,10 @@ fn setup(s: &mut App, waker: Waker) {
     if !kept.is_empty() && !s.sample {
         s.mount_req.request((kept, s.conn.clone()), |(kept, conn)| {
             let (mut list, mut said) = (Vec::new(), Vec::new());
-            // a ship over HTTP is mounted again only while this window is signed in to it
-            let session = |url: &str| conn.as_ref().filter(|c| c.url == url).map(|c| c.cookie.clone());
+            // a ship over HTTP is mounted again with its own session, whichever ship is in front: any
+            // ship signed in on this computer, and the one this window was started on
+            let signed = api::ship_sessions();
+            let session = |url: &str| conn.as_ref().filter(|c| c.url == url).map(|c| c.cookie.clone()).or_else(|| signed.iter().find(|(u, _)| u == url).map(|(_, c)| c.clone()));
             for (m, r) in mounts::resume(kept, session) {
                 if let Err(e) = r {
                     said.push(format!("{} was not mounted again: {e}", m.mountpoint));
@@ -9642,10 +9678,10 @@ fn ships_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         }
     }).build(k).key("ship-add"));
     if let Some(name) = front {
-        acts = acts.child(Button::new(format!("Sign out of {name}")).variant(ButtonVariant::Ghost).on_press(sign_out).build(k).key("ship-out"));
+        acts = acts.child(Button::new(format!("Sign out of {name}")).variant(ButtonVariant::Ghost).on_press(|s: &mut App| sign_out_asked(s, false)).build(k).key("ship-out"));
     }
     if s.ships.len() > 1 {
-        acts = acts.child(Button::new("Sign out of every ship").variant(ButtonVariant::Ghost).on_press(sign_out_all).build(k).key("ship-out-all"));
+        acts = acts.child(Button::new("Sign out of every ship").variant(ButtonVariant::Ghost).on_press(|s: &mut App| sign_out_asked(s, true)).build(k).key("ship-out-all"));
     }
     Dialog::new("ships", "Ships")
         .open(true)
@@ -9671,7 +9707,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::Kind(t) | Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) | Prompt::ShipOut(_) => unreachable!("it has no field of this kind"),
                 #[cfg(unix)]
                 Prompt::IdOut(..) | Prompt::IdIn(..) | Prompt::IdUse(..) => unreachable!("it has fields of its own"),
             })
@@ -9738,6 +9774,12 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::ForumRowDelete(..) => ("Delete this thread?", text("The thread and its comments are gone for everyone who reads the board.").font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::CommentRemove(page, _) => ("Remove this comment?", text(format!("It is gone from {page} for everyone who reads it, and cannot be brought back.")).key("comment-remove-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
+        Prompt::ShipOut(all) => {
+            let held = ship_mounts(s, *all);
+            let folders = held.iter().map(|m| m.mountpoint.clone()).collect::<Vec<_>>().join(", ");
+            let said = format!("{} mounted with {} session: {folders}. Signing out unmounts {}. The pages stay on the ship.", if held.len() == 1 { "A folder is" } else { "Folders are" }, if *all { "these ships'" } else { "this ship's" }, if held.len() == 1 { "it" } else { "them" });
+            (if *all { "Sign out of every ship?" } else { "Sign out of this ship?" }, text(said).key("ship-out-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Unmount and sign out", ButtonVariant::Danger)
+        }
         Prompt::Kind(t) => ("This page's kind", field(t, "md, gmi, html, text, js, css, tex, geojson or scad"), "Change", ButtonVariant::Contrast),
         Prompt::MarkMove(_, t) => ("Move this bookmark to a folder", field(t, "A folder, or nothing for none"), "Move", ButtonVariant::Contrast),
         Prompt::LinkIn(_, t) => ("Move into my pages as", field(t, "a name, as notes/plan"), "Move", ButtonVariant::Contrast),
@@ -11847,7 +11889,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
             row().grow(1.0).min_w(0.0).child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).truncate())
         })
         .child(theme)
-        .child(Button::new(if s.conn.is_some() { "Sign out" } else if s.anon { "Leave" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
+        .child(Button::new(if s.conn.is_some() { "Sign out" } else if s.anon { "Leave" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| sign_out_asked(s, false)).build(k).key("sign-out"));
     // rune-kit keeps a band over the sidebar for its own toggle, level with the top bar. The toggle is the
     // ribbon's here, so the pane's tabs go up into the band, beside the top bar, and nothing is left blank
     let side = col().key("pages").w_full().grow(1.0).min_h(0.0).mt(-rune_kit::shell::TOOLBAR_HEIGHT).padding(8.0).gap(8.0).child(halves);
@@ -13662,6 +13704,22 @@ mod tests {
         s.prompt = Some(Prompt::Kind(TextEdit::new("md")));
         confirm(&mut s);
         assert_eq!(s.open.as_ref().unwrap().kind, "md");
+    }
+
+    #[test]
+    fn signing_out_asks_only_when_a_folder_is_mounted_with_the_session() {
+        let mut s = sample("welcome");
+        s.conn = Some(Conn { url: "https://zod.test".into(), cookie: "urbauth-~zod=0v1".into() });
+        let at = |folder: &str, url: &str, sock: &str| mounts::MountSpec { mountpoint: folder.into(), url: url.into(), sock: sock.into(), ..mounts::MountSpec::default() };
+        s.mounts = vec![at("/m/zod", "https://zod.test", ""), at("/m/bus", "https://bus.test", ""), at("/m/local", "", "/pier/.urb/dev/lattice")];
+        assert_eq!(ship_mounts(&s, false).iter().map(|m| m.mountpoint.as_str()).collect::<Vec<_>>(), ["/m/zod"], "this ship's, and not one mounted by a socket");
+        assert_eq!(ship_mounts(&s, true).len(), 2, "every ship's over HTTP");
+        sign_out_asked(&mut s, false);
+        assert!(matches!(s.prompt, Some(Prompt::ShipOut(false))) && s.conn.is_some(), "asked first, and still signed in");
+        s.prompt = None;
+        s.mounts.remove(0);
+        sign_out_asked(&mut s, true);
+        assert!(matches!(s.prompt, Some(Prompt::ShipOut(true))), "another ship's folder is asked about when every ship is signed out of");
     }
 
     #[test]

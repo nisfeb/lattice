@@ -768,6 +768,18 @@ pub struct Ship {
     pub front: bool,
 }
 
+/// The session of every ship signed in whose session still stands: its address and its cookie.
+/// A mount of a ship is made with that ship's own, whichever ship is in front.
+pub fn ship_sessions() -> Vec<(String, String)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !cfg!(test) {
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            return crate::accounts::load_at(dir, now_secs()).list.into_iter().filter(|a| !a.expired).map(|a| (a.url, a.cookie)).collect();
+        }
+    }
+    Vec::new()
+}
+
 /// Brings another ship signed in to the front, for the next `Conn::load`. False when it is not signed in.
 pub fn ship_bring(url: &str) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
