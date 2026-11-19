@@ -49,12 +49,26 @@ pub enum Flavor {
 }
 
 /// From the program's own surroundings: the AppImage runtime sets
-/// `APPIMAGE` to the file it was started from.
-pub fn flavor(appimage: Option<&str>) -> Flavor {
-    match appimage {
-        Some(p) if !p.is_empty() => Flavor::AppImage(PathBuf::from(p)),
-        _ => Flavor::ReleasePage,
-    }
+/// `APPIMAGE` to the file it was started from and `APPDIR` to where it
+/// mounted it. `APPIMAGE` alone is not believed: a program started from
+/// another AppImage (a terminal, an editor) is handed that one's, and
+/// would write its update over the other program's file. This program
+/// must itself be running out of the mount. `trusting` is for a test.
+pub fn flavor(appimage: Option<&str>, appdir: Option<&str>, exe: Option<&Path>, trusting: bool) -> Flavor {
+    let image = match appimage {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => return Flavor::ReleasePage,
+    };
+    let ours = match (appdir, exe) {
+        (Some(d), Some(exe)) if !d.is_empty() => exe.starts_with(d),
+        _ => false,
+    };
+    if ours || trusting { Flavor::AppImage(image) } else { Flavor::ReleasePage }
+}
+
+/// The name a release's AppImage goes by for this machine, as `dist.sh` names it.
+pub fn file_name(version: &str) -> String {
+    format!("lattice-rune-{version}-{}.AppImage", std::env::consts::ARCH)
 }
 
 /// The name a release goes by in the manifest for this machine.
@@ -98,8 +112,9 @@ pub fn newer(remote: &str, current: &str) -> bool {
 pub struct Offer {
     pub version: String,
     pub notes: String,
-    /// Where the file is and its signature. None when this copy cannot take its own place.
-    pub file: Option<(String, String)>,
+    /// Where the file is, its signature, and the name the signature must have been made over (none
+    /// in a test). None when this copy cannot take its own place.
+    pub file: Option<(String, String, Option<String>)>,
 }
 
 /// Reads a manifest. None when what it names is not newer than `current`.
@@ -113,8 +128,12 @@ pub fn offer(manifest: &str, current: &str, flavor: &Flavor, platform: &str, any
     let file = match flavor {
         Flavor::AppImage(_) => {
             let p = &v["platforms"][format!("{platform}-appimage")];
+            // the file is this version's, by name: the list is not signed, and without this an older
+            // release's file, or the desktop app's, signed by the same key, could be named as the new one
+            let name = file_name(&version);
             match (p["url"].as_str(), p["signature"].as_str()) {
-                (Some(url), Some(sig)) if anywhere || url.starts_with(DOWNLOADS) => Some((url.to_owned(), sig.to_owned())),
+                (Some(url), Some(sig)) if anywhere => Some((url.to_owned(), sig.to_owned(), None)),
+                (Some(url), Some(sig)) if from_releases(url) && url.ends_with(&format!("/{name}")) => Some((url.to_owned(), sig.to_owned(), Some(name))),
                 _ => None,
             }
         }
@@ -140,6 +159,12 @@ pub fn offer_text(o: &Offer, current: &str) -> String {
     s
 }
 
+/// Whether an address is a file of this repository's releases, and written plainly: nothing in it
+/// that an address is rewritten by on the way (`..`, an escape, a query).
+fn from_releases(url: &str) -> bool {
+    url.starts_with(DOWNLOADS) && !url.contains("..") && !url.contains(['%', '?', '#', '\\', '@'])
+}
+
 fn unbase64(what: &str, s: &str) -> Result<String, String> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD.decode(s.trim()).map_err(|e| format!("{what} is not base64: {e}"))?;
@@ -148,10 +173,22 @@ fn unbase64(what: &str, s: &str) -> Result<String, String> {
 
 /// Whether `bytes` are what `signature` was made over, by the holder of
 /// `pubkey`. Both are as Tauri writes them: base64 of minisign's own text.
-pub fn verify(bytes: &[u8], signature: &str, pubkey: &str) -> Result<(), String> {
+/// With `named`, the signature must also say it was made over a file of
+/// that name: the signer writes the name in the signature's trusted
+/// comment, which the signature covers.
+pub fn verify(bytes: &[u8], signature: &str, pubkey: &str, named: Option<&str>) -> Result<(), String> {
     let key = minisign_verify::PublicKey::decode(&unbase64("the key", pubkey)?).map_err(|e| format!("the key could not be read: {e}"))?;
     let sig = minisign_verify::Signature::decode(&unbase64("the signature", signature)?).map_err(|e| format!("the signature could not be read: {e}"))?;
-    key.verify(bytes, &sig, true).map_err(|e| format!("the signature does not hold: {e}"))
+    key.verify(bytes, &sig, true).map_err(|e| format!("the signature does not hold: {e}"))?;
+    match named {
+        Some(name) if signed_name(sig.trusted_comment()) != Some(name) => Err(format!("the signature is of another file than {name}")),
+        _ => Ok(()),
+    }
+}
+
+/// The file name in a signature's trusted comment, as Tauri's signer writes it: `timestamp:N<tab>file:NAME`.
+fn signed_name(comment: &str) -> Option<&str> {
+    comment.split('\t').find_map(|part| part.trim().strip_prefix("file:"))
 }
 
 /// Asks whether a newer release is out.
@@ -165,11 +202,15 @@ pub fn check(endpoint: &str, flavor: &Flavor, anywhere: bool) -> Result<Option<O
     offer(&text, VERSION, flavor, &platform(), anywhere)
 }
 
+/// The whole of a download may take this long, however slowly it comes.
+const LONGEST: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// Fetches the offered file and checks its signature. `seen` is told how
 /// far along it is, in hundredths. Nothing is written anywhere.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn fetch(url: &str, signature: &str, pubkey: &str, seen: &dyn Fn(u8)) -> Result<Vec<u8>, String> {
+pub fn fetch(url: &str, signature: &str, pubkey: &str, named: Option<&str>, seen: &dyn Fn(u8)) -> Result<Vec<u8>, String> {
     use std::io::Read;
+    let began = std::time::Instant::now();
     let agent = ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(30)).timeout_read(std::time::Duration::from_secs(60)).build();
     let res = agent.get(url).call().map_err(|e| e.to_string())?;
     let total = res.header("content-length").and_then(|l| l.parse::<u64>().ok()).filter(|t| *t > 0);
@@ -184,6 +225,9 @@ pub fn fetch(url: &str, signature: &str, pubkey: &str, seen: &dyn Fn(u8)) -> Res
             break;
         }
         bytes.extend_from_slice(&buf[..n]);
+        if began.elapsed() > LONGEST {
+            return Err("the download took too long".into());
+        }
         if let Some(t) = total {
             seen(((bytes.len() as u64 * 100) / t).min(99) as u8);
         }
@@ -195,7 +239,7 @@ pub fn fetch(url: &str, signature: &str, pubkey: &str, seen: &dyn Fn(u8)) -> Res
         return Err("the download stopped short".into());
     }
     seen(100);
-    verify(&bytes, signature, pubkey)?;
+    verify(&bytes, signature, pubkey, named)?;
     Ok(bytes)
 }
 
@@ -208,14 +252,21 @@ pub fn install(at: &Path, bytes: &[u8]) -> Result<(), String> {
     let name = at.file_name().and_then(|n| n.to_str()).ok_or("the AppImage has no name")?;
     let new = dir.join(format!(".{name}.new"));
     let put = || -> std::io::Result<()> {
-        std::fs::write(&new, bytes)?;
+        use std::io::Write;
+        // what an earlier try left, or what someone put there: taken away, never written through
+        let _ = std::fs::remove_file(&new);
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&new)?;
+        f.write_all(bytes)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             // as runnable as the one it replaces
             let mode = std::fs::metadata(at).map(|m| m.permissions().mode() & 0o777).unwrap_or(0o755) | 0o100;
-            std::fs::set_permissions(&new, std::fs::Permissions::from_mode(mode))?;
+            f.set_permissions(std::fs::Permissions::from_mode(mode))?;
         }
+        // on the disk before it takes the name: a power cut must not leave an empty file under it
+        f.sync_all()?;
+        drop(f);
         std::fs::rename(&new, at)
     };
     put().map_err(|e| {
@@ -281,14 +332,18 @@ mod tests {
 
     #[test]
     fn a_file_is_taken_only_with_its_own_signature_by_the_right_key() {
-        assert_eq!(verify(TEST_FILE, TEST_SIG, TEST_KEY), Ok(()));
+        assert_eq!(verify(TEST_FILE, TEST_SIG, TEST_KEY, None), Ok(()));
         let mut changed = TEST_FILE.to_vec();
         changed[3] ^= 1;
-        assert!(verify(&changed, TEST_SIG, TEST_KEY).unwrap_err().contains("does not hold"));
-        assert!(verify(TEST_FILE, TEST_SIG, PUBKEY).is_err(), "signed by another key than the releases'");
-        assert!(verify(TEST_FILE, "not base64 !", TEST_KEY).is_err());
-        assert!(verify(TEST_FILE, "", TEST_KEY).is_err());
-        assert!(verify(TEST_FILE, TEST_KEY, TEST_KEY).is_err(), "a key is no signature");
+        assert!(verify(&changed, TEST_SIG, TEST_KEY, None).unwrap_err().contains("does not hold"));
+        assert!(verify(TEST_FILE, TEST_SIG, PUBKEY, None).is_err(), "signed by another key than the releases'");
+        assert!(verify(TEST_FILE, "not base64 !", TEST_KEY, None).is_err());
+        assert!(verify(TEST_FILE, "", TEST_KEY, None).is_err());
+        assert!(verify(TEST_FILE, TEST_KEY, TEST_KEY, None).is_err(), "a key is no signature");
+        // the signature says which file it was made over: a good file under another's name is not taken
+        assert_eq!(verify(TEST_FILE, TEST_SIG, TEST_KEY, Some("app.bin")), Ok(()));
+        assert!(verify(TEST_FILE, TEST_SIG, TEST_KEY, Some("lattice-rune-9.9.9-x86_64.AppImage")).unwrap_err().contains("another file"));
+        assert_eq!((signed_name("timestamp:1\tfile:a.AppImage"), signed_name("timestamp:1")), (Some("a.AppImage"), None));
     }
 
     #[test]
@@ -307,7 +362,7 @@ mod tests {
     }
 
     fn manifest(version: &str) -> String {
-        format!(r#"{{"version":"{version}","notes":"- one\n- two","platforms":{{"linux-x86_64-appimage":{{"url":"https://github.com/nisfeb/lattice/releases/download/v{version}/lattice-rune-{version}-x86_64.AppImage","signature":"sig"}},"linux-x86_64":{{"url":"x","signature":"y"}}}}}}"#)
+        format!(r#"{{"version":"{version}","notes":"- one\n- two","platforms":{{"linux-x86_64-appimage":{{"url":"https://github.com/nisfeb/lattice/releases/download/v{version}/{}","signature":"sig"}},"linux-x86_64":{{"url":"x","signature":"y"}}}}}}"#, file_name(version))
     }
 
     #[test]
@@ -315,7 +370,7 @@ mod tests {
         let image = Flavor::AppImage("/a/lattice-rune.AppImage".into());
         let o = offer(&manifest("1.0.35"), "1.0.34", &image, "linux-x86_64", false).unwrap().unwrap();
         assert_eq!(o.version, "1.0.35");
-        assert_eq!(o.file, Some(("https://github.com/nisfeb/lattice/releases/download/v1.0.35/lattice-rune-1.0.35-x86_64.AppImage".to_owned(), "sig".to_owned())));
+        assert_eq!(o.file, Some((format!("https://github.com/nisfeb/lattice/releases/download/v1.0.35/{}", file_name("1.0.35")), "sig".to_owned(), Some(file_name("1.0.35")))));
         assert_eq!(offer_text(&o, "1.0.34"), "lattice-rune 1.0.35 is available. You have 1.0.34.\n- one\n- two");
         // a deb, or the program in a folder
         let o = offer(&manifest("1.0.35"), "1.0.34", &Flavor::ReleasePage, "linux-x86_64", false).unwrap().unwrap();
@@ -323,7 +378,13 @@ mod tests {
         assert!(offer_text(&o, "1.0.34").ends_with("installed from the release page."));
         // a machine the release has no AppImage for
         assert_eq!(offer(&manifest("1.0.35"), "1.0.34", &image, "linux-aarch64", false).unwrap().unwrap().file, None);
-        assert_eq!((flavor(Some("/x/a.AppImage")), flavor(Some("")), flavor(None)), (Flavor::AppImage("/x/a.AppImage".into()), Flavor::ReleasePage, Flavor::ReleasePage));
+        // an AppImage only when this program runs out of the mount the variables name
+        let (inside, outside) = (Path::new("/tmp/.mount_x/usr/bin/lattice-rune"), Path::new("/usr/bin/lattice-rune"));
+        assert_eq!(flavor(Some("/x/a.AppImage"), Some("/tmp/.mount_x"), Some(inside), false), Flavor::AppImage("/x/a.AppImage".into()));
+        assert_eq!(flavor(Some("/x/term.AppImage"), Some("/tmp/.mount_term"), Some(outside), false), Flavor::ReleasePage, "started from another program's AppImage: that file is not this one's to replace");
+        assert_eq!(flavor(Some("/x/a.AppImage"), None, Some(inside), false), Flavor::ReleasePage);
+        assert_eq!((flavor(Some(""), Some("/m"), Some(inside), false), flavor(None, None, None, true)), (Flavor::ReleasePage, Flavor::ReleasePage));
+        assert_eq!(flavor(Some("/x/a.AppImage"), None, None, true), Flavor::AppImage("/x/a.AppImage".into()));
     }
 
     #[test]
@@ -337,11 +398,16 @@ mod tests {
         let elsewhere = manifest("1.0.35").replace("https://github.com/nisfeb/lattice/releases/download/", "https://example.com/");
         assert_eq!(offer(&elsewhere, "1.0.34", &image, "linux-x86_64", false).unwrap().unwrap().file, None);
         assert!(offer(&elsewhere, "1.0.34", &image, "linux-x86_64", true).unwrap().unwrap().file.is_some());
+        // nor one whose address climbs out of the releases, or that is another version's file or another program's
+        let good = format!("https://github.com/nisfeb/lattice/releases/download/v1.0.35/{}", file_name("1.0.35"));
+        for bad in [format!("https://github.com/nisfeb/lattice/releases/download/../../../other/repo/releases/download/v1/{}", file_name("1.0.35")), format!("https://github.com/nisfeb/lattice/releases/download/v1.0.2/{}", file_name("1.0.2")), "https://github.com/nisfeb/lattice/releases/download/v1.0.35/lattice_1.0.35_amd64.AppImage".to_owned(), format!("{good}?x=1")] {
+            assert_eq!(offer(&manifest("1.0.35").replace(&good, &bad), "1.0.34", &image, "linux-x86_64", false).unwrap().unwrap().file, None, "{bad}");
+        }
     }
 
     #[test]
     fn long_notes_are_cut() {
-        let o = Offer { version: "2.0.0".into(), notes: (1..=9).map(|i| format!("- {i}")).collect::<Vec<_>>().join("\n"), file: Some((String::new(), String::new())) };
+        let o = Offer { version: "2.0.0".into(), notes: (1..=9).map(|i| format!("- {i}")).collect::<Vec<_>>().join("\n"), file: Some((String::new(), String::new(), None)) };
         let said = offer_text(&o, "1.0.0");
         assert!(said.contains("- 6\n\u{2026}") && !said.contains("- 7"));
     }
@@ -359,6 +425,13 @@ mod tests {
         assert_eq!(std::fs::read(&at).unwrap(), b"new and longer");
         assert_eq!(std::fs::metadata(&at).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1, "nothing is left beside it");
+        // a link left where the new file is written first is taken away, not written through
+        let (elsewhere, planted) = (d.join("elsewhere"), d.join(".lattice-rune.AppImage.new"));
+        std::fs::write(&elsewhere, b"not to be touched").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &planted).unwrap();
+        install(&at, b"newer").unwrap();
+        assert_eq!((std::fs::read(&at).unwrap(), std::fs::read(&elsewhere).unwrap()), (b"newer".to_vec(), b"not to be touched".to_vec()));
+        std::fs::remove_file(&elsewhere).unwrap();
         // a folder that is gone: said, and nothing left behind
         assert!(install(&d.join("no/such/place.AppImage"), b"x").is_err());
         std::fs::remove_dir_all(&d).unwrap();
@@ -371,8 +444,8 @@ mod tests {
     fn live_a_published_file_holds_against_the_releases_key() {
         let file = std::fs::read(std::env::var("LATTICE_RUNE_SIGNED_FILE").unwrap()).unwrap();
         let sig = std::fs::read_to_string(std::env::var("LATTICE_RUNE_SIGNED_SIG").unwrap()).unwrap();
-        assert_eq!(verify(&file, &sig, PUBKEY), Ok(()));
-        assert!(verify(&file[1..], &sig, PUBKEY).is_err());
+        assert_eq!(verify(&file, &sig, PUBKEY, None), Ok(()));
+        assert!(verify(&file[1..], &sig, PUBKEY, None).is_err());
     }
 
     #[test]

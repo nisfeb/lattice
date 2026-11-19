@@ -11134,10 +11134,14 @@ struct Updater {
     next: f64,
     armed: bool,
     check_req: Latest<Result<Option<update::Offer>, String>>,
-    get_req: Latest<Result<Vec<u8>, String>>,
+    get_req: Latest<Result<(), String>>,
     offer: Option<update::Offer>,
     /// Versions put off for this run. A newer one is offered again.
     later: Vec<String>,
+    /// The version put in this copy's place in this run: not offered again, whatever its banner was answered.
+    installed: Option<String>,
+    /// When the download's count is next looked at (app clock): one wake at a time.
+    tick: f64,
     stage: UpdStage,
     /// Hundredths of the file fetched so far.
     pct: std::sync::Arc<std::sync::atomic::AtomicU8>,
@@ -11146,13 +11150,15 @@ struct Updater {
 #[cfg(not(target_arch = "wasm32"))]
 impl Updater {
     fn new() -> Updater {
-        let flavor = update::flavor(std::env::var("APPIMAGE").ok().as_deref());
         // a build for working on asks only when a test names where, and may then be given the test's own key.
         // A release build reads neither: what it trusts is built into it
         let test = if cfg!(debug_assertions) { std::env::var("LATTICE_RUNE_UPDATE_URL").ok().filter(|u| !u.is_empty()) } else { None };
+        let flavor = update::flavor(std::env::var("APPIMAGE").ok().as_deref(), std::env::var("APPDIR").ok().as_deref(), std::env::current_exe().ok().as_deref(), test.is_some());
+        // whoever would not have it ask says so
+        let off = std::env::var_os("LATTICE_RUNE_NO_UPDATE").is_some_and(|v| !v.is_empty());
         let key = test.as_ref().and_then(|_| std::env::var("LATTICE_RUNE_UPDATE_KEY").ok()).unwrap_or_else(|| update::PUBKEY.to_owned());
         Updater {
-            on: !cfg!(debug_assertions) || test.is_some(),
+            on: (!cfg!(debug_assertions) || test.is_some()) && !off,
             flavor,
             anywhere: test.is_some(),
             next: if test.is_some() { 1.0 } else { update::FIRST_CHECK },
@@ -11163,6 +11169,8 @@ impl Updater {
             get_req: Latest::default(),
             offer: None,
             later: Vec::new(),
+            installed: None,
+            tick: 0.0,
             stage: UpdStage::Idle,
             pct: Default::default(),
         }
@@ -11189,51 +11197,78 @@ fn sync_update(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     // offline, GitHub away, no release yet: asked again next time, and nothing said
     if let Some(Ok(Some(o))) = s.upd.check_req.take() {
-        let known = s.upd.later.contains(&o.version) || matches!(&s.upd.stage, UpdStage::Installed(v) if *v == o.version);
-        if !known && s.upd.stage != UpdStage::Fetching && s.upd.offer.as_ref() != Some(&o) {
-            s.upd.offer = Some(o);
-            changed = true;
-        }
+        changed |= update_offered(&mut s.upd, o);
     }
     if let Some(got) = s.upd.get_req.take() {
         changed = true;
-        let version = s.upd.offer.take().map(|o| o.version).unwrap_or_default();
-        s.upd.stage = match (got, &s.upd.flavor) {
-            (Ok(bytes), update::Flavor::AppImage(at)) => match update::install(at, &bytes) {
-                Ok(()) => UpdStage::Installed(version),
-                Err(e) => UpdStage::Failed(format!("Could not update to lattice-rune {version}: {e}. Nothing was changed.")),
-            },
-            (Ok(_), _) => UpdStage::Idle,
-            (Err(e), _) => UpdStage::Failed(format!("Could not update to lattice-rune {version}: {e}. Nothing was changed, and it will be offered again.")),
-        };
+        update_fetched(&mut s.upd, got);
     }
-    if s.upd.stage == UpdStage::Fetching {
-        // the count moves as the file comes
+    if s.upd.stage == UpdStage::Fetching && clock >= s.upd.tick {
+        // the count moves as the file comes. One wake stands at a time: a wake set on every pass made a chain for each
         changed = true;
+        s.upd.tick = clock + 0.25;
         tx.wake_after(std::time::Duration::from_millis(250));
     }
     changed
 }
 
+/// A newer release was found. It is offered when nothing else of the update is showing: not a version
+/// put off or already put in place in this run, and not over a download, its failure, or what was installed.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_offered(u: &mut Updater, o: update::Offer) -> bool {
+    let known = u.later.contains(&o.version) || u.installed.as_deref() == Some(o.version.as_str());
+    if known || u.stage != UpdStage::Idle || u.offer.as_ref() == Some(&o) {
+        return false;
+    }
+    u.offer = Some(o);
+    true
+}
+
+/// The download and the swap came back. A failure keeps the offer, to be tried again.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_fetched(u: &mut Updater, got: Result<(), String>) {
+    let version = u.offer.as_ref().map(|o| o.version.clone()).unwrap_or_default();
+    u.stage = match got {
+        Ok(()) => {
+            (u.offer, u.installed) = (None, Some(version.clone()));
+            UpdStage::Installed(version)
+        }
+        Err(e) => UpdStage::Failed(format!("Could not update to lattice-rune {version}: {e}. Nothing was changed.")),
+    };
+}
+
 /// Fetches the offered file. It is checked against its signature before anything is written.
 #[cfg(not(target_arch = "wasm32"))]
 fn update_now(s: &mut App) {
-    let Some((url, sig)) = s.upd.offer.as_ref().and_then(|o| o.file.clone()) else { return };
+    let Some((url, sig, named)) = s.upd.offer.as_ref().and_then(|o| o.file.clone()) else { return };
+    let update::Flavor::AppImage(at) = s.upd.flavor.clone() else { return };
     let (key, pct) = (s.upd.key.clone(), s.upd.pct.clone());
-    pct.store(0, std::sync::atomic::Ordering::Relaxed);
-    s.upd.stage = UpdStage::Fetching;
-    s.upd.get_req.request((url, sig, key), move |(url, sig, key)| update::fetch(&url, &sig, &key, &|p| pct.store(p, std::sync::atomic::Ordering::Relaxed)));
+    // how far is not known until the first of it comes
+    pct.store(UNKNOWN, std::sync::atomic::Ordering::Relaxed);
+    (s.upd.stage, s.upd.tick) = (UpdStage::Fetching, 0.0);
+    // fetched, checked and written on the worker's thread: the window does not wait on the disk
+    s.upd.get_req.request((url, sig, key, named, at), move |(url, sig, key, named, at)| {
+        let bytes = update::fetch(&url, &sig, &key, named.as_deref(), &|p| pct.store(p, std::sync::atomic::Ordering::Relaxed))?;
+        update::install(&at, &bytes)
+    });
 }
+
+/// The download's count before anything of it has come.
+#[cfg(not(target_arch = "wasm32"))]
+const UNKNOWN: u8 = u8::MAX;
 
 /// Puts the offer off for this run.
 #[cfg(not(target_arch = "wasm32"))]
 fn update_later(s: &mut App) {
-    if let Some(o) = s.upd.offer.take() {
-        s.upd.later.push(o.version);
-    }
-    if matches!(s.upd.stage, UpdStage::Installed(_) | UpdStage::Failed(_)) {
-        // the new version still starts next time
-        s.upd.stage = UpdStage::Idle;
+    match s.upd.stage {
+        // the new version still starts next time, and is not offered again. A failure put aside leaves its offer, to be tried again
+        UpdStage::Installed(_) | UpdStage::Failed(_) => s.upd.stage = UpdStage::Idle,
+        UpdStage::Idle => {
+            if let Some(o) = s.upd.offer.take() {
+                s.upd.later.push(o.version);
+            }
+        }
+        UpdStage::Fetching => {}
     }
 }
 
@@ -11249,9 +11284,23 @@ fn update_restart(s: &mut App) {
         return;
     }
     match update::restart_after_exit(&at) {
-        Ok(()) => std::process::exit(0),
+        Ok(()) => {
+            // what a window closed by hand would do first
+            closing(s);
+            std::process::exit(0)
+        }
         Err(e) => s.note = format!("could not restart: {e}. The new version starts the next time the app does"),
     }
+}
+
+/// What is done before the program goes, however it goes: the reader's engine closes its store, so
+/// what libmesa holds is written.
+fn closing(s: &mut App) {
+    #[cfg(unix)]
+    if let Some(e) = s.engine.take() {
+        e.close();
+    }
+    let _ = s;
 }
 
 /// The update's own line across the top of the page area: the offer, how
@@ -11265,14 +11314,18 @@ fn update_banner(s: &App, k: &Kit) -> Option<El> {
         (UpdStage::Fetching, o) => {
             let pct = s.upd.pct.load(std::sync::atomic::Ordering::Relaxed);
             let v = o.as_ref().map(|o| o.version.as_str()).unwrap_or_default();
-            Some(line(if pct >= 100 { format!("Checking the signature of lattice-rune {v}\u{2026}") } else { format!("Downloading lattice-rune {v}\u{2026} {pct}%") }))
+            Some(line(match pct {
+                UNKNOWN => format!("Downloading lattice-rune {v}\u{2026}"),
+                100.. => format!("Checking and installing lattice-rune {v}\u{2026}"),
+                _ => format!("Downloading lattice-rune {v}\u{2026} {pct}%"),
+            }))
         }
         (UpdStage::Installed(v), _) => Some(
             line(format!("lattice-rune {v} is installed and starts the next time the app does."))
                 .child(small("Restart now").variant(ButtonVariant::Contrast).on_press(update_restart).build(k).key("update-restart"))
                 .child(later("Later")),
         ),
-        (UpdStage::Failed(e), _) => Some(line(e.clone()).child(later("Dismiss"))),
+        (UpdStage::Failed(e), _) => Some(line(e.clone()).child(small("Try again").variant(ButtonVariant::Contrast).on_press(update_now).build(k).key("update-again")).child(later("Dismiss"))),
         (UpdStage::Idle, Some(o)) => {
             let act = if o.file.is_some() {
                 small("Update").variant(ButtonVariant::Contrast).on_press(update_now).build(k).key("update-now")
@@ -12168,7 +12221,8 @@ pub fn run() {
         fonts,
         ..AppSpec::new("lattice", (1120.0, 720.0), init, view)
     })
-    .chrome(chrome);
+    .chrome(chrome)
+    .on_close(|s: &mut App, _| closing(s));
     app.run();
 }
 
@@ -13831,6 +13885,34 @@ mod tests {
         sync_sheet(&mut s);
         assert!(read_md(&s, s.open.as_ref().unwrap()).unwrap().contains("New"));
         assert_eq!(s.web.text, was + 1, "and an HTML page is asked for again");
+    }
+
+    #[test]
+    fn an_update_is_offered_once_tried_again_after_a_failure_and_not_offered_once_installed() {
+        let offer = |v: &str| update::Offer { version: v.into(), notes: String::new(), file: Some(("u".into(), "s".into(), None)) };
+        let mut s = sample("welcome");
+        assert!(update_offered(&mut s.upd, offer("2.0.0")));
+        assert!(!update_offered(&mut s.upd, offer("2.0.0")), "the same one again changes nothing");
+        // a download that fails keeps the offer: Try again has something to try, and Dismiss does not put the version off
+        s.upd.stage = UpdStage::Fetching;
+        assert!(!update_offered(&mut s.upd, offer("2.0.1")), "not over a download");
+        update_fetched(&mut s.upd, Err("the signature does not hold".into()));
+        assert!(matches!(&s.upd.stage, UpdStage::Failed(e) if e.contains("2.0.0") && e.contains("does not hold")));
+        assert_eq!(s.upd.offer, Some(offer("2.0.0")));
+        update_later(&mut s);
+        assert_eq!((&s.upd.stage, s.upd.offer.is_some(), s.upd.later.is_empty()), (&UpdStage::Idle, true, true));
+        // installed: Later leaves it installed, and the next check does not offer it again
+        s.upd.stage = UpdStage::Fetching;
+        update_fetched(&mut s.upd, Ok(()));
+        assert_eq!((&s.upd.stage, &s.upd.offer, s.upd.installed.as_deref()), (&UpdStage::Installed("2.0.0".into()), &None, Some("2.0.0")));
+        assert!(!update_offered(&mut s.upd, offer("2.0.1")), "not over the word that one is installed");
+        update_later(&mut s);
+        assert_eq!(s.upd.stage, UpdStage::Idle);
+        assert!(!update_offered(&mut s.upd, offer("2.0.0")), "what is installed is not offered");
+        assert!(update_offered(&mut s.upd, offer("2.0.1")), "a later one is");
+        // Later puts that version off for the run
+        update_later(&mut s);
+        assert!(!update_offered(&mut s.upd, offer("2.0.1")) && update_offered(&mut s.upd, offer("2.0.2")));
     }
 
     fn sample(name: &str) -> App {
