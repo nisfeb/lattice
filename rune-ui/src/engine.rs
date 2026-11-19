@@ -671,6 +671,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[test]
+    fn nothing_starts_the_engine_ahead_of_a_read() {
+        // the desktop app starts its engine at launch and so must drop a comet nobody used when a
+        // ship is signed in. Here a comet is made only by a read someone asked for, so there is
+        // none to drop: the engine starts from a read, and again after a move if it ran before it
+        let src = include_str!("engine.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        assert_eq!(code.matches("self.start()").count(), 3, "a read, and the restart after an export and an import");
+        assert!(code.contains("if was {\n            self.start();"), "a restart only of an engine that ran");
+        let app = include_str!("lib.rs");
+        assert!(!app.contains("e.start()") && !app.contains("engine.start()") && !app.contains("Engine::start"), "the app never starts it itself");
+    }
+
     fn temp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("lattice-rune-engine-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
