@@ -1779,7 +1779,9 @@
   ^-  form:m
   ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek host pax)
   ?^  got  (pure:m `[pax u.got])
-  =/  np=(unit path)  (moved-path:lu desk-base:lu pax)
+  ::  only the shell's own rename: any other layout may hold another
+  ::  copy of the page, and a link must not move onto it
+  =/  np=(unit path)  (shell-moved:lu pax)
   ?~  np  (pure:m ~)
   ;<  gn=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek host u.np)
   ?~  gn  (pure:m ~)
@@ -13425,18 +13427,27 @@
 ::  mode, so its next open goes straight there and does not wait out the
 ::  old path first. Nothing when no entry names `old`. Through
 ::  /shares.sig, the one writer of /shared.
+::
+::  Only the shell's own rename (+shell-moved:lu): +peer-moved may also
+::  land on another layout (a ball instance beside a desk), which can
+::  hold another copy of the page, and that read stays a one-off. An
+::  entry the host already lists at `new` keeps its own mode, since the
+::  host's newer notice is the truth. The new entry is put before the old
+::  one goes, so a failure between the two leaves both, never neither.
 ++  heal-share
   |=  [host=@p old=path new=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ?.  =(`new (shell-moved:lu old))  (pure:m ~)
   ;<  sh=shared:ls  bind:m  read-shared
   =/  md=(unit @t)  (entry-mode sh host old)
   ?~  md  (pure:m ~)
   ;<  ~  bind:m
+    ?.  =(~ (entry-mode sh host new))  (pure:m ~)
     %+  poke:io  (rf up / %'shares.sig')
-    [[/lattice %share-notice] `action:ls`[%del host old]]
+    [[/lattice %share-notice] `action:ls`[%put host new u.md]]
   %+  poke:io  (rf up / %'shares.sig')
-  [[/lattice %share-notice] `action:ls`[%put host new u.md]]
+  [[/lattice %share-notice] `action:ls`[%del host old]]
 ::  +peek-remote-wait: peek a remote road, but give up after remote-timeout. ~ on
 ::  timeout or veto. `seen otherwise. This is peek-remote (nonce + %peek dart +
 ::  take-peek) with a concurrent timer, resolving on whichever lands first.
