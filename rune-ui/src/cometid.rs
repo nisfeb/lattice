@@ -271,7 +271,7 @@ pub fn install(dir: &Path, id: &Identity) -> Result<Option<PathBuf>, String> {
 }
 
 /// Writes a file that only its owner may read, whole and on the disk before it is answered for.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let put = || -> std::io::Result<()> {

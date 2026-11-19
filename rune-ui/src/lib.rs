@@ -337,6 +337,15 @@ struct SheetView {
 /// A question the window is asking: a name for a new page, a new name for
 /// the open one, or whether to delete it.
 enum Prompt {
+    /// The anonymous identity to be exported to this file: the passphrase, and the passphrase again.
+    #[cfg(unix)]
+    IdOut(std::path::PathBuf, Box<[TextEdit; 2]>),
+    /// An identity file to open, and its passphrase.
+    #[cfg(unix)]
+    IdIn(std::path::PathBuf, TextEdit),
+    /// An identity read from a file, to use in place of this computer's, which is named if there is one.
+    #[cfg(unix)]
+    IdUse(Box<cometid::Identity>, Option<String>),
     New(TextEdit),
     Rename(String, TextEdit),
     Delete(String),
@@ -493,6 +502,16 @@ struct App {
     /// When the engine's start is next looked at (app clock): one wake at a time.
     anon_tick: f64,
     anon_got: std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<(String, api::Urb), String>)>>>,
+    /// What a move of the anonymous identity came to. Sealing a file takes seconds and the engine
+    /// closes for the copy, so each step has a thread of its own and an answer no other request drops.
+    #[cfg(unix)]
+    id_got: std::sync::Arc<std::sync::Mutex<Vec<IdDone>>>,
+    /// What is being done to the identity now, in words, or nothing.
+    #[cfg(unix)]
+    id_busy: &'static str,
+    /// The identity this computer has, and whether an export of it was made, as last read from its files.
+    #[cfg(unix)]
+    id_known: (Option<String>, bool),
     url: TextEdit,
     code: TextEdit,
     login_err: String,
@@ -1020,6 +1039,12 @@ fn init() -> App {
         anon_seq: 0,
         anon_tick: 0.0,
         anon_got: Default::default(),
+        #[cfg(unix)]
+        id_got: Default::default(),
+        #[cfg(unix)]
+        id_busy: "",
+        #[cfg(unix)]
+        id_known: (None, false),
         url,
         code: TextEdit::new(""),
         login_err: String::new(),
@@ -1455,6 +1480,7 @@ fn sign_out(s: &mut App) {
     #[cfg(unix)]
     {
         fresh.engine = s.engine.take();
+        (fresh.id_got, fresh.id_busy) = (s.id_got.clone(), s.id_busy);
     }
     // the listener of the session that ended stops, and every request this window keeps is woken as before
     s.beacon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1468,6 +1494,11 @@ fn sign_out(s: &mut App) {
 /// Asks the ship for the change the open prompt names.
 fn confirm(s: &mut App) {
     let Some(p) = s.prompt.take() else { return };
+    #[cfg(unix)]
+    let p = match id_confirm(s, p) {
+        Some(p) => p,
+        None => return,
+    };
     if let Prompt::Ask(sh, t) = &p {
         let (sh, note) = (sh.clone(), t.text.clone());
         match s.conn.clone() {
@@ -5865,6 +5896,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.note = e,
         }
     }
+    #[cfg(unix)]
+    if id_drained(s) {
+        changed = true;
+    }
     // while the reader starts for a first read, what it is doing is said, and then that it reads
     #[cfg(unix)]
     if let Some(url) = &s.anon_reading {
@@ -9395,6 +9430,8 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
                 Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                #[cfg(unix)]
+                Prompt::IdOut(..) | Prompt::IdIn(..) | Prompt::IdUse(..) => unreachable!("it has fields of its own"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -9402,6 +9439,34 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .key("prompt-field")
     };
     let (title, body, verb, variant) = match p {
+        #[cfg(unix)]
+        Prompt::IdOut(path, t) => {
+            let line = |i: usize, label: &str, key: &str| TextInput::new(&t[i]).label(label).placeholder(label).secure().on_edit(move |s: &mut App| id_field(s, i)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key(key.to_owned());
+            let body = col()
+                .w_full()
+                .gap(10.0)
+                .child(text(format!("The file {} will hold the key to this identity, locked with a passphrase of {} characters or more. Without the passphrase the file cannot be opened, and lattice cannot bring it back.", path.display(), cometid::MIN_PASSPHRASE)).key("id-out-said").font(k.ty.ui).color(k.c.text_muted).wrap())
+                .child(line(0, "Passphrase", "prompt-field"))
+                .child(line(1, "Passphrase again", "id-pass-again"));
+            ("Export your anonymous identity", body, "Export", ButtonVariant::Contrast)
+        }
+        #[cfg(unix)]
+        Prompt::IdIn(path, t) => {
+            let body = col()
+                .w_full()
+                .gap(10.0)
+                .child(text(format!("{}", path.display())).key("id-in-said").font(k.ty.ui).color(k.c.text_muted).wrap())
+                .child(TextInput::new(t).label("The file's passphrase").placeholder("The file's passphrase").secure().on_edit(|s: &mut App| id_field(s, 0)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key("prompt-field"));
+            ("Use an existing anonymous identity", body, "Open", ButtonVariant::Contrast)
+        }
+        #[cfg(unix)]
+        Prompt::IdUse(id, old) => {
+            let mut body = col().key("id-use-ask").w_full().gap(10.0);
+            for para in id_question(old.as_deref(), &id.ship) {
+                body = body.child(text(para).font(k.ty.ui).color(k.c.text_muted).wrap());
+            }
+            ("Use this anonymous identity?", body, "Use it", ButtonVariant::Danger)
+        }
         Prompt::New(t) => ("New page", field(t, "folder/name"), "Create", ButtonVariant::Contrast),
         Prompt::NewFolder(t) => ("New folder", field(t, "A folder's name, as notes or notes/sub"), "Create", ButtonVariant::Contrast),
         Prompt::Rename(_, t) => ("Rename or move", field(t, "folder/name"), "Rename", ButtonVariant::Contrast),
@@ -9584,6 +9649,8 @@ fn browse_anon(s: &mut App) {
         let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")));
         s.engine = base.map(|b| engine::Engine::new(b.join("lattice-rune").join("urb")));
     }
+    #[cfg(unix)]
+    id_refresh(s);
     go_browser(s);
     s.note = "Reading anonymously. You can browse published pages. Saving and hosting need a node.".into();
 }
@@ -9619,6 +9686,223 @@ fn urb_go_anon(s: &mut App, to: Option<String>) {
             w();
         }
     });
+}
+
+/// What a step of moving the anonymous identity came to: the file an export was written to, an
+/// identity read out of a file, or the name now in use and the folder the old one was moved to.
+#[cfg(unix)]
+enum IdDone {
+    Out(Result<String, String>),
+    Opened(Result<cometid::Identity, String>),
+    In(Result<(String, Option<std::path::PathBuf>), String>),
+}
+
+/// A comet's name at a length a button and a file name can hold: its last two parts.
+fn id_short(ship: &str) -> String {
+    let s = ship.trim_start_matches('~');
+    let tail: Vec<&str> = s.rsplit('-').filter(|w| !w.is_empty()).take(2).collect();
+    if s.len() > 14 && tail.len() == 2 { format!("~{}-{}", tail[1], tail[0]) } else { format!("~{s}") }
+}
+
+/// Whether an export's passphrase will do: long enough, and typed the same twice.
+fn id_pass_ok(pass: &str, again: &str, least: usize) -> Result<(), String> {
+    if pass.chars().count() < least {
+        return Err(format!("Pick a passphrase of at least {least} characters."));
+    }
+    if pass != again {
+        return Err("The two passphrases are not the same.".into());
+    }
+    Ok(())
+}
+
+/// What is asked before an identity from a file is used, naming both: a paragraph each.
+fn id_question(old: Option<&str>, new: &str) -> [String; 2] {
+    let now = match old {
+        Some(o) => format!("Replace this computer's anonymous identity {o} with {new}? {o} is set aside on this computer, not deleted, but lattice stops using it."),
+        None => format!("Use {new} as this computer's anonymous identity?"),
+    };
+    [now, format!("Stop using {new} on the computer it came from. Two computers running one identity at once lose each other's messages. And import from a fresh export: an older file can make your next messages go missing.")]
+}
+
+/// Reads again which identity this computer has, and whether it was exported.
+#[cfg(unix)]
+fn id_refresh(s: &mut App) {
+    s.id_known = s.engine.as_ref().map_or((None, false), |e| (e.identity(), e.exported()));
+}
+
+/// The field being typed in of the identity prompt that is open.
+#[cfg(unix)]
+fn id_field(s: &mut App, i: usize) -> &mut TextEdit {
+    match s.prompt.as_mut().expect("a prompt is open") {
+        Prompt::IdOut(_, t) => &mut t[i],
+        Prompt::IdIn(_, t) => t,
+        _ => unreachable!("an identity prompt is open"),
+    }
+}
+
+/// Runs one step of an identity's move on a thread of its own, and wakes the window with its answer.
+#[cfg(unix)]
+fn id_run(s: &mut App, said: &'static str, f: impl FnOnce() -> IdDone + Send + 'static) {
+    s.id_busy = said;
+    s.note = format!("{said}\u{2026}");
+    let (got, waker) = (s.id_got.clone(), s.waker.clone());
+    spawn(move || {
+        let r = f();
+        got.lock().unwrap_or_else(|e| e.into_inner()).push(r);
+        if let Some(w) = waker {
+            w();
+        }
+    });
+}
+
+/// Export: the file is named first, in the save dialog, and then the passphrase is asked for.
+#[cfg(unix)]
+fn id_export_ask(s: &mut App, tx: &mut Tx) {
+    if !s.id_busy.is_empty() {
+        return;
+    }
+    id_refresh(s);
+    let Some(ship) = s.id_known.0.clone() else {
+        s.note = "There is no anonymous identity on this computer yet. Read an address once to make one.".into();
+        return;
+    };
+    let options = rune::FileDialogOptions { title: "Export your anonymous identity".into(), file_name: Some(format!("lattice-identity-{}.{}", id_short(&ship).trim_start_matches('~'), cometid::EXTENSION)), ..Default::default() };
+    tx.save_file(options.filter("lattice identity", &[cometid::EXTENSION]), |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => {
+            let mut t = [TextEdit::new(""), TextEdit::new("")];
+            t[0].focused = true;
+            s.prompt = Some(Prompt::IdOut(path, Box::new(t)));
+        }
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
+/// Import: the file is picked first, and then its passphrase is asked for.
+#[cfg(unix)]
+fn id_import_ask(s: &mut App, tx: &mut Tx) {
+    if !s.id_busy.is_empty() {
+        return;
+    }
+    let options = rune::FileDialogOptions { title: "Use an existing anonymous identity".into(), ..Default::default() };
+    tx.open_file(options.filter("lattice identity", &[cometid::EXTENSION]), |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => {
+            let mut t = TextEdit::new("");
+            t.focused = true;
+            s.prompt = Some(Prompt::IdIn(path, t));
+        }
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
+/// An identity prompt said yes to. Any other prompt is handed back.
+#[cfg(unix)]
+fn id_confirm(s: &mut App, p: Prompt) -> Option<Prompt> {
+    let Some(e) = s.engine.clone() else { return Some(p) };
+    match p {
+        Prompt::IdOut(path, t) => {
+            if let Err(why) = id_pass_ok(&t[0].text, &t[1].text, cometid::MIN_PASSPHRASE) {
+                s.note = why;
+                s.prompt = Some(Prompt::IdOut(path, t));
+                return None;
+            }
+            let pass = t[0].text.clone();
+            id_run(s, "Exporting the identity", move || {
+                IdDone::Out((|| {
+                    let id = e.export_identity()?;
+                    let file = cometid::seal(&id, &pass)?;
+                    cometid::write_private(&path, &file).map_err(|e| format!("could not write {e}"))?;
+                    cometid::mark_exported(e.dir())?;
+                    Ok(path.display().to_string())
+                })())
+            });
+            None
+        }
+        Prompt::IdIn(path, t) => {
+            let pass = t.text.clone();
+            id_run(s, "Opening the identity file", move || {
+                IdDone::Opened((|| {
+                    let size = std::fs::metadata(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?.len();
+                    if size > cometid::MAX_FILE {
+                        return Err(cometid::OpenError::NotIdentity.to_string());
+                    }
+                    let bytes = std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+                    cometid::open(&bytes, &pass).map_err(|e| e.to_string())
+                })())
+            });
+            None
+        }
+        Prompt::IdUse(id, _) => {
+            id_run(s, "Changing the identity", move || IdDone::In(e.import_identity(&id).map(|aside| (id.ship.clone(), aside))));
+            None
+        }
+        p => Some(p),
+    }
+}
+
+/// Takes what the identity's threads answered. True when something changed.
+#[cfg(unix)]
+fn id_drained(s: &mut App) -> bool {
+    let got: Vec<_> = std::mem::take(&mut *s.id_got.lock().unwrap_or_else(|e| e.into_inner()));
+    let any = !got.is_empty();
+    for r in got {
+        s.id_busy = "";
+        match r {
+            IdDone::Out(Ok(path)) => s.note = format!("The identity is exported to {path}. Keep the file and its passphrase: one is no use without the other."),
+            IdDone::Opened(Ok(id)) => {
+                id_refresh(s);
+                let old = s.id_known.0.clone();
+                if old.as_deref() == Some(id.ship.as_str()) {
+                    s.note = format!("This computer already uses {}. Nothing changed.", id.ship);
+                } else {
+                    s.note.clear();
+                    s.prompt = Some(Prompt::IdUse(Box::new(id), old));
+                }
+            }
+            IdDone::In(Ok((ship, aside))) => {
+                // what was being read was asked for as the old identity
+                urb_cancel(s);
+                s.note = match aside {
+                    Some(a) => format!("This computer now reads as {ship}. The identity used before is kept in {}.", a.display()),
+                    None => format!("This computer now reads as {ship}."),
+                };
+            }
+            IdDone::Out(Err(e)) | IdDone::Opened(Err(e)) | IdDone::In(Err(e)) => s.note = e,
+        }
+    }
+    if any {
+        id_refresh(s);
+    }
+    any
+}
+
+/// The anonymous identity on the browser's start: its name, whether it has been exported, and the
+/// two ways it moves between computers.
+#[cfg(unix)]
+fn id_section(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let ship = s.engine.as_ref().and_then(engine::Engine::our).or_else(|| s.id_known.0.clone());
+    let busy = !s.id_busy.is_empty();
+    let said = match (&ship, s.id_known.1) {
+        _ if busy => format!("{}\u{2026}", s.id_busy),
+        (None, _) => "None yet. One is made the first time you read an address, and other ships see it as the reader.".to_owned(),
+        (Some(_), true) => "An export of it has been made. Export again after using it, so the file is fresh.".to_owned(),
+        (Some(_), false) => "It lives on this computer only. Export it to keep it, or to use it on another computer.".to_owned(),
+    };
+    col()
+        .key("anon-id")
+        .w_full()
+        .gap(6.0)
+        .child(text("Anonymous identity").font(k.ty.body_medium).color(c.text_base))
+        .children(ship.as_ref().map(|n| text(n.clone()).key("anon-id-name").font(k.ty.ui_medium).color(c.text_base).truncate()))
+        .child(text(said).key("anon-id-said").font(k.ty.small).color(c.text_muted).wrap())
+        .child(
+            row()
+                .gap(8.0)
+                .child(Button::new("Export").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Save this identity to a file locked with a passphrase").disabled(busy || ship.is_none()).on_press_tx(id_export_ask).build(k).key("id-export"))
+                .child(Button::new("Use an existing identity").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Open an identity file exported from another computer").disabled(busy).on_press_tx(id_import_ask).build(k).key("id-import")),
+        )
 }
 
 /// Lets go of a read on its way: what it answers is not wanted any more.
@@ -9843,6 +10127,10 @@ fn shared_view(s: &App, k: &Kit) -> El {
             .child(text(if s.anon { "Type an address above, as urb://~sampel-palnet/notes, to read what a ship publishes." } else { "Type an address above, as urb://~sampel-palnet/notes, to read what another ship publishes or shares with you. Anything else is looked for among your own pages." }).font(k.ty.small).color(c.text_muted).wrap())
             .child(saved)
             .child(seen);
+        #[cfg(unix)]
+        if s.anon {
+            page = page.child(id_section(s, k));
+        }
     }
     col().key("shared").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page)).scroll(ScrollSpec { stick_bottom: false })
 }
@@ -12754,6 +13042,25 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_export_passphrase_is_long_enough_and_typed_the_same_twice() {
+        assert!(id_pass_ok("seven77", "seven77", 8).unwrap_err().contains("at least 8"));
+        assert!(id_pass_ok("eight888", "eight889", 8).unwrap_err().contains("not the same"));
+        assert_eq!(id_pass_ok("eight888", "eight888", 8), Ok(()));
+        // letters are counted, not bytes
+        assert_eq!(id_pass_ok("\u{e9}\u{e9}\u{e9}\u{e9}", "\u{e9}\u{e9}\u{e9}\u{e9}", 4), Ok(()));
+    }
+
+    #[test]
+    fn a_comet_is_named_short_and_the_question_names_both() {
+        assert_eq!(id_short("~sampel-palnet"), "~sampel-palnet");
+        assert_eq!(id_short("~dozzod-dozzod-dozzod-dozzod--dozzod-dozzod-ricsul-bilwyt"), "~ricsul-bilwyt");
+        let [first, second] = id_question(Some("~old"), "~new");
+        assert!(first.contains("~old") && first.contains("~new") && first.contains("not deleted"));
+        assert!(second.contains("Stop using ~new"));
+        assert!(!id_question(None, "~new")[0].contains("Replace"));
+    }
 
     #[test]
     fn the_switcher_ranks_tight_early_matches_first_and_drops_misses() {

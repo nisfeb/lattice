@@ -239,6 +239,20 @@ impl Engine {
         rx.recv_timeout(Duration::from_secs(5)).is_ok()
     }
 
+    /// The identity this computer has: the one running, or the one its keyfile names. `None` before
+    /// one is made. A fake identity has no file to move, so it is not named here.
+    pub fn identity(&self) -> Option<String> {
+        if self.fake.is_some() {
+            return None;
+        }
+        self.our().or_else(|| comet_of_keyfile(std::fs::read_to_string(self.dir.join("comet.key")).ok()?.trim()))
+    }
+
+    /// Whether an export of the identity here has been made.
+    pub fn exported(&self) -> bool {
+        self.dir.join("comet.key").exists() && crate::cometid::exported_at(&self.dir).is_some()
+    }
+
     /// Where the identity's files are.
     pub fn dir(&self) -> &Path {
         &self.dir
@@ -274,12 +288,13 @@ impl Engine {
 
     /// Makes `id` (from an export file) the reader identity, in place of whatever was here, which
     /// is moved aside and never deleted (`cometid::install`). The engine is closed for it and
-    /// started again as the new identity. `Some(folder)` names where the old one went.
+    /// started again as the new identity if it ran: an engine that was off starts at the next read,
+    /// as it always does. `Some(folder)` names where the old one went.
     pub fn import_identity(&self, id: &crate::cometid::Identity) -> Result<Option<PathBuf>, String> {
         if comet_of_keyfile(&id.keyfile).as_deref() != Some(id.ship.as_str()) {
             return Err("That identity file does not hold an anonymous identity.".into());
         }
-        self.close_for_move()?;
+        let was = self.close_for_move()?;
         let aside = crate::cometid::install(&self.dir, id)?;
         {
             let mut g = self.inner.lock().unwrap();
@@ -291,7 +306,9 @@ impl Engine {
         if let Some(a) = &aside {
             log_line(&format!("identity replaced by {}, the old one kept in {}", id.ship, a.display()));
         }
-        self.start();
+        if was {
+            self.start();
+        }
         Ok(aside)
     }
 }
@@ -591,6 +608,58 @@ mod tests {
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1, "nothing was set aside");
         assert!(comet_of_keyfile("").is_none());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A comet's keyfile, mined here from fixed bytes under a star. Nothing is asked of any network,
+    /// and the comet is never started.
+    fn mined(seed: u8) -> (String, String) {
+        let key = urb_engine::engine::mine_comet_under(&[0x100], &[seed; 64]).expect("a comet is mined");
+        (comet_of_keyfile(&key).expect("and it is a comet"), key)
+    }
+
+    #[test]
+    fn an_identity_moves_from_one_folder_to_another_through_a_sealed_file() {
+        let (a, b) = (temp("move-a"), temp("move-b"));
+        let ((one, one_key), (two, two_key)) = (mined(1), mined(2));
+        assert_ne!(one, two);
+        for (d, name, key) in [(&a, &one, &one_key), (&b, &two, &two_key)] {
+            std::fs::write(d.join("comet.key"), key).unwrap();
+            std::fs::write(d.join(format!("{}.db", name.trim_start_matches('~'))), format!("store of {name}")).unwrap();
+        }
+        let first = engine_at(a.clone(), None, Status::Off);
+        assert_eq!(first.identity().as_deref(), Some(one.as_str()));
+        assert!(!first.exported());
+        let id = first.export_identity().unwrap();
+        let file = crate::cometid::seal(&id, "a long passphrase").unwrap();
+        crate::cometid::mark_exported(first.dir()).unwrap();
+        assert!(first.exported());
+
+        let second = engine_at(b.clone(), None, Status::Off);
+        let opened = crate::cometid::open(&file, "a long passphrase").unwrap();
+        let aside = second.import_identity(&opened).unwrap().expect("the old identity is set aside");
+        assert_eq!(second.identity().as_deref(), Some(one.as_str()));
+        assert!(matches!(second.status(), Status::Off), "an engine that was off is not started by an import");
+        assert!(!second.exported(), "the copy here has not been exported from here");
+        assert_eq!(std::fs::read(b.join(format!("{}.db", one.trim_start_matches('~')))).unwrap(), format!("store of {one}").into_bytes());
+        assert_eq!(std::fs::read_to_string(aside.join("comet.key")).unwrap().trim(), two_key.trim(), "the old keyfile is kept");
+        assert!(aside.join(format!("{}.db", two.trim_start_matches('~'))).exists(), "with its store");
+        for d in [a, b] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// Puts a mined comet and a stand-in store in `LATTICE_ID_SCRATCH`, for a headless run of the
+    /// export and import screens. The comet is never started.
+    #[test]
+    #[ignore = "a fixture: LATTICE_ID_SCRATCH names the folder"]
+    fn a_scratch_identity_for_a_headless_run() {
+        let Ok(dir) = std::env::var("LATTICE_ID_SCRATCH") else { return };
+        let seed = std::env::var("LATTICE_ID_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(7u8);
+        let (d, (name, key)) = (PathBuf::from(dir), mined(seed));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("comet.key"), key).unwrap();
+        std::fs::write(d.join(format!("{}.db", name.trim_start_matches('~'))), format!("store of {name}")).unwrap();
+        eprintln!("scratch identity {name}");
     }
 
     #[test]
