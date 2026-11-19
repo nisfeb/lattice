@@ -251,7 +251,9 @@ enum ModAct {
 
 #[derive(Clone, Copy, Default, PartialEq)]
 enum ForumSort {
+    /// What is voted up and new, as the web's forum opens.
     #[default]
+    Hot,
     New,
     Active,
     Top,
@@ -269,13 +271,30 @@ enum ForumGot {
     Changed(Vec<api::Board>),
 }
 
-/// A board's threads as they are listed: the pinned ones first, then by the order asked for.
-fn forum_sorted(posts: &[api::ForumPost], sort: ForumSort) -> Vec<&api::ForumPost> {
+/// How hot a thread is, as the ship scores one (`+hot-score` in `lattice-forum-rules.hoon`): its
+/// votes up less its votes down, never under nothing, over the square of the whole hours since it
+/// was made and two more. A pair to compare by multiplying across, as the ship does, never as a fraction.
+fn hot_score(p: &api::ForumPost, now: i64) -> (u128, u128) {
+    let made = api::da_secs(&p.created).unwrap_or(now);
+    let hours = 2 + ((now - made).max(0) / 3600) as u128;
+    (p.up.saturating_sub(p.down) as u128, hours * hours)
+}
+
+/// A board's threads as they are listed: the pinned ones first, then by the order asked for. `now`
+/// is the moment, in seconds since 1970, that hot is reckoned at.
+fn forum_sorted(posts: &[api::ForumPost], sort: ForumSort, now: i64) -> Vec<&api::ForumPost> {
     let mut v: Vec<&api::ForumPost> = posts.iter().collect();
+    // by the moment a date names, and by its text only where it names none
+    let at = |da: &str| (api::da_secs(da), da.to_owned());
     match sort {
-        // the ship's dates sort as text: the same shape, most significant first
-        ForumSort::New => v.sort_by(|a, b| b.created.cmp(&a.created)),
-        ForumSort::Active => v.sort_by(|a, b| b.active.cmp(&a.active)),
+        ForumSort::Hot => {
+            // each scored once, then the higher first and the newer first of two the same, as `+hot-before`
+            let mut scored: Vec<((u128, u128), (Option<i64>, String), &api::ForumPost)> = v.into_iter().map(|p| (hot_score(p, now), at(&p.created), p)).collect();
+            scored.sort_by(|a, b| (b.0.0 * a.0.1).cmp(&(a.0.0 * b.0.1)).then_with(|| b.1.cmp(&a.1)));
+            v = scored.into_iter().map(|x| x.2).collect();
+        }
+        ForumSort::New => v.sort_by_cached_key(|p| std::cmp::Reverse(at(&p.created))),
+        ForumSort::Active => v.sort_by_cached_key(|p| std::cmp::Reverse(at(&p.active))),
         ForumSort::Top => v.sort_by_key(|p| std::cmp::Reverse(p.up as i64 - p.down as i64)),
     }
     v.sort_by_key(|p| !p.pinned);
@@ -7677,7 +7696,7 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                 }
             }).build(k).key(key.to_owned())
         };
-        page = page.child(row().key("forum-sort").gap(4.0).child(sort("New", "fsort-new", ForumSort::New)).child(sort("Active", "fsort-active", ForumSort::Active)).child(sort("Top", "fsort-top", ForumSort::Top)));
+        page = page.child(row().key("forum-sort").gap(4.0).child(sort("Hot", "fsort-hot", ForumSort::Hot)).child(sort("New", "fsort-new", ForumSort::New)).child(sort("Active", "fsort-active", ForumSort::Active)).child(sort("Top", "fsort-top", ForumSort::Top)));
         // the board itself: its title and description changed, shown to all or to its members, or deleted
         let (title, description, public, name) = (b.title.clone(), b.description.clone(), b.public, b.board.clone());
         match &f.editing {
@@ -7788,7 +7807,7 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
         if b.posts.is_empty() {
             page = page.child(muted("No threads yet.".into()));
         }
-        let shown: Vec<&api::ForumPost> = forum_sorted(&b.posts, f.sort).into_iter().filter(|p| f.tags.iter().all(|t| p.tags.contains(t))).collect();
+        let shown: Vec<&api::ForumPost> = forum_sorted(&b.posts, f.sort, api::since_epoch().map_or(0, |d| d.as_secs() as i64)).into_iter().filter(|p| f.tags.iter().all(|t| p.tags.contains(t))).collect();
         if shown.is_empty() && !b.posts.is_empty() {
             page = page.child(muted("No thread carries every tag picked.".into()));
         }
@@ -12630,11 +12649,29 @@ mod tests {
     fn the_forum_orders_threads_steps_back_and_gives_way_to_a_page() {
         let post = |id: u64, created: &str, active: &str, up: u64, pinned: bool| api::ForumPost { id, created: created.into(), active: active.into(), up, pinned, ..api::ForumPost::default() };
         let posts = [post(1, "~2026.11.1", "~2026.11.9", 5, false), post(2, "~2026.11.2", "~2026.11.2", 1, false), post(3, "~2026.10.1", "~2026.10.1", 0, true), post(4, "~2026.11.3", "~2026.11.3", 9, false)];
-        let ids = |sort| forum_sorted(&posts, sort).into_iter().map(|p| p.id).collect::<Vec<_>>();
+        let ids = |sort| forum_sorted(&posts, sort, 0).into_iter().map(|p| p.id).collect::<Vec<_>>();
         // the pinned thread is first whatever the order, then newest, latest spoken in, or most points
         assert_eq!(ids(ForumSort::New), [3, 4, 2, 1]);
         assert_eq!(ids(ForumSort::Active), [3, 1, 4, 2]);
         assert_eq!(ids(ForumSort::Top), [3, 4, 1, 2]);
+        // dates are compared as moments: as text the 9th came after the 10th, and at 9 o'clock after 10
+        let dated = [post(1, "~2026.11.9..9.0.0", "~2026.11.9..9.0.0", 0, false), post(2, "~2026.11.10..8.0.0", "~2026.11.9..10.0.0", 0, false)];
+        let order = |sort| forum_sorted(&dated, sort, 0).into_iter().map(|p| p.id).collect::<Vec<_>>();
+        assert_eq!((order(ForumSort::New), order(ForumSort::Active)), (vec![2, 1], vec![2, 1]));
+        // hot, the order a board opens in: votes over the square of the hours since and two more
+        assert!(ForumSort::default() == ForumSort::Hot);
+        let now = api::da_secs("~2026.11.20..12.0.0").unwrap();
+        let hot = [
+            post(1, "~2026.11.20..11.0.0", "", 3, false),  // an hour old, 3 points: 3/9
+            post(2, "~2026.11.19..12.0.0", "", 40, false), // a day old, 40 points: 40/676
+            post(3, "~2026.11.20..2.0.0", "", 30, false),  // ten hours old, 30 points: 30/144
+            post(4, "~2026.11.20..11.30.0", "", 0, false), // new, no points
+            post(5, "~2026.11.20..10.0.0", "", 0, false),  // older, no points
+            post(6, "~2026.11.1..0.0.0", "", 1, true),     // pinned
+        ];
+        assert_eq!(forum_sorted(&hot, ForumSort::Hot, now).into_iter().map(|p| p.id).collect::<Vec<_>>(), [6, 1, 3, 2, 4, 5]);
+        let down = api::ForumPost { up: 1, down: 5, created: "~2026.11.20..11.0.0".into(), ..api::ForumPost::default() };
+        assert_eq!(hot_score(&down, now), (0, 9), "voted under nothing counts as nothing, as on the ship");
         let mut s = sample("welcome");
         go_forum(&mut s);
         assert!(s.forum.as_ref().is_some_and(|f| f.boards.as_ref().is_some_and(Vec::is_empty)), "with no ship there are no boards, and it says so");

@@ -82,6 +82,14 @@ class H(BaseHTTPRequestHandler):
             url = q.get('url', [''])[0]
             if url.rstrip('/') == 'urb://~sampel-palnet/notes':
                 return self.send(200, json.dumps({"kind":"folder","path":"/notes","entries":[{"name":"plan","url":"urb://~sampel-palnet/notes/plan","folder":False},{"name":"trips","url":"urb://~sampel-palnet/notes/trips/","folder":True}]}))
+            # a board of four threads, made at hours before now so the hot order can be seen
+            if url.rstrip('/').endswith('/forum/chat'):
+                def da(hours_ago):
+                    t = time.gmtime(time.time() - hours_ago * 3600)
+                    return "~%d.%d.%d..%d.%d.%d" % (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec)
+                mk = lambda i, title, ago, up, pinned=False: {"id":i,"title":title,"author":"~zod","created":da(ago),"active":da(ago),"body":"","up":up,"down":0,"comments":0,"pinned":pinned,"tags":[]}
+                posts = [mk(1, "DayOldForty", 24, 40), mk(2, "HourOldThree", 1, 3), mk(3, "NewNone", 0.2, 0), mk(4, "TenHoursThirty", 10, 30)]
+                return self.send(200, json.dumps({"kind":"board","board":"chat","title":"Chat","description":"","public":True,"count":4,"posts":posts}))
             # a forum thread, as the ship answers one: enough of it to be shown
             if '/forum/' in url and url.rsplit('/', 1)[-1].isdigit():
                 n = int(url.rsplit('/', 1)[-1])
@@ -104,6 +112,9 @@ class H(BaseHTTPRequestHandler):
             if not e or e["path"].endswith('/dir-index'): return self.send(404, 'not a file')
             return self.send(200, json.dumps({"body":e["body"],"mark":"page","builder":"md","editable":True,"rev":e["rev"]}))
         # activity: a reply on another ship's board, one on a board of this ship's, and a followed folder's news
+        # the forum: the index page the boards are read from, and no notes of refusal
+        if p == 'forum': return self.send(200, '<a href="/apps/lattice/forum/chat">chat</a>', 'text/html')
+        if p == 'forum-notes': return self.send(200, '{"items":[]}')
         if p == 'notify': return self.send(200, json.dumps({"unread": sum(1 for n in NOTICES if not n["read"]), "items": NOTICES}))
         if p == 'notify-count': return self.send(200, '{"held":0,"unread":0}')
         self.send(404, '{"error":"not in the stub"}')

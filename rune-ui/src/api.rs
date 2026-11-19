@@ -646,6 +646,26 @@ struct Rendered {
     kept: Option<bool>,
 }
 
+/// A date as the ship writes one (`~2026.11.17..17.25.11..b165`), in seconds since 1970. None for
+/// what is not one. Dates are compared by this, never as text: as text the 9th comes after the 10th.
+pub fn da_secs(da: &str) -> Option<i64> {
+    let mut parts = da.trim().strip_prefix('~')?.split("..");
+    let mut date = parts.next()?.split('.').map(|n| n.parse::<i64>().ok());
+    let (y, m, d) = (date.next()??, date.next()??, date.next()??);
+    let mut time = parts.next().unwrap_or("0.0.0").split('.').map(|n| n.parse::<i64>().ok());
+    let (h, min, sec) = (time.next()??, time.next().flatten().unwrap_or(0), time.next().flatten().unwrap_or(0));
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || !(0..24).contains(&h) || !(0..60).contains(&min) || !(0..60).contains(&sec) {
+        return None;
+    }
+    // days since 1970 of a date in the calendar in use, by the usual count of eras of 400 years
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    Some(days * 86_400 + h * 3600 + min * 60 + sec)
+}
+
 /// One stored revision of a page.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Rev {
@@ -3238,6 +3258,18 @@ mod tests {
         assert_eq!(Rev { rev: 0, updated: held.items[0].when.clone() }.when(), "2026-11-17 20:36");
         let inbox: Inbox = serde_json::from_str(r#"{"items":[{"page":"a","id":"0v1","when":"~2026.11.17..20.36.35..0722"}]}"#).unwrap();
         assert_eq!(inbox.items[0].when, "~2026.11.17..20.36.35..0722");
+    }
+
+    #[test]
+    fn a_ships_date_is_read_as_a_moment() {
+        assert_eq!(da_secs("~1970.1.1"), Some(0));
+        assert_eq!(da_secs("~1970.1.2..0.0.1"), Some(86_401));
+        assert_eq!(da_secs("~2026.11.17..17.25.11..b165"), Some(1_794_936_311));
+        assert_eq!(da_secs("~2024.2.29..12.0.0"), Some(1_709_208_000), "a leap day");
+        assert!(da_secs("~2026.11.9..9.0.0") < da_secs("~2026.11.10..8.0.0"), "the 9th is before the 10th, which as text it is not");
+        for bad in ["", "2026.11.17", "~2026.13.1", "~2026.11", "~x.y.z", "~2026.11.17..25.0.0"] {
+            assert_eq!(da_secs(bad), None, "{bad}");
+        }
     }
 
     #[test]
