@@ -404,12 +404,20 @@ pub struct Notice {
     pub host: String,
     #[serde(default, rename = "where")]
     pub place: String,
+    /// The thread a forum notice is about, or 0.
+    #[serde(default)]
+    pub post: u64,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub body: String,
     #[serde(default)]
     pub read: bool,
+}
+
+/// Whether text is a board's name as the ship writes one: a term.
+fn board_name(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_lowercase()) && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// What pressing Open on a notice shows here.
@@ -421,7 +429,12 @@ pub enum Opens {
     Shared(Shared),
     /// The Access screen, where an ask is answered.
     Access,
-    /// Somewhere this client has no screen for yet (a forum, a folder).
+    /// A forum thread: the board's key as the forum screen has it (its name, or `~host/name` for
+    /// another ship's), and the thread. The board itself when the notice names no thread.
+    Thread(String, Option<u64>),
+    /// An address to read in the browser: a followed folder on its host.
+    Address(String),
+    /// Nothing this client can show.
     Nothing,
 }
 
@@ -449,6 +462,13 @@ impl Notice {
             "comment" => Opens::Page(self.place.clone()),
             "ask" => Opens::Access,
             "share" | "reshare" | "asked" if !self.place.ends_with('/') => Opens::Shared(Shared { host: self.host.clone(), path: self.place.clone(), mode: "read".into(), when: String::new() }),
+            // a reply on a board of this ship's, or on another's: as the web goes to `/forum/<where>/<post>` and `/forum-remote/<host>/...`
+            "reply" | "remote" if board_name(&self.place) => {
+                let key = if self.kind == "remote" { format!("{}/{}", self.host, self.place) } else { self.place.clone() };
+                Opens::Thread(key, (self.post > 0).then_some(self.post))
+            }
+            // a followed folder's news: the folder on its host
+            "folder" if self.place.starts_with('/') && self.host.starts_with('~') => Opens::Address(format!("urb://{}{}/", self.host, self.place.trim_end_matches('/'))),
             _ => Opens::Nothing,
         }
     }
@@ -3238,7 +3258,13 @@ mod tests {
         assert_eq!(n.items[0].opens(), Opens::Page("notes/today".into()));
         assert!(matches!(n.items[1].opens(), Opens::Shared(s) if s.host == "~bus" && s.name() == "plans/trip"));
         assert_eq!(n.items[2].opens(), Opens::Access);
-        assert!(n.items[3..].iter().all(|i| i.opens() == Opens::Nothing));
+        assert_eq!(n.items[3].opens(), Opens::Thread("~bus/tech".into(), Some(7)), "a reply on another ship's board");
+        assert_eq!(n.items[4].opens(), Opens::Nothing, "what is no longer shared has nothing to open");
+        assert_eq!(n.items[5].opens(), Opens::Address("urb://~bus/notes/".into()));
+        assert_eq!(n.items[6].opens(), Opens::Nothing);
+        let reply = |place: &str, post: u64| Notice { kind: "reply".into(), host: "~zod".into(), place: place.into(), post, ..Notice::default() }.opens();
+        assert_eq!((reply("chat", 3), reply("chat", 0)), (Opens::Thread("chat".into(), Some(3)), Opens::Thread("chat".into(), None)));
+        assert_eq!(reply("../x", 3), Opens::Nothing, "a board's name is a term, whatever a notice says");
         assert_eq!(Rev { rev: 0, updated: n.items[0].when.clone() }.when(), "2026-11-17 20:36");
         let w: Waiting = serde_json::from_str(r#"{"held":1,"unread":2}"#).unwrap();
         assert_eq!((w.held, w.unread), (1, 2));

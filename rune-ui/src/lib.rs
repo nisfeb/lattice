@@ -9635,10 +9635,42 @@ fn open_notice(s: &mut App, n: &Notice) {
             s.forum = None;
             load_groups(s);
         }
+        Opens::Thread(board, post) => {
+            if s.conn.is_none() {
+                s.note = "sample pages have no forum to open".into();
+                return;
+            }
+            if !leave_edit(s) {
+                return;
+            }
+            (s.inbox, s.access, s.shared_open, s.settings) = (false, false, false, None);
+            s.forum = Some(Forum::default());
+            s.note = format!("reading {board}\u{2026}");
+            forum_open(s, board, post);
+        }
+        Opens::Address(url) => {
+            if s.conn.is_none() {
+                s.note = "sample pages have no other ships to read".into();
+                return;
+            }
+            urb_go(s, Some(url));
+        }
         Opens::Nothing => return,
     }
     if !n.read {
-        mark_read(s, Some(n.id.clone()));
+        match s.conn.clone() {
+            // marked behind what was opened, and said by the mark going: its answer has nothing to add, and on the
+            // request the other actions share it took the place of whatever the opening had to say
+            Some(c) => {
+                let id = n.id.clone();
+                spawn(move || drop(c.notice_read(Some(&id))));
+                for x in s.notices.iter_mut().filter(|x| x.id == n.id) {
+                    x.read = true;
+                }
+                s.waiting.unread = s.waiting.unread.saturating_sub(1);
+            }
+            None => mark_read(s, Some(n.id.clone())),
+        }
     }
 }
 

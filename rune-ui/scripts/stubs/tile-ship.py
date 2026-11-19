@@ -82,6 +82,10 @@ class H(BaseHTTPRequestHandler):
             url = q.get('url', [''])[0]
             if url.rstrip('/') == 'urb://~sampel-palnet/notes':
                 return self.send(200, json.dumps({"kind":"folder","path":"/notes","entries":[{"name":"plan","url":"urb://~sampel-palnet/notes/plan","folder":False},{"name":"trips","url":"urb://~sampel-palnet/notes/trips/","folder":True}]}))
+            # a forum thread, as the ship answers one: enough of it to be shown
+            if '/forum/' in url and url.rsplit('/', 1)[-1].isdigit():
+                n = int(url.rsplit('/', 1)[-1])
+                return self.send(200, json.dumps({"kind":"thread","board":url.split('/forum/')[1].split('/')[0],"title":"Thread %d" % n,"post":{"id":n,"title":"Thread %d" % n,"author":"~sampel-palnet","created":"~2026.11.17..9.0.0","active":"~2026.11.18..9.0.0","body":"The thread a notice led to.","up":2,"down":0,"comments":1,"pinned":False,"tags":[]},"comments":[{"id":1,"author":"~bus","created":"~2026.11.18..9.0.0","body":"A reply.","parent":0}]}))
             if url == 'urb://~sampel-palnet/notes/plan':
                 return self.send(200, json.dumps({"comments":THREAD,"kind":"page","ship":"~sampel-palnet","path":"/notes/plan","mode":"md","body":"# The plan\n\nPublished by ~sampel-palnet. See [the trips](urb://~sampel-palnet/notes/trips/).\n"}))
             return self.send(404, 'nothing is published there')
@@ -99,6 +103,8 @@ class H(BaseHTTPRequestHandler):
             e = next((e for e in SHARED if e["host"] == q.get('ship', [''])[0] and e["path"] == q.get('path', [''])[0]), None)
             if not e or e["path"].endswith('/dir-index'): return self.send(404, 'not a file')
             return self.send(200, json.dumps({"body":e["body"],"mark":"page","builder":"md","editable":True,"rev":e["rev"]}))
+        # activity: a reply on another ship's board, one on a board of this ship's, and a followed folder's news
+        if p == 'notify': return self.send(200, json.dumps({"unread": sum(1 for n in NOTICES if not n["read"]), "items": NOTICES}))
         if p == 'notify-count': return self.send(200, '{"held":0,"unread":0}')
         self.send(404, '{"error":"not in the stub"}')
 # a save is taken and answered as the ship answers one, so a change made in the window lands
@@ -115,6 +121,10 @@ SHARED = [] if os.environ.get('LR_SHARED') != '1' else [
 LINKS = {}
 MARKS = [{"url": "urb://~sampel-palnet/notes", "title": "Sampel's notes", "folder": ""}]
 HISTORY = []
+NOTICES = [
+    {"id":"0v1.n","kind":"remote","when":1795000000000,"who":"~bus","host":"~sampel-palnet","where":"tech","post":7,"title":"Rune","body":"I think so too.","read":False},
+    {"id":"0v2.n","kind":"reply","when":1794990000000,"who":"~bus","host":"~zod","where":"chat","post":3,"title":"Hello","body":"Welcome.","read":False},
+    {"id":"0v3.n","kind":"folder","when":1794980000000,"who":"~sampel-palnet","host":"~sampel-palnet","where":"/notes","post":0,"title":"2 new pages in notes from ~sampel-palnet","body":"","read":False}]
 COMMENTS = [{"page": os.environ.get('LR_NAME', 'places'), "id": "0v1.a", "author": "~sampel-palnet", "when": "~2026.11.17..9.30.0", "body": "A first comment."}]
 COMMENTS_ON = {}
 PENDING = [{"id": "0v9.held", "author": "~doznec-salfun-naptul-habrys--todlux-mosmep-linsub-binzod", "when": 1795000000000, "body": "A comet's comment, held."}]
@@ -126,6 +136,11 @@ def do_POST(self):
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
     # comments, as the ship answers each. LR_COMMENT_FAIL refuses a post and a switch, to see that nothing typed is lost
     if p in ('comment', 'page-comments', 'comment-remote') and os.environ.get('LR_COMMENT_FAIL'): return self.send(500, 'the ship could not do that')
+    if p == 'notify-read':
+        for n in NOTICES:
+            if 'id' not in q or n["id"] == q['id'][0]: n["read"] = True
+        sys.stderr.write("notice read %s\n" % q.get('id', ['all'])[0])
+        return self.send(200, '{"ok":true}')
     if p == 'comment':
         COMMENTS.insert(0, {"page": q['page'][0], "id": "0v2.%d" % len(COMMENTS), "author": "~zod", "when": "~2026.11.18..10.0.0", "body": parse_qs(body).get('body', [''])[0]})
         sys.stderr.write("comment on %s\n" % q['page'][0])
