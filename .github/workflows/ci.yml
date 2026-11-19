@@ -296,6 +296,11 @@ jobs:
           bin=rune-ui/target/${{ matrix.target }}/release/lattice-rune
           [ "$RUNNER_OS" = Windows ] && bin=$bin.exe
           "$bin" --version
+      # lattice-rune.app and its dmg: the plist reads, the signature holds,
+      # the dmg opens, and the program inside it answers where it can run
+      - name: the mac bundle and its dmg
+        if: runner.os == 'macOS'
+        run: sh rune-ui/scripts/bundle/macapp-check.sh ${{ matrix.target }} "$RUNNER_TEMP/rune-dist"
 
   nix:
     name: nix — flake build

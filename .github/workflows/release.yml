@@ -116,9 +116,11 @@ jobs:
           desktop app, never in place of it. Its AppImage updates itself
           from these releases, as the desktop app's does, and the other
           forms are shown the release page. Linux: `lattice-rune_*.deb` or `lattice-rune-*.AppImage`.
-          macOS: `lattice-rune-*-macos-*.tar.gz`, one program, signed ad hoc
-          and not notarized, so clear its quarantine before the first run
-          (`xattr -d com.apple.quarantine lattice-rune`). Windows:
+          macOS: `lattice-rune-*-macos-*.dmg`, which holds `lattice-rune.app`,
+          or `lattice-rune-*-macos-*.tar.gz`, the program alone. Both are
+          signed ad hoc and not notarized, so clear the quarantine before
+          the first run (`xattr -dr com.apple.quarantine` on the app or the
+          program). Windows:
           `lattice-rune-*-windows-x86_64.zip`, untried on a real machine.
           BODY
           )

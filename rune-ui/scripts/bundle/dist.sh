@@ -4,9 +4,11 @@
 #   sh scripts/bundle/dist.sh <target> <out-dir>
 # It builds target/<target>/release first (cargo build --release --locked).
 # Linux gives a deb and an AppImage, by deb.sh and appimage.sh. macOS gives
-# a tar.gz of the program, signed ad hoc: no bundle and no notarization yet,
-# so a downloaded copy has to be let through Gatekeeper by hand. Windows
-# gives a zip of the exe. Every name carries the crate's own version.
+# a dmg that holds lattice-rune.app (macapp.sh) beside the way to
+# Applications, and a tar.gz of the program alone. Both are signed ad hoc
+# and neither is notarized, so a downloaded copy has to be let through
+# Gatekeeper by hand. Windows gives a zip of the exe. Every name carries
+# the crate's own version.
 set -eu
 cd "$(dirname "$0")/../.."
 target=$1
@@ -30,6 +32,23 @@ case $target in
         strip "$stage/lattice-rune"
         codesign --force -s - "$stage/lattice-rune"
         tar -C "$stage" -czf "$out/lattice-rune-$version-macos-$arch.tar.gz" lattice-rune
+        # the bundle, signed as one thing after the program inside it
+        sh scripts/bundle/macapp.sh "$stage/lattice-rune" "$version" "$stage"
+        codesign --force --deep -s - "$stage/lattice-rune.app"
+        codesign --verify --deep --strict "$stage/lattice-rune.app"
+        # the dmg: the bundle, and Applications to drag it to
+        rm -rf "$stage/dmg" && mkdir -p "$stage/dmg"
+        cp -R "$stage/lattice-rune.app" "$stage/dmg/"
+        ln -s /Applications "$stage/dmg/Applications"
+        dmg=$out/lattice-rune-$version-macos-$arch.dmg
+        rm -f "$dmg"
+        # a runner's disk service is now and then busy for a moment
+        n=0
+        until hdiutil create -quiet -volname lattice-rune -srcfolder "$stage/dmg" -fs HFS+ -format UDZO -ov "$dmg"; do
+            n=$((n + 1))
+            [ "$n" -lt 4 ] || { echo "dist.sh: hdiutil could not make $dmg" >&2; exit 1; }
+            sleep 5
+        done
         ;;
     *-pc-windows-msvc)
         arch=${target%%-*}
