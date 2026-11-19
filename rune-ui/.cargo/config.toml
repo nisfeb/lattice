@@ -1,0 +1,4 @@
+# libmesa's two C sources (urcrypt and the SQLite amalgamation), fetched
+# and checked by scripts/mesa-deps.sh. mesa-sys never downloads anything.
+[env]
+MESA_SYS_DEPS = { value = "target/mesa-deps", relative = true }

@@ -47,6 +47,8 @@ mod view3d;
 mod htmlview;
 #[cfg(not(target_arch = "wasm32"))]
 mod update;
+#[cfg(unix)]
+mod engine;
 mod vim;
 
 use std::collections::HashMap;
@@ -440,6 +442,12 @@ struct App {
     conn: Option<Conn>,
     /// Browsing the built-in pages with no ship.
     sample: bool,
+    /// Using the app with no ship: other ships' published pages are read by the urb engine, as a comet.
+    /// It stands on `sample` for everything a ship would be asked, with no pages of its own.
+    anon: bool,
+    /// The urb engine, made the first time the app is used with no ship.
+    #[cfg(unix)]
+    engine: Option<engine::Engine>,
     url: TextEdit,
     code: TextEdit,
     login_err: String,
@@ -938,6 +946,9 @@ fn init() -> App {
     url.focused = true;
     App {
         sample: false,
+        anon: false,
+        #[cfg(unix)]
+        engine: None,
         url,
         code: TextEdit::new(""),
         login_err: String::new(),
@@ -1355,6 +1366,11 @@ fn sign_out(s: &mut App) {
     fresh.remote_req = std::mem::take(&mut s.remote_req);
     fresh.old_req = std::mem::take(&mut s.old_req);
     fresh.sidebar = s.sidebar.clone();
+    // the reader's comet is this computer's, not a session's: its thread and its store stay as they are
+    #[cfg(unix)]
+    {
+        fresh.engine = s.engine.take();
+    }
     // the listener of the session that ended stops, and every request this window keeps is woken as before
     s.beacon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let waker = s.waker.clone();
@@ -5561,8 +5577,20 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         match r {
             Ok((url, got)) => urb_got(s, url, got),
+            // the reader's own words are whole sentences
+            Err(e) if s.anon => s.note = e,
             Err(e) => s.note = format!("address: {e}"),
         }
+    }
+    // while the reader starts for a first read, what it is doing is said
+    #[cfg(unix)]
+    if s.anon && s.urb_req.is_pending() {
+        let step = s.engine.as_ref().map(engine::Engine::step).unwrap_or_default();
+        if !step.is_empty() && !s.note.starts_with(step) {
+            s.note = format!("{step}\u{2026}");
+            changed = true;
+        }
+        tx.wake_after(std::time::Duration::from_millis(300));
     }
     if let Some(r) = s.keys_req.take() {
         changed = true;
@@ -8804,6 +8832,13 @@ fn login_view(s: &App, k: &Kit) -> El {
     card = card
         .child(go)
         .child(Button::new("Browse sample pages").variant(ButtonVariant::Ghost).on_press(browse_sample).build(k).key("sample"));
+    // the one other way in: no node, and other ships' published pages read by this computer itself
+    #[cfg(unix)]
+    {
+        card = card
+            .child(text("No node? You can use lattice anonymously. You can browse pages people publish, but you can't save or host pages without a node.").key("anon-said").font(k.ty.small).color(c.text_muted).wrap())
+            .child(Button::new("Use anonymously").variant(ButtonVariant::Ghost).on_press(browse_anon).build(k).key("anon"));
+    }
     col().w_full().h_full().center().fill(c.bg_base).child(card)
 }
 
@@ -8997,8 +9032,47 @@ fn link_back(s: &mut App) {
     s.op_req.request((c, name), |(c, name)| c.link_unmake(&name).map(|()| Op::Unlinked(name)));
 }
 
+/// Enters the app with no ship: the browser, reading through the urb engine as a comet of this computer's.
+#[cfg(unix)]
+fn browse_anon(s: &mut App) {
+    (s.sample, s.anon) = (true, true);
+    if s.engine.is_none() {
+        let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")));
+        s.engine = base.map(|b| engine::Engine::new(b.join("lattice-rune").join("urb")));
+    }
+    go_browser(s);
+    s.note = "Reading anonymously. You can browse published pages. Saving and hosting need a node.".into();
+}
+
+/// Reads an address with no ship, through the urb engine. A forum's boards are not read this way yet.
+#[cfg(unix)]
+fn urb_go_anon(s: &mut App, to: Option<String>) {
+    let Some(url) = to.or_else(|| api::urb_address(&s.urb.text)) else {
+        s.note = "an address is urb://~ship/path".into();
+        return;
+    };
+    if api::urb_is_forum(&url) {
+        s.note = "A forum needs a node to read for now.".into();
+        return;
+    }
+    let Some(e) = s.engine.clone() else {
+        s.note = "the reader has nowhere to keep its files: no home folder".into();
+        return;
+    };
+    s.note = format!("reading {url}\u{2026}");
+    s.urb_req.request((e, url), |(e, url)| {
+        let (ship, path) = engine::place(&url).ok_or_else(|| "an address is urb://~ship/path".to_owned())?;
+        let p = e.read(&url, engine::BUDGET).map_err(|e| e.words())?;
+        Ok((url, api::Urb::Page { ship, path, kind: engine::kind_of(&p.mark).to_owned(), body: p.body, comments: 0 }))
+    });
+}
+
 /// Reads what stands at an address: the one typed, or one given (a folder's entry).
 fn urb_go(s: &mut App, to: Option<String>) {
+    #[cfg(unix)]
+    if s.anon {
+        return urb_go_anon(s, to);
+    }
     let Some(c) = s.conn.clone() else {
         s.note = "sample pages have no other ships to read".into();
         return;

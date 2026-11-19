@@ -123,6 +123,12 @@ Debug builds render headless with the same renderer:
     cargo test                                             # unit tests
     LATTICE_URL=.. LATTICE_COOKIE=.. cargo test -- --ignored   # against a ship, needs a page named rune-probe
 
+## Reading with no ship
+
+On Linux and macOS the sign-in screen has a second way in, "Use anonymously". The app then reads pages other ships publish through the urb engine: urb-fetch's Rust core over libmesa, linked into the program, running as a comet this computer makes once and keeps in `~/.config/lattice-rune/urb/`. It is the engine the desktop app has, at the same commit, and it is not the desktop app's comet. Type an `urb://~ship/path` address in the browser. This first cut reads pages and nothing else: no folders, no forum boards, no comments, no start list or history, and no way to move the comet to another computer. With a ship signed in, reads go over the ship as before. Windows builds without it.
+
+Building needs clang 18 or newer (libmesa is C23) and libmesa's two C sources, fetched once: `sh scripts/mesa-deps.sh`. `scripts/bundle/build-in-debian.sh` does not have either yet, so a deb or AppImage made that way fails to build: use `scripts/bundle/dist.sh` on a machine with a new clang, as CI does. A build for working on takes `LATTICE_ENGINE_FAKE=new-moon-of:~ship` to run as a moon on a fake network, and `LATTICE_LOG=1` prints the engine's words.
+
 ## Updates
 
 A release build asks 20 seconds after it starts, and every 6 hours after, whether a newer release is out (`latest-rune.json` on the newest GitHub release). It offers the version with its notes in a line across the top of the page area. An AppImage fetches the new one, checks its minisign signature against the key built into the app (the desktop app's own key), puts it in its own place and offers to restart. A deb, or the program run from a folder, is shown the release page. macOS and Windows copies are shown the release page too. A build made with `cargo build` asks nothing, unless `LATTICE_RUNE_UPDATE_URL` names a list to read, with `LATTICE_RUNE_UPDATE_KEY` for a test key: a release build reads neither. The crate's version is the release's: `release.yml` refuses a tag it does not match.
