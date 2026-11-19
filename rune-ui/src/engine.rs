@@ -295,11 +295,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         Err(e) => return fail(e),
     };
     let fake = fake.as_deref();
-    // a damaged folder is said, not mended: the desktop app sets damage aside and makes a new comet,
-    // which is a choice about an identity that this first cut does not make for anyone
-    let found = match state::find(dir, "", false, fake.unwrap_or("")) {
+    let found = match find_state(dir, fake.unwrap_or("")) {
         Ok(f) => f,
-        // another copy holding the store is said as that. Anything else is the files: where they are is said, since nothing here mends them
+        // another copy holding the store is said as that. Anything else that could not be mended says where the files are
         Err(e) if e.ends_with("is in use by another process") => return fail(e),
         Err(e) => return fail(format!("{e}. Its files are in {}: move that folder aside to start again with a new identity", dir.display())),
     };
@@ -359,6 +357,69 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         });
         host.turn();
     }
+}
+
+/// `state::find`, and when a file in the folder is damaged (a keyfile cut short by a crash while
+/// it was mined, a store SQLite cannot open, a port file that is not a number), the damage set
+/// aside and one more try, as the desktop app's engine does. A damaged port costs only the port,
+/// and the identity is kept. A damaged keyfile or store costs the identity: the keyfile and every
+/// store in the folder go into `damaged-<ms>/`, never deleted, and a new comet is made. A store
+/// held by another copy of the app is not damage and is left alone.
+fn find_state(dir: &Path, fake: &str) -> Result<state::Found, String> {
+    let e = match state::find(dir, "", false, fake) {
+        Ok(f) => return Ok(f),
+        Err(e) => e,
+    };
+    let what = damage(&e);
+    if what == Damage::None {
+        return Err(e);
+    }
+    log_line(&format!("state damaged ({e}), setting it aside"));
+    set_aside(dir, what)?;
+    state::find(dir, "", false, fake)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Damage {
+    None,
+    /// a `.db.port` file that is not a port
+    Port,
+    /// the keyfile or a store
+    Identity,
+}
+
+/// What a `state::find` failure says is damaged, by urb-gateway's and libmesa's own words.
+fn damage(e: &str) -> Damage {
+    if e.ends_with("is in use by another process") || e.ends_with("can't open lockfile") {
+        Damage::None
+    } else if e.starts_with("strconv.Atoi: parsing") || e.starts_with("invalid port") {
+        Damage::Port
+    } else if e.ends_with(": mesa: not a keyfile") || e.ends_with(": can't open database") || e.ends_with(": can't initialize database") || e.ends_with(": can't prepare statements") {
+        Damage::Identity
+    } else {
+        Damage::None
+    }
+}
+
+/// Moves the damaged files out of the way, into a folder of their own beside them.
+fn set_aside(dir: &Path, what: Damage) -> Result<(), String> {
+    let names: Vec<String> = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+    let gone = |n: &str| match what {
+        Damage::Port => n.ends_with(".db.port"),
+        Damage::Identity => n == "comet.key" || [".db", ".db-wal", ".db-shm", ".db.port"].iter().any(|x| n.ends_with(x)),
+        Damage::None => false,
+    };
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    let aside = dir.join(format!("damaged-{stamp}"));
+    for n in names.iter().filter(|n| gone(n)) {
+        // a port file that reads as a port is not the damaged one
+        if what == Damage::Port && std::fs::read_to_string(dir.join(n)).is_ok_and(|t| t.trim().parse::<u16>().is_ok()) {
+            continue;
+        }
+        std::fs::create_dir_all(&aside).map_err(|e| format!("{}: {e}", aside.display()))?;
+        std::fs::rename(dir.join(n), aside.join(n)).map_err(|e| format!("{n}: {e}"))?;
+    }
+    Ok(())
 }
 
 /// The one request this engine makes: a page's content.
@@ -437,6 +498,58 @@ mod tests {
         for no in ["Poke", "Comment", "ForumCall", "FurumCall"] {
             assert!(!code.contains(no), "{no} has no place in a reader");
         }
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("lattice-rune-engine-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn damage_is_told_from_a_store_in_use() {
+        assert_eq!(damage("/x/a.db is in use by another process"), Damage::None);
+        assert_eq!(damage("/x/a.db.lock: can't open lockfile"), Damage::None);
+        assert_eq!(damage("strconv.Atoi: parsing \"x\": invalid syntax"), Damage::Port);
+        assert_eq!(damage("invalid port 99999"), Damage::Port);
+        for e in ["/x/comet.key: mesa: not a keyfile", "/x/a.db: can't open database", "/x/a.db: can't initialize database", "/x/a.db: can't prepare statements"] {
+            assert_eq!(damage(e), Damage::Identity, "{e}");
+        }
+        assert_eq!(damage("Get \"https://bootstrap.urbit.org\": no route"), Damage::None, "no network is not damage");
+    }
+
+    #[test]
+    fn a_damaged_port_costs_only_the_port_and_a_damaged_store_the_identity() {
+        let d = temp("aside");
+        let put = |n: &str, t: &str| std::fs::write(d.join(n), t).unwrap();
+        let names = |p: &Path| {
+            let mut v: Vec<String> = std::fs::read_dir(p).unwrap().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+            v.sort();
+            v
+        };
+        for n in ["comet.key", "~sampel.db", "~sampel.db-wal", "keys.txt"] {
+            put(n, "x");
+        }
+        // a port file that is not a number goes, and one that is stays
+        put("~sampel.db.port", "not a port");
+        put("~other.db.port", "40123");
+        set_aside(&d, Damage::Port).unwrap();
+        let left = names(&d);
+        assert!(left.contains(&"comet.key".to_owned()) && left.contains(&"~sampel.db".to_owned()) && left.contains(&"~other.db.port".to_owned()) && !left.contains(&"~sampel.db.port".to_owned()));
+        let aside = left.iter().find(|n| n.starts_with("damaged-")).unwrap().clone();
+        assert_eq!(names(&d.join(&aside)), ["~sampel.db.port"], "set aside, never deleted");
+        std::fs::remove_dir_all(d.join(&aside)).unwrap();
+        // a damaged store takes the keyfile and every store with it, and leaves what is not the identity's
+        set_aside(&d, Damage::Identity).unwrap();
+        let left = names(&d);
+        let aside = left.iter().find(|n| n.starts_with("damaged-")).unwrap().clone();
+        assert_eq!(left.iter().filter(|n| !n.starts_with("damaged-")).collect::<Vec<_>>(), ["keys.txt"]);
+        assert_eq!(names(&d.join(&aside)), ["comet.key", "~other.db.port", "~sampel.db", "~sampel.db-wal"]);
+        // nothing damaged, nothing moved
+        set_aside(&d, Damage::None).unwrap();
+        assert_eq!(names(&d).len(), 2);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
