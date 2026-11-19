@@ -2010,6 +2010,7 @@ dependencies = [
  "flate2",
  "js-sys",
  "minisign-verify",
+ "ring",
  "rune",
  "rune-kit",
  "serde",

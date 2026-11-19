@@ -49,6 +49,8 @@ mod htmlview;
 mod update;
 #[cfg(unix)]
 mod engine;
+#[cfg(unix)]
+mod cometid;
 mod vim;
 
 use std::collections::HashMap;

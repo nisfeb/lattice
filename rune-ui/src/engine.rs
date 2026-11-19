@@ -220,22 +220,87 @@ impl Engine {
         }
     }
 
-    /// Closes the store and ends the thread, waiting a moment for it.
-    pub fn close(&self) {
+    /// Closes the store and ends the thread, waiting a moment for it. `false` when it did not
+    /// stop in that time.
+    pub fn close(&self) -> bool {
         let run = {
             let mut g = self.inner.lock().unwrap();
             g.status = Status::Off;
             g.run.take()
         };
-        let Some(run) = run else { return };
+        let Some(run) = run else { return true };
         let (tx, rx) = channel();
-        if run.jobs.send(Job::Close(tx)).is_ok() {
-            if let Some(w) = &run.waker {
-                let _ = w.send(Event::Wake);
-            }
-            let _ = rx.recv_timeout(Duration::from_secs(5));
+        if run.jobs.send(Job::Close(tx)).is_err() {
+            return true;
         }
+        if let Some(w) = &run.waker {
+            let _ = w.send(Event::Wake);
+        }
+        rx.recv_timeout(Duration::from_secs(5)).is_ok()
     }
+
+    /// Where the identity's files are.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Closed for a move of the identity: refused while a start is in progress (it may be mining
+    /// or opening the store) and for a fake ship. True when it was running, to start it again after.
+    fn close_for_move(&self) -> Result<bool, String> {
+        if self.fake.is_some() {
+            return Err("a fake test identity cannot be moved".into());
+        }
+        let was = match self.status() {
+            Status::Booting => return Err("The anonymous identity is still starting. Try again in a moment.".into()),
+            Status::Ready { .. } => true,
+            _ => false,
+        };
+        if !self.close() {
+            return Err("The anonymous identity did not stop in time. Try again in a moment.".into());
+        }
+        Ok(was)
+    }
+
+    /// The identity, for an export file: the engine closed first, so the store is copied whole,
+    /// and started again after if it ran.
+    pub fn export_identity(&self) -> Result<crate::cometid::Identity, String> {
+        let was = self.close_for_move()?;
+        let got = crate::cometid::read_dir(&self.dir, comet_of_keyfile);
+        if was {
+            self.start();
+        }
+        got
+    }
+
+    /// Makes `id` (from an export file) the reader identity, in place of whatever was here, which
+    /// is moved aside and never deleted (`cometid::install`). The engine is closed for it and
+    /// started again as the new identity. `Some(folder)` names where the old one went.
+    pub fn import_identity(&self, id: &crate::cometid::Identity) -> Result<Option<PathBuf>, String> {
+        if comet_of_keyfile(&id.keyfile).as_deref() != Some(id.ship.as_str()) {
+            return Err("That identity file does not hold an anonymous identity.".into());
+        }
+        self.close_for_move()?;
+        let aside = crate::cometid::install(&self.dir, id)?;
+        {
+            let mut g = self.inner.lock().unwrap();
+            g.failed_at = None;
+            if matches!(g.status, Status::Failed(_)) {
+                g.status = Status::Off;
+            }
+        }
+        if let Some(a) = &aside {
+            log_line(&format!("identity replaced by {}, the old one kept in {}", id.ship, a.display()));
+        }
+        self.start();
+        Ok(aside)
+    }
+}
+
+/// The comet a keyfile names, or `None` when it is not a comet's keyfile (a comet is the one rank
+/// wider than 64 bits).
+pub fn comet_of_keyfile(text: &str) -> Option<String> {
+    let (ship, _, _) = urb_engine::engine::keyfile_ship(text)?;
+    (ship.1 != 0).then(|| urb_engine::engine::ship_text(ship))
 }
 
 fn make_dir(dir: &Path) -> Result<(), String> {
@@ -498,6 +563,43 @@ mod tests {
         for no in ["Poke", "Comment", "ForumCall", "FurumCall"] {
             assert!(!code.contains(no), "{no} has no place in a reader");
         }
+    }
+
+    fn engine_at(dir: PathBuf, fake: Option<&str>, status: Status) -> Engine {
+        Engine { dir, fake: fake.map(str::to_string), inner: Arc::new(Mutex::new(Inner { status, failed_at: None, step: "", run: None })) }
+    }
+
+    #[test]
+    fn an_identity_is_not_moved_while_it_starts_or_when_it_is_fake() {
+        let d = temp("move");
+        let e = engine_at(d.clone(), None, Status::Booting);
+        assert!(e.export_identity().unwrap_err().contains("still starting"));
+        assert!(matches!(e.status(), Status::Booting), "and the start is left alone");
+        let e = engine_at(d.clone(), Some("new-moon-of:~zod"), Status::Off);
+        assert!(e.export_identity().unwrap_err().contains("fake"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_import_that_is_not_a_comet_is_refused_and_nothing_is_touched() {
+        let d = temp("import");
+        std::fs::write(d.join("comet.key"), "kept").unwrap();
+        let e = engine_at(d.clone(), None, Status::Off);
+        let id = crate::cometid::Identity { ship: "~zod".into(), keyfile: "not a keyfile".into(), db: vec![1], wal: vec![], exported: 0, my_posts: vec![] };
+        assert!(e.import_identity(&id).unwrap_err().contains("does not hold"));
+        assert_eq!(std::fs::read_to_string(d.join("comet.key")).unwrap(), "kept");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1, "nothing was set aside");
+        assert!(comet_of_keyfile("").is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn export_with_no_identity_says_so() {
+        let d = temp("none");
+        let e = engine_at(d.clone(), None, Status::Off);
+        assert!(e.export_identity().is_err());
+        assert!(matches!(e.status(), Status::Off), "an engine that was off is not started by an export");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     fn temp(name: &str) -> PathBuf {
