@@ -18,6 +18,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Save over a rev, refusal of a stale save
 - [x] Warning when the page being edited changes elsewhere
 - [x] New, rename or move, delete
+- [x] A right-click on a row of the file tree opens a menu at the pointer: Rename, Move, Download and Delete, for the row whether or not its page is in front. A folder has no Download. Rename and Move open the one prompt, with the last part of the name or its folder marked to type over. Download of a page not in front reads it from the ship first. Rows shared by other ships keep their own buttons and have no menu. Rune's tree has no right-click for a row, so each row carries a clear sheet that takes it. Checked: a unit test, and `scripts/tree-menu.json` headless on the sample pages: a plain click still opens the page, the menu, a download written, a folder's menu, the delete question. Not checked: against a ship, by the Menu key, and in a real window.
 - [x] Folders: view, new page here, rename or move, delete
 - [x] History: list, read an old revision, restore
 - [x] One-request tree with bodies, sync every 30 s by the `since` token

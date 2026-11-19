@@ -809,6 +809,8 @@ struct App {
     search_at: Option<usize>,
     /// The page menu in the tab header is open.
     page_menu: bool,
+    /// The tree row a right-click landed on, and where: its menu shows there.
+    tree_menu: Option<(String, rune::PointerPress)>,
     /// The top bar's tabs while one is pressed or dragged.
     tab_drag: rune_kit::shell::TabDragState,
     /// The bookmarks the reader keeps, once read.
@@ -1229,6 +1231,7 @@ fn init() -> App {
         sskipped: 0,
         search_at: None,
         page_menu: false,
+        tree_menu: None,
         tab_drag: rune_kit::shell::TabDragState::new(),
         marks: None,
         marks_req: Latest::default(),
@@ -11013,6 +11016,93 @@ fn ask_new(s: &mut App) {
     s.prompt = Some(Prompt::New(t));
 }
 
+/// What a tree row's menu offers: its command and its words. A folder has no one file to download.
+fn tree_menu_items(dir: bool) -> Vec<(&'static str, &'static str)> {
+    let mut out = vec![("rename", "Rename"), ("move", "Move")];
+    if !dir {
+        out.push(("download", "Download"));
+    }
+    out.push(("delete", "Delete"));
+    out
+}
+
+/// The name a rename or a move starts from, with the part to change marked so typing replaces it:
+/// the last part for a rename, and the folder before it for a move.
+fn tree_menu_edit(path: &str, mv: bool) -> TextEdit {
+    let mut t = TextEdit::new(path);
+    t.focused = true;
+    let at = path.rfind('/').map_or(0, |i| i + 1);
+    if mv { t.set_selection(0, at) } else { t.set_selection(at, path.len()) }
+    t
+}
+
+/// Runs one command of a tree row's menu on that row, whether or not it is the page in front.
+fn tree_menu_run(s: &mut App, path: &str, id: &str, tx: &mut Tx) {
+    s.tree_menu = None;
+    match id {
+        "rename" | "move" => {
+            if !no_node(s) {
+                s.prompt = Some(Prompt::Rename(path.to_owned(), tree_menu_edit(path, id == "move")));
+            }
+        }
+        "delete" => {
+            if !no_node(s) {
+                s.prompt = Some(Prompt::Delete(path.to_owned()));
+            }
+        }
+        "download" => tree_download(s, path, tx),
+        _ => {}
+    }
+}
+
+/// Saves a page from the tree to a file on this machine. The page in front goes as it stands, with
+/// what is being typed. Any other is saved from what is kept of it, or read from the ship first.
+fn tree_download(s: &mut App, path: &str, tx: &mut Tx) {
+    if s.open.as_ref().is_some_and(|p| p.name == path) {
+        return ask_download(s, tx);
+    }
+    let kind = s.cache.get(path).map(|p| p.kind.clone()).or_else(|| s.files.get(path).and_then(|n| n.data.as_ref()).map(|n| n.kind.clone())).unwrap_or_default();
+    let (kept, conn, name) = (s.cache.get(path).map(|p| p.body.clone()), s.conn.clone().filter(|_| !s.memory), path.to_owned());
+    if kept.is_none() && conn.is_none() {
+        s.note = format!("{path} has no text here to download");
+        return;
+    }
+    let options = rune::FileDialogOptions { title: "Download this page".into(), file_name: Some(upload::download_name(path, &kind, s.memory)), ..Default::default() };
+    tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(to)) => match (conn.clone(), kept.clone()) {
+            // the ship's copy is the newest
+            (Some(c), _) => {
+                s.note = format!("reading {name}");
+                s.op_req.request((c, name.clone(), to), |(c, name, to)| {
+                    let p = c.page(&name)?;
+                    Ok(Op::Said(match std::fs::write(&to, p.body) {
+                        Ok(()) => format!("saved to {}", to.display()),
+                        Err(e) => format!("not saved to {}: {e}", to.display()),
+                    }))
+                });
+            }
+            (None, Some(body)) => write_file(s, to, body),
+            (None, None) => {}
+        },
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
+/// The left pane with the menu of the tree row that was right-clicked, shown where the pointer was.
+fn tree_menu_view(s: &App, k: &Kit, side: El, layer: &mut Vec<El>) -> El {
+    let dir = s.tree_menu.as_ref().is_some_and(|(p, _)| s.files.get(p).is_none_or(|n| n.dir));
+    let mut menu = rune_kit::context_menu("tree-menu", side, s.tree_menu.as_ref().map(|m| m.1)).on_close(|s: &mut App| s.tree_menu = None);
+    for (id, label) in tree_menu_items(dir) {
+        menu = menu.item(MenuItem::new(label).danger(id == "delete").on_select_tx(move |s: &mut App, tx| {
+            if let Some((path, _)) = s.tree_menu.clone() {
+                tree_menu_run(s, &path, id, tx);
+            }
+        }));
+    }
+    menu.build(k, layer)
+}
+
 fn ask_rename(s: &mut App) {
     if let Some(p) = &s.open {
         let mut t = TextEdit::new(p.name.clone());
@@ -11489,6 +11579,17 @@ fn sidebar(s: &App, k: &Kit) -> El {
             let (muted, hover) = (k.c.text_muted, k.c.hover);
             move |n, r| {
                 let item = TreeItem::file(n, r).highlight(q.clone());
+                // the tree has no right-click of its own for a row, so a row of this ship's carries a clear
+                // sheet over itself that takes one. It has no press, so a click still reaches the row
+                let item = if swm::is_ours(&n.path) {
+                    item
+                } else {
+                    let at = n.path.clone();
+                    item.trailing(el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).on_secondary_press(move |s: &mut App, p, _| {
+                        s.files.select(&at);
+                        s.tree_menu = Some((at.clone(), p));
+                    }))
+                };
                 if links.contains(&n.path) {
                     // a page that is another ship's, moved here as a link
                     return item.icon(&tabhead::OUT);
@@ -12797,7 +12898,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let inset = cx.titlebar_inset();
     let right = IconButton::new(&topbar::PANE_RIGHT).variant(if s.inspector.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help("Right pane").on_press(toggle_right).build(&k).key("pane-right");
     let shell = SplitView::new(main)
-        .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
+        .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, tree_menu_view(s, &k, sidebar(s, &k), &mut layer))
         .inspector(&s.inspector, |s: &mut App| &mut s.inspector, right_pane(s, &k))
         .toolbar(Toolbar::new().leading(tab_strip(s, &k)).trailing(right))
         // the left pane's toggle is the ribbon's first icon, as on the web
@@ -13042,6 +13143,16 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tree_row_menu_fits_the_row_and_marks_the_part_to_change() {
+        assert_eq!(tree_menu_items(false).iter().map(|i| i.0).collect::<Vec<_>>(), ["rename", "move", "download", "delete"]);
+        assert_eq!(tree_menu_items(true).iter().map(|i| i.0).collect::<Vec<_>>(), ["rename", "move", "delete"]);
+        assert_eq!(tree_menu_edit("notes/plans/today", false).selected(), "today");
+        assert_eq!(tree_menu_edit("notes/plans/today", true).selected(), "notes/plans/");
+        assert_eq!(tree_menu_edit("today", false).selected(), "today");
+        assert_eq!(tree_menu_edit("today", true).selected(), "");
+    }
 
     #[test]
     fn an_export_passphrase_is_long_enough_and_typed_the_same_twice() {
