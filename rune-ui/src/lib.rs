@@ -5011,6 +5011,9 @@ fn drained(s: &mut App, (did, out): Drained) {
             load_tree(s);
         }
     }
+    if hist {
+        load_history(s);
+    }
     s.note = said.join(". ");
     if !stopped {
         drain(s);
@@ -5418,6 +5421,15 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         if let Some(f) = &mut s.forum {
             f.acting = false;
+        }
+        // an answer about a board on another ship may come with a refusal of what was just sent there
+        let away = match &r {
+            Ok(ForumGot::Board(b)) => b.board.starts_with('~'),
+            Ok(ForumGot::Thread(t)) => t.board.starts_with('~'),
+            _ => false,
+        };
+        if away && !s.notes_req.is_pending() {
+            forum_notes(s);
         }
         // an answer that lands after the forum was left is dropped
         match (r, &mut s.forum) {
@@ -7290,10 +7302,20 @@ fn forum_go(s: &mut App) {
 /// Reads a board of the forum, or with a number one of its threads, and shows it when it lands.
 fn forum_open(s: &mut App, board: String, post: Option<u64>) {
     let Some(c) = s.conn.clone() else { return };
+    // what other ships refused is read with whatever of the forum is opened, however it was come to:
+    // by an address or a notice the boards screen, which read it, is never passed
+    forum_notes(s);
     s.forum_req.request((c, board, post), |(c, board, post)| match post {
         Some(id) => c.forum_thread(&board, id).map(ForumGot::Thread),
         None => c.forum_board(&board).map(ForumGot::Board),
     });
+}
+
+/// Reads what other ships' boards refused of this ship's, for the count the forum shows.
+fn forum_notes(s: &mut App) {
+    if let Some(c) = s.conn.clone() {
+        s.notes_req.request(c, |c| c.forum_notes().map(ForumGot::Notes));
+    }
 }
 
 /// What is done to the forum thread showing.
@@ -7663,7 +7685,32 @@ fn forum_back(s: &mut App) {
             (f.board, f.moding) = (None, None);
             f.tags.clear();
         }
+        // back from a thread that was come to directly: the boards were never read
+        if f.board.is_none() && f.boards.is_none() {
+            if let Some(c) = s.conn.clone() {
+                s.forum_req.request(c, |c| c.forum_boards().map(ForumGot::Boards));
+            }
+        }
     }
+}
+
+/// The way to what other ships refused, with how many there are. On the boards screen it is always
+/// there. On a board or a thread it shows only when there is something to see, as the web's badge does.
+fn refusals(f: &Forum, k: &Kit, always: bool) -> Option<El> {
+    let refused = f.notes.as_ref().map_or(0, Vec::len);
+    (always || refused > 0).then(|| {
+        Button::new(if refused == 0 { "Refusals".to_owned() } else { format!("Refusals {refused}") })
+            .control_size(ControlSize::Small)
+            .variant(if refused == 0 { ButtonVariant::GhostMuted } else { ButtonVariant::Ghost })
+            .help("Posts another ship's board did not take, and why")
+            .on_press(|s: &mut App| {
+                if let Some(f) = &mut s.forum {
+                    f.notes_open = true;
+                }
+            })
+            .build(k)
+            .key("notes-open")
+    })
 }
 
 /// The forum: the boards, a board's threads, or a thread with its comments under what they answer.
@@ -7687,8 +7734,10 @@ fn forum_view(f: &Forum, ours: &str, k: &Kit) -> El {
         }
         return page;
     }
-    if f.board.is_some() {
-        page = page.child(row().child(Button::new(if f.thread.is_some() { "\u{2039} Back to the board" } else { "\u{2039} Boards" }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(forum_back).build(k).key("forum-back")));
+    // a thread come to by a notice or an address has no board behind it: the way back is to the boards
+    if f.board.is_some() || f.thread.is_some() {
+        let back = if f.thread.is_some() && f.board.is_some() { "\u{2039} Back to the board" } else { "\u{2039} Boards" };
+        page = page.child(row().w_full().center_y().child(Button::new(back).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(forum_back).build(k).key("forum-back")).child(el().grow(1.0)).children(refusals(f, k, false)));
     }
     if let Some(th) = &f.thread {
         let p = &th.post;
@@ -7925,22 +7974,7 @@ fn forum_view(f: &Forum, ours: &str, k: &Kit) -> El {
         }
         return page;
     }
-    let refused = f.notes.as_ref().map_or(0, Vec::len);
-    page = page.child(
-        row().w_full().gap(8.0).center_y().child(text("Boards").font(k.ty.body_medium).color(c.text_base).grow(1.0)).child(
-            Button::new(if refused == 0 { "Refusals".to_owned() } else { format!("Refusals {refused}") })
-                .control_size(ControlSize::Small)
-                .variant(if refused == 0 { ButtonVariant::GhostMuted } else { ButtonVariant::Ghost })
-                .help("Posts another ship's board did not take, and why")
-                .on_press(|s: &mut App| {
-                    if let Some(f) = &mut s.forum {
-                        f.notes_open = true;
-                    }
-                })
-                .build(k)
-                .key("notes-open"),
-        ),
-    );
+    page = page.child(row().w_full().gap(8.0).center_y().child(text("Boards").font(k.ty.body_medium).color(c.text_base).grow(1.0)).children(refusals(f, k, true)));
     page = page.child(
         row()
             .key("board-away")

@@ -115,7 +115,7 @@ class H(BaseHTTPRequestHandler):
         # activity: a reply on another ship's board, one on a board of this ship's, and a followed folder's news
         # the forum: the index page the boards are read from, and no notes of refusal
         if p == 'forum': return self.send(200, '<a href="/apps/lattice/forum/chat">chat</a>', 'text/html')
-        if p == 'forum-notes': return self.send(200, '{"items":[]}')
+        if p == 'forum-notes': return self.send(200, os.environ.get('LR_NOTES_HTML', ''), 'text/html')
         if p == 'notify': return self.send(200, json.dumps({"unread": sum(1 for n in NOTICES if not n["read"]), "items": NOTICES}))
         if p == 'notify-count': return self.send(200, '{"held":0,"unread":0}')
         self.send(404, '{"error":"not in the stub"}')
