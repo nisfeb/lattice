@@ -48,8 +48,7 @@ jobs:
       # otherwise ship code no test ever saw.
       - name: build deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libfuse3-dev pkg-config libgtk-3-dev \
+          sh scripts/ci-apt.sh libfuse3-dev pkg-config libgtk-3-dev \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
             libsoup-3.0-dev clang libclang-dev
       - name: urb engine sources
@@ -187,8 +186,7 @@ jobs:
       - name: linux build deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libfuse3-dev pkg-config libgtk-3-dev \
+          sh scripts/ci-apt.sh libfuse3-dev pkg-config libgtk-3-dev \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
             libsoup-3.0-dev libxdo-dev libssl-dev file
 
@@ -418,8 +416,7 @@ jobs:
       - name: linux build deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev pkg-config squashfs-tools binutils
+          sh scripts/ci-apt.sh libxkbcommon-dev pkg-config squashfs-tools binutils
       - name: build and pack
         run: sh rune-ui/scripts/bundle/dist.sh ${{ matrix.target }} "$RUNNER_TEMP/rune-dist"
       - name: upload and checksums

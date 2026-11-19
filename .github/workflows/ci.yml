@@ -79,8 +79,7 @@ jobs:
       # shape, config round-trip, eyre binding classification).
       - name: tauri + fuse build deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libfuse3-dev pkg-config libgtk-3-dev \
+          sh scripts/ci-apt.sh libfuse3-dev pkg-config libgtk-3-dev \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
             libsoup-3.0-dev pandoc xvfb clang libclang-dev
       # libmesa's C sources for the urb engine (desktop/.cargo/config.toml)
@@ -148,7 +147,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sh desktop/scripts/clang-18.sh
-          sudo apt-get install -y libfuse3-dev pkg-config \
+          sh scripts/ci-apt.sh libfuse3-dev pkg-config \
             libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             librsvg2-dev libsoup-3.0-dev
       - name: homebrew llvm and macfuse (macos)
@@ -256,8 +255,7 @@ jobs:
       - name: linux build deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev pkg-config squashfs-tools binutils fonts-dejavu-core
+          sh scripts/ci-apt.sh libxkbcommon-dev pkg-config squashfs-tools binutils fonts-dejavu-core
       - name: cargo test
         if: runner.os == 'Linux'
         working-directory: rune-ui
