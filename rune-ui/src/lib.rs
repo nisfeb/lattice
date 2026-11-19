@@ -4,6 +4,8 @@
 //! With neither set it opens on built-in sample pages, which is also what the
 //! headless runs draw: `cargo run -- --snap out.png --scene reading`.
 
+#[cfg(not(target_arch = "wasm32"))]
+mod accounts;
 mod api;
 mod backups;
 mod browse;

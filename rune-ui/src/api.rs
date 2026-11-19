@@ -738,6 +738,12 @@ struct Saved {
     kept: String,
 }
 
+/// Now, in seconds since 1970.
+#[cfg(not(target_arch = "wasm32"))]
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
 /// Where a signed-in session is kept between runs: the app's own file,
 /// readable by its owner alone.
 fn session_path() -> Option<std::path::PathBuf> {
@@ -1907,8 +1913,9 @@ impl Conn {
         if let Some(c) = Conn::from_env() {
             return Some(c);
         }
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(session_path()?).ok()?).ok()?;
-        Some(Conn { url: v["url"].as_str()?.to_owned(), cookie: v["cookie"].as_str()?.to_owned() })
+        // the ship in front among those signed in, unless its session has ended
+        let all = crate::accounts::load_at(session_path()?.parent()?, now_secs());
+        all.front().filter(|a| !a.expired).map(|a| Conn { url: a.url.clone(), cookie: a.cookie.clone() })
     }
 
     /// Keeps the tree with every page's text, to read when the ship does not answer. In a file only its owner reads, written whole or not at all.
@@ -2167,26 +2174,40 @@ impl Conn {
         kept_at(&kept_path(&self.url)?)
     }
 
-    /// Keeps this session for the next run, in a file only its owner reads.
+    /// Keeps this session for the next run, among the ships signed in, and brings its ship to the front.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn remember(&self) -> Result<(), String> {
-        let p = session_path().ok_or("no home directory")?;
-        std::fs::create_dir_all(p.parent().ok_or("no parent")?).map_err(|e| e.to_string())?;
-        let body = serde_json::json!({ "url": self.url, "cookie": self.cookie }).to_string();
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&p).map_err(|e| e.to_string())?;
-            f.write_all(body.as_bytes()).map_err(|e| e.to_string())
+        // a test never writes the sessions of whoever runs it
+        if cfg!(test) {
+            return Ok(());
         }
-        #[cfg(not(unix))]
-        std::fs::write(&p, body).map_err(|e| e.to_string())
+        let p = session_path().ok_or("no home directory")?;
+        let dir = p.parent().ok_or("no parent")?;
+        let mut all = crate::accounts::load_at(dir, now_secs());
+        all.put(&self.url, &self.cookie, now_secs());
+        crate::accounts::store_at(dir, &all)
     }
 
-    /// Forgets the saved session.
+    /// In a browser the session is the browser's own.
+    #[cfg(target_arch = "wasm32")]
+    pub fn remember(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Signs out of the ship in front: its session is let go, and the others signed in stay.
     pub fn forget() {
-        if let Some(p) = session_path() {
-            let _ = std::fs::remove_file(p);
+        if cfg!(test) {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let mut all = crate::accounts::load_at(dir, now_secs());
+            if let Some(front) = all.front.clone() {
+                all.remove(&front);
+                // sign out leaves nobody in front: the window goes to its sign-in, not to another ship
+                all.front = None;
+                let _ = crate::accounts::store_at(dir, &all);
+            }
         }
     }
 
