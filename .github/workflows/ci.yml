@@ -49,7 +49,7 @@ jobs:
         with:
           persist-credentials: false
       - name: fuse build deps
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+        run: sh scripts/ci-apt.sh libfuse3-dev pkg-config
       #  --release for speed, but with overflow checks: the overflow
       #  regressions (da_extreme_fields_do_not_overflow, da_is_total*, and
       #  cue's atom-length guard) only panic when they are on, and release
@@ -315,8 +315,7 @@ jobs:
           persist-credentials: false
       - name: LibreOffice Writer (no GUI)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui libreoffice-calc-nogui
+          sh scripts/ci-apt.sh --no-install-recommends libreoffice-writer-nogui libreoffice-calc-nogui
           soffice --version
       - name: canon.py is stable across two LibreOffice re-saves
         run: python3 scripts/writer-corpus/canon.py --self-test
@@ -359,7 +358,7 @@ jobs:
           persist-credentials: false
       - name: vere and socat
         run: |
-          sudo apt-get install -y socat
+          sh scripts/ci-apt.sh socat
           mkdir -p "$RUNNER_TEMP/vere" "$(dirname "$VERE")"
           curl -fsSL "https://github.com/urbit/vere/releases/download/$VERE_TAG/linux-x86_64.tgz" |
             tar -xz -C "$RUNNER_TEMP/vere"

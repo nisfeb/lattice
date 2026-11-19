@@ -205,7 +205,7 @@ jobs:
         with:
           persist-credentials: false
       - name: fuse build deps
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+        run: sh scripts/ci-apt.sh libfuse3-dev pkg-config
       #  shuttle is RANDOMISED, not exhaustive, so one CI pass proves less than
       #  repetition does. Nightly is where it earns its keep: a fresh schedule
       #  space every night, and a failure prints the seed that replays it.
@@ -225,7 +225,7 @@ jobs:
         with:
           persist-credentials: false
       - name: fuse build deps
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+        run: sh scripts/ci-apt.sh libfuse3-dev pkg-config
       #  fsx keeps a shadow buffer and diffs it against the filesystem after
       #  every operation, so a mismatch names the exact op sequence. The script
       #  skips cleanly when there is no /dev/fuse, no compiler, or no network.
