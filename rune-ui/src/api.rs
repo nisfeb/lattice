@@ -56,7 +56,7 @@ pub struct Suggest {
 }
 
 /// An address the reader visited: when last, and how often.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct Visit {
     #[serde(default)]
     pub url: String,

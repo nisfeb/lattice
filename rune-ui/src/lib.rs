@@ -9575,8 +9575,9 @@ fn link_back(s: &mut App) {
 #[cfg(unix)]
 fn browse_anon(s: &mut App) {
     (s.sample, s.anon) = (true, true);
-    // what was starred with no ship is kept on this computer
+    // what was starred and what was read with no ship are kept on this computer
     s.marks = Some(anon_marks_load());
+    s.visits = anon_visits_load();
     if s.engine.is_none() {
         let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")));
         s.engine = base.map(|b| engine::Engine::new(b.join("lattice-rune").join("urb")));
@@ -9623,6 +9624,62 @@ fn urb_cancel(s: &mut App) {
     s.urb_req.cancel();
     s.anon_seq += 1;
     s.anon_reading = None;
+}
+
+/// How many addresses read with no ship are remembered.
+const ANON_VISITS: usize = 200;
+
+/// The visits with one more read noted: the address comes to the front with the moment and one more
+/// to its count, as the ship's own history keeps a visit, and the oldest go past the limit.
+fn visit_noted(list: &[api::Visit], url: &str, title: &str, when: &str) -> Vec<api::Visit> {
+    let before = list.iter().find(|v| v.url == url);
+    let mut out = vec![api::Visit { url: url.to_owned(), title: if title.is_empty() { before.map(|v| v.title.clone()).unwrap_or_default() } else { title.to_owned() }, last: when.to_owned(), hits: before.map_or(0, |v| v.hits) + 1 }];
+    out.extend(list.iter().filter(|v| v.url != url).take(ANON_VISITS - 1).cloned());
+    out
+}
+
+/// What a page read at an address is called in the list of visits: its first heading, or nothing.
+fn visit_title(kind: &str, body: &str) -> String {
+    if !matches!(kind, "md" | "gmi") {
+        return String::new();
+    }
+    body.lines().take(40).find_map(|l| l.strip_prefix('#')).map(|h| h.trim_start_matches('#').trim().chars().take(80).collect()).unwrap_or_default()
+}
+
+fn anon_visits_path() -> Option<std::path::PathBuf> {
+    Some(anon_marks_path()?.with_file_name("anon-history.json"))
+}
+
+/// The addresses read with no ship, kept on this computer and sent nowhere.
+fn anon_visits_load() -> Vec<api::Visit> {
+    anon_visits_path().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn anon_visits_store(list: &[api::Visit]) {
+    // a test's visits are not this computer's
+    if cfg!(test) {
+        return;
+    }
+    let Some(p) = anon_visits_path() else { return };
+    let _ = p.parent().map(std::fs::create_dir_all);
+    // readable by its owner alone: it is where someone has been
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.mode(0o600);
+    }
+    if let (Ok(mut f), Ok(bytes)) = (open.open(&p), serde_json::to_vec(list)) {
+        use std::io::Write;
+        // one that was there already and looser is tightened
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
+        let _ = f.write_all(&bytes);
+    }
 }
 
 fn anon_marks_path() -> Option<std::path::PathBuf> {
@@ -9699,6 +9756,12 @@ fn urb_got(s: &mut App, url: String, got: api::Urb) {
         let seen = url.clone();
         spawn(move || drop(c.visit(&seen)));
     }
+    // with no ship the visits are this computer's own list
+    if let (true, api::Urb::Page { kind, body, .. }) = (s.anon, &got) {
+        let when = api::since_epoch().map_or(String::new(), |d| api::da_of_ms(d.as_millis() as i64));
+        s.visits = visit_noted(&s.visits, &url, &visit_title(kind, body), &when);
+        anon_visits_store(&s.visits);
+    }
     match got {
         api::Urb::Page { ship, path, kind, body, comments } => {
             let name = format!("{ship}/{path}");
@@ -9764,7 +9827,7 @@ fn shared_view(s: &App, k: &Kit) -> El {
             })),
         );
         if s.visits.is_empty() {
-            seen = seen.child(text(if s.conn.is_some() { "No address has been visited yet." } else if s.anon { "What is read anonymously is not listed here." } else { "Sample pages have no other ships to visit." }).font(k.ty.small).color(c.text_faint));
+            seen = seen.child(text(if s.conn.is_some() { "No address has been visited yet." } else if s.anon { "No address has been read yet. What you read is listed here, on this computer only." } else { "Sample pages have no other ships to visit." }).font(k.ty.small).color(c.text_faint));
         }
         for (i, v) in s.visits.iter().take(30).enumerate() {
             let (to, gone) = (v.url.clone(), v.url.clone());
@@ -9775,7 +9838,7 @@ fn shared_view(s: &App, k: &Kit) -> El {
             );
         }
         page = page
-            .child(text("Type an address above, as urb://~sampel-palnet/notes, to read what another ship publishes or shares with you. Anything else is looked for among your own pages.").font(k.ty.small).color(c.text_muted).wrap())
+            .child(text(if s.anon { "Type an address above, as urb://~sampel-palnet/notes, to read what a ship publishes." } else { "Type an address above, as urb://~sampel-palnet/notes, to read what another ship publishes or shares with you. Anything else is looked for among your own pages." }).font(k.ty.small).color(c.text_muted).wrap())
             .child(saved)
             .child(seen);
     }
@@ -9787,6 +9850,9 @@ fn forget_visit(s: &mut App, url: Option<String>) {
     match &url {
         Some(u) => s.visits.retain(|v| v.url != *u),
         None => s.visits.clear(),
+    }
+    if s.anon {
+        anon_visits_store(&s.visits);
     }
     if let Some(c) = s.conn.clone() {
         s.visits_req.request((c, url), |(c, url)| {
@@ -14440,6 +14506,40 @@ mod tests {
         // Later puts that version off for the run
         update_later(&mut s);
         assert!(!update_offered(&mut s.upd, offer("2.0.1")) && update_offered(&mut s.upd, offer("2.0.2")));
+    }
+
+    #[test]
+    fn what_is_read_with_no_ship_is_listed_newest_first_and_counted() {
+        let v = visit_noted(&[], "urb://~nec/a", "A", "~2026.11.19..1.0.0");
+        let v = visit_noted(&v, "urb://~nec/b", "", "~2026.11.19..2.0.0");
+        let v = visit_noted(&v, "urb://~nec/a", "", "~2026.11.19..3.0.0");
+        assert_eq!(v.iter().map(|x| (x.url.as_str(), x.title.as_str(), x.hits)).collect::<Vec<_>>(), [("urb://~nec/a", "A", 2), ("urb://~nec/b", "", 1)], "read again it comes to the front, counted, and keeps the name it had");
+        assert_eq!(v[0].last, "~2026.11.19..3.0.0");
+        // the oldest go past the limit
+        let mut many = Vec::new();
+        for i in 0..ANON_VISITS + 20 {
+            many = visit_noted(&many, &format!("urb://~nec/p{i}"), "", "");
+        }
+        assert_eq!((many.len(), many[0].url.as_str()), (ANON_VISITS, "urb://~nec/p219"));
+        assert!(!many.iter().any(|x| x.url == "urb://~nec/p0"));
+        // a page read with no ship is noted, and one read through a ship is not this list's
+        let mut s = init();
+        s.conn = None;
+        (s.sample, s.anon) = (true, true);
+        let page = |body: &str| api::Urb::Page { ship: "~nec".into(), path: "a".into(), kind: "md".into(), body: body.into(), comments: Vec::new() };
+        urb_got(&mut s, "urb://~nec/a".into(), page("# Alpha\n"));
+        urb_got(&mut s, "urb://~nec/a".into(), page("# Alpha\n"));
+        assert_eq!(s.visits.iter().map(|x| (x.url.as_str(), x.title.as_str(), x.hits)).collect::<Vec<_>>(), [("urb://~nec/a", "Alpha", 2)]);
+        assert!(s.visits[0].last.starts_with('~'));
+        forget_visit(&mut s, Some("urb://~nec/a".into()));
+        assert!(s.visits.is_empty());
+        let mut signed = sample("welcome");
+        urb_got(&mut signed, "urb://~nec/a".into(), page("# Alpha\n"));
+        assert!(signed.visits.is_empty());
+        // a page is called by its first heading
+        assert_eq!(visit_title("md", "intro\n## The plan  \ntext"), "The plan");
+        assert_eq!(visit_title("gmi", "# Gem\n=> x"), "Gem");
+        assert_eq!((visit_title("md", "no heading"), visit_title("html", "# not a heading here")), (String::new(), String::new()));
     }
 
     #[test]
