@@ -9426,6 +9426,7 @@ fn open_share(s: &mut App) {
 /// The palette's commands: a name to keep and the words shown. Each has
 /// a button on screen too.
 const COMMANDS: &[(&str, &str)] = &[
+    ("ships", "Ships: go to another, add one, or sign out"),
     ("new", "New page or memory"),
     ("template", "New from a template"),
     ("upload", "Upload a file as a page"),
@@ -9488,6 +9489,7 @@ fn usable(s: &App, id: &str) -> bool {
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "find" => page && find_where(s) != FindIn::Nothing,
         "reload" | "map-token" => s.conn.is_some(),
+        "ships" => s.conn.is_some() && !cfg!(target_arch = "wasm32"),
         "map-base" => own && !s.editing && s.map.as_ref().is_some_and(|m| s.open.as_ref().is_some_and(|p| p.name == m.name)),
         "map-import" => map_changes(s),
         "map-gpx" => page && s.map.is_some(),
@@ -9600,6 +9602,10 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "reload" => {
             load_know(s);
             load_tree(s);
+        }
+        "ships" => {
+            s.ships = api::ships();
+            s.ships_open = true;
         }
         "signout" => sign_out(s),
         _ => {}
@@ -9718,6 +9724,8 @@ fn ships_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         let url = sh.url.clone();
         let host = sh.url.split("://").nth(1).unwrap_or(&sh.url).to_owned();
         let news = if sh.front { String::new() } else { ship_news(s.seen.lock().ok().and_then(|m| m.get(&sh.url).cloned()).as_ref()) };
+        // the keys that go to it, for the first nine
+        let host = if i < 9 { format!("{host} \u{b7} Ctrl+Shift+{}", i + 1) } else { host };
         let said = if sh.front { format!("{host} \u{b7} in front") } else if !news.is_empty() { format!("{host} \u{b7} {news}") } else if sh.expired { format!("{host} \u{b7} sign in again") } else { host };
         list = list.child(
             row()
@@ -13426,6 +13434,15 @@ enum Chord {
     Delete,
 }
 
+/// The place in the list of ships a key press names: Ctrl+Shift+1 is the first, to 9.
+fn ship_figure(ev: &KeyEvent) -> Option<usize> {
+    let m = ev.mods;
+    if !(m.shift && !m.alt) {
+        return None;
+    }
+    (1..=9u8).find(|n| ev.is_command((b'0' + n) as char)).map(|n| usize::from(n) - 1)
+}
+
 fn chord(s: &App, ev: &KeyEvent) -> Option<Chord> {
     let m = ev.mods;
     if ev.key == Key::Tab && m.ctrl && !m.alt {
@@ -13472,6 +13489,13 @@ fn chord(s: &App, ev: &KeyEvent) -> Option<Chord> {
 fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if s.conn.is_none() && !s.sample {
         return false;
+    }
+    // Ctrl+Shift and a figure goes to that ship of those signed in, in the order they were added
+    if let Some(n) = ship_figure(ev) {
+        if let Some(url) = s.ships.get(n).map(|x| x.url.clone()) {
+            switch_ship(s, &url);
+            return true;
+        }
     }
     if let Some(c) = chord(s, ev) {
         let ask = |s: &mut App, jump: bool| {
