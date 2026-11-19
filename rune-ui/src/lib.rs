@@ -215,6 +215,9 @@ struct Forum {
     /// A comment being written on the thread showing, and the comment it answers when it answers one.
     comment: TextEdit,
     reply: Option<u64>,
+    /// Something done to a thread from the board's list is on its way: the list's buttons wait, so
+    /// a second press is not a second vote.
+    acting: bool,
     /// What was written is on its way to the ship: it is kept until the ship has it.
     sending: bool,
 }
@@ -347,6 +350,8 @@ enum Prompt {
     ForumTags(TextEdit),
     /// A forum thread to delete, or one comment of the thread showing.
     ForumDelete(Option<u64>),
+    /// Deleting a thread from its board's list: the board and the thread.
+    ForumRowDelete(String, u64),
     /// Removing a comment from one of this ship's pages: the page and the comment.
     CommentRemove(String, String),
     /// A board to delete, with every thread on it.
@@ -1529,6 +1534,10 @@ fn confirm(s: &mut App) {
     }
     if let Prompt::ForumDelete(comment) = &p {
         forum_act(s, ForumAct::Delete(*comment));
+        return;
+    }
+    if let Prompt::ForumRowDelete(board, post) = &p {
+        forum_list_act(s, board.clone(), *post, ForumAct::Delete(None));
         return;
     }
     if let Prompt::CommentRemove(page, id) = &p {
@@ -5407,6 +5416,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     if let Some(r) = s.forum_req.take() {
         changed = true;
+        if let Some(f) = &mut s.forum {
+            f.acting = false;
+        }
         // an answer that lands after the forum was left is dropped
         match (r, &mut s.forum) {
             (Ok(ForumGot::Boards(b)), Some(f)) => f.boards = Some(b),
@@ -7313,6 +7325,23 @@ fn forum_act(s: &mut App, act: ForumAct) {
     });
 }
 
+/// Does to a thread from its board's list what the thread's own screen does, and reads the board again.
+fn forum_list_act(s: &mut App, board: String, post: u64, act: ForumAct) {
+    let Some(c) = s.conn.clone() else { return };
+    if let Some(f) = &mut s.forum {
+        f.acting = true;
+    }
+    s.forum_req.request((c, board, act), move |(c, board, act)| {
+        match &act {
+            ForumAct::Vote => c.forum_vote(&board, post)?,
+            ForumAct::Pin(on) => c.forum_pin(&board, post, *on)?,
+            ForumAct::Tags(tags) => c.forum_set_tags(&board, post, tags)?,
+            ForumAct::Delete(comment) => c.forum_delete(&board, post, *comment)?,
+        }
+        c.forum_board(&board).map(ForumGot::Board)
+    });
+}
+
 /// The tags a board's threads carry, most used first, then by name.
 fn forum_board_tags(posts: &[api::ForumPost]) -> Vec<(String, usize)> {
     let mut count: HashMap<&str, usize> = HashMap::new();
@@ -7814,6 +7843,7 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
         for p in shown {
             let (board, id) = (b.board.clone(), p.id);
             let points = p.up as i64 - p.down as i64;
+            let to = board.clone();
             let mut line = col()
                 .key(format!("post-{id}"))
                 .w_full()
@@ -7822,7 +7852,7 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                 .radius(k.radius.md)
                 .hover(c.layer_01)
                 .cursor(rune::Cursor::Pointer)
-                .on_press(move |s: &mut App| forum_open(s, board.clone(), Some(id)))
+                .on_press(move |s: &mut App| forum_open(s, to.clone(), Some(id)))
                 .label(format!("Open the thread {}", p.title))
                 .child(text(if p.pinned { format!("\u{2022} {}", p.title) } else { p.title.clone() }).font(k.ty.ui_medium).color(c.text_base).wrap());
             let host = p.link.as_deref().and_then(|l| l.split("://").nth(1)).and_then(|r| r.split('/').next()).map(|h| format!(" \u{b7} {h}")).unwrap_or_default();
@@ -7830,7 +7860,17 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
             if !p.tags.is_empty() {
                 line = line.child(muted(p.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ")));
             }
-            page = page.child(line);
+            // what the web's list has on each row: a vote, and for those who may, pin and delete. They sit
+            // beside what opens the thread, not inside it, so a press on one does not open it too
+            let small = |label: &str, help: &str| Button::new(label.to_owned()).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(help.to_owned()).disabled(f.acting);
+            let (vb, pb, db, pinned) = (board.clone(), board.clone(), board.clone(), p.pinned);
+            let acts = row()
+                .px(4.0)
+                .gap(2.0)
+                .child(small("Vote", "Vote this thread up, or take the vote back").on_press(move |s: &mut App| forum_list_act(s, vb.clone(), id, ForumAct::Vote)).build(k).key(format!("row-vote-{id}")))
+                .child(small(if pinned { "Unpin" } else { "Pin" }, "Keep this thread at the top of the board, or let it go").on_press(move |s: &mut App| forum_list_act(s, pb.clone(), id, ForumAct::Pin(!pinned))).build(k).key(format!("row-pin-{id}")))
+                .child(small("Delete", "Delete this thread").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumRowDelete(db.clone(), id))).build(k).key(format!("row-delete-{id}")));
+            page = page.child(col().key(format!("post-row-{id}")).w_full().child(line).child(acts));
         }
         return page;
     }
@@ -9110,7 +9150,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -9144,6 +9184,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::BoardDelete(name) => ("Delete this board?", text(format!("{name} and every thread on it are gone for everyone who reads it.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::ForumTags(t) => ("This thread's tags", field(t, "Up to five: lowercase letters, digits and dashes. None clears them"), "Set", ButtonVariant::Contrast),
         Prompt::ForumDelete(comment) => (if comment.is_some() { "Delete this comment?" } else { "Delete this thread?" }, text(if comment.is_some() { "It is gone for everyone who reads the board." } else { "The thread and its comments are gone for everyone who reads the board." }).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
+        Prompt::ForumRowDelete(..) => ("Delete this thread?", text("The thread and its comments are gone for everyone who reads the board.").font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::CommentRemove(page, _) => ("Remove this comment?", text(format!("It is gone from {page} for everyone who reads it, and cannot be brought back.")).key("comment-remove-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
         Prompt::MarkMove(_, t) => ("Move this bookmark to a folder", field(t, "A folder, or nothing for none"), "Move", ButtonVariant::Contrast),

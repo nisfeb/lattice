@@ -87,9 +87,8 @@ class H(BaseHTTPRequestHandler):
                 def da(hours_ago):
                     t = time.gmtime(time.time() - hours_ago * 3600)
                     return "~%d.%d.%d..%d.%d.%d" % (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec)
-                mk = lambda i, title, ago, up, pinned=False: {"id":i,"title":title,"author":"~zod","created":da(ago),"active":da(ago),"body":"","up":up,"down":0,"comments":0,"pinned":pinned,"tags":[]}
-                posts = [mk(1, "DayOldForty", 24, 40), mk(2, "HourOldThree", 1, 3), mk(3, "NewNone", 0.2, 0), mk(4, "TenHoursThirty", 10, 30)]
-                return self.send(200, json.dumps({"kind":"board","board":"chat","title":"Chat","description":"","public":True,"count":4,"posts":posts}))
+                posts = [{"id":t["id"],"title":t["title"],"author":"~zod","created":da(t["ago"]),"active":da(t["ago"]),"body":"","up":t["up"],"down":0,"comments":0,"pinned":t["pinned"],"tags":[]} for t in THREADS]
+                return self.send(200, json.dumps({"kind":"board","board":"chat","title":"Chat","description":"","public":True,"count":len(posts),"posts":posts}))
             # a forum thread, as the ship answers one: enough of it to be shown
             if '/forum/' in url and url.rsplit('/', 1)[-1].isdigit():
                 n = int(url.rsplit('/', 1)[-1])
@@ -132,6 +131,7 @@ SHARED = [] if os.environ.get('LR_SHARED') != '1' else [
 LINKS = {}
 MARKS = [{"url": "urb://~sampel-palnet/notes", "title": "Sampel's notes", "folder": ""}]
 HISTORY = []
+THREADS = [{"id":1,"title":"DayOldForty","ago":24,"up":40,"pinned":False}, {"id":2,"title":"HourOldThree","ago":1,"up":3,"pinned":False}, {"id":3,"title":"NewNone","ago":0.2,"up":0,"pinned":False}, {"id":4,"title":"TenHoursThirty","ago":10,"up":30,"pinned":False}]
 NOTICES = [
     {"id":"0v1.n","kind":"remote","when":1795000000000,"who":"~bus","host":"~sampel-palnet","where":"tech","post":7,"title":"Rune","body":"I think so too.","read":False},
     {"id":"0v2.n","kind":"reply","when":1794990000000,"who":"~bus","host":"~zod","where":"chat","post":3,"title":"Hello","body":"Welcome.","read":False},
@@ -147,6 +147,21 @@ def do_POST(self):
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
     # comments, as the ship answers each. LR_COMMENT_FAIL refuses a post and a switch, to see that nothing typed is lost
     if p in ('comment', 'page-comments', 'comment-remote') and os.environ.get('LR_COMMENT_FAIL'): return self.send(500, 'the ship could not do that')
+    # the forum's forms on the board chat, each answered as the ship answers a form: by sending the reader back
+    if p.startswith('forum/chat/'):
+        rest = p.split('/')[2:]
+        form = parse_qs(body)
+        if rest == ['vote']:
+            n = int(form['target'][0].split('-')[1])
+            for t in THREADS:
+                if t["id"] == n: t["up"] += 1
+        elif len(rest) == 2 and rest[1] == 'pin':
+            for t in THREADS:
+                if t["id"] == int(rest[0]): t["pinned"] = form['pinned'][0] == 'true'
+        elif len(rest) == 2 and rest[1] == 'delete':
+            THREADS[:] = [t for t in THREADS if t["id"] != int(rest[0])]
+        sys.stderr.write("forum %s %s\n" % ('/'.join(rest), body))
+        return redirect(self, '/apps/lattice/forum/chat')
     if p == 'notify-read':
         for n in NOTICES:
             if 'id' not in q or n["id"] == q['id'][0]: n["read"] = True
