@@ -16992,7 +16992,9 @@
     ?~  bo  (send-err eyre-id 404 'no such board, or it is not open to this ship')
     ?:  &(?=(^ post.u.ref) !(~(has by posts.u.bo) u.post.u.ref))
       (send-err eyre-id 404 'no such post on that board')
-    (send-json eyre-id (pairs:enjs:format (weld hed (urb-forum-json shp u.bo post.u.ref))))
+    ::  page=N: a board's posts a hundred at a time, the newest hundred first
+    =/  pag=@ud  (max 1 (fall (rush (~(gut by args) 'page' '1') dim:ag) 1))
+    (send-json eyre-id (pairs:enjs:format (weld hed (urb-forum-json our shp u.bo post.u.ref pag))))
   ::
       %tree
     =/  pax=path  pax.u.ref
@@ -17262,10 +17264,14 @@
   =/  lod=(each board:ft @t)  (load:fb u.gs)
   ?:  ?=(%| -.lod)  (pure:m ~)
   (pure:m `p.lod)
-::  +urb-forum-json: a board's posts, newest first (at most 100), or one
-::  thread with its comments, each with the address to follow
+::  +urb-forum-json: a board's posts, newest first, a hundred to a page
+::  (`pag` from 1, `count` is all of them), or one thread with its comments,
+::  each with the address to follow. `role` is the asking ship's own on the
+::  board (+get-role:fr), so a client offers what that ship may do, and
+::  `sidebar` the board's own text. Both are among what a host publishes of
+::  a board, so they are there for a board read from another ship too.
 ++  urb-forum-json
-  |=  [shp=@p brd=board:ft pid=(unit @ud)]
+  |=  [our=@p shp=@p brd=board:ft pid=(unit @ud) pag=@ud]
   ^-  (list [@t json])
   =/  burl=tape  :(weld "urb://" (scow %p shp) "/forum/" (trip name.info.brd))
   =/  pj
@@ -17293,6 +17299,8 @@
         ['description' s+description.info.brd]
         ['public' b+public.info.brd]
         ['boardUrl' s+(crip burl)]
+        ['role' s+(get-role:fr our brd)]
+        ['sidebar' s+sidebar.brd]
     ==
   ?~  pid
     =/  ps=(list post:ft)
@@ -17302,7 +17310,8 @@
     ^-  (list [@t json])
     :~  ['kind' s+'board']
         ['count' (numb:enjs:format (lent ps))]
-        ['posts' a+(turn (scag 100 ps) |=(p=post:ft (pj p |)))]
+        ['page' (numb:enjs:format pag)]
+        ['posts' a+(turn (scag 100 (slag (mul 100 (dec pag)) ps)) |=(p=post:ft (pj p |)))]
     ==
   =/  p=post:ft  (~(got by posts.brd) u.pid)
   =/  cs=(list comment:ft)
@@ -17323,6 +17332,8 @@
           ['author' s+(scot %p author.c)]
           ['created' s+(scot %da created.c)]
           ['body' s+body.c]
+          ['up' (numb:enjs:format ~(wyt in up-votes.c))]
+          ['down' (numb:enjs:format ~(wyt in down-votes.c))]
       ==
   ==
 ::  +urb-file-json: a tree file as text, or, when it has none, a line
