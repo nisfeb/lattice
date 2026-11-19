@@ -572,6 +572,10 @@ struct App {
     ships: Vec<api::Ship>,
     /// The list of ships is showing, to go to another, add one or sign out.
     ships_open: bool,
+    /// What the watcher last saw of each ship signed in that is not in front, by its address.
+    seen: std::sync::Arc<std::sync::Mutex<HashMap<String, api::ShipSeen>>>,
+    /// Stops the watcher of the ships not in front, when the ship in front changes.
+    watch_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Another ship is being signed in to, with the one in front left as it is until that is done.
     adding: bool,
     restored: bool,
@@ -1098,6 +1102,8 @@ fn init() -> App {
         prefs: Prefs::load_for(conn.as_ref().map_or("", |c| c.url.as_str())),
         ships: api::ships(),
         ships_open: false,
+        seen: Default::default(),
+        watch_stop: Default::default(),
         adding: false,
         restored: false,
         want: None,
@@ -1467,6 +1473,68 @@ fn sign_in(s: &mut App) {
     s.login_req.request((s.url.text.clone(), s.code.text.clone()), |(u, c)| Conn::login(&u, &c));
 }
 
+/// Watches the ships signed in that are not in front, on one thread of its own: once a minute each
+/// is asked for its notices, which says whether it answers, how many are unread, and whether its
+/// session stands. Nothing else is read of them, and nothing is written to them: what waits to be
+/// sent to a ship goes when it is gone to, where a refusal can be shown and settled.
+fn watch_ships(s: &mut App) {
+    use std::sync::atomic::Ordering;
+    s.watch_stop.store(true, Ordering::Relaxed);
+    if cfg!(target_arch = "wasm32") || cfg!(test) {
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(waker) = s.waker.clone() else { return };
+        let front = s.conn.as_ref().map(|c| c.url.clone());
+        let others: Vec<(String, String)> = api::ship_sessions().into_iter().filter(|(u, _)| Some(u) != front.as_ref()).collect();
+        if others.is_empty() {
+            return;
+        }
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        s.watch_stop = stop.clone();
+        let seen = s.seen.clone();
+        std::thread::spawn(move || loop {
+            for (url, cookie) in &others {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                let got = api::ship_look(url, cookie);
+                let changed = seen.lock().map(|mut m| m.insert(url.clone(), got.clone()) != Some(got)).unwrap_or(false);
+                if changed {
+                    waker();
+                }
+            }
+            // a minute between looks, let go of at once when the ship in front changes
+            for _ in 0..60 {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        });
+    }
+}
+
+/// What the watcher saw of a ship, in a few words for the list of ships. Nothing for a ship that
+/// answers with nothing new.
+fn ship_news(seen: Option<&api::ShipSeen>) -> String {
+    let Some(x) = seen else { return String::new() };
+    let mut out = Vec::new();
+    if x.expired {
+        out.push("sign in again".to_owned());
+    } else if !x.up {
+        out.push("not answering".to_owned());
+    }
+    if x.unread > 0 {
+        out.push(format!("{} unread", x.unread));
+    }
+    if x.waiting > 0 {
+        out.push(format!("{} waiting to be sent", x.waiting));
+    }
+    out.join(" \u{b7} ")
+}
+
 /// The folders mounted over HTTP with the session of the ship in front, or of any ship signed in.
 /// A ship mounted by its own socket on this computer needs no session, and is not among them.
 fn ship_mounts(s: &App, all: bool) -> Vec<mounts::MountSpec> {
@@ -1564,6 +1632,7 @@ fn reset(s: &mut App, signed: bool) {
     }
     // the listener of the session that ended stops, and every request this window keeps is woken as before
     s.beacon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    s.watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let waker = s.waker.clone();
     *s = fresh;
     if let Some(w) = waker {
@@ -2252,6 +2321,7 @@ fn setup(s: &mut App, waker: Waker) {
     load_know(s);
     load_shared(s);
     listen(s);
+    watch_ships(s);
     // the mounts kept from the run before: still there, or made again. Not on sample pages, which keep nothing
     let kept = mounts::load();
     if !kept.is_empty() && !s.sample {
@@ -9647,7 +9717,8 @@ fn ships_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
     for (i, sh) in s.ships.iter().enumerate() {
         let url = sh.url.clone();
         let host = sh.url.split("://").nth(1).unwrap_or(&sh.url).to_owned();
-        let said = if sh.expired { format!("{host} \u{b7} sign in again") } else if sh.front { format!("{host} \u{b7} in front") } else { host };
+        let news = if sh.front { String::new() } else { ship_news(s.seen.lock().ok().and_then(|m| m.get(&sh.url).cloned()).as_ref()) };
+        let said = if sh.front { format!("{host} \u{b7} in front") } else if !news.is_empty() { format!("{host} \u{b7} {news}") } else if sh.expired { format!("{host} \u{b7} sign in again") } else { host };
         list = list.child(
             row()
                 .key(format!("ship-{i}"))
@@ -11884,7 +11955,11 @@ fn sidebar(s: &App, k: &Kit) -> El {
             row().role("button").label(if more > 0 { format!("{who}, and {more} more signed in. Ships") } else { format!("{who}. Ships") }).help("Ships signed in: go to another, add one, or sign out").grow(1.0).min_w(0.0).px(4.0).py(2.0).radius(k.radius.sm).hover(k.c.hover).on_press(|s: &mut App| {
                 s.ships = api::ships();
                 s.ships_open = true;
-            }).child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).truncate()).key("ship-switch")
+            }).gap(6.0).center_y().child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).truncate()).children({
+                // what is unread on the ships not in front, so it is seen without going to them
+                let unread: usize = s.seen.lock().map(|m| s.ships.iter().filter(|x| !x.front).filter_map(|x| m.get(&x.url)).map(|x| x.unread).sum()).unwrap_or(0);
+                (unread > 0).then(|| text(format!("+{unread}")).key("ship-unread").label(format!("{unread} unread on your other ships")).font(k.ty.small_medium).color(k.c.text_accent))
+            }).key("ship-switch")
         } else {
             row().grow(1.0).min_w(0.0).child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).truncate())
         })
@@ -13704,6 +13779,16 @@ mod tests {
         s.prompt = Some(Prompt::Kind(TextEdit::new("md")));
         confirm(&mut s);
         assert_eq!(s.open.as_ref().unwrap().kind, "md");
+    }
+
+    #[test]
+    fn a_ship_not_in_front_says_what_is_new_on_it() {
+        let seen = |up, unread, waiting, expired| api::ShipSeen { up, unread, waiting, expired };
+        assert_eq!(ship_news(None), "");
+        assert_eq!(ship_news(Some(&seen(true, 0, 0, false))), "", "a ship that answers with nothing new says nothing");
+        assert_eq!(ship_news(Some(&seen(true, 3, 0, false))), "3 unread");
+        assert_eq!(ship_news(Some(&seen(false, 0, 2, false))), "not answering \u{b7} 2 waiting to be sent");
+        assert_eq!(ship_news(Some(&seen(true, 0, 0, true))), "sign in again");
     }
 
     #[test]

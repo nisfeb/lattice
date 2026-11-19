@@ -780,6 +780,45 @@ pub fn ship_sessions() -> Vec<(String, String)> {
     Vec::new()
 }
 
+/// What is known of a ship signed in that is not in front, from one look at it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShipSeen {
+    /// It answered.
+    pub up: bool,
+    /// The notices on it not read yet.
+    pub unread: usize,
+    /// The saves and other changes made here that wait to be sent to it. They go when it is gone to.
+    pub waiting: usize,
+    /// It turned the session away: its code is wanted again.
+    pub expired: bool,
+}
+
+/// What a ship's answer to a look says of it. `waiting` is counted from what is kept here.
+pub fn ship_seen(notices: Result<Vec<Notice>, String>, waiting: usize) -> ShipSeen {
+    match notices {
+        Ok(n) => ShipSeen { up: true, unread: n.iter().filter(|x| !x.read).count(), waiting, expired: false },
+        // the ship answers and will not have this session
+        Err(e) if e.starts_with("401:") || e.starts_with("403:") => ShipSeen { up: true, unread: 0, waiting, expired: true },
+        Err(_) => ShipSeen { up: false, unread: 0, waiting, expired: false },
+    }
+}
+
+/// Looks at a ship signed in: one light request, its notices. A session it turns away is marked,
+/// so the list of ships says its code is wanted again.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn ship_look(url: &str, cookie: &str) -> ShipSeen {
+    let c = Conn { url: url.to_owned(), cookie: cookie.to_owned() };
+    let seen = ship_seen(c.notices(), c.queue().len() + c.ops().len());
+    if seen.expired && !cfg!(test) {
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let mut all = crate::accounts::load_at(dir, now_secs());
+            all.expire(url);
+            let _ = crate::accounts::store_at(dir, &all);
+        }
+    }
+    seen
+}
+
 /// Brings another ship signed in to the front, for the next `Conn::load`. False when it is not signed in.
 pub fn ship_bring(url: &str) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
@@ -3306,6 +3345,14 @@ pub fn enc(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_look_at_a_ship_says_whether_it_answers_what_is_unread_and_whether_its_session_stands() {
+        let note = |read: bool| Notice { read, ..Notice::default() };
+        assert_eq!(ship_seen(Ok(vec![note(false), note(true), note(false)]), 1), ShipSeen { up: true, unread: 2, waiting: 1, expired: false });
+        assert_eq!(ship_seen(Err("403: missing".into()), 0), ShipSeen { up: true, unread: 0, waiting: 0, expired: true });
+        assert_eq!(ship_seen(Err("could not reach https://zod.test: timed out".into()), 3), ShipSeen { up: false, unread: 0, waiting: 3, expired: false });
+    }
 
     #[test]
     fn what_is_the_computers_goes_with_every_ship_and_what_is_a_ships_stays_with_it() {
