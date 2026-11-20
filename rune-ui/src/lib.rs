@@ -839,6 +839,8 @@ struct App {
     page_menu: bool,
     /// The tree row a right-click landed on, and where: its menu shows there.
     tree_menu: Option<(String, rune::PointerPress)>,
+    /// The link in a page a right-click was on, and where: its menu is open.
+    link_menu: Option<(String, rune::PointerPress)>,
     /// The top bar's tabs while one is pressed or dragged.
     tab_drag: rune_kit::shell::TabDragState,
     /// The bookmarks the reader keeps, once read.
@@ -1273,6 +1275,7 @@ fn init() -> App {
         search_at: None,
         page_menu: false,
         tree_menu: None,
+        link_menu: None,
         tab_drag: rune_kit::shell::TabDragState::new(),
         marks: None,
         marks_req: Latest::default(),
@@ -2499,6 +2502,13 @@ fn step(s: &mut App, by: isize) {
 /// Follows a link in a page: to a page of this ship, to a prompt that makes
 /// the page when there is none yet, or to the web.
 fn follow(s: &mut App, url: &str, tx: &mut Tx) {
+    // with Ctrl (Cmd on a Mac) the link opens in a new tab
+    let aside = tx.mods().cmd;
+    follow_in(s, url, aside, tx);
+}
+
+/// Follows a link, a page of this ship's into a new tab when `aside`.
+fn follow_in(s: &mut App, url: &str, aside: bool, tx: &mut Tx) {
     // an address on the network is read here, in the browser, not handed to the system
     let there = s.remote.as_ref().filter(|r| r.mode == "published").and_then(|sh| remote_link(&sh.host, sh.name(), url));
     let to = there.or_else(|| url.starts_with("urb://").then(|| url.to_owned()));
@@ -2508,8 +2518,7 @@ fn follow(s: &mut App, url: &str, tx: &mut Tx) {
     match md::page_of(url) {
         Some(name) if s.names.contains(&name) => {
             s.files.reveal(&name, tx);
-            // with Ctrl (Cmd on a Mac) the link opens in a new tab
-            if tx.mods().cmd { tab_for(s, &name) } else { open_page(s, &name) }
+            if aside { tab_for(s, &name) } else { open_page(s, &name) }
         }
         // a link to a page not written yet starts it, named, ready to type in
         Some(name) if api::valid_name(&name) => {
@@ -4073,7 +4082,7 @@ fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
     if let Some(h) = s.outline_at.and_then(|i| outline::outline(&src, "md").into_iter().nth(i)).filter(|h| !h.words.is_empty()) {
         marks.push((vec![h.words], rune_kit::Highlight::new().key("md-outline")));
     }
-    Markdown::new(src).selectable(true).on_link_tx(follow).images(move |src| pics.get(src).cloned()).highlights(marks).style(page_style(k)).build(k)
+    Markdown::new(src).selectable(true).on_link_tx(follow).on_link_secondary(|s: &mut App, url, p, _| s.link_menu = Some((url.to_owned(), p))).images(move |src| pics.get(src).cloned()).highlights(marks).style(page_style(k)).build(k)
 }
 
 /// How a page's Markdown is set to be read. rune-kit's own style is a chat message's, with
@@ -11629,6 +11638,44 @@ fn tree_menu_view(s: &App, k: &Kit, side: El, layer: &mut Vec<El>) -> El {
     menu.build(k, layer)
 }
 
+/// What the menu of a link in a page offers: to open it, to open it in
+/// a new tab when it leads to a page of this ship's, and its address.
+fn link_menu_items(page_here: bool) -> Vec<(&'static str, &'static str)> {
+    let mut items = vec![("open", "Open")];
+    if page_here {
+        items.push(("tab", "Open in new tab"));
+    }
+    items.push(("copy", "Copy link"));
+    items
+}
+
+/// Whether a link leads to a page this ship has: one a tab can hold.
+fn link_is_page(s: &App, url: &str) -> bool {
+    !s.memory && s.remote.is_none() && !url.starts_with("urb://") && md::page_of(url).is_some_and(|n| s.names.contains(&n))
+}
+
+/// The menu a right-click on a link in a page opens, over the window.
+/// Rune's Markdown tells of a secondary press on a link, and of no
+/// middle one, so this is where a link is opened in a new tab by the
+/// pointer alone.
+fn link_menu_view(s: &App, k: &Kit, shell: El, layer: &mut Vec<El>) -> El {
+    let page_here = s.link_menu.as_ref().is_some_and(|(url, _)| link_is_page(s, url));
+    let mut menu = rune_kit::context_menu("link-menu", shell, s.link_menu.as_ref().map(|m| m.1)).on_close(|s: &mut App| s.link_menu = None);
+    for (id, label) in link_menu_items(page_here) {
+        menu = menu.item(MenuItem::new(label).on_select_tx(move |s: &mut App, tx| {
+            let Some((url, _)) = s.link_menu.take() else { return };
+            match id {
+                "copy" => {
+                    tx.copy(url);
+                    s.note = "Link copied".to_owned();
+                }
+                _ => follow_in(s, &url, id == "tab", tx),
+            }
+        }));
+    }
+    menu.build(k, layer)
+}
+
 /// The kinds a page of text can be changed between by typing one. Sheets, documents and maps are
 /// not among them: each is a file of its own shape.
 const PAGE_KINDS: [&str; 9] = ["md", "gmi", "html", "text", "js", "css", "tex", "geojson", "scad"];
@@ -13689,6 +13736,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // a theme's ground goes behind the ribbon and the status bar too. The built-in look leaves the window's own there
     let ground = if s.prefs.worn.look().bg.is_some() { k.c.page } else { rune::Color::TRANSPARENT };
     let shell = row().w_full().h_full().min_h(0.0).fill(ground).child(ribbon_view(s, &k, if inset > 0.0 { 32.0 } else { 0.0 })).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(el().w_full().grow(1.0).min_h(0.0).child(shell)).child(status_bar(s, &k, busy)));
+    let shell = link_menu_view(s, &k, shell, &mut layer);
     rune_kit::root(shell, layer).on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec())).on_drop_hover(|s: &mut App, over, _| s.dropping = over)
 }
 
@@ -13940,6 +13988,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_links_menu_offers_a_new_tab_for_a_page_of_this_ships_alone() {
+        assert_eq!(link_menu_items(true).iter().map(|i| i.0).collect::<Vec<_>>(), ["open", "tab", "copy"]);
+        assert_eq!(link_menu_items(false).iter().map(|i| i.0).collect::<Vec<_>>(), ["open", "copy"]);
+    }
 
     #[test]
     fn a_tree_row_menu_fits_the_row_and_marks_the_part_to_change() {
