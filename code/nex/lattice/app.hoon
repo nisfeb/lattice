@@ -483,9 +483,11 @@
         ::  /presence.sig: who has which shared page open, and where in it
         ::  (+presence-loop). The table is the process's own, held in its
         ::  loop and nowhere else: no grub is written for it, so nothing of
-        ::  it reaches a page's history, a backup or the event log's bulk,
-        ::  and a reload starts it empty, which is right for what expires
-        ::  in a minute anyway.
+        ::  it reaches a page's history or a backup, and a reload starts
+        ::  it empty, which is right for what expires in a minute anyway.
+        ::  It is not free of the event log: each POST /presence is a
+        ::  request like any other, about 300 bytes of log, and each open
+        ::  stream wakes every 25 seconds.
             [%fall %& [/ %'presence.sig'] [[/ %sig] ~]]
         ::  /access.sig: the edit access inbox (+apply-access-notice). Any
         ::  ship may ask for edit on a page or folder it reads, as any ship
