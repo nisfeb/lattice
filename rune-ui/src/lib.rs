@@ -4075,7 +4075,7 @@ fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
 fn page_style(k: &Kit) -> rune_kit::MarkdownStyle {
     let body = rune::TextStyle { line_height: 22.4, ..k.ty.body };
     let heading = |size: f32, line: f32| rune::TextStyle { size, weight: 650.0, line_height: line, ..body };
-    rune_kit::MarkdownStyle::from_kit(k).heading_font(1, heading(26.0, 34.0)).heading_font(2, heading(21.0, 28.0)).heading_font(3, heading(17.0, 24.0)).heading_font(4, heading(15.0, 22.0))
+    rune_kit::MarkdownStyle::from_kit(k).heading_font(1, heading(26.0, 34.0)).heading_font(2, heading(21.0, 28.0)).heading_font(3, heading(17.0, 24.0)).heading_font(4, heading(15.0, 22.0)).selection(selection_of(k))
 }
 
 /// The colours of a page's source, by its kind: Rune's own lexers for
@@ -13029,7 +13029,7 @@ fn fill_editor(s: &App, label: &str, spans: Vec<Span>, k: &Kit) -> El {
         .label(label.to_owned())
         .color(c.text_base)
         .rich_style(rune::RichStyle { link: c.text_accent, code_fg: None, code_bg: c.layer_03, code_block_bg: c.layer_02, quote_bar: c.border_strong, marker: Some(c.text_muted) })
-        .caret(c.text_base, k.selection())
+        .caret(c.text_base, selection_of(k))
         .spans(spans)
         .on_edit(|s: &mut App| &mut s.edit)
         .on_input_key(editor_key)
@@ -13377,8 +13377,44 @@ fn kit_of(prefs: &api::Prefs, system_dark: bool) -> Kit {
     kit_from(prefs.worn.look(), prefs.dark(system_dark))
 }
 
+thread_local! {
+    /// The selection colours themes brought, each by the ground and accent of the kit made
+    /// from its theme. Rune's kit has no place for one: `Kit::selection` works it out.
+    static SELECTIONS: std::cell::RefCell<Vec<((rune::Color, rune::Color), rune::Color)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What tells one theme's kit from another's: its ground and its accent.
+fn kit_mark(k: &Kit) -> (rune::Color, rune::Color) {
+    (k.c.bg_base, k.c.text_accent)
+}
+
+/// The colour selected text is marked with: the theme's own when it
+/// names one, and the kit's otherwise. The kit's own fields (a
+/// one-line input, a dialog's field) still draw the kit's colour.
+fn selection_of(k: &Kit) -> rune::Color {
+    let mark = kit_mark(k);
+    SELECTIONS.with_borrow(|all| all.iter().find(|(m, _)| *m == mark).map(|(_, c)| *c)).unwrap_or_else(|| k.selection())
+}
+
 /// A kit for a look. One that brings no ground of its own is the built-in look, dark or light as told.
 fn kit_from(look: theme::Look, dark: bool) -> Kit {
+    let selection = look.selection;
+    let k = kit_made(look, dark);
+    let mark = kit_mark(&k);
+    SELECTIONS.with_borrow_mut(|all| {
+        all.retain(|(m, _)| *m != mark);
+        if let Some(c) = selection {
+            // the window's theme and a board's: a few at most are worn at once
+            if all.len() >= 8 {
+                all.remove(0);
+            }
+            all.push((mark, c));
+        }
+    });
+    k
+}
+
+fn kit_made(look: theme::Look, dark: bool) -> Kit {
     let mut k = match (look.bg, look.text) {
         // a theme brings its own light or dark: the mode picked is for the built-in look
         (Some(bg), Some(fg)) => Kit::from_palette(rune_kit::PaletteSeed { bg, fg, accent: look.accent.unwrap_or(fg) }),
@@ -13938,6 +13974,23 @@ mod tests {
     /// Letters and figures only, so spacing, bullets, list numbers and the pads round code do not count.
     fn letters(s: &str) -> String {
         s.chars().filter(|c| c.is_alphanumeric()).collect()
+    }
+
+    /// A theme's own selection colour is worn by the kit made from it,
+    /// and a theme without one leaves the kit's own.
+    #[test]
+    fn a_themes_selection_colour_is_worn() {
+        let hex = |h: &str| rune::color::hex(h).expect("a colour");
+        let look = |sel: Option<&str>| theme::Look { bg: Some(hex("#101418")), text: Some(hex("#e6e6e6")), accent: Some(hex("#8ab4f8")), selection: sel.map(hex), ..Default::default() };
+        let k = kit_from(look(Some("#335577")), true);
+        assert_eq!(selection_of(&k), hex("#335577"));
+        // another theme's kit, worn beside it, keeps its own
+        let other = kit_from(theme::Look { bg: Some(hex("#fafafa")), text: Some(hex("#222222")), ..Default::default() }, false);
+        assert_eq!(selection_of(&other), other.selection());
+        assert_eq!(selection_of(&k), hex("#335577"));
+        // the same theme with the colour taken out goes back to the kit's
+        let k = kit_from(look(None), true);
+        assert_eq!(selection_of(&k), k.selection());
     }
 
     /// Runs every example of the CommonMark spec through the reader and says, by section, which
