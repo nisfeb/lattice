@@ -12505,7 +12505,7 @@ fn our(s: &App) -> &str {
 }
 
 /// Whether an answer says the ship will not give this window a table: a
-/// ship before lattice 142 knows neither route (404, 405), and any other
+/// ship before lattice 143 knows neither route (404, 405), and any other
 /// refusal (400, 401, 403) would only be given again at once.
 fn no_presence(e: &str) -> bool {
     e.len() >= 3 && e.starts_with('4') && e.as_bytes()[..3].iter().all(u8::is_ascii_digit)
