@@ -16,6 +16,7 @@ mod formula;
 mod html;
 mod local;
 mod mounts;
+mod notify;
 mod funcs;
 mod head;
 mod linkedit;
@@ -868,6 +869,8 @@ struct App {
     accent_hex: TextEdit,
     /// The families the window's text was last set in, to set them again only when the theme's font changes.
     font_set: String,
+    /// The shares a notification was raised for, so that one told twice is said once.
+    noted: Vec<String>,
     /// The faces of Talon's font fetched from the ship, and how many were newly kept.
     font_req: Latest<Result<usize, String>>,
     /// The last read of them failed.
@@ -1279,6 +1282,7 @@ fn init() -> App {
         theme_req: Latest::default(),
         next_theme: 0.0,
         font_set: APP_FONT.to_owned(),
+        noted: Vec::new(),
         font_req: Latest::default(),
         theme_put: Latest::default(),
         accent_hex: TextEdit::new(""),
@@ -5499,6 +5503,14 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let heard = std::mem::take(&mut *s.beacon.lock().unwrap());
     for ev in heard {
         let down = ev == api::Beacon::Down;
+        // a page or folder newly shared with this ship: said here and by the system, once
+        if let api::Beacon::Shares { old: false, stamp } = &ev {
+            if let Some(n) = notify::share(stamp).filter(|n| notify::once(&mut s.noted, &n.key)) {
+                s.note = n.title.clone();
+                notify::show(&n.title, &n.body);
+                changed = true;
+            }
+        }
         let w = s.beacon_state.take(ev);
         if w.tree {
             // a moment later, so changes that come together are read once

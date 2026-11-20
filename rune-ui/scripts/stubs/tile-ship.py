@@ -40,6 +40,10 @@ class H(BaseHTTPRequestHandler):
             if not f.startswith(os.path.realpath(os.environ['LR_WEB']) + os.sep) or not os.path.isfile(f): return self.send(404, 'not found', 'text/plain')
             ct = {'.js': 'text/javascript', '.wasm': 'application/wasm', '.html': 'text/html', '.ttf': 'font/ttf'}.get(os.path.splitext(f)[1], 'application/octet-stream')
             return self.send(200, open(f, 'rb').read(), ct)
+        # LR_SHARE_ADD=1: the change stream, as grubbery's keep sends it, telling of one new share and then ending
+        if u.path.endswith('/beacon/rev') and os.environ.get('LR_SHARE_ADD'):
+            add = json.dumps({"t": "~2026.11.19..10.00.00", "op": "add", "host": "~sampel-palnet", "path": "/lattice/page/notes/plan/code", "rev": 7})
+            return self.send(200, 'event: old /rev\ndata: 1\n\nevent: upd /shares\ndata: ' + add + '\n\n', 'text/event-stream')
         if u.path.startswith('/grubbery/api/file/talon/fonts/'):
             b = FONTS.get(u.path.rsplit('/', 1)[1].removesuffix('.font')) if signed else None
             sys.stderr.write("font %s %s\n" % (u.path.rsplit('/', 1)[1][:12], 'sent' if b else 'refused'))
