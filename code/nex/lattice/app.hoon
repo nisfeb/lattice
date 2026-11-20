@@ -3738,26 +3738,38 @@
   ::  table, one `here` frame whenever it changes (+presence-stream).
   ::  Holding it open is what puts the window on the page. `client`
   ::  tells one of the owner's windows from another.
+  ::
+  ::  Opening it changes what others are shown, so it is refused to a
+  ::  page of another site, as a write is above and a tile is: an
+  ::  EventSource on any page the owner visits would send the cookie,
+  ::  and could fill a page with windows that are not there.
       [%'GET' %presence-stream]
-    =/  page=(unit @t)  (~(get by args) 'page')
-    ?~  page  (send-err eyre-id 400 'missing page')
-    =/  who=@t  (rap 3 ~[(scot %p src) '/' (~(gut by args) 'client' '')])
-    (presence-stream up eyre-id u.page who (scot %p src))
+    ?:  %:  cross-site:lu
+          (get-header:http 'sec-fetch-site' header-list.request.req)
+          (get-header:http 'origin' header-list.request.req)
+          (get-header:http 'host' header-list.request.req)
+        ==
+      (send-err eyre-id 403 'cross-site request refused')
+    =/  who=(unit [page=@t who=@t])  (presence-who src args)
+    ?~  who  (send-err eyre-id 400 'page and client: 1 to 256 and 1 to 64 bytes')
+    (presence-stream up eyre-id page.u.who who.u.who (scot %p src))
   ::  POST /presence?page=&client=&block=&mode=read|edit|gone: where that
   ::  window is now, sent when it changes and not otherwise, or that it
   ::  has left. Passed to /presence.sig. Nothing is written.
       [%'POST' %presence]
-    =/  page=(unit @t)  (~(get by args) 'page')
-    ?~  page  (send-err eyre-id 400 'missing page')
+    =/  who=(unit [page=@t who=@t])  (presence-who src args)
+    ?~  who  (send-err eyre-id 400 'page and client: 1 to 256 and 1 to 64 bytes')
     =/  mode=@t  (~(gut by args) 'mode' 'read')
+    =/  block=@t  (~(gut by args) 'block' '')
     ;<  ~  bind:m
       %+  poke:io  (rf up / %'presence.sig')
       :-  [/ %json]
       %-  pairs:enjs:format
       :~  ['op' s+?:(=('gone' mode) 'gone' 'here')]
-          ['page' s+u.page]
-          ['who' s+(rap 3 ~[(scot %p src) '/' (~(gut by args) 'client' '')])]
-          ['block' s+(~(gut by args) 'block' '')]
+          ['page' s+page.u.who]
+          ['who' s+who.u.who]
+          ::  a place longer than a place is, is no place: cutting it could cut a character
+          ['block' s+?:((gth (met 3 block) 128) '' block)]
           ['mode' s+mode]
       ==
     (send-ok eyre-id)
@@ -15092,8 +15104,14 @@
 ::  written a comment. The ship's web server closes a stream it has
 ::  written nothing to for about 50 seconds, so the timer cannot be
 ::  slower. That write is also how a stream whose window has gone is
-::  found: the send fails, or eyre cancels the request, and its row
-::  goes. With no stream open there is no timer.
+::  found: eyre finds the connection closed and cancels the request,
+::  the request's process is culled, and the next thing sent to it
+::  comes back refused, on which its row goes. So a window that
+::  vanished is dropped a tick or two later, and one that says it has
+::  left, at once. With no stream open there is no timer.
+::
+::  Not handled: a reload starts the table empty while the requests of
+::  open streams are started again by the kernel and open them anew.
 ::
 ::  Three rules keep one slow or dead listener from costing the others:
 ::  the table is sent without waiting for anyone to take it, a listener
@@ -15101,6 +15119,16 @@
 ::  only goes up, so one that arrives late can be told from the newest.
 ::
 ++  presence-row  ,[ship=@t block=@t mode=@t]
+::  +presence-who: the page asked about and the window asking, as
+::  `~ship/client`, from a request's arguments. ~ when either is missing
+::  or too long, so the request is refused before anything is opened.
+++  presence-who
+  |=  [src=@p args=(map @t @t)]
+  ^-  (unit [page=@t who=@t])
+  =/  page=@t  (~(gut by args) 'page' '')
+  =/  client=@t  (~(gut by args) 'client' '')
+  ?:  |(=('' page) (gth (met 3 page) 256) =('' client) (gth (met 3 client) 64))  ~
+  `[page (rap 3 ~[(scot %p src) '/' client])]
 ::  +presence-in: the next thing /presence.sig has to act on. A poke is
 ::  handed over, a timer's wake among them. A send that could not be
 ::  delivered is handed over as the id of the stream it was for. All
@@ -15170,8 +15198,12 @@
   ?:  (gte now (add was ~s1))
     ;<  ~  bind:m
       (presence-cast root page +(seq) (~(gut by tab) page ~) subs)
-    (pure:m [(~(put by last) page now) dirty +(seq)])
-  ;<  ~  bind:m  (set-timer:io /cast (add was ~s1))
+    (pure:m [(~(put by last) page now) (~(del in dirty) page) +(seq)])
+  ::  the timer is set when the first page waits: a page that joins the
+  ::  wait is sent on the same wake, or on the one set at that wake
+  ;<  ~  bind:m
+    ?^  dirty  (pure:(fiber:fiber:nexus ,~) ~)
+    (set-timer:io /cast (add was ~s1))
   (pure:m [last (~(put in dirty) page) seq])
 ::  +presence-drop: a stream goes, and its window's row with it unless
 ::  the window holds another stream on the page. The page, when its
@@ -15218,7 +15250,9 @@
   =|  last=(map @t @da)
   =|  dirty=(set @t)
   =|  seq=@ud
-  =/  tick=?  |
+  ::  when the timer that writes to every stream is next due, or the
+  ::  beginning of time with none set
+  =|  tick=@da
   |-
   ;<  got=(unit (each sage:tarball @ta))  bind:m  presence-in
   ?~  got  $
@@ -15237,19 +15271,31 @@
     =/  wak=path  !<(path q.sage)
     ?:  ?=([%tick *] wak)
       ::  every stream is written to, which keeps it open and finds the dead
-      ?:  =(~ subs)  $(tick |)
+      ?:  =(~ subs)  $(tick *@da)
       ;<  ~  bind:m
         (presence-send root ~(tap in ~(key by subs)) (pairs:enjs:format ~[['ping' b+&]]))
       ;<  ~  bind:m  (set-timer:io /tick (add now ~s30))
-      $(tick &)
+      $(tick (add now ~s30))
     ?.  ?=([%cast *] wak)  $
-    =/  due=(list @t)  ~(tap in dirty)
-    =.  dirty  ~
+    ::  the pages whose second is up are sent, and the wake is set again
+    ::  for the first of those whose second is not
+    =/  due=(list @t)
+      (skim ~(tap in dirty) |=(p=@t (gte now (add (~(gut by last) p *@da) ~s1))))
     |-
-    ?~  due  ^$
-    =.  seq  +(seq)
-    ;<  ~  bind:m  (presence-cast root i.due seq (~(gut by tab) i.due ~) subs)
-    $(due t.due, last (presence-forget i.due tab subs (~(put by last) i.due now)))
+    ?^  due
+      =.  seq  +(seq)
+      ;<  ~  bind:m  (presence-cast root i.due seq (~(gut by tab) i.due ~) subs)
+      %=  $
+        due    t.due
+        dirty  (~(del in dirty) i.due)
+        last   (presence-forget i.due tab subs (~(put by last) i.due now))
+      ==
+    ?:  =(~ dirty)  ^$
+    =/  next=@da
+      %+  roll  ~(tap in dirty)
+      |=([p=@t a=@da] (max a (add (~(gut by last) p *@da) ~s1)))
+    ;<  ~  bind:m  (set-timer:io /cast next)
+    ^$
   ?.  =([/ %json] p.sage)  $
   =/  j=json  !<(json q.sage)
   ?.  ?=([%o *] j)  $
@@ -15261,17 +15307,26 @@
   =/  op=@t  (str 'op')
   =/  page=@t  (str 'page')
   =/  who=@t  (str 'who')
-  ?:  |(=('' page) (gth (met 3 page) 256) =('' who) (gth (met 3 who) 80))  $
+  ::  the routes have checked their lengths (+presence-who)
+  ?:  |(=('' page) =('' who))  $
   =/  rows=(map @t presence-row)  (~(gut by tab) page ~)
   ?:  =('sub' op)
     ::  a stream is opened: its window is on the page, reading
     =/  id=@ta  (str 'id')
-    ?:  |(=('' id) (gte ~(wyt by subs) 256))  $
+    ?:  =('' id)  $
+    ::  256 streams and no more: one over is ended at once, and not left
+    ::  open with nothing ever sent to it
+    ?:  (gte ~(wyt by subs) 256)
+      ;<  ~  bind:m  (presence-send root ~[id] (pairs:enjs:format ~[['end' b+&]]))
+      $
     =.  subs  (~(put by subs) id [page who])
     =/  new=?  !(~(has by rows) who)
     =?  tab  new  (~(put by tab) page (~(put by rows) who [(str 'ship') '' 'read']))
-    ;<  ~  bind:m  ?:(tick (pure:m ~) (set-timer:io /tick (add now ~s30)))
-    =.  tick  &
+    ::  set when there is none, and again when one is long past due: a
+    ::  wake that was lost would otherwise leave every stream unwritten
+    =/  arm=?  (gth now (add tick ~s20))
+    ;<  ~  bind:m  ?.(arm (pure:m ~) (set-timer:io /tick (add now ~s30)))
+    =?  tick  arm  (add now ~s30)
     ?.  new
       ::  a second stream of a window already there: it alone is sent the table
       ;<  ~  bind:m  (presence-send root ~[id] (presence-json page seq rows))
@@ -15284,17 +15339,20 @@
       (presence-send root ~[id] (presence-json page seq.t (~(gut by tab) page ~)))
     $(last last.t, dirty dirty.t, seq seq.t)
   ?:  =('gone' op)
-    ::  a window says it has left: its streams are ended from here
+    ::  a window says it has left: its streams are ended from here, and
+    ::  its row goes with the last of them
     =/  ids=(list @ta)
       (murn ~(tap by subs) |=([id=@ta p=@t w=@t] ?:(&(=(p page) =(w who)) `id ~)))
+    ?~  ids  $
     ;<  ~  bind:m  (presence-send root ids (pairs:enjs:format ~[['end' b+&]]))
-    =.  subs
-      |-  ^+  subs
-      ?~  ids  subs
-      $(ids t.ids, subs (~(del by subs) i.ids))
-    ?.  (~(has by rows) who)  $
-    =/  next=(map @t presence-row)  (~(del by rows) who)
-    =.  tab  ?:(=(~ next) (~(del by tab) page) (~(put by tab) page next))
+    =/  d
+      %+  roll  `(list @ta)`ids
+      |:  [id=*@ta acc=[subs=subs tab=tab page=*(unit @t)]]
+      =/  n  (presence-drop id subs.acc tab.acc)
+      [subs.n tab.n ?^(page.n page.n page.acc)]
+    =.  subs  subs.d
+    =.  tab  tab.d
+    ?~  page.d  $
     ;<  t=[last=(map @t @da) dirty=(set @t) seq=@ud]  bind:m
       (presence-tell root now page tab subs last dirty seq)
     $(last (presence-forget page tab subs last.t), dirty dirty.t, seq seq.t)
@@ -15302,7 +15360,7 @@
   =/  old=(unit presence-row)  (~(get by rows) who)
   ?~  old  $
   =/  row=presence-row
-    [ship.u.old (end [3 128] (str 'block')) ?:(=('edit' (str 'mode')) 'edit' 'read')]
+    [ship.u.old (str 'block') ?:(=('edit' (str 'mode')) 'edit' 'read')]
   ?:  =(row u.old)  $
   =.  tab  (~(put by tab) page (~(put by rows) who row))
   ;<  t=[last=(map @t @da) dirty=(set @t) seq=@ud]  bind:m
