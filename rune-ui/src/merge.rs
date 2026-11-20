@@ -135,6 +135,31 @@ pub fn merge3(kind: &str, base: &str, mine: &str, theirs: &str) -> Merged {
         }
         (i, mp, tp) = (g1, m1, t1);
     }
+    // A block one side moved is, to the walk, cut in one place and
+    // written in another, so it can come out once more than it should:
+    // twice when both sides moved it alike, and back again when this
+    // window cut it and they moved it. Each block of the base is counted,
+    // and a copy too many is taken out where it came from their side.
+    // ponytail: a move is not known as a move. Their copy goes and this window's stays, which is right for these two cases and says nothing. A diff that knows a move is the fix
+    let count = |v: &[String], x: &str| v.iter().filter(|b| b.as_str() == x).count();
+    let said = |o: &(bool, usize)| if o.0 { mt[o.1].as_str() } else { tt[o.1].as_str() };
+    let mut seen = std::collections::HashSet::new();
+    for x in bt.iter().filter(|x| !x.is_empty()) {
+        if !seen.insert(x.as_str()) {
+            continue;
+        }
+        let (cb, cm, ct) = (count(&bt, x), count(&mt, x), count(&tt, x));
+        let want = if cm == cb { ct } else if ct == cb { cm } else { cm.max(ct) };
+        let mut have = out.iter().filter(|o| said(o) == x).count();
+        while have > want {
+            let Some(at) = out.iter().rposition(|o| !o.0 && said(o) == x) else { break };
+            out.remove(at);
+            for mark in marks.iter_mut().filter(|mark| mark.0 > at) {
+                mark.0 -= 1;
+            }
+            have -= 1;
+        }
+    }
     let mut text = String::new();
     let mut starts = Vec::with_capacity(out.len());
     for (n, (mine_one, x)) in out.iter().enumerate() {
@@ -312,6 +337,20 @@ mod tests {
         // blank lines this window keeps between its blocks stay as they are
         let got = merge3("js", "a = 1\n\n\nb = 2\n\nc = 3\n", "a = 1\n\n\nb = 2\n\nc = 3\n", "a = 1\n\n\nb = 2\n\nc = 30\n");
         assert_eq!(got.text, "a = 1\n\n\nb = 2\n\nc = 30\n");
+    }
+
+    #[test]
+    fn a_block_both_moved_alike_is_not_doubled() {
+        let m = merge3("md", "C.\n\nD.\n\nE.", "D.\n\nC.", "D.\n\nC.\n\nE.");
+        assert_eq!((m.text.as_str(), m.conflicts.len()), ("D.\n\nC.", 0));
+        let m = merge3("md", "C.\n\nD.\n\nE.", "D.\n\nC.\n\nE.", "D.\n\nC.");
+        assert_eq!(m.text.matches("C.").count(), 1);
+    }
+
+    #[test]
+    fn a_block_this_window_cut_does_not_come_back_moved() {
+        let m = merge3("md", "A.\n\nB.\n", "B.\n", "B.\n\nA.\n");
+        assert_eq!(m.text, "B.\n");
     }
 
     #[test]

@@ -40,9 +40,29 @@ impl Row {
     }
 }
 
-/// A table from what a stream's `here` event carries.
+/// The most windows of a table that are kept. The ship holds 256 streams over all its pages.
+const ROWS_MOST: usize = 256;
+
+/// A name or a place as it may be shown and compared: nothing that is
+/// not printed, and no longer than the ship lets one be.
+fn clean(s: &mut String, most: usize) {
+    if s.len() > most || s.chars().any(char::is_control) {
+        *s = s.chars().filter(|c| !c.is_control()).take(most).collect();
+    }
+}
+
+/// A table from what a stream's `here` event carries, cut to what a
+/// ship of this version could have sent: the words are shown, and each
+/// row is worked on, so a ship is not taken at its word on their size.
 pub fn table(data: &str) -> Option<Table> {
-    serde_json::from_str(data).ok()
+    let mut t: Table = serde_json::from_str(data).ok()?;
+    t.here.truncate(ROWS_MOST);
+    for r in &mut t.here {
+        clean(&mut r.who, 96);
+        clean(&mut r.ship, 64);
+        clean(&mut r.block, 128);
+    }
+    Some(t)
 }
 
 /// The windows on the page other than this one, those editing first.
@@ -215,6 +235,18 @@ mod tests {
     use super::*;
 
     const PAGE: &str = "# The shed\n\nA plan.\n\n## Site\n\nBehind the tree.\n\nOn the slab.\n\n## Cost\n\n- Timber\n";
+
+    #[test]
+    fn a_table_is_cut_to_what_a_ship_could_send() {
+        let rows: Vec<String> = (0..400).map(|i| format!(r#"{{"who":"~zod/{i}","ship":"~zod","block":"","mode":"read"}}"#)).collect();
+        let t = table(&format!(r#"{{"page":"a","seq":1,"here":[{}]}}"#, rows.join(","))).unwrap();
+        assert_eq!(t.here.len(), ROWS_MOST);
+        let long = "x".repeat(500);
+        let t = table(&format!(r#"{{"page":"a","here":[{{"who":"~zod/1","ship":"~z\u0007od\n{long}","block":"{long}","mode":"edit"}}]}}"#)).unwrap();
+        assert_eq!(t.here[0].ship.len(), 64);
+        assert!(t.here[0].ship.starts_with("~zodx"));
+        assert_eq!(t.here[0].block.len(), 128);
+    }
 
     #[test]
     fn a_place_is_the_heading_above_and_the_blocks_turn_under_it() {

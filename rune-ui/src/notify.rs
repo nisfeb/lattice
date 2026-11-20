@@ -69,9 +69,11 @@ fn notifiers(title: &str, body: &str) -> Vec<Run> {
     let (title, body) = (text(title, TITLE_MAX), text(body, BODY_MAX));
     // ponytail: the Mac and Windows notifiers are written and were never run. Checked when the app is tried there
     if cfg!(target_os = "macos") {
-        // the words are read from the environment, so nothing in them is read as script or as an option
-        let script = "display notification (system attribute \"LATTICE_NOTE_BODY\") with title (system attribute \"LATTICE_NOTE_TITLE\")";
-        vec![("osascript", vec!["-e".to_owned(), script.to_owned()], vec![("LATTICE_NOTE_TITLE", title), ("LATTICE_NOTE_BODY", body)])]
+        // the words are arguments to the script, never part of it, and are given as they are: `system attribute` spoils any letter that is not ASCII. One that starts with a dash would be read as an option, so it is given a space first
+        let word = |w: String| if w.starts_with('-') { format!(" {w}") } else { w };
+        let mut args: Vec<String> = ["on run argv", "display notification (item 2 of argv) with title (item 1 of argv)", "end run"].iter().flat_map(|l| ["-e".to_owned(), (*l).to_owned()]).collect();
+        args.extend([word(title), word(body)]);
+        vec![("osascript", args, Vec::new())]
     } else if cfg!(windows) {
         // a toast, with the words read from the environment
         let script = "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \

@@ -1105,6 +1105,9 @@ pub enum Beacon {
     Down,
 }
 
+/// The most of one unfinished event that is kept, in bytes. A table of 256 windows is about 50,000.
+const SSE_MOST: usize = 1 << 20;
+
 /// The whole events in what has come of a stream so far, each its name
 /// and its data. What follows the last blank line stays, to be added to.
 pub fn sse_events(buf: &mut String) -> Vec<(String, String)> {
@@ -2389,6 +2392,10 @@ impl Conn {
             // ponytail: a character cut in two by the end of a read is spoiled. Bytes kept over to the next read if a stream ever carries much that is not ASCII
             buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
             let events = sse_events(&mut buf);
+            // an event that never ends is not kept for ever
+            if buf.len() > SSE_MOST {
+                return Err("the stream sent an event too long to keep".into());
+            }
             if events.is_empty() && !on("", "") {
                 return Ok(());
             }

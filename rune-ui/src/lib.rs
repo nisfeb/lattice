@@ -869,6 +869,8 @@ struct App {
     here_mine: String,
     here_tints: Vec<std::ops::Range<usize>>,
     here_key: (usize, usize, u64),
+    /// How many times what the table shows has changed.
+    here_heard: u64,
     /// Whether anyone is at the window (`sync_away`): a key or the pointer moved since the last look, when one last did, since when the window has not been in front, and when it is looked at again.
     touched: bool,
     touched_at: f64,
@@ -1334,6 +1336,7 @@ fn init() -> App {
         here_mine: String::new(),
         here_tints: Vec::new(),
         here_key: (0, 0, 0),
+        here_heard: 0,
         // a window is in front and in use when it opens
         touched: true,
         touched_at: 0.0,
@@ -5547,7 +5550,6 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     changed |= sync_scrub(s, clock, tx);
     changed |= sync_away(s, clock, tx);
     changed |= sync_here(s, clock, tx);
-    sync_merge(s);
     changed |= sync_draft(s);
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -6399,6 +6401,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
         }
     }
+    // after the tree is read, which is where a page is found to be behind
+    sync_merge(s);
     changed |= take_pics(s);
     if changed {
         sync_map(s);
@@ -12490,6 +12494,8 @@ fn sidebar(s: &App, k: &Kit) -> El {
 struct HereHeard {
     table: Option<here::Table>,
     off: bool,
+    /// The stream ended: what it last said is no longer known to be so.
+    down: bool,
 }
 
 /// This ship's name, or nothing with no ship.
@@ -12497,9 +12503,11 @@ fn our(s: &App) -> &str {
     s.conn.as_ref().map_or("", |c| c.ship())
 }
 
-/// Whether an answer says the ship has no presence: a ship before lattice 142 knows neither route.
+/// Whether an answer says the ship will not give this window a table: a
+/// ship before lattice 142 knows neither route (404, 405), and any other
+/// refusal (400, 401, 403) would only be given again at once.
 fn no_presence(e: &str) -> bool {
-    e.starts_with("404") || e.starts_with("405")
+    e.len() >= 3 && e.starts_with('4') && e.as_bytes()[..3].iter().all(u8::is_ascii_digit)
 }
 
 /// Waits `ms`, or until told to stop, whichever is first.
@@ -12522,7 +12530,8 @@ fn sync_away(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let was = std::mem::replace(&mut s.away, away::left(clock, s.touched_at, s.behind));
     let again = clock + away::left_in(clock, s.touched_at, s.behind) + 0.5;
     // asked for once for each time it moves, not at every look
-    if !s.away && (again - s.away_look).abs() > 1.0 {
+    // a look that has come and gone is asked for again, however near the new one is to it
+    if !s.away && ((again - s.away_look).abs() > 1.0 || s.away_look <= clock) {
         s.away_look = again;
         tx.wake_after(std::time::Duration::from_secs_f64(again - clock));
     }
@@ -12539,7 +12548,8 @@ fn here_page(s: &App) -> Option<String> {
         return None;
     }
     let p = s.open.as_ref()?;
-    s.shares.contains_key(&p.name).then(|| p.name.clone())
+    // a page made private again keeps its name here, as private
+    s.shares.get(&p.name).is_some_and(|mode| mode != "private").then(|| p.name.clone())
 }
 
 /// Who this window is in a page's table.
@@ -12566,7 +12576,8 @@ fn here_work(s: &mut App) {
         }
         return;
     }
-    let key = (s.edit.text.len(), s.edit.focus, s.here_shown.as_ref().map_or(0, |t| t.seq));
+    // the tables are counted here: the ship's own count starts again when its presence does
+    let key = (s.edit.text.len(), s.edit.focus, s.here_heard);
     if key == s.here_key {
         return;
     }
@@ -12625,11 +12636,12 @@ fn here_listen(s: &mut App, page: String) {
                 // asked at every word from the ship, a table or not, so a stop is heard within its 30 seconds
                 !stop.load(Ordering::Relaxed)
             });
-            if got.as_ref().is_err_and(|e| no_presence(e)) {
-                if let Ok(mut h) = heard.lock() {
-                    h.off = true;
-                }
-                waker();
+            let off = got.as_ref().is_err_and(|e| no_presence(e));
+            if let Ok(mut h) = heard.lock() {
+                (h.table, h.down, h.off) = (None, true, off);
+            }
+            waker();
+            if off {
                 return;
             }
             fail = if any { 1 } else { (fail + 1).min(5) };
@@ -12652,11 +12664,17 @@ fn here_tell(s: &mut App, clock: f64, tx: &mut Tx) {
         (s.here_now, s.here_moved, s.here_tries) = (Some(now.clone()), clock, 0);
     }
     let me = here_me(s);
-    let told = s.here_shown.as_ref().and_then(|t| t.here.iter().find(|r| r.who == me)).is_some_and(|r| r.block != now.1 || r.mode != now.2);
-    if !told || s.here_tries >= 3 {
+    let Some(row) = s.here_shown.as_ref().and_then(|t| t.here.iter().find(|r| r.who == me)) else { return };
+    if row.block == now.1 && row.mode == now.2 {
+        // it took: a ship that loses the row later is told again from the start
+        s.here_tries = 0;
         return;
     }
-    let due = (s.here_moved + 1.0).max(s.here_at + 3.0);
+    if s.here_tries >= 3 {
+        return;
+    }
+    // a place the caret has rested in for a second is said. Said again only after three more
+    let due = (s.here_moved + 1.0).max(s.here_at + if s.here_tries > 0 { 3.0 } else { 1.0 });
     if clock < due {
         tx.wake_after(std::time::Duration::from_secs_f64((due - clock).max(0.05)));
         return;
@@ -12687,9 +12705,13 @@ fn sync_here(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         if std::mem::take(&mut h.off) {
             s.here_off_until = clock + 600.0;
         }
+        // nobody is shown from a stream that has ended: they may have gone since
+        if std::mem::take(&mut h.down) && s.here_shown.take().is_some() {
+            (s.here_heard, changed) = (s.here_heard + 1, true);
+        }
         // a table for a page since left is not this page's
         if let Some(t) = h.table.take().filter(|t| Some(&t.page) == s.here_for.as_ref()) {
-            (s.here_shown, changed) = (Some(t), true);
+            (s.here_shown, s.here_heard, changed) = (Some(t), s.here_heard + 1, true);
         }
     }
     // an answer to what was said is not waited on: the table says whether it took
@@ -12784,8 +12806,10 @@ fn merge_theirs(s: &mut App) {
     // ponytail: the editor is given the merged text as a new text, so undo does not reach back across a merge. The merge made as one edit of the old text is the fix
     let at = here::across(&was, caret, &s.edit.text);
     s.edit.set_selection(at, at);
-    if !s.rich {
-        vim_start(s);
+    // vim starts again in the new text, with the caret where it was put
+    s.vim = vim::Vim::default();
+    if !s.rich && s.prefs.vim {
+        vim_settle(s);
     }
     s.open = Some(Page { body: theirs.body, rev: theirs.rev, ..p });
     s.stale = false;
@@ -13081,6 +13105,8 @@ fn history_view(s: &App, k: &Kit) -> El {
                     .radius(k.radius.sm)
                     .on_press(move |s: &mut App| match s.scrub.as_ref().and_then(|sc| sc.film.as_ref()?.frames.iter().position(|f| f.rev == rev)) {
                         Some(at) => scrub_to(s, at),
+                        // a film still being read may yet hold it: the press waits for that
+                        None if s.scrub.as_ref().is_some_and(|sc| sc.film.is_none()) => {}
                         // a revision the film does not hold, older than it reaches: the scrubber is left for it
                         None => {
                             s.scrub = None;
