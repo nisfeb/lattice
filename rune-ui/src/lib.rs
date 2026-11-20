@@ -4,6 +4,8 @@
 //! With neither set it opens on built-in sample pages, which is also what the
 //! headless runs draw: `cargo run -- --snap out.png --scene reading`.
 
+#[cfg(not(target_arch = "wasm32"))]
+mod accounts;
 mod api;
 mod backups;
 mod browse;
@@ -363,6 +365,10 @@ enum Prompt {
     Ask(Shared, TextEdit),
     /// A tag to put on the memory in front.
     Tag(TextEdit),
+    /// Signing out of the ship in front, or of every ship, while folders of theirs are mounted.
+    ShipOut(bool),
+    /// What to call a ship signed in: its address, and the label.
+    ShipLabel(String, TextEdit),
     /// The kind of the page in front, to change: Markdown, gemtext, HTML and the rest.
     Kind(TextEdit),
     /// The tags of the forum thread showing, to set.
@@ -564,6 +570,18 @@ struct App {
     auto_held: bool,
     /// What is kept between runs, and whether the last page was opened again.
     prefs: Prefs,
+    /// The ships signed in on this computer, as they were when the window's state was last built.
+    ships: Vec<api::Ship>,
+    /// The list of ships is showing, to go to another, add one or sign out.
+    ships_open: bool,
+    /// What the watcher last saw of each ship signed in that is not in front, by its address.
+    seen: std::sync::Arc<std::sync::Mutex<HashMap<String, api::ShipSeen>>>,
+    /// Stops the watcher of the ships not in front, when the ship in front changes.
+    watch_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Another ship is being signed in to, with the one in front left as it is until that is done.
+    adding: bool,
+    /// The window's title as it was last set.
+    titled: String,
     restored: bool,
     /// The page asked for whose text has not come yet: a page just made,
     /// or one opened before the first tree arrived. Its answer is shown.
@@ -1085,7 +1103,13 @@ fn init() -> App {
         autosaving: false,
         save_again: false,
         auto_held: false,
-        prefs: Prefs::load(),
+        prefs: Prefs::load_for(conn.as_ref().map_or("", |c| c.url.as_str())),
+        ships: api::ships(),
+        ships_open: false,
+        seen: Default::default(),
+        watch_stop: Default::default(),
+        adding: false,
+        titled: "lattice".into(),
         restored: false,
         want: None,
         folder: None,
@@ -1454,10 +1478,156 @@ fn sign_in(s: &mut App) {
     s.login_req.request((s.url.text.clone(), s.code.text.clone()), |(u, c)| Conn::login(&u, &c));
 }
 
+/// Watches the ships signed in that are not in front, on one thread of its own: once a minute each
+/// is asked for its notices, which says whether it answers, how many are unread, and whether its
+/// session stands. A ship that answers is sent the saves that waited for it (`Conn::send_waiting`).
+/// Nothing else is read of them or written to them.
+fn watch_ships(s: &mut App) {
+    use std::sync::atomic::Ordering;
+    s.watch_stop.store(true, Ordering::Relaxed);
+    if cfg!(target_arch = "wasm32") || cfg!(test) {
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(waker) = s.waker.clone() else { return };
+        let front = s.conn.as_ref().map(|c| c.url.clone());
+        let others: Vec<(String, String)> = api::ship_sessions().into_iter().filter(|(u, _)| Some(u) != front.as_ref()).collect();
+        if others.is_empty() {
+            return;
+        }
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        s.watch_stop = stop.clone();
+        let seen = s.seen.clone();
+        std::thread::spawn(move || loop {
+            for (url, cookie) in &others {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                let got = api::ship_look(url, cookie, &stop);
+                let changed = seen.lock().map(|mut m| m.insert(url.clone(), got.clone()) != Some(got)).unwrap_or(false);
+                if changed {
+                    waker();
+                }
+            }
+            // a minute between looks, let go of at once when the ship in front changes
+            for _ in 0..60 {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        });
+    }
+}
+
+/// The colour after `now` among those a ship can be given, and none after the last.
+fn ship_colour_after(now: &str) -> &'static str {
+    match api::SHIP_COLOURS.iter().position(|c| c.eq_ignore_ascii_case(now)) {
+        Some(i) => api::SHIP_COLOURS.get(i + 1).copied().unwrap_or(""),
+        None => api::SHIP_COLOURS[0],
+    }
+}
+
+/// Leaves the anonymous reader or the sample pages: back to the ship in front when one is signed
+/// in, and to the sign-in when none is. No ship is signed out of.
+fn leave_guest(s: &mut App) {
+    reset(s, true);
+}
+
+/// Reads with no ship, from the list of ships. Every ship stays signed in, to come back to.
+#[cfg(unix)]
+fn go_anon(s: &mut App) {
+    if !leave_edit(s) {
+        return;
+    }
+    reset(s, false);
+    browse_anon(s);
+}
+
+/// What the watcher saw of a ship, in a few words for the list of ships. Nothing for a ship that
+/// answers with nothing new.
+fn ship_news(seen: Option<&api::ShipSeen>) -> String {
+    let Some(x) = seen else { return String::new() };
+    let mut out = Vec::new();
+    if x.expired {
+        out.push("sign in again".to_owned());
+    } else if !x.up {
+        out.push("not answering".to_owned());
+    }
+    if x.unread > 0 {
+        out.push(format!("{} unread", x.unread));
+    }
+    if x.waiting > 0 {
+        out.push(format!("{} waiting to be sent", x.waiting));
+    }
+    if x.aside > 0 {
+        out.push(format!("{} kept aside there", x.aside));
+    }
+    out.join(" \u{b7} ")
+}
+
+/// The folders mounted over HTTP with the session of the ship in front, or of any ship signed in.
+/// A ship mounted by its own socket on this computer needs no session, and is not among them.
+fn ship_mounts(s: &App, all: bool) -> Vec<mounts::MountSpec> {
+    let front = s.conn.as_ref().map(|c| c.url.as_str());
+    s.mounts.iter().filter(|m| !m.url.is_empty() && (all || Some(m.url.as_str()) == front)).cloned().collect()
+}
+
+/// Sign out, asked for: at once when nothing of the ship's is mounted, and after a question when
+/// something is, since its folder goes with its session.
+fn sign_out_asked(s: &mut App, all: bool) {
+    s.ships_open = false;
+    if ship_mounts(s, all).is_empty() {
+        if all { sign_out_all(s) } else { sign_out(s) }
+    } else {
+        s.prompt = Some(Prompt::ShipOut(all));
+    }
+}
+
+/// Signs out of the ship in front. Another ship signed in comes to the front in its place: the
+/// one used most lately. With none, the window is at its sign-in.
 fn sign_out(s: &mut App) {
     Conn::forget();
+    reset(s, true);
+}
+
+/// Signs out of every ship.
+fn sign_out_all(s: &mut App) {
+    api::ships_forget();
+    reset(s, false);
+}
+
+/// Goes to another ship signed in: its tree, its tabs and its last page, as they were left.
+fn switch_ship(s: &mut App, url: &str) {
+    if s.conn.as_ref().is_some_and(|c| c.url == url) {
+        s.ships_open = false;
+        return;
+    }
+    // what is being typed is saved or kept first, as before any other page is opened
+    if !leave_edit(s) {
+        return;
+    }
+    if !api::ship_bring(url) {
+        s.note = "that ship is not signed in on this computer any more".into();
+        return;
+    }
+    reset(s, true);
+    if let Some(c) = &s.conn {
+        s.note = format!("now on {}", c.ship());
+    }
+}
+
+/// Builds the window's state again from what is kept: for the ship now in front when `signed`,
+/// or for no ship. Everything the window held of the ship before is let go.
+fn reset(s: &mut App, signed: bool) {
     let mut fresh = init();
-    fresh.conn = None;
+    if !signed {
+        fresh.conn = None;
+        fresh.prefs = Prefs::load();
+    }
+    // the window's title is as it was set: what it should say now is worked out against that
+    fresh.titled = s.titled.clone();
     // the wakers were set once, on the requests this window keeps
     fresh.tree_req = std::mem::take(&mut s.tree_req);
     fresh.page_req = std::mem::take(&mut s.page_req);
@@ -1496,6 +1666,7 @@ fn sign_out(s: &mut App) {
     }
     // the listener of the session that ended stops, and every request this window keeps is woken as before
     s.beacon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    s.watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let waker = s.waker.clone();
     *s = fresh;
     if let Some(w) = waker {
@@ -1617,6 +1788,27 @@ fn confirm(s: &mut App) {
                 save_body(s, Page { kind: k.to_owned(), ..open }, body);
             }
         }
+        return;
+    }
+    if let Prompt::ShipLabel(url, t) = &p {
+        let colour = s.ships.iter().find(|x| x.url == *url).map(|x| x.colour.clone()).unwrap_or_default();
+        api::ship_dress(url, &t.text, &colour);
+        s.ships = api::ships();
+        s.ships_open = true;
+        return;
+    }
+    if let Prompt::ShipOut(all) = &p {
+        let all = *all;
+        // the folders are let go of first, so the next start finds none to make again with a session that is gone
+        let gone = ship_mounts(s, all);
+        let rest: Vec<mounts::MountSpec> = s.mounts.iter().filter(|m| !gone.contains(m)).cloned().collect();
+        let _ = mounts::save(&rest);
+        spawn(move || {
+            for m in gone {
+                let _ = mounts::stop(&m);
+            }
+        });
+        if all { sign_out_all(s) } else { sign_out(s) }
         return;
     }
     if let Prompt::Tag(t) = &p {
@@ -2170,13 +2362,16 @@ fn setup(s: &mut App, waker: Waker) {
     load_know(s);
     load_shared(s);
     listen(s);
+    watch_ships(s);
     // the mounts kept from the run before: still there, or made again. Not on sample pages, which keep nothing
     let kept = mounts::load();
     if !kept.is_empty() && !s.sample {
         s.mount_req.request((kept, s.conn.clone()), |(kept, conn)| {
             let (mut list, mut said) = (Vec::new(), Vec::new());
-            // a ship over HTTP is mounted again only while this window is signed in to it
-            let session = |url: &str| conn.as_ref().filter(|c| c.url == url).map(|c| c.cookie.clone());
+            // a ship over HTTP is mounted again with its own session, whichever ship is in front: any
+            // ship signed in on this computer, and the one this window was started on
+            let signed = api::ship_sessions();
+            let session = |url: &str| conn.as_ref().filter(|c| c.url == url).map(|c| c.cookie.clone()).or_else(|| signed.iter().find(|(u, _)| u == url).map(|(_, c)| c.clone()));
             for (m, r) in mounts::resume(kept, session) {
                 if let Err(e) = r {
                     said.push(format!("{} was not mounted again: {e}", m.mountpoint));
@@ -4965,12 +5160,30 @@ fn write(s: &mut App) {
 /// the ship does not take or refuse outright.
 // ponytail: one request for each page. The ship's batch route is for when a queue of hundreds shows up
 fn drain(s: &mut App) {
+    bg_taken(s);
     if (s.queue.is_empty() && s.ops.is_empty()) || s.drain_req.is_pending() {
         return;
     }
     let Some(c) = s.conn.clone() else { return };
     s.note = format!("sending {} saved on this device\u{2026}", s.queue.len() + s.ops.len());
-    s.drain_req.request((c, s.ops.clone(), s.queue.clone()), |(c, ops, q)| {
+    s.drain_req.request((c, s.ops.clone(), s.queue.clone()), |(c, mut ops, mut q)| {
+        // one sender at a time: the watcher of the ships not in front may be part way through this ship's
+        // list, from before it came to the front. What it sent is not sent again
+        let _held = api::send_lock();
+        for sent in api::bg_sent(&c.url, false) {
+            match sent {
+                api::BgSent::Op(op) => {
+                    if ops.first() == Some(&op) {
+                        ops.remove(0);
+                    }
+                }
+                api::BgSent::Save(name, item) => {
+                    if q.get(&name) == Some(&item) {
+                        q.remove(&name);
+                    }
+                }
+            }
+        }
         // the deletes and moves first, in the order made: what they meant for the saves was settled when they were put by
         let mut did = Vec::new();
         for op in ops {
@@ -4997,6 +5210,31 @@ fn drain(s: &mut App) {
     });
 }
 
+/// Takes out of this window's lists what the watcher sent to this ship while it was not in front:
+/// the kept lists already lack them, and the window's own were read a moment before the last of
+/// them went. Each is taken only where the window still holds that very save.
+fn bg_taken(s: &mut App) {
+    let Some(c) = s.conn.clone() else { return };
+    let sent = api::bg_sent(&c.url, true);
+    if sent.is_empty() {
+        return;
+    }
+    for x in sent {
+        match x {
+            api::BgSent::Op(op) => {
+                if s.ops.first() == Some(&op) {
+                    s.ops.remove(0);
+                }
+            }
+            api::BgSent::Save(name, item) => {
+                if s.queue.get(&name) == Some(&item) {
+                    s.queue.remove(&name);
+                }
+            }
+        }
+    }
+}
+
 /// How sending what waited came out: each delete or move with the ship's answer, then each save as it was sent.
 type Drained = (Vec<(api::QueuedOp, Result<(), String>)>, Vec<(String, api::Queued, api::Sent)>);
 
@@ -5005,6 +5243,7 @@ type Drained = (Vec<(api::QueuedOp, Result<(), String>)>, Vec<(String, api::Queu
 /// meanwhile, and that newer save then goes. A conflict or a refusal is
 /// said with the name its other text is kept under.
 fn drained(s: &mut App, (did, out): Drained) {
+    bg_taken(s);
     // taken whatever comes of it: it speaks for this sending and no later one
     let read_save = std::mem::take(&mut s.read_save);
     let mut hist = false;
@@ -5764,13 +6003,16 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         match r {
             Ok(c) => {
-                // signed in again, or to another ship: what the window held of the one before is let go first
-                if s.conn.is_some() {
-                    sign_out(s);
+                // signed in again, or to another ship: what the window held of the one before is let go first.
+                // The ship that was in front stays signed in, and can be gone back to
+                if s.conn.is_some() || s.adding {
+                    reset(s, false);
                 }
                 if let Err(e) = c.remember() {
                     s.note = format!("signed in, but the session was not kept: {e}");
                 }
+                s.prefs = Prefs::load_for(&c.url);
+                s.ships = api::ships();
                 s.code = TextEdit::new("");
                 s.queue = c.queue();
                 s.ops = c.ops();
@@ -5953,6 +6195,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             // the reader's own words are whole sentences
             Err(e) => s.note = e,
         }
+    }
+    // the window says which ship it is on, so two windows or a glance at the task bar tell them apart
+    let titled = s.conn.as_ref().map_or_else(|| "lattice".to_owned(), |c| format!("lattice \u{b7} {}", s.ships.iter().find(|x| x.front && !x.label.is_empty()).map_or(c.ship(), |x| x.label.as_str())));
+    if s.titled != titled {
+        tx.set_title(titled.clone());
+        s.titled = titled;
     }
     #[cfg(unix)]
     if id_drained(s) {
@@ -9269,6 +9517,7 @@ fn open_share(s: &mut App) {
 /// The palette's commands: a name to keep and the words shown. Each has
 /// a button on screen too.
 const COMMANDS: &[(&str, &str)] = &[
+    ("ships", "Ships: go to another, add one, or sign out"),
     ("new", "New page or memory"),
     ("template", "New from a template"),
     ("upload", "Upload a file as a page"),
@@ -9331,6 +9580,7 @@ fn usable(s: &App, id: &str) -> bool {
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "find" => page && find_where(s) != FindIn::Nothing,
         "reload" | "map-token" => s.conn.is_some(),
+        "ships" => s.conn.is_some() && !cfg!(target_arch = "wasm32"),
         "map-base" => own && !s.editing && s.map.as_ref().is_some_and(|m| s.open.as_ref().is_some_and(|p| p.name == m.name)),
         "map-import" => map_changes(s),
         "map-gpx" => page && s.map.is_some(),
@@ -9444,6 +9694,10 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
             load_know(s);
             load_tree(s);
         }
+        "ships" => {
+            s.ships = api::ships();
+            s.ships_open = true;
+        }
         "signout" => sign_out(s),
         _ => {}
     }
@@ -9543,7 +9797,90 @@ fn login_view(s: &App, k: &Kit) -> El {
             .child(text("No node? You can use lattice anonymously. You can browse pages people publish, but you can't save or host pages without a node.").key("anon-said").font(k.ty.small).color(c.text_muted).wrap())
             .child(Button::new("Use anonymously").variant(ButtonVariant::Ghost).on_press(browse_anon).build(k).key("anon"));
     }
+    // adding a ship beside the one in front: a way back to it
+    if let (true, Some(now)) = (s.adding, &s.conn) {
+        card = card.child(Button::new(format!("Back to {}", now.ship())).variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.adding = false).build(k).key("add-back"));
+    }
     col().w_full().h_full().center().fill(c.bg_base).child(card)
+}
+
+/// The ships signed in on this computer: go to one, add one, or sign out.
+fn ships_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
+    if !s.ships_open {
+        return;
+    }
+    let c = &k.c;
+    let mut list = col().key("ship-list").w_full().gap(4.0);
+    for (i, sh) in s.ships.iter().enumerate() {
+        let url = sh.url.clone();
+        let host = sh.url.split("://").nth(1).unwrap_or(&sh.url).to_owned();
+        let news = if sh.front { String::new() } else { ship_news(s.seen.lock().ok().and_then(|m| m.get(&sh.url).cloned()).as_ref()) };
+        // the keys that go to it, for the first nine
+        let host = if i < 9 { format!("{host} \u{b7} Ctrl+Shift+{}", i + 1) } else { host };
+        let said = if sh.front { format!("{host} \u{b7} in front") } else if !news.is_empty() { format!("{host} \u{b7} {news}") } else if sh.expired { format!("{host} \u{b7} sign in again") } else { host };
+        list = list.child(
+            row()
+                .key(format!("ship-{i}"))
+                .role("button")
+                .label(format!("{}, {said}", sh.name))
+                .w_full()
+                .px(10.0)
+                .py(6.0)
+                .gap(8.0)
+                .center_y()
+                .radius(k.radius.sm)
+                .fill(if sh.front { c.layer_01 } else { rune::Color::TRANSPARENT })
+                .hover(c.hover)
+                .on_press(move |s: &mut App| switch_ship(s, &url))
+                .child(el().size(10.0, 10.0).radius(5.0).fill(rune::color::hex(&sh.colour.to_lowercase()).unwrap_or(c.border_base)))
+                .child(col().grow(1.0).min_w(0.0).gap(1.0).child(text(sh.name.clone()).font(k.ty.ui_medium).color(c.text_base).truncate()).child(text(said).font(k.ty.small).color(c.text_muted).truncate()))
+                .child({
+                    let (u, label) = (sh.url.clone(), sh.label.clone());
+                    Button::new("Name").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Give this ship a name of your own").on_press(move |s: &mut App| {
+                        let mut t = TextEdit::new(label.clone());
+                        t.focused = true;
+                        (s.ships_open, s.prompt) = (false, Some(Prompt::ShipLabel(u.clone(), t)));
+                    }).build(k).key(format!("ship-name-{i}"))
+                })
+                .child({
+                    // each press gives it the next colour, and after the last none
+                    let (u, label, now) = (sh.url.clone(), sh.label.clone(), sh.colour.clone());
+                    Button::new("Colour").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Give this ship a colour, to tell it from the others").on_press(move |s: &mut App| {
+                        api::ship_dress(&u, &label, ship_colour_after(&now));
+                        s.ships = api::ships();
+                    }).build(k).key(format!("ship-colour-{i}"))
+                }),
+        );
+    }
+    if s.ships.is_empty() {
+        list = list.child(text("No ship is signed in on this computer.").font(k.ty.small).color(c.text_muted));
+    }
+    let front = s.conn.as_ref().map(|c| c.ship().to_owned());
+    let mut acts = row().w_full().gap(8.0).flex_wrap().child(Button::new("Add a ship").variant(ButtonVariant::Contrast).help("Sign in to another ship. This one stays signed in").on_press(|s: &mut App| {
+        if leave_edit(s) {
+            (s.ships_open, s.adding) = (false, true);
+            (s.url, s.code) = (TextEdit::new(""), TextEdit::new(""));
+            s.url.focused = true;
+            s.login_err.clear();
+        }
+    }).build(k).key("ship-add"));
+    if let Some(name) = front {
+        acts = acts.child(Button::new(format!("Sign out of {name}")).variant(ButtonVariant::Ghost).on_press(|s: &mut App| sign_out_asked(s, false)).build(k).key("ship-out"));
+    }
+    #[cfg(unix)]
+    {
+        acts = acts.child(Button::new("Use anonymously").variant(ButtonVariant::Ghost).help("Read published pages as this computer's anonymous reader. Your ships stay signed in").on_press(go_anon).build(k).key("ship-anon"));
+    }
+    if s.ships.len() > 1 {
+        acts = acts.child(Button::new("Sign out of every ship").variant(ButtonVariant::Ghost).on_press(|s: &mut App| sign_out_asked(s, true)).build(k).key("ship-out-all"));
+    }
+    Dialog::new("ships", "Ships")
+        .open(true)
+        .width(440.0)
+        .fit()
+        .on_close(|s: &mut App| s.ships_open = false)
+        .child(col().w_full().gap(14.0).child(list).child(acts))
+        .build(k, layer);
 }
 
 /// One of the open feature prompt's fields: its name, kind or note.
@@ -9560,8 +9897,8 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::Kind(t) | Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::ShipLabel(_, t) | Prompt::Kind(t) | Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) | Prompt::ShipOut(_) => unreachable!("it has no field of this kind"),
                 #[cfg(unix)]
                 Prompt::IdOut(..) | Prompt::IdIn(..) | Prompt::IdUse(..) => unreachable!("it has fields of its own"),
             })
@@ -9628,6 +9965,16 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::ForumRowDelete(..) => ("Delete this thread?", text("The thread and its comments are gone for everyone who reads the board.").font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::CommentRemove(page, _) => ("Remove this comment?", text(format!("It is gone from {page} for everyone who reads it, and cannot be brought back.")).key("comment-remove-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
+        Prompt::ShipLabel(..) => ("What to call this ship", match p {
+            Prompt::ShipLabel(_, t) => field(t, "A name of your own for it, or nothing for the ship's"),
+            _ => unreachable!(),
+        }, "Set", ButtonVariant::Contrast),
+        Prompt::ShipOut(all) => {
+            let held = ship_mounts(s, *all);
+            let folders = held.iter().map(|m| m.mountpoint.clone()).collect::<Vec<_>>().join(", ");
+            let said = format!("{} mounted with {} session: {folders}. Signing out unmounts {}. The pages stay on the ship.", if held.len() == 1 { "A folder is" } else { "Folders are" }, if *all { "these ships'" } else { "this ship's" }, if held.len() == 1 { "it" } else { "them" });
+            (if *all { "Sign out of every ship?" } else { "Sign out of this ship?" }, text(said).key("ship-out-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Unmount and sign out", ButtonVariant::Danger)
+        }
         Prompt::Kind(t) => ("This page's kind", field(t, "md, gmi, html, text, js, css, tex, geojson or scad"), "Change", ButtonVariant::Contrast),
         Prompt::MarkMove(_, t) => ("Move this bookmark to a folder", field(t, "A folder, or nothing for none"), "Move", ButtonVariant::Contrast),
         Prompt::LinkIn(_, t) => ("Move into my pages as", field(t, "a name, as notes/plan"), "Move", ButtonVariant::Contrast),
@@ -11711,7 +12058,8 @@ fn sidebar(s: &App, k: &Kit) -> El {
             }
         }).build(k).key(tab.key));
     }
-    let who = s.conn.as_ref().map_or(if s.anon { "anonymous" } else { "sample pages" }.to_owned(), |c| c.ship().to_owned());
+    // the ship in front by the owner's own name for it, when they gave one
+    let who = s.conn.as_ref().map_or(if s.anon { "anonymous" } else { "sample pages" }.to_owned(), |c| s.ships.iter().find(|x| x.front && !x.label.is_empty()).map_or_else(|| c.ship().to_owned(), |x| format!("{} ({})", x.label, x.ship)));
     let theme = Button::new(match s.prefs.theme.as_str() {
         "dark" => "Dark",
         "light" => "Light",
@@ -11726,9 +12074,22 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .w_full()
         .center_y()
         .justify_between()
-        .child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).grow(1.0).min_w(0.0).truncate())
+        .child(if s.conn.is_some() && !cfg!(target_arch = "wasm32") {
+            // the ship in front, and the way to the others signed in
+            let more = s.ships.len().saturating_sub(1);
+            row().role("button").label(if more > 0 { format!("{who}, and {more} more signed in. Ships") } else { format!("{who}. Ships") }).help("Ships signed in: go to another, add one, or sign out").grow(1.0).min_w(0.0).px(4.0).py(2.0).radius(k.radius.sm).hover(k.c.hover).on_press(|s: &mut App| {
+                s.ships = api::ships();
+                s.ships_open = true;
+            }).gap(6.0).center_y().children(s.ships.iter().find(|x| x.front).and_then(|x| rune::color::hex(&x.colour.to_lowercase())).map(|col| el().size(8.0, 8.0).radius(4.0).fill(col))).child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).truncate()).children({
+                // what is unread on the ships not in front, so it is seen without going to them
+                let unread: usize = s.seen.lock().map(|m| s.ships.iter().filter(|x| !x.front).filter_map(|x| m.get(&x.url)).map(|x| x.unread).sum()).unwrap_or(0);
+                (unread > 0).then(|| text(format!("+{unread}")).key("ship-unread").label(format!("{unread} unread on your other ships")).font(k.ty.small_medium).color(k.c.text_accent))
+            }).key("ship-switch")
+        } else {
+            row().grow(1.0).min_w(0.0).child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).truncate())
+        })
         .child(theme)
-        .child(Button::new(if s.conn.is_some() { "Sign out" } else if s.anon { "Leave" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
+        .child(Button::new(if s.conn.is_some() { "Sign out" } else if s.anon { "Leave" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| if s.conn.is_some() { sign_out_asked(s, false) } else { leave_guest(s) }).build(k).key("sign-out"));
     // rune-kit keeps a band over the sidebar for its own toggle, level with the top bar. The toggle is the
     // ribbon's here, so the pane's tabs go up into the band, beside the top bar, and nothing is left blank
     let side = col().key("pages").w_full().grow(1.0).min_h(0.0).mt(-rune_kit::shell::TOOLBAR_HEIGHT).padding(8.0).gap(8.0).child(halves);
@@ -12949,7 +13310,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let k = kit_of(&s.prefs, cx.system_dark());
     #[cfg(not(target_arch = "wasm32"))]
     s.web.env.set((cx.env().scale, k.dark));
-    if s.conn.is_none() && !s.sample {
+    if (s.conn.is_none() && !s.sample) || s.adding {
         return login_view(s, &k);
     }
     let path = s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref());
@@ -13061,6 +13422,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     palette_view(s, &k, &mut layer);
     template_view(s, &k, &mut layer);
     prompt_view(s, &k, &mut layer);
+    ships_view(s, &k, &mut layer);
     share_view(s, &k, &mut layer);
     let nav = |key: &str, icon: &'static rune::Icon, name: &str, by: isize, on: bool| IconButton::new(icon).variant(IconButtonVariant::GhostMuted).help(name).disabled(!on).on_press(move |s: &mut App| step(s, by)).build(&k).key(key.to_owned());
     let name = text(title.to_owned()).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate();
@@ -13189,6 +13551,15 @@ enum Chord {
     Delete,
 }
 
+/// The place in the list of ships a key press names: Ctrl+Shift+1 is the first, to 9.
+fn ship_figure(ev: &KeyEvent) -> Option<usize> {
+    let m = ev.mods;
+    if !(m.shift && !m.alt) {
+        return None;
+    }
+    (1..=9u8).find(|n| ev.is_command((b'0' + n) as char)).map(|n| usize::from(n) - 1)
+}
+
 fn chord(s: &App, ev: &KeyEvent) -> Option<Chord> {
     let m = ev.mods;
     if ev.key == Key::Tab && m.ctrl && !m.alt {
@@ -13235,6 +13606,13 @@ fn chord(s: &App, ev: &KeyEvent) -> Option<Chord> {
 fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if s.conn.is_none() && !s.sample {
         return false;
+    }
+    // Ctrl+Shift and a figure goes to that ship of those signed in, in the order they were added
+    if let Some(n) = ship_figure(ev) {
+        if let Some(url) = s.ships.get(n).map(|x| x.url.clone()) {
+            switch_ship(s, &url);
+            return true;
+        }
     }
     if let Some(c) = chord(s, ev) {
         let ask = |s: &mut App, jump: bool| {
@@ -13321,7 +13699,7 @@ pub fn run() {
     // where its tables are wrong, before Rune looks for the family itself. A font first worn in this
     // run is found by Rune, and is read this way from the next launch
     #[cfg(not(target_arch = "wasm32"))]
-    let fonts: &'static [&'static [u8]] = match api::Prefs::load().worn.font() {
+    let fonts: &'static [&'static [u8]] = match api::Prefs::load_for(Conn::load().as_ref().map_or("", |c| c.url.as_str())).worn.font() {
         Some(theme::Font::Named(f)) => Box::leak(fonts::of_family(&f).into_iter().map(|b| &*Box::leak(b.into_boxed_slice())).collect::<Vec<&'static [u8]>>().into_boxed_slice()),
         _ => &[],
     };
@@ -13542,6 +13920,64 @@ mod tests {
         s.prompt = Some(Prompt::Kind(TextEdit::new("md")));
         confirm(&mut s);
         assert_eq!(s.open.as_ref().unwrap().kind, "md");
+    }
+
+    #[test]
+    fn what_the_watcher_sent_is_taken_out_of_the_windows_own_list_once() {
+        let mut s = sample("welcome");
+        s.conn = Some(Conn { url: "https://bg-test.invalid".into(), cookie: "urbauth-~zod=0v1".into() });
+        let save = |body: &str| api::Queued { kind: "md".into(), body: body.into(), base: 3, ..api::Queued::default() };
+        s.queue.insert("notes/a".into(), save("sent by the watcher"));
+        s.queue.insert("notes/b".into(), save("typed again since"));
+        s.ops = vec![api::QueuedOp::Del("old".into()), api::QueuedOp::Del("other".into())];
+        // nothing noted, nothing taken
+        bg_taken(&mut s);
+        assert_eq!((s.queue.len(), s.ops.len()), (2, 2));
+        assert!(api::bg_sent("https://bg-test.invalid", false).is_empty());
+        api::bg_note_for_test("https://bg-test.invalid", api::BgSent::Op(api::QueuedOp::Del("old".into())));
+        api::bg_note_for_test("https://bg-test.invalid", api::BgSent::Save("notes/a".into(), save("sent by the watcher")));
+        // a save the window has changed since is another save: it stays
+        api::bg_note_for_test("https://bg-test.invalid", api::BgSent::Save("notes/b".into(), save("an older text")));
+        api::bg_note_for_test("https://elsewhere.invalid", api::BgSent::Op(api::QueuedOp::Del("other".into())));
+        bg_taken(&mut s);
+        assert_eq!(s.queue.keys().cloned().collect::<Vec<_>>(), ["notes/b"]);
+        assert_eq!(s.ops, vec![api::QueuedOp::Del("other".into())], "another ship's is not this one's");
+        assert!(api::bg_sent("https://bg-test.invalid", false).is_empty(), "taken once");
+        assert_eq!(api::bg_sent("https://elsewhere.invalid", true).len(), 1);
+    }
+
+    #[test]
+    fn a_ships_colour_goes_round_the_eight_and_then_to_none() {
+        assert_eq!(ship_colour_after(""), api::SHIP_COLOURS[0]);
+        assert_eq!(ship_colour_after(&api::SHIP_COLOURS[0].to_lowercase()), api::SHIP_COLOURS[1]);
+        assert_eq!(ship_colour_after(api::SHIP_COLOURS[7]), "");
+        assert_eq!(ship_colour_after("#123456"), api::SHIP_COLOURS[0], "a colour that is not one of them starts again");
+    }
+
+    #[test]
+    fn a_ship_not_in_front_says_what_is_new_on_it() {
+        let seen = |up, unread, waiting, expired| api::ShipSeen { up, unread, waiting, expired, aside: 0 };
+        assert_eq!(ship_news(None), "");
+        assert_eq!(ship_news(Some(&seen(true, 0, 0, false))), "", "a ship that answers with nothing new says nothing");
+        assert_eq!(ship_news(Some(&seen(true, 3, 0, false))), "3 unread");
+        assert_eq!(ship_news(Some(&seen(false, 0, 2, false))), "not answering \u{b7} 2 waiting to be sent");
+        assert_eq!(ship_news(Some(&seen(true, 0, 0, true))), "sign in again");
+    }
+
+    #[test]
+    fn signing_out_asks_only_when_a_folder_is_mounted_with_the_session() {
+        let mut s = sample("welcome");
+        s.conn = Some(Conn { url: "https://zod.test".into(), cookie: "urbauth-~zod=0v1".into() });
+        let at = |folder: &str, url: &str, sock: &str| mounts::MountSpec { mountpoint: folder.into(), url: url.into(), sock: sock.into(), ..mounts::MountSpec::default() };
+        s.mounts = vec![at("/m/zod", "https://zod.test", ""), at("/m/bus", "https://bus.test", ""), at("/m/local", "", "/pier/.urb/dev/lattice")];
+        assert_eq!(ship_mounts(&s, false).iter().map(|m| m.mountpoint.as_str()).collect::<Vec<_>>(), ["/m/zod"], "this ship's, and not one mounted by a socket");
+        assert_eq!(ship_mounts(&s, true).len(), 2, "every ship's over HTTP");
+        sign_out_asked(&mut s, false);
+        assert!(matches!(s.prompt, Some(Prompt::ShipOut(false))) && s.conn.is_some(), "asked first, and still signed in");
+        s.prompt = None;
+        s.mounts.remove(0);
+        sign_out_asked(&mut s, true);
+        assert!(matches!(s.prompt, Some(Prompt::ShipOut(true))), "another ship's folder is asked about when every ship is signed out of");
     }
 
     #[test]

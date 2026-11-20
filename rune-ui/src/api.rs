@@ -738,6 +738,189 @@ struct Saved {
     kept: String,
 }
 
+/// Now, in seconds since 1970.
+#[cfg(not(target_arch = "wasm32"))]
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// The ships signed in on this computer, and the one in front. None in a test, which never reads
+/// the sessions of whoever runs it, and none in a browser, where the ship is the page's own.
+pub fn ships() -> Vec<Ship> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !cfg!(test) {
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let all = crate::accounts::load_at(dir, now_secs());
+            return all.list.iter().map(|a| Ship { url: a.url.clone(), name: a.name().to_owned(), ship: a.ship().to_owned(), expired: a.expired, front: all.front.as_deref() == Some(a.url.as_str()), label: a.label.clone(), colour: a.colour.clone() }).collect();
+        }
+    }
+    Vec::new()
+}
+
+/// One ship signed in, as the window lists it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Ship {
+    pub url: String,
+    /// What it is called: the owner's label, or the ship's name.
+    pub name: String,
+    pub ship: String,
+    pub expired: bool,
+    pub front: bool,
+    /// The owner's own name for it and the colour they gave it, when they gave any.
+    pub label: String,
+    pub colour: String,
+}
+
+/// The colours a ship can be given, to tell it from the others at a glance.
+pub const SHIP_COLOURS: [&str; 8] = ["#D1495B", "#E08E45", "#E6C229", "#4A7C59", "#2A9D8F", "#3A86C8", "#7A5AF8", "#B5179E"];
+
+/// Gives a ship a label and a colour, or takes them off. False when it is not signed in.
+pub fn ship_dress(url: &str, label: &str, colour: &str) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !cfg!(test) {
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let mut all = crate::accounts::load_at(dir, now_secs());
+            return all.dress(url, label, colour) && crate::accounts::store_at(dir, &all).is_ok();
+        }
+    }
+    let _ = (url, label, colour);
+    false
+}
+
+/// What to say when a ship's sign-in page answers with an error. Only a code turned away is the code's fault.
+pub fn login_refused(url: &str, status: u16) -> String {
+    match status {
+        400 | 401 | 403 => "that access code was refused".to_owned(),
+        404 => format!("{url} answers, but has no sign-in page there. Is it the ship's own address?"),
+        500..=599 => format!("{url} answered with an error of its own ({status}). It may be starting up: try again in a moment"),
+        other => format!("{url} answered {other} to the sign-in"),
+    }
+}
+
+/// What a ship that took the code says of lattice, from its answer to an owner's route: nothing
+/// when it is there or cannot be told, and why not when it is plainly missing.
+pub fn lattice_missing(ship: &str, answer: &Result<String, String>) -> Option<String> {
+    match answer {
+        Err(e) if e.starts_with("404") => Some(format!("{ship} took the code, but lattice does not answer there. It needs grubbery installed, and lattice on it")),
+        _ => None,
+    }
+}
+
+/// The session of every ship signed in whose session still stands: its address and its cookie.
+/// A mount of a ship is made with that ship's own, whichever ship is in front.
+pub fn ship_sessions() -> Vec<(String, String)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !cfg!(test) {
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            return crate::accounts::load_at(dir, now_secs()).list.into_iter().filter(|a| !a.expired).map(|a| (a.url, a.cookie)).collect();
+        }
+    }
+    Vec::new()
+}
+
+/// One thing the watcher sent to a ship while it was not in front.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BgSent {
+    Save(String, Queued),
+    Op(QueuedOp),
+}
+
+/// Held while anything that waited is being sent to a ship, by the window or by the watcher of the
+/// ships not in front: one sender at a time, so nothing is ever sent by both.
+static SENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// What the watcher sent, by the ship's address, until the window has taken it out of its own list.
+static BG_SENT: std::sync::Mutex<Vec<(String, BgSent)>> = std::sync::Mutex::new(Vec::new());
+
+/// The lock every sender of waiting saves holds.
+pub fn send_lock() -> std::sync::MutexGuard<'static, ()> {
+    SENDING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// What the watcher has sent to the ship at `url` that the window has not yet been told of.
+pub fn bg_sent(url: &str, take: bool) -> Vec<BgSent> {
+    let mut all = BG_SENT.lock().unwrap_or_else(|e| e.into_inner());
+    let mine: Vec<BgSent> = all.iter().filter(|(u, _)| u == url).map(|(_, x)| x.clone()).collect();
+    if take {
+        all.retain(|(u, _)| u != url);
+    }
+    mine
+}
+
+/// Notes a thing as sent by the watcher, for a test of how the window takes it.
+#[cfg(test)]
+pub fn bg_note_for_test(url: &str, x: BgSent) {
+    BG_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((url.to_owned(), x));
+}
+
+/// What is known of a ship signed in that is not in front, from one look at it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShipSeen {
+    /// It answered.
+    pub up: bool,
+    /// The notices on it not read yet.
+    pub unread: usize,
+    /// The saves and other changes made here that wait to be sent to it. They go when it is gone to.
+    pub waiting: usize,
+    /// It turned the session away: its code is wanted again.
+    pub expired: bool,
+    /// How many of the waiting saves the ship refused for good, each kept as a page of its own there.
+    pub aside: usize,
+}
+
+/// What a ship's answer to a look says of it. `waiting` is counted from what is kept here.
+pub fn ship_seen(notices: Result<Vec<Notice>, String>, waiting: usize) -> ShipSeen {
+    match notices {
+        Ok(n) => ShipSeen { up: true, unread: n.iter().filter(|x| !x.read).count(), waiting, expired: false, aside: 0 },
+        // the ship answers and will not have this session
+        Err(e) if e.starts_with("401:") || e.starts_with("403:") => ShipSeen { up: true, unread: 0, waiting, expired: true, aside: 0 },
+        Err(_) => ShipSeen { up: false, unread: 0, waiting, expired: false, aside: 0 },
+    }
+}
+
+/// Looks at a ship signed in: one light request, its notices. A session it turns away is marked,
+/// so the list of ships says its code is wanted again.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn ship_look(url: &str, cookie: &str, stop: &std::sync::atomic::AtomicBool) -> ShipSeen {
+    let c = Conn { url: url.to_owned(), cookie: cookie.to_owned() };
+    let mut seen = ship_seen(c.notices(), c.queue().len() + c.ops().len());
+    // a ship that answers is sent what waited for it, as it would be were it in front
+    if seen.up && !seen.expired && seen.waiting > 0 {
+        seen.aside = c.send_waiting(stop);
+        seen.waiting = c.queue().len() + c.ops().len();
+    }
+    if seen.expired && !cfg!(test) {
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let mut all = crate::accounts::load_at(dir, now_secs());
+            all.expire(url);
+            let _ = crate::accounts::store_at(dir, &all);
+        }
+    }
+    seen
+}
+
+/// Brings another ship signed in to the front, for the next `Conn::load`. False when it is not signed in.
+pub fn ship_bring(url: &str) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !cfg!(test) {
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let mut all = crate::accounts::load_at(dir, now_secs());
+            return all.bring(url, now_secs()) && crate::accounts::store_at(dir, &all).is_ok();
+        }
+    }
+    let _ = url;
+    false
+}
+
+/// Signs out of every ship.
+pub fn ships_forget() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !cfg!(test) {
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let _ = crate::accounts::store_at(dir, &crate::accounts::Accounts::default());
+        }
+    }
+}
+
 /// Where a signed-in session is kept between runs: the app's own file,
 /// readable by its owner alone.
 fn session_path() -> Option<std::path::PathBuf> {
@@ -1489,20 +1672,56 @@ pub struct Prefs {
     /// The pin chosen here for a feature of a map that is not written to, as orrery's: by the body it names.
     #[serde(default)]
     pub pins: std::collections::BTreeMap<String, String>,
+    /// The address of the ship these are kept for. Empty with no ship: the computer's own alone.
+    #[serde(skip)]
+    pub of: String,
 }
 
 impl Prefs {
-    fn path() -> Option<std::path::PathBuf> {
-        Some(session_path()?.with_file_name("prefs.json"))
+    /// Where they are kept: a file for each ship's address, and `prefs.json` for what is the
+    /// computer's whichever ship is in front.
+    fn path_for(of: &str) -> Option<std::path::PathBuf> {
+        if of.is_empty() {
+            return Some(session_path()?.with_file_name("prefs.json"));
+        }
+        let name: String = of.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        Some(session_path()?.with_file_name(format!("prefs-{name}.json")))
     }
 
-    /// The kept preferences, or the defaults when there are none or they do not read.
+    /// What is the computer's, not a ship's, taken from `from`: light or dark, the editor's font,
+    /// vim keys, autosave, how HTML is shown, and how the tree and a split are laid out.
+    pub fn take_device(&mut self, from: &Prefs) {
+        (self.theme, self.font, self.vim, self.no_autosave) = (from.theme.clone(), from.font.clone(), from.vim, from.no_autosave);
+        (self.html_plain, self.sort_desc, self.split_down) = (from.html_plain, from.sort_desc, from.split_down);
+    }
+
+    /// The kept preferences with no ship in front.
     pub fn load() -> Prefs {
+        Prefs::load_for("")
+    }
+
+    /// The preferences for the ship at `of`: its own (the last page, tabs, pins, the theme it wears),
+    /// with the computer's laid over them. A ship with none of its own yet starts from what was
+    /// kept before ships had their own, so the first ship keeps its tabs through the change.
+    pub fn load_for(of: &str) -> Prefs {
         #[cfg(target_arch = "wasm32")]
-        let kept = web::storage().and_then(|st| st.get_item(web::PREFS).ok().flatten());
+        {
+            let kept = web::storage().and_then(|st| st.get_item(web::PREFS).ok().flatten());
+            let mut p: Prefs = kept.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+            p.of = of.to_owned();
+            p
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        let kept = Prefs::path().and_then(|p| std::fs::read_to_string(p).ok());
-        kept.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        {
+            let read = |of: &str| Prefs::path_for(of).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Prefs>(&t).ok());
+            let device = read("");
+            let mut p = if of.is_empty() { device.clone().unwrap_or_default() } else { read(of).or_else(|| device.clone()).unwrap_or_default() };
+            if let (false, Some(d)) = (of.is_empty(), &device) {
+                p.take_device(d);
+            }
+            p.of = of.to_owned();
+            p
+        }
     }
 
     /// Keeps them. A failure is not worth a message: they are a convenience.
@@ -1513,9 +1732,21 @@ impl Prefs {
             let _ = st.set_item(web::PREFS, &t);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let (Some(p), Ok(t)) = (Prefs::path(), serde_json::to_string(self)) {
-            let _ = p.parent().map(std::fs::create_dir_all);
-            let _ = std::fs::write(p, t);
+        {
+            let put = |of: &str, p: &Prefs| {
+                if let (Some(path), Ok(t)) = (Prefs::path_for(of), serde_json::to_string(p)) {
+                    let _ = path.parent().map(std::fs::create_dir_all);
+                    let _ = std::fs::write(path, t);
+                }
+            };
+            put(&self.of, self);
+            // and the computer's part where every ship reads it: that alone, so a ship added later
+            // does not start with another ship's tabs
+            if !self.of.is_empty() {
+                let mut device = Prefs::default();
+                device.take_device(self);
+                put("", &device);
+            }
         }
     }
 
@@ -1907,8 +2138,9 @@ impl Conn {
         if let Some(c) = Conn::from_env() {
             return Some(c);
         }
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(session_path()?).ok()?).ok()?;
-        Some(Conn { url: v["url"].as_str()?.to_owned(), cookie: v["cookie"].as_str()?.to_owned() })
+        // the ship in front among those signed in, unless its session has ended
+        let all = crate::accounts::load_at(session_path()?.parent()?, now_secs());
+        all.front().filter(|a| !a.expired).map(|a| Conn { url: a.url.clone(), cookie: a.cookie.clone() })
     }
 
     /// Keeps the tree with every page's text, to read when the ship does not answer. In a file only its owner reads, written whole or not at all.
@@ -2157,6 +2389,59 @@ impl Conn {
         queue_path(&self.url).map(|p| queue_at(&p)).unwrap_or_default()
     }
 
+    /// Sends what waits for this ship while it is not in front, as the window sends it for the ship
+    /// in front: the deletes and moves first in the order made, then the saves, the new pages
+    /// before the edits, stopping at the first the ship neither takes nor refuses for good. Each
+    /// one is sent under the senders' lock and taken out of the kept list as soon as the ship has
+    /// it, and is noted for the window, so going to the ship mid-way sends nothing twice. `stop`
+    /// ends it between two sends. The number the ship refused for good and kept as pages of their own.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn send_waiting(&self, stop: &std::sync::atomic::AtomicBool) -> usize {
+        use std::sync::atomic::Ordering;
+        let note = |x: BgSent| BG_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((self.url.clone(), x));
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                return 0;
+            }
+            let _held = send_lock();
+            let mut ops = self.ops();
+            let Some(op) = ops.first().cloned() else { break };
+            if self.send_op(&op).is_err_and(|e| !replay_drop(&e)) {
+                return 0;
+            }
+            ops.remove(0);
+            if self.store_ops(&ops).is_err() {
+                return 0;
+            }
+            note(BgSent::Op(op));
+        }
+        let mut names: Vec<(String, bool)> = self.queue().iter().map(|(n, q)| (n.clone(), q.is_new)).collect();
+        names.sort_by_key(|(_, new)| !new);
+        let mut aside = 0;
+        for (name, _) in names {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            let _held = send_lock();
+            let mut q = self.queue();
+            let Some(item) = q.get(&name).cloned() else { continue };
+            match self.send_queued(&name, &item) {
+                Sent::Stop(_) => break,
+                sent => {
+                    q.remove(&name);
+                    if self.store_queue(&q).is_err() {
+                        break;
+                    }
+                    if matches!(sent, Sent::Aside(..)) {
+                        aside += 1;
+                    }
+                    note(BgSent::Save(name, item));
+                }
+            }
+        }
+        aside
+    }
+
     /// Keeps the saves that wait. They are nowhere else, so a failure here is one to say.
     pub fn store_queue(&self, q: &Queue) -> Result<(), String> {
         write_private(&queue_path(&self.url).ok_or("no home directory")?, &serde_json::to_vec(q).map_err(|e| e.to_string())?)
@@ -2167,26 +2452,38 @@ impl Conn {
         kept_at(&kept_path(&self.url)?)
     }
 
-    /// Keeps this session for the next run, in a file only its owner reads.
+    /// Keeps this session for the next run, among the ships signed in, and brings its ship to the front.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn remember(&self) -> Result<(), String> {
-        let p = session_path().ok_or("no home directory")?;
-        std::fs::create_dir_all(p.parent().ok_or("no parent")?).map_err(|e| e.to_string())?;
-        let body = serde_json::json!({ "url": self.url, "cookie": self.cookie }).to_string();
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&p).map_err(|e| e.to_string())?;
-            f.write_all(body.as_bytes()).map_err(|e| e.to_string())
+        // a test never writes the sessions of whoever runs it
+        if cfg!(test) {
+            return Ok(());
         }
-        #[cfg(not(unix))]
-        std::fs::write(&p, body).map_err(|e| e.to_string())
+        let p = session_path().ok_or("no home directory")?;
+        let dir = p.parent().ok_or("no parent")?;
+        let mut all = crate::accounts::load_at(dir, now_secs());
+        all.put(&self.url, &self.cookie, now_secs());
+        crate::accounts::store_at(dir, &all)
     }
 
-    /// Forgets the saved session.
+    /// In a browser the session is the browser's own.
+    #[cfg(target_arch = "wasm32")]
+    pub fn remember(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Signs out of the ship in front: its session is let go, and the others signed in stay.
     pub fn forget() {
-        if let Some(p) = session_path() {
-            let _ = std::fs::remove_file(p);
+        if cfg!(test) {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let mut all = crate::accounts::load_at(dir, now_secs());
+            if let Some(front) = all.front.clone() {
+                all.remove(&front);
+                let _ = crate::accounts::store_at(dir, &all);
+            }
         }
     }
 
@@ -2209,14 +2506,19 @@ impl Conn {
                 .send_string(&format!("password={}", enc(code.trim())));
             let res = match res {
                 Ok(r) => r,
-                Err(ureq::Error::Status(_, _)) => return Err("that access code was refused".into()),
-                Err(e) => return Err(format!("could not reach {url}: {e}")),
+                Err(ureq::Error::Status(code, _)) => return Err(login_refused(&url, code)),
+                Err(e) => return Err(format!("{url} does not answer: {e}")),
             };
             let cookie = res.header("set-cookie").and_then(|c| c.split(';').next()).unwrap_or("").trim().to_owned();
             if !cookie.starts_with("urbauth-~") {
                 return Err("the ship gave no session".into());
             }
-            Ok(Conn { url, cookie })
+            let c = Conn { url, cookie };
+            // the ship is there and took the code: is lattice on it? Where that cannot be told, it is let through
+            if let Some(why) = lattice_missing(c.ship(), &c.call("GET", "streams", None)) {
+                return Err(why);
+            }
+            Ok(c)
         }
     }
 
@@ -3182,6 +3484,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_sign_in_that_fails_says_which_of_three_things_it_was() {
+        assert_eq!(login_refused("https://zod.test", 400), "that access code was refused");
+        assert!(login_refused("https://zod.test", 404).contains("no sign-in page"));
+        assert!(login_refused("https://zod.test", 502).contains("error of its own"));
+        // the code was taken and lattice is not there
+        let missing = lattice_missing("~zod", &Err("404: missing".into())).unwrap();
+        assert!(missing.contains("~zod took the code") && missing.contains("grubbery"));
+        // there, or not to be told: let through
+        assert_eq!(lattice_missing("~zod", &Ok("{}".into())), None);
+        assert_eq!(lattice_missing("~zod", &Err("could not reach".into())), None);
+        assert_eq!(lattice_missing("~zod", &Err("500: oops".into())), None);
+    }
+
+    #[test]
+    fn a_look_at_a_ship_says_whether_it_answers_what_is_unread_and_whether_its_session_stands() {
+        let note = |read: bool| Notice { read, ..Notice::default() };
+        assert_eq!(ship_seen(Ok(vec![note(false), note(true), note(false)]), 1), ShipSeen { up: true, unread: 2, waiting: 1, expired: false, aside: 0 });
+        assert_eq!(ship_seen(Err("403: missing".into()), 0), ShipSeen { up: true, unread: 0, waiting: 0, expired: true, aside: 0 });
+        assert_eq!(ship_seen(Err("could not reach https://zod.test: timed out".into()), 3), ShipSeen { up: false, unread: 0, waiting: 3, expired: false, aside: 0 });
+    }
+
+    #[test]
+    fn what_is_the_computers_goes_with_every_ship_and_what_is_a_ships_stays_with_it() {
+        let on = Prefs { theme: "dark".into(), font: "serif".into(), vim: true, no_autosave: true, html_plain: true, sort_desc: true, split_down: true, last: "notes/today".into(), tabs: vec!["a".into()], ..Prefs::default() };
+        let mut other = Prefs { last: "elsewhere".into(), of: "https://bus.test".into(), ..Prefs::default() };
+        other.take_device(&on);
+        assert_eq!((other.theme.as_str(), other.font.as_str(), other.vim, other.no_autosave, other.html_plain, other.sort_desc, other.split_down), ("dark", "serif", true, true, true, true, true));
+        assert_eq!((other.last.as_str(), other.tabs.len(), other.of.as_str()), ("elsewhere", 0, "https://bus.test"), "the page it was on and its tabs are its own");
+        // the ship a set belongs to is not written into the file: the file's own name says it
+        assert!(!serde_json::to_string(&other).unwrap().contains("bus.test"));
+    }
+
+    #[test]
     fn the_pictures_a_post_names_are_found_once_each() {
         let text = "See ![a cat](https://x.test/cat.png) and [this](https://x.test/dog.JPG), or https://x.test/bird.webp.\n\
             Again https://x.test/cat.png and a page https://x.test/page.html and urb://~zod/pic.png.\n\
@@ -3213,7 +3548,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new() }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert!(back.sort_desc);
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");

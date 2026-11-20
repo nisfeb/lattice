@@ -50,6 +50,8 @@ class H(BaseHTTPRequestHandler):
         if u.path == '/~/name': return self.send(200, '~zod' if signed else '~bosdev-dozzod-marnus-fopfed', 'text/plain')
         if not signed:
             self.send_response(302); self.send_header('location', '/~/login?redirect=' + u.path); self.send_header('content-length', '0'); self.end_headers(); return
+        # LR_NO_LATTICE: a ship that signs in and has no lattice on it
+        if os.environ.get('LR_NO_LATTICE'): return self.send(404, 'missing', 'text/plain')
         if p == 'streams': return self.send(200, json.dumps({"base": "/stub", "streams": {}}))
         if p == 'page-dump':
             nodes = [{"path":n,"page":True,"kind":v[1],"rev":v[2],"body":v[0]} for n, v in PAGES.items()]
@@ -157,6 +159,13 @@ def redirect(self, to):
     self.send_response(303); self.send_header('location', to); self.send_header('content-length', '0'); self.end_headers()
 def do_POST(self):
     u = urlparse(self.path); p = u.path.replace('/apps/lattice/', '', 1); q = parse_qs(u.query)
+    # a sign-in, as eyre answers a code it takes: the session cookie on the answer itself
+    if u.path == '/~/login':
+        sent = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
+        # LR_CODE: the only access code taken. Any other is turned away, as eyre turns one away
+        if os.environ.get('LR_CODE') and sent != 'password=' + os.environ['LR_CODE']: return self.send(400, 'bad code', 'text/plain')
+        self.send_response(204); self.send_header('set-cookie', 'urbauth-%s=0v1.stub; Path=/; Max-Age=604800' % os.environ.get('LR_SHIP', '~zod')); self.send_header('content-length', '0'); self.end_headers()
+        return
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
     # comments, as the ship answers each. LR_COMMENT_FAIL refuses a post and a switch, to see that nothing typed is lost
     if p in ('comment', 'page-comments', 'comment-remote') and os.environ.get('LR_COMMENT_FAIL'): return self.send(500, 'the ship could not do that')
@@ -292,4 +301,5 @@ def do_PUT(self):
     self.send(204, '')
 H.do_PUT = do_PUT
 H.do_POST = do_POST
-HTTPServer(('127.0.0.1', 8379), H).serve_forever()
+# LR_PORT: another port, so two stand-in ships can run at once, and LR_SHIP: the name this one signs a session as
+HTTPServer(('127.0.0.1', int(os.environ.get('LR_PORT', '8379'))), H).serve_forever()

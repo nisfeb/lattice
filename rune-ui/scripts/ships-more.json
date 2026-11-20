@@ -1,0 +1,20 @@
+{"events": [
+  {"t": 3.0, "type": "tap", "key": "ship-switch"},
+  {"t": 4.0, "type": "tap", "key": "ship-name-0"},
+  {"t": 4.8, "type": "type", "text": "home"},
+  {"t": 5.6, "type": "tap", "key": "prompt-ok"},
+  {"t": 6.4, "type": "tap", "key": "ship-colour-0"},
+  {"t": 7.4, "type": "mark", "name": "dressed"},
+  {"t": 7.6, "type": "tap", "key": "ship-anon"},
+  {"t": 9.0, "type": "mark", "name": "anon"},
+  {"t": 9.2, "type": "tap", "key": "sign-out"},
+  {"t": 12.0, "type": "mark", "name": "back"},
+  {"t": 12.2, "type": "tap", "key": "ship-switch"},
+  {"t": 13.0, "type": "tap", "key": "ship-add"},
+  {"t": 13.6, "type": "tap", "key": "url"},
+  {"t": 14.0, "type": "type", "text": "http://127.0.0.1:8381"},
+  {"t": 14.8, "type": "tap", "key": "code"},
+  {"t": 15.2, "type": "type", "text": "any"},
+  {"t": 16.0, "type": "tap", "key": "sign-in"},
+  {"t": 18.5, "type": "mark", "name": "no-lattice"}
+]}
