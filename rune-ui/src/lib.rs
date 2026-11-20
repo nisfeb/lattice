@@ -868,6 +868,8 @@ struct App {
     accent_hex: TextEdit,
     /// The families the window's text was last set in, to set them again only when the theme's font changes.
     font_set: String,
+    /// The faces of Talon's font fetched from the ship, and how many were newly kept.
+    font_req: Latest<Result<usize, String>>,
     /// The last read of them failed.
     marks_bad: bool,
     /// What is typed into their filter.
@@ -1277,6 +1279,7 @@ fn init() -> App {
         theme_req: Latest::default(),
         next_theme: 0.0,
         font_set: APP_FONT.to_owned(),
+        font_req: Latest::default(),
         theme_put: Latest::default(),
         accent_hex: TextEdit::new(""),
         theme_draft: None,
@@ -2354,6 +2357,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.shared_req.set_waker(waker.clone());
     s.marks_req.set_waker(waker.clone());
     s.theme_req.set_waker(waker.clone());
+    s.font_req.set_waker(waker.clone());
     s.folds_req.set_waker(waker.clone());
     s.sugg_req.set_waker(waker.clone());
     s.visits_req.set_waker(waker.clone());
@@ -5546,6 +5550,18 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.set_font_families(font.clone(), APP_FONT);
         s.font_set = font;
         changed = true;
+        // a family Talon installed that this computer has not: its files are on the ship
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(c), Some(theme::Font::Named(family)), ids) = (s.conn.clone(), s.prefs.worn.font(), s.prefs.worn.font_ids()) {
+            if !ids.is_empty() {
+                s.font_req.request((c, family, ids), |(c, family, ids)| c.fetch_fonts(&family, &ids));
+            }
+        }
+    }
+    // Rune takes font files at launch alone, so one fetched now is worn from the next
+    if s.font_req.take().is_some_and(|r| r.is_ok_and(|n| n > 0)) {
+        changed = true;
+        s.note = "Talon\u{2019}s font was fetched from your ship. It is worn the next time lattice starts.".to_owned();
     }
     // a ship that could not be asked leaves the look it had
     if let Some(Ok(worn)) = s.theme_req.take().filter(|r| r.as_ref().is_ok_and(|w| *w != s.prefs.worn)) {
@@ -13840,8 +13856,17 @@ pub fn run() {
     // where its tables are wrong, before Rune looks for the family itself. A font first worn in this
     // run is found by Rune, and is read this way from the next launch
     #[cfg(not(target_arch = "wasm32"))]
-    let fonts: &'static [&'static [u8]] = match api::Prefs::load_for(Conn::load().as_ref().map_or("", |c| c.url.as_str())).worn.font() {
-        Some(theme::Font::Named(f)) => Box::leak(fonts::of_family(&f).into_iter().map(|b| &*Box::leak(b.into_boxed_slice())).collect::<Vec<&'static [u8]>>().into_boxed_slice()),
+    let worn = api::Prefs::load_for(Conn::load().as_ref().map_or("", |c| c.url.as_str())).worn;
+    #[cfg(not(target_arch = "wasm32"))]
+    let fonts: &'static [&'static [u8]] = match (worn.font(), worn.font_ids()) {
+        (Some(theme::Font::Named(f)), ids) => {
+            // this computer's own files first, then the ones fetched from the ship in an earlier run
+            let mut files = fonts::of_family(&f);
+            if files.is_empty() {
+                files = fonts::kept_dir().map(|d| fonts::kept_at(&d, &ids)).unwrap_or_default();
+            }
+            Box::leak(files.into_iter().map(|b| &*Box::leak(b.into_boxed_slice())).collect::<Vec<&'static [u8]>>().into_boxed_slice())
+        }
         _ => &[],
     };
     #[cfg(target_arch = "wasm32")]

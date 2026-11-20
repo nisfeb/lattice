@@ -2616,6 +2616,28 @@ impl Conn {
     /// own from its %settings bucket, Talon's when it is followed, and the
     /// profile's colour when an accent asks for it. Talon's bucket or the
     /// profile not answering leaves what was had.
+    /// Fetches the faces of the font Talon installed that this computer
+    /// has neither installed nor kept, from grubbery's store on the ship
+    /// (`talon/fonts/<id>.font`), and keeps each that is the file its
+    /// name says. How many were kept. Run off the window's thread: it
+    /// asks fontconfig and the ship.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn fetch_fonts(&self, family: &str, ids: &[String]) -> Result<usize, String> {
+        let dir = crate::fonts::kept_dir().ok_or("nowhere to keep a font")?;
+        let missing = crate::fonts::missing_at(&dir, ids);
+        if missing.is_empty() || !crate::fonts::of_family(family).is_empty() {
+            return Ok(0);
+        }
+        let mut kept = 0;
+        for id in missing {
+            let bytes = fetch_bytes(&format!("{}/grubbery/api/file/talon/fonts/{id}.font", self.url), Some(self.cookie()))?;
+            if crate::fonts::keep_at(&dir, &id, &bytes).is_ok() {
+                kept += 1;
+            }
+        }
+        Ok(kept)
+    }
+
     pub fn worn(&self, mut w: crate::theme::Worn) -> Result<crate::theme::Worn, String> {
         w.lattice(self.scry("settings/bucket/lattice/ui-prefs")?.as_ref());
         if w.reads_talon() {

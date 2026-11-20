@@ -40,6 +40,10 @@ class H(BaseHTTPRequestHandler):
             if not f.startswith(os.path.realpath(os.environ['LR_WEB']) + os.sep) or not os.path.isfile(f): return self.send(404, 'not found', 'text/plain')
             ct = {'.js': 'text/javascript', '.wasm': 'application/wasm', '.html': 'text/html', '.ttf': 'font/ttf'}.get(os.path.splitext(f)[1], 'application/octet-stream')
             return self.send(200, open(f, 'rb').read(), ct)
+        if u.path.startswith('/grubbery/api/file/talon/fonts/'):
+            b = FONTS.get(u.path.rsplit('/', 1)[1].removesuffix('.font')) if signed else None
+            sys.stderr.write("font %s %s\n" % (u.path.rsplit('/', 1)[1][:12], 'sent' if b else 'refused'))
+            return self.send(200, b, 'application/octet-stream') if b else self.send(404, 'not found', 'text/plain')
         if u.path == '/~/login': return self.send(200, '<title>login</title><p id=login>the ship asks for its code, to go back to ' + q.get('redirect', [''])[0], 'text/html')
         # %settings, as eyre answers a scry of a bucket: each entry is text that holds JSON, and a bucket never written is a 404
         if u.path.startswith('/~/scry/settings/bucket/'):
@@ -291,6 +295,14 @@ def do_POST(self):
 SETTINGS = {}
 # LR_TALON names a file of JSON: Talon's ui-prefs bucket (themes, accent, fonts), as a ship that wears a Talon theme answers
 if os.environ.get('LR_TALON'): SETTINGS['talon'] = json.load(open(os.environ['LR_TALON']))
+# LR_FONT names a font file Talon installed, and LR_FONT_FAMILY its family: the font Talon's text is set in, its file in grubbery's store under its sha256
+FONTS = {}
+if os.environ.get('LR_FONT'):
+    import hashlib
+    _b = open(os.environ['LR_FONT'], 'rb').read()
+    _id = hashlib.sha256(_b).hexdigest()
+    FONTS[_id] = _b
+    SETTINGS.setdefault('talon', {})['fonts'] = {"family": os.environ.get('LR_FONT_FAMILY', ''), "fonts": [{"id": _id, "family": os.environ.get('LR_FONT_FAMILY', ''), "weight": 400, "italic": False}]}
 def do_PUT(self):
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
     for act in json.loads(body or '[]'):
