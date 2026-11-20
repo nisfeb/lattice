@@ -174,6 +174,66 @@ pub fn sheets_md(sheets: &[crate::sheet::Sheet]) -> String {
     out
 }
 
+/// A page of source as Markdown: each run of lines between blank lines
+/// is a block of code of its own, so a part that stayed moves as one
+/// and a part that was written comes in as one. `lang` names the
+/// language for its colours, or is empty.
+pub fn source_md(lang: &str, body: &str) -> String {
+    let mut out = String::new();
+    let mut part: Vec<&str> = Vec::new();
+    let mut close = |part: &mut Vec<&str>, out: &mut String| {
+        if part.is_empty() {
+            return;
+        }
+        // a fence longer than any run of backticks inside, so nothing in the part ends it
+        let longest = part.iter().flat_map(|l| l.split(|c| c != '`')).map(str::len).max().unwrap_or(0);
+        let fence = "`".repeat(longest.max(2) + 1);
+        out.push_str(&format!("{fence}{lang}\n{}\n{fence}\n\n", part.join("\n")));
+        part.clear();
+    };
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            close(&mut part, &mut out);
+        } else {
+            part.push(line);
+        }
+    }
+    close(&mut part, &mut out);
+    out
+}
+
+/// A map's features as Markdown: a table with a row for each, saying
+/// its name, its kind, its shape and where it is, and its note. A
+/// feature moved or redrawn is a row whose shape changed.
+pub fn map_md(features: &[crate::map::Feature]) -> String {
+    if features.is_empty() {
+        return "*A map with nothing drawn on it*\n".to_owned();
+    }
+    let mut out = String::from("| # | Name | Kind | Shape | Note |\n|---|---|---|---|---|\n");
+    for (i, f) in features.iter().take(500).enumerate() {
+        let shapes: Vec<String> = f
+            .geoms
+            .iter()
+            .map(|g| match g {
+                crate::map::Geom::Point(p) => {
+                    let [lon, lat] = crate::map::lonlat(*p);
+                    format!("point at {lat:.5}, {lon:.5}")
+                }
+                crate::map::Geom::Line(ps) | crate::map::Geom::Area(ps) => {
+                    // where it is, as the middle of its corners, so one that was moved reads as changed
+                    let n = ps.len().max(1) as f64;
+                    let (x, y) = ps.iter().fold((0.0, 0.0), |a, p| (a.0 + p[0] / n, a.1 + p[1] / n));
+                    let [lon, lat] = crate::map::lonlat([x, y]);
+                    format!("{} of {} corners round {lat:.5}, {lon:.5}", if matches!(g, crate::map::Geom::Line(_)) { "line" } else { "area" }, ps.len())
+                }
+            })
+            .collect();
+        let cell = |s: &str| plain(&s.replace(['\n', '\r'], " "));
+        out.push_str(&format!("| {} | {} | {} | {} | {} |\n", i + 1, cell(&f.name), cell(&f.kind), shapes.join("; "), cell(&f.note)));
+    }
+    out
+}
+
 /// A document (flat ODT) as Markdown: its headings, paragraphs and list
 /// items, in order, as plain text. What a document has beyond that
 /// (type, tables' shape, pictures) is not shown.
@@ -365,6 +425,36 @@ mod tests {
         // a cell with a bar or a star in it stays one cell of text
         assert!(sheets_md(&sheet(&[&["a|b", "*c*"]])).contains("| 1 | a\\|b | \\*c\\* |"));
         assert_eq!(sheets_md(&[crate::sheet::Sheet { name: "S".into(), rows: Vec::new() }]), "*An empty sheet*\n\n");
+    }
+
+    #[test]
+    fn source_is_a_block_of_code_for_each_part_between_blank_lines() {
+        let src = "fn a() {\n    1\n}\n\n\n// ```\nfn b() {}\n";
+        assert_eq!(source_md("rust", src), "```rust\nfn a() {\n    1\n}\n```\n\n````rust\n// ```\nfn b() {}\n````\n\n");
+        assert_eq!(blocks(&source_md("rust", src)).len(), 2);
+        assert_eq!((source_md("", "").as_str(), source_md("", "\n \n").as_str()), ("", ""));
+        // a part changed keeps its name, and the line that changed is the one marked
+        let mut film = Film::default();
+        film.push(1, String::new(), source_md("", "a = 1\nb = 2\n\nc = 3\n"));
+        film.push(2, String::new(), source_md("", "z = 0\n\na = 1\nb = 5\n\nc = 3\n"));
+        let f = &film.frames[1];
+        assert_eq!(f.keys.iter().map(|k| k.1.as_str()).collect::<Vec<_>>(), ["s3", "s1", "s2"]);
+        assert_eq!(f.changed.iter().map(|r| &f.src[r.clone()]).collect::<Vec<_>>(), ["```\nz = 0\n```", "b = 5"]);
+    }
+
+    #[test]
+    fn a_map_is_a_row_for_each_feature_and_a_moved_one_is_a_changed_row() {
+        let map = |lon: f64| format!(r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{"name":"Shed","kind":"building","note":"the | old one"}},"geometry":{{"type":"Point","coordinates":[{lon},51.5]}}}},{{"type":"Feature","properties":{{"name":"Path"}},"geometry":{{"type":"LineString","coordinates":[[0,0],[2,2]]}}}}]}}"#);
+        let one = map_md(&crate::map::parse(&map(-0.12)).unwrap());
+        assert!(one.starts_with("| # | Name | Kind | Shape | Note |\n|---|---|---|---|---|\n| 1 | Shed | building | point at "), "{one}");
+        assert!(one.contains("the \\| old one") && one.contains("| 1 | Shed | building | point at 51.50000, -0.12000 |") && one.contains("| 2 | Path |  | line of 2 corners round 1.000"), "{one}");
+        let mut film = Film::default();
+        film.push(1, String::new(), one);
+        film.push(2, String::new(), map_md(&crate::map::parse(&map(-0.13)).unwrap()));
+        let f = &film.frames[1];
+        assert_eq!((f.changed.len(), f.touched), (1, 1));
+        assert!(f.src[f.changed[0].clone()].starts_with("point at "));
+        assert_eq!(map_md(&[]), "*A map with nothing drawn on it*\n");
     }
 
     #[test]

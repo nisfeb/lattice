@@ -12396,27 +12396,35 @@ const SCRUB_MOST: usize = 150;
 /// How long a frame stands while the film plays, in seconds.
 const SCRUB_STEP: f64 = 0.9;
 
-/// The kinds of page whose history can be dragged through: each has a
-/// way to be read as Markdown. A sheet is its tables and a document its
-/// text, which is less than either is.
-const SCRUB_KINDS: [&str; 5] = ["md", "fods", "fodt", "html", "gmi"];
-
-/// A revision as the scrubber's reader is given it, by its kind.
+/// A revision as the scrubber's reader is given it, by its kind. What
+/// has a way to be read is read that way: a sheet as its tables, a
+/// document as its text, a map as a table of its features, LaTeX as
+/// pandoc reads it. Anything else is its source, a block of code for
+/// each part of it.
 fn scrub_src(kind: &str, body: &str, ghost: &dyn Fn(&str) -> bool) -> String {
+    let source = |lang: &str| scrub::source_md(lang, body);
     match kind {
+        // as the reader draws it: its HTML made Markdown, its wiki links made links
+        "md" => md::wikilinks(&md::html_made(body), ghost),
         "fods" => scrub::sheets_md(&sheet::parse(body)),
+        "csv" => scrub::sheets_md(&[sheet::Sheet { name: String::new(), rows: sheet::parse_csv(body) }]),
         "fodt" => scrub::doc_md(body),
         "html" => html::to_markdown(body),
         "gmi" => html::gemtext(body),
-        // as the reader draws it: its HTML made Markdown, its wiki links made links
-        _ => md::wikilinks(&md::html_made(body), ghost),
+        "geojson" => map::parse(body).map_or_else(|| source("json"), |f| scrub::map_md(&f)),
+        // with no pandoc here, or a revision it cannot read, the source
+        #[cfg(not(target_arch = "wasm32"))]
+        "tex" => tex::read(body).unwrap_or_else(|_| source("latex")),
+        "svg" => source("html"),
+        "text" | "txt" => source(""),
+        other => source(other),
     }
 }
 
-/// Whether the open page's history can be dragged through: a page of this ship's of such a kind, being read.
+/// Whether the open page's history can be dragged through: a page of this ship's, of any kind, being read. Not a memory.
 fn can_scrub(s: &App) -> bool {
     // the browser build has one thread, and a history is many requests waited for
-    !cfg!(target_arch = "wasm32") && s.conn.is_some() && !s.memory && s.remote.is_none() && !s.editing && s.open.as_ref().is_some_and(|p| SCRUB_KINDS.contains(&p.kind.as_str()))
+    !cfg!(target_arch = "wasm32") && s.conn.is_some() && !s.memory && s.remote.is_none() && !s.editing && s.open.is_some()
 }
 
 /// Starts reading every revision of the open page, on a thread of its
