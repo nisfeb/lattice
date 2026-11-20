@@ -78,7 +78,7 @@ pub fn client_id() -> String {
 
 /// The blocks of a page's text: Markdown's own top blocks, and for any
 /// other kind each run of lines between blank lines.
-fn blocks(kind: &str, text: &str) -> Vec<std::ops::Range<usize>> {
+pub fn blocks(kind: &str, text: &str) -> Vec<std::ops::Range<usize>> {
     if kind == "md" {
         return crate::scrub::blocks(text);
     }
@@ -151,6 +151,48 @@ pub fn place_range(kind: &str, text: &str, place: &str) -> Option<std::ops::Rang
     places(kind, text).into_iter().find(|(p, _)| p == place).map(|(_, r)| r.start..r.start + text[r.clone()].trim_end().len())
 }
 
+/// A line without the marks a list, a heading or a quote starts with, for
+/// finding it again in the same page written another way.
+fn bare(line: &str) -> &str {
+    let l = line.trim().trim_start_matches(['#', '>', ' ']);
+    let l = l.strip_prefix(['-', '*', '+', '\u{2022}']).map_or(l, str::trim_start);
+    let digits = l.bytes().take_while(u8::is_ascii_digit).count();
+    let l = if digits > 0 { l[digits..].strip_prefix(['.', ')']).map_or(l, str::trim_start) } else { l };
+    l.strip_prefix("[ ]").or(l.strip_prefix("[x]")).map_or(l, str::trim_start)
+}
+
+/// Where the line at `at` in one text is in another text of the same
+/// page: the start of the line there that reads the same, the nearest
+/// to where it would be were the two alike. The editor shows a page as
+/// rich text or as its source, and a place is named in the source.
+pub fn across(from: &str, at: usize, to: &str) -> usize {
+    let at = at.min(from.len());
+    let start = from[..at].rfind('\n').map_or(0, |i| i + 1);
+    let key = bare(from[start..].lines().next().unwrap_or(""));
+    let guess = (at as f64 / from.len().max(1) as f64 * to.len() as f64) as usize;
+    let mut best: Option<usize> = None;
+    let mut pos: usize = 0;
+    for line in to.split_inclusive('\n') {
+        if !key.is_empty() && bare(line) == key && best.is_none_or(|b| pos.abs_diff(guess) < b.abs_diff(guess)) {
+            best = Some(pos);
+        }
+        pos += line.len();
+    }
+    best.unwrap_or_else(|| {
+        // no such line: the start of the line at the same share of the way through
+        let g = (0..=guess.min(to.len())).rev().find(|i| to.is_char_boundary(*i)).unwrap_or(0);
+        to[..g].rfind('\n').map_or(0, |i| i + 1)
+    })
+}
+
+/// A range of whole lines in one text, as the lines that read the same in another.
+pub fn across_range(from: &str, r: std::ops::Range<usize>, to: &str) -> std::ops::Range<usize> {
+    let start = across(from, r.start, to);
+    let last = across(from, r.end.saturating_sub(1).max(r.start), to);
+    let end = last + to[last..].lines().next().map_or(0, str::len);
+    start..end.max(start)
+}
+
 /// A place as people read it: the heading it is under, when it has one.
 pub fn place_said(place: &str) -> String {
     match place.split('\u{1f}').next().filter(|h| !h.is_empty()) {
@@ -186,6 +228,24 @@ mod tests {
         assert_eq!(&theirs[r], "On the slab.");
         assert_eq!(place_range("md", &theirs, "gone\u{1f}3"), None);
         assert_eq!(place_range("md", &theirs, ""), None);
+    }
+
+    #[test]
+    fn a_line_is_found_again_in_the_page_written_another_way() {
+        // the rich editor's text: no blank lines between blocks, a bullet for a list's dash
+        let rich = "# The shed\nA plan.\n## Site\nBehind the tree.\nOn the slab.\n## Cost\n\u{2022} Timber\n";
+        let at = |s: &str, needle: &str| s.find(needle).unwrap();
+        assert_eq!(across(rich, at(rich, "On the slab") + 4, PAGE), at(PAGE, "On the slab"));
+        assert_eq!(across(rich, at(rich, "Timber") + 2, PAGE), at(PAGE, "- Timber"));
+        assert_eq!(across(PAGE, at(PAGE, "## Site") + 3, rich), at(rich, "## Site"));
+        // a place named in the source is the same place for a caret in the rich text
+        assert_eq!(place("md", PAGE, across(rich, at(rich, "On the slab") + 4, PAGE)), "site\u{1f}2");
+        // and a block's range in the source is whole lines of the rich text
+        let r = place_range("md", PAGE, "site\u{1f}2").unwrap();
+        assert_eq!(&rich[across_range(PAGE, r, rich)], "On the slab.");
+        // a line that is not there lands on a line's start, never mid-character
+        assert_eq!(across("zzz", 1, "caf\u{e9}\nb"), 0);
+        assert_eq!(across("", 0, ""), 0);
     }
 
     #[test]

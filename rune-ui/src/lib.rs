@@ -25,6 +25,7 @@ mod map;
 mod marks;
 mod mapio;
 mod md;
+mod merge;
 mod odf;
 mod outline;
 mod pdf;
@@ -858,6 +859,12 @@ struct App {
     here_req: Latest<Result<(), String>>,
     /// The ship has no presence: it is not asked again in this run.
     here_off: bool,
+    /// Where this window's caret is, as a place, and what of the editor's text others are editing: worked out when the text, the caret or the table changes.
+    here_mine: String,
+    here_tints: Vec<std::ops::Range<usize>>,
+    here_key: (usize, usize, bool, u64),
+    /// What a merge of the other's text would do, said in the banner: the parts both changed, and the parts only they did.
+    merge_said: Option<(usize, usize)>,
     /// A page's history being dragged through, when it is.
     scrub: Option<Scrub>,
     /// What the thread reading that history has so far.
@@ -1307,6 +1314,10 @@ fn init() -> App {
         here_next: 0.0,
         here_req: Latest::default(),
         here_off: false,
+        here_mine: String::new(),
+        here_tints: Vec::new(),
+        here_key: (0, 0, false, 0),
+        merge_said: None,
         scrub: None,
         scrub_load: Default::default(),
         tab_drag: rune_kit::shell::TabDragState::new(),
@@ -5987,6 +5998,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 // a page being edited that was written elsewhere: say so, since its save would be refused
                 if s.editing && !away {
                     s.stale = s.open.as_ref().is_some_and(|p| s.cache.get(&p.name).is_some_and(|c| c.rev > p.rev));
+                    s.merge_said = if s.stale && s.editing { merge_look(s) } else { None };
                 }
                 // the open page follows a write made elsewhere, unless it is being edited
                 if !s.editing && !away {
@@ -12435,12 +12447,32 @@ fn here_others(s: &App) -> Vec<here::Row> {
     s.here_shown.as_ref().filter(|t| Some(&t.page) == s.here_for.as_ref()).map(|t| here::others(t, &me)).unwrap_or_default()
 }
 
-/// Where this window is in the page, when it is editing: the place of its caret.
-fn here_place(s: &App) -> String {
-    match (&s.open, s.editing) {
-        (Some(p), true) => here::place(&p.kind, &s.edit.text, byte_at(&s.edit.text, s.edit.focus)),
-        _ => String::new(),
+/// Works out where this window's caret is, as a place, and where in
+/// the editor's text the others are editing. A place is named in the
+/// page's source, and the rich editor's text is not the source, so a
+/// caret and a range are carried across by the line they are on.
+/// Done only when the text, the caret or the table changed.
+fn here_work(s: &mut App) {
+    let seq = s.here_shown.as_ref().map_or(0, |t| t.seq);
+    let key = (s.edit.text.len(), s.edit.focus, s.editing, seq);
+    if key == s.here_key {
+        return;
     }
+    s.here_key = key;
+    let (Some(p), true) = (s.open.clone(), s.editing) else {
+        (s.here_mine, s.here_tints) = (String::new(), Vec::new());
+        return;
+    };
+    let source = if s.rich { edited(s) } else { s.edit.text.clone() };
+    let caret = byte_at(&s.edit.text, s.edit.focus);
+    let at = if s.rich { here::across(&s.edit.text, caret, &source) } else { caret };
+    s.here_mine = here::place(&p.kind, &source, at);
+    s.here_tints = here_others(s)
+        .iter()
+        .filter(|r| r.editing())
+        .filter_map(|r| here::place_range(&p.kind, &source, &r.block))
+        .map(|r| if s.rich { here::across_range(&source, r, &s.edit.text) } else { r })
+        .collect();
 }
 
 /// Keeps this window on the table of the page it shows: listens on that
@@ -12506,8 +12538,9 @@ fn sync_here(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if s.here_req.take().is_some_and(|r| r.is_err_and(|e| e.starts_with("404") || e.starts_with("405"))) {
         s.here_off = true;
     }
+    here_work(s);
     if let (Some(c), Some(page)) = (s.conn.clone(), want) {
-        let now = (page, here_place(s), if s.editing { "edit" } else { "read" }.to_owned());
+        let now = (page, s.here_mine.clone(), if s.editing { "edit" } else { "read" }.to_owned());
         let moved = s.here_said.as_ref() != Some(&now);
         if moved && clock < s.here_at + 1.0 {
             // a caret crossing blocks is said once a second at most
@@ -12547,19 +12580,62 @@ fn here_chips(s: &App, k: &Kit) -> Option<El> {
 
 /// The blocks others are editing, in the text being edited: tinted, so it is seen before it is typed into.
 fn here_spans(s: &App, k: &Kit) -> Vec<Span> {
-    let Some(p) = s.open.as_ref().filter(|_| s.editing) else { return Vec::new() };
-    here_others(s).iter().filter(|r| r.editing()).filter_map(|r| here::place_range(&p.kind, &s.edit.text, &r.block)).map(|r| Span::new(r.start, r.end).bg(k.c.text_accent.alpha(0.2), 1.0)).collect()
+    if !s.editing {
+        return Vec::new();
+    }
+    s.here_tints.iter().filter(|r| r.end <= s.edit.text.len() && s.edit.text.is_char_boundary(r.start) && s.edit.text.is_char_boundary(r.end)).map(|r| Span::new(r.start, r.end).bg(k.c.text_accent.alpha(0.2), 1.0)).collect()
 }
 
 /// Who else is editing the block this window's caret is in, when anyone is.
 fn here_collides(s: &App) -> Option<String> {
-    let mine = here_place(s);
-    if mine.is_empty() {
+    if s.here_mine.is_empty() || !s.editing {
         return None;
     }
     let our = s.conn.as_ref().map_or("", |c| c.ship()).to_owned();
-    let who: Vec<String> = here_others(s).iter().filter(|r| r.editing() && r.block == mine).map(|r| if r.ship == our { "Another window of yours".to_owned() } else { r.ship.clone() }).collect();
+    let who: Vec<String> = here_others(s).iter().filter(|r| r.editing() && r.block == s.here_mine).map(|r| if r.ship == our { "Another window of yours".to_owned() } else { r.ship.clone() }).collect();
     (!who.is_empty()).then(|| who.join(", "))
+}
+
+/// The page as it was saved somewhere else since this window began to edit it.
+fn stale_theirs(s: &App) -> Option<&Page> {
+    let p = s.open.as_ref()?;
+    s.cache.get(&p.name).filter(|c| c.rev > p.rev)
+}
+
+/// What merging their text into what is typed here would do: how many
+/// parts both changed, and how many only they did.
+fn merge_look(s: &App) -> Option<(usize, usize)> {
+    let (p, theirs) = (s.open.as_ref()?, stale_theirs(s)?);
+    let m = merge::merge3(&p.kind, &p.body, &edited(s), &theirs.body);
+    Some((m.conflicts.len(), m.taken))
+}
+
+/// Merges what was saved somewhere else into what is typed here, by the
+/// page's blocks. What only they changed is taken, what only this
+/// window changed stays, and where both did this window's stays and is
+/// said. Their text becomes what this window's edits are counted from,
+/// so the next save lands. Nothing is saved by this.
+fn merge_theirs(s: &mut App) {
+    let (Some(p), Some(theirs)) = (s.open.clone(), stale_theirs(s).cloned()) else { return };
+    let m = merge::merge3(&p.kind, &p.body, &edited(s), &theirs.body);
+    let (was, caret) = (s.edit.text.clone(), byte_at(&s.edit.text, s.edit.focus));
+    // the editor shows the merged text in the way it was showing the page
+    let rich = s.rich.then(|| md::exact(&m.text)).flatten();
+    s.rich = rich.is_some();
+    s.edit = match rich {
+        Some(d) => rich_edit(d, &mut s.seps),
+        None => TextEdit::new(m.text.clone()),
+    };
+    s.edit.focused = true;
+    // the caret stays on the line it was on, where that line still is
+    let at = s.edit.text[..here::across(&was, caret, &s.edit.text)].chars().count();
+    s.edit.set_selection(at, at);
+    s.open = Some(Page { body: theirs.body, rev: theirs.rev, ..p });
+    (s.stale, s.merge_said) = (false, None);
+    s.note = match m.conflicts.as_slice() {
+        [] => "Merged: their changes are in, and yours are kept".to_owned(),
+        all => format!("Merged. Yours was kept {}, where both of you wrote. Theirs is in the page\u{2019}s history", all.iter().map(|c| here::place_said(&c.place)).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(" and ")),
+    };
 }
 
 /// A page's history being dragged through: every revision, read once,
@@ -12882,22 +12958,27 @@ fn body(s: &App, k: &Kit) -> El {
                 .child(Button::new("Back to now").control_size(ControlSize::Small).on_press(|s: &mut App| s.old = None).build(k).key("leave-old")),
         )
     } else if s.editing && s.stale {
-        Some(banner(
-            "stale",
-            "This page was changed somewhere else while you were editing. Saving now would be refused.".into(),
-            "Save over theirs",
-            |s| {
-                // the owner's choice: take the newest rev as the base, so the save lands
-                if let Some(newest) = s.open.as_ref().and_then(|p| s.cache.get(&p.name)).map(|c| c.rev) {
-                    if let Some(p) = &mut s.open {
-                        p.rev = newest;
-                    }
-                    s.stale = false;
-                    save(s);
+        // their text can be merged into what is typed here, by the page's blocks, or written over
+        let say = match s.merge_said {
+            Some((0, _)) => "This page was changed somewhere else while you were editing. Their changes are in other parts of it than yours.".to_owned(),
+            Some((1, _)) => "This page was changed somewhere else while you were editing. One part was changed both here and there.".to_owned(),
+            Some((n, _)) => format!("This page was changed somewhere else while you were editing. {n} parts were changed both here and there."),
+            None => "This page was changed somewhere else while you were editing. Saving now would be refused.".to_owned(),
+        };
+        let over = Button::new("Save over theirs").control_size(ControlSize::Small).help("Save what is typed here as it is. Their changes go, and stay in the history").on_press(|s: &mut App| {
+            // the owner's choice: take the newest rev as the base, so the save lands
+            if let Some(newest) = s.open.as_ref().and_then(|p| s.cache.get(&p.name)).map(|c| c.rev) {
+                if let Some(p) = &mut s.open {
+                    p.rev = newest;
                 }
-            },
-            k,
-        ))
+                (s.stale, s.merge_said) = (false, None);
+                save(s);
+            }
+        }).build(k).key("stale-act");
+        let merge = s.merge_said.map(|(both, _)| {
+            Button::new(if both == 0 { "Merge theirs in" } else { "Merge, keeping mine there" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).help("Take what they changed into what is typed here. Nothing is saved until you save").on_press(merge_theirs).build(k).key("stale-merge")
+        });
+        Some(row().key("stale").w_full().px(16.0).py(8.0).gap(8.0).center_y().fill(k.c.layer_01).child(text(say).font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0)).children(merge).child(over))
     } else if let Some(who) = here_collides(s) {
         // a warning and not a lock: the typing is not stopped
         Some(row().key("here-warn").w_full().px(16.0).py(8.0).gap(12.0).center_y().fill(k.c.layer_01).child(text(format!("{who} is editing this section too. What you both type here may not both be kept.")).font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0)))
