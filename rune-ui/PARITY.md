@@ -80,6 +80,12 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Export a page as PDF: the page as the ship renders it, in one sealed document, printed to the file named in the save dialog by a headless Chromium or Chrome found on the path. Nothing outside the document is loaded and no script runs. Rune neither prints nor writes PDF, so without one of those browsers the export says it cannot. A sheet, a Writer document and a map print as their source, where the web client prints its own view of them. From the palette
 - [x] Convert a LaTeX page to HTML with the pandoc on this machine: written beside it as `<name>-web`, an html page, over the last conversion. pandoc runs sandboxed with ten seconds at most, and its output is cleaned as the web client cleans it before it is kept. With no pandoc it says where to get one. Run on sample pages, not against a ship: the page is written by the save a capture uses
 
+- [ ] Live presence on shared pages, which the web client does not have. Planned on 2026-11-20 in the lattice wiki page `specs/2026-11-20-live-presence-design`, with what was measured. Who has a shared page open, shown in the tab head. Needs a ship change: a route to say where a client is, a table held in memory on the page's host, and a stream to clients that is not the `/beacon` file keep
+- [ ] Presence: where an editor is, as the block they are in, drawn as a tinted bar beside it with the ship's name. Sent at most once a second. Not a caret: an acknowledged round trip between ships took about 240 ms and a change took half a second to reach the stream, measured on fake ships
+- [ ] Presence: soft locks by section. A warning before typing into a block someone else is editing. A warning and not a lock, and nothing held on the ship
+- [ ] Merge on save: a save from an old revision is merged three ways by block against the revision it started from, splitting the page as `src/scrub.rs` does. A block both sides changed is refused alone and both versions are shown. Needs the ship to hand back the base and the newest text on a stale save, or to merge itself
+- [!] Presence between two ships cannot be tested yet: on the current kernel the host vetoes a guest's read of a shared page although its permission record lists the grant (`%weir-veto-at boundary=/sys/ames/ships/~ship`, seen on two fresh fake ships on 2026-11-20). Not known whether shares are broken on the `/apps/shell` layout or it is a fault of fake ships
+
 ## Page kinds
 
 - [x] Markdown
