@@ -1060,4 +1060,42 @@
     (expect-eq !>('notes/') !>((share-name:ls /apps/x/page/notes/'dir-index')))
     (expect-eq !>('/apps/x/odd') !>((share-name:ls /apps/x/odd)))
   ==
+::  +road-text: relative to the app root, a directory with a trailing /
+++  test-road-text
+  =/  sb=path  /apps/x/lat
+  ;:  weld
+    (expect-eq !>(`'/page/a/code') !>((road-text:ls sb [%& %& /apps/x/lat/page/a %code])))
+    (expect-eq !>(`'/shares.sig') !>((road-text:ls sb [%& %& /apps/x/lat %'shares.sig'])))
+    (expect-eq !>(`'/page/a/') !>((road-text:ls sb [%& %| /apps/x/lat/page/a])))
+    (expect-eq !>(`'/') !>((road-text:ls sb [%& %| /apps/x/lat])))
+    ::  outside the root, or relative: no text
+    (expect-eq !>(~) !>((road-text:ls sb [%& %& /apps/y %code])))
+    (expect-eq !>(~) !>((road-text:ls sb [%| 0 %| /page])))
+  ==
+::  +groups-entry: one sub-key per group, sorted, with roads outside counted
+++  test-groups-entry
+  =/  sb=path  /apps/x/lat
+  =/  r=[ent=json lost=@ud]
+    %+  groups-entry:ls  sb
+    :~  :*  'nec'  ~[~nec ~bud]
+            ~[[%& %& /apps/x/lat/page/a %code]]
+            ~
+            ~[[%& %& /apps/x/lat/page/b %code] [%& %& /apps/x/lat/page/a %code] [%& %| /apps/elsewhere]]
+    ==  ==
+  =/  want=json
+    :-  %o
+    %-  my
+    :~  :-  'nec'
+        :-  %o
+        %-  my
+        :~  ['members' a+~[s+'~nec' s+'~bud']]
+            ['make' a+~[s+'/page/a/code']]
+            ['poke' a+~]
+            ['peek' a+~[s+'/page/a/code' s+'/page/b/code']]
+    ==  ==
+  ;:  weld
+    (expect-eq !>(want) !>(ent.r))
+    (expect-eq !>(1) !>(lost.r))
+  ==
 --
+

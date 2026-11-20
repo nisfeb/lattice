@@ -214,6 +214,20 @@
             ::  shell. %stay: a load that dropped it would close /public
             ::  until the writer next starts.
             [%stay %& [/ %'groups.json']]
+            ::  /ug: lattice's own sharing groups, laid out as
+            ::  /sys/ames/usergroups is (<name>.grp/who.ships, how.weir).
+            ::  The shell owns /sys/ames/usergroups and puts back what an app
+            ::  writes there, so /groups.sig names these in groups.json under
+            ::  /lattice/ and the shell makes them (+publish-groups).
+            [%fall %| /ug empty-dir:loader]
+            ::  public-how.json: the /public entry +send-public-how works
+            ::  out, which /groups.sig puts in groups.json
+            [%fall %& [/ %'public-how.json'] [[/ %json] `json`[%o ~]]]
+            ::  ug-carried.json: has the one-time carry of the sharing
+            ::  groups into /ug run (+carry-groups)
+            [%fall %& [/ %'ug-carried.json'] [[/ %json] `json`[%b %.n]]]
+            ::  /groups.sig: the one writer of groups.json (+publish-groups)
+            [%fall %& [/ %'groups.sig'] [[/ %sig] ~]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
         ::  /legacy: the retired-agent marker lives here (see +legacy-mark-road)
             [%fall %| /legacy empty-dir:loader]
@@ -682,6 +696,20 @@
         ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
         ;<  now=@da  bind:m  bowl-now
         ;<  ~  bind:m  (apply-share-notice root from sage now)
+        $
+      ::  /groups.sig: the one writer of groups.json. It carries the
+      ::  sharing groups into /ug once (+carry-groups), then names /ug and
+      ::  the /public entry there whenever either changes (+publish-groups).
+          [~ %'groups.sig']
+        ;<  ~  bind:m  (rise-later prod "lattice /groups.sig" "")
+        =/  root=@ud  (lent path.rail)
+        ;<  *  bind:m  (keep:io /ug (rv root /ug) ~)
+        ;<  *  bind:m  (keep:io /ph (rf root / %'public-how.json') ~)
+        ;<  ~  bind:m  (publish-groups root)
+        ;<  ~  bind:m  (carry-groups root)
+        |-
+        ;<  ~  bind:m  (publish-groups root)
+        ;<  ~  bind:m  take-groups-news
         $
       ::  /access.sig: edit access requests, and a host's answer to ours
       ::  (+apply-access-notice). The same take-poke loop as /shares.sig.
@@ -1589,7 +1617,8 @@
   ?:  %+  lien  u.mkp
       |=(p=path (lien intake |=(i=path =(p (scag (lent p) i)))))
     (send-err eyre-id 400 'a make grant there would reach lattice\'s request intake')
-  =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
+  ;<  ub=path  bind:m  ug-dir
+  =/  gdir=path  (snoc ub (crip (weld (trip u.gname) ".grp")))
   ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
   ::  ABSOLUTE, as the grantee's weir matches them. A group weir is read
   ::  as written into each member's weir under /sys/ames/ships, so a
@@ -3371,7 +3400,7 @@
     ::  the grants in place is the label this route exists not to be.
     ?~  n
       %^  send-err  eyre-id  403
-      'banned, but lattice may not change your sharing groups, so the ship keeps what its groups grant: grant lattice make /sys/ames/usergroups/ at /apps/grubbery/permits, then ban again'
+      'banned, but lattice could not save its sharing groups, so the ship keeps what they grant. Ban again to retry'
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['ok' b+&] ['revoked' (numb:enjs:format u.n)]])
   ::
@@ -3400,6 +3429,22 @@
       [%'GET' %share-groups]
     ;<  j=json  bind:m  share-groups-json
     (send-json eyre-id j)
+  ::  the groups from before lattice kept its own (+legacy-groups), for
+  ::  the notice that lets the owner remove them on the Peers page
+      [%'GET' %legacy-groups]
+    ;<  sb=path  bind:m  self-base
+    ;<  gs=(list [rel=path name=@t who=(list @p) rs=(list road:tarball)])  bind:m
+      legacy-groups
+    %+  send-json  eyre-id
+    :-  %a
+    %+  turn  gs
+    |=  [rel=path name=@t who=(list @p) rs=(list road:tarball)]
+    %-  pairs:enjs:format
+    :~  ['name' s+name]
+        ['ships' a+(turn who |=(w=@p s+(scot %p w)))]
+        ['roads' a+(murn rs |=(r=road:tarball (bind (road-text:ls sb r) |=(t=@t s+t))))]
+        ['peers' s+(crip (weld "/apps/grubbery/peers/usergroups" (spud rel)))]
+    ==
   ::  save = replace a group's ships and its UI-managed grants. Body JSON:
   ::  {ships: ["~nec"], peek: ["/apps/..."], make: ["/apps/..."]}.
   ::
@@ -3625,7 +3670,8 @@
     =/  gname=(unit @t)  (~(get by args) 'name')
     ?~  gname  (send-err eyre-id 400 'missing name')
     ?.  ((sane %tas) u.gname)  (send-err eyre-id 400 'bad name')
-    =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
+    ;<  ub=path  bind:m  ug-dir
+    =/  gdir=path  (snoc ub (crip (weld (trip u.gname) ".grp")))
     ::  who reads what, read before the group goes, so each member that
     ::  loses a page is told (+tell-holds) and its shared with me drops it
     ::  live. A page it still reads through another group stays.
@@ -6080,7 +6126,7 @@
       :-  'peek'
       :-  %a
       :~  %+  line  '/sys/ames/usergroups/'
-          'let other ships read the pages you publish. Refuse this and lattice still works completely for you - your published pages just stay on this ship'
+          'check that your public group is there, so other ships can read the pages you publish, and list your sharing groups from before this version that still reach lattice pages, so you can remove them. Refuse this and lattice still works for you, but your published pages stay on this ship'
           %+  line  '/sys/link/'
           'look up where this app is installed, so the live-reload stream and the links to your published pages point at the right place. Refuse this and pages still render, but they will not refresh as you edit them'
         ::  lick-serve:io keeps and peeks its socket's /in grub, and grubbery
@@ -6134,15 +6180,13 @@
           %+  line  '/apps/shell/desks/orrery.desk/'
           'read orrery on this ship, its daily brief, weekly review and world digest, so your agents and journal pages stay current. Refuse it and lattice is unaffected; you just lose the orrery mirror'
       ==
-    ::  sharing with ships IS writing usergroups: who.ships and how.weir,
-    ::  from the share box, the ACL pane and a ban. The registry has no
-    ::  membership action, so there is no narrower road. Every write is
-    ::  soft (+ug-over), so a refusal answers the request with a reason
-    ::  instead of parking it.
+    ::  sharing with ships writes no usergroup: lattice keeps its groups
+    ::  in /ug and names them in its groups.json under /lattice/, and the
+    ::  shell makes them (+publish-groups). So there is no make road on
+    ::  /sys/ames/usergroups any more.
       :-  'make'
       :-  %a
-      :~  %+  line  '/sys/ames/usergroups/'
-          'share pages with other ships: add a ship to a sharing group and grant the group read or edit on your pages, and take a banned ship out of every group. This road can change any sharing group on this ship. Refuse it and lattice works fully for you; you just cannot share pages with other ships'
+      :~
         ::  the retire road (+retire-old-app): the old app-tier copy is
         ::  deleted once it is carried and a snapshot of it is kept, so
         ::  grants made on it stop reaching anything. It also carries the
@@ -7478,7 +7522,8 @@
   =/  pgs=(list path)
     %+  turn  ~(tap in (~(gas in *(set path)) [sb peer-bases:lu]))
     |=(b=path (weld b (weld /page name)))
-  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:fio [%& %| ug-base] ~)
+  ;<  ub=path  bind:m  ug-dir
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:fio [%& %| ub] ~)
   ?.  ?=([~ %ball *] vw)  (pure:m |)
   %-  pure:m
   ::  every group, nested ones too, and file roads as well as dir roads:
@@ -8468,7 +8513,8 @@
   ?:  ?=(%| -.lod)  (send-err eyre-id 500 'board unreadable')
   ?:  public.info.p.lod  (send-err eyre-id 400 'a public board has no members to manage')
   =/  gname=@t  (forum-group-name nom)
-  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
+  ;<  ub=path  bind:m  ug-dir
+  =/  gdir=path  (snoc ub (crip (weld (trip gname) ".grp")))
   ;<  cur=(set @p)  bind:m  (read-forum-members nom)
   ?.  add
     ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
@@ -8666,9 +8712,10 @@
       ?.  ?=(?(%create-board %delete-board) -.act.act)  (pure:m ~)
       =/  nom=@ta  ?:(?=(%create-board -.act.act) name.act.act +.act.act)
       ;<  *  bind:m  (cull-soft:io (rf root /forum/members nom))
+      ;<  ub=path  bind:m  ug-dir
       ;<  *  bind:m
         %-  cull-soft:io
-        [%& %| (snoc ug-base (crip (weld (trip (forum-group-name nom)) ".grp")))]
+        [%& %| (snoc ub (crip (weld (trip (forum-group-name nom)) ".grp")))]
       (pure:m ~)
     (send-public-how root)
       %forum-note-store
@@ -13531,7 +13578,212 @@
 ::  use. The editor speaks read=peek / edit=make. poke is deliberately never
 ::  exposed. A poke grant on main.sig is full eval power, not "edit a file".
 ::
-++  ug-base  `path`/sys/ames/usergroups
+++  ug-sys  `path`/sys/ames/usergroups
+::  +ug-dir: where lattice keeps its own sharing groups, <root>/ug, laid
+::  out as /sys/ames/usergroups is. The shell owns that tree and puts
+::  back anything an app writes there, so lattice writes here and
+::  /groups.sig names these groups in groups.json (+publish-groups).
+++  ug-dir
+  =/  m  (fiber:fiber:nexus ,path)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  (pure:m (weld sb /ug))
+::  +ug-row: one group of a usergroups ball (+all-groups) as
+::  +groups-entry:ls takes it: its name under the prefix (its path,
+::  without .grp), members and roads
+++  ug-row
+  |=  [rel=path gb=ball:tarball]
+  ^-  [name=@t who=(list @p) mk=(list road:tarball) po=(list road:tarball) pk=(list road:tarball)]
+  =/  fils  ?~(fil.gb ~ contents.u.fil.gb)
+  =/  who=(set @p)
+    =/  w  (~(get by fils) %'who.ships')
+    ?~  w  ~
+    (fall (mole |.(;;((set @p) (sang-noun:tarball sang.u.w)))) ~)
+  =/  wr=weir:nexus
+    =/  h  (~(get by fils) %'how.weir')
+    ?~  h  *weir:nexus
+    (fall (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.h)))) *weir:nexus)
+  =/  nt=tape  (trip (spat rel))
+  :*  (crip (slag 1 (scag (sub (max 4 (lent nt)) 4) nt)))
+      ~(tap in who)
+      ~(tap in make.wr)
+      ~(tap in poke.wr)
+      ~(tap in peek.wr)
+  ==
+::  +publish-groups: groups.json from its two sources, the /public entry
+::  +send-public-how leaves in public-how.json and lattice's own groups in
+::  /ug as the /lattice/ key (+groups-entry:ls). Any other key is kept.
+::  /groups.sig alone runs this, so nothing else writes the file and no
+::  key is lost to a race. Written only when it differs: the shell
+::  derives every group again on each write. An empty public-how.json
+::  (before the writer has first run) leaves /public as it is.
+++  publish-groups
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  ;<  ph=json  bind:m  (json-at (rf root / %'public-how.json'))
+  ;<  uv=(unit view:nexus)  bind:m  (peek-soft:io (rv root /ug) ~)
+  =/  gs  ?.(?=([~ %ball *] uv) ~ (all-groups / ball.u.uv))
+  =/  [ent=json lost=@ud]  (groups-entry:ls sb (turn gs ug-row))
+  ;<  ~  bind:m
+    ?:  =(0 lost)  (fault-clear ~['groups-roads'])
+    %:  fault  'groups-roads'  0
+      "lattice: {<lost>} sharing road(s) lie outside lattice and cannot be named in its groups.json, so they do not apply"
+      ~
+    ==
+  =/  gfile=road:tarball  (rf root / %'groups.json')
+  ;<  cur=json  bind:m  (json-at gfile)
+  =/  pub=(map @t json)  (rise-omap ph)
+  =/  new=json
+    =/  o=(map @t json)  (~(put by (rise-omap cur)) '/lattice/' ent)
+    :-  %o
+    ?~  pub  o
+    (~(put by o) '/public' ph)
+  ?:  =(new cur)  (fault-clear ~['public-grant' 'groups-json'])
+  ::  SOFT, because a veto is a crashed event that rolls back everything
+  ::  this fiber already wrote
+  ;<  how=(unit tang)  bind:m
+    (over-as-soft:io gfile [[/ %json] new] [/ %json])
+  ?~  how  (fault-clear ~['public-grant' 'groups-json'])
+  (fault 'groups-json' 0 "lattice: sharing and published pages stay as they were: groups.json was not written" ~)
+::  +take-groups-news: /groups.sig's wait, for a change to /ug or to
+::  public-how.json
+++  take-groups-news
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %news * *]
+    ?.  ?|(=(/ug wire.u.in) =(/ph wire.u.in))  [%skip ~]
+    [%done ~]
+  ==
+::  +grant-who: the members a group named `g` is known to have from its
+::  name alone: the ship it is named after, for the group a share makes
+::  per ship (+share-page-with), else none
+++  grant-who
+  |=  g=@t
+  ^-  (set @p)
+  =/  s=(unit @p)  (slaw %p (cat 3 '~' g))
+  ?~(s ~ (silt ~[u.s]))
+::  +grant-records: every page's own grants and folder's ship grants in
+::  a /page ball, by the page or folder's path under /page
+++  grant-records
+  |=  [b=ball:tarball rel=path]
+  ^-  (list [rel=path own=(map @t @t) fol=(map @t @t)])
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  =/  kids=(list [rel=path own=(map @t @t) fol=(map @t @t)])
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=([nom=@ta kid=ball:tarball] (grant-records kid (snoc rel nom)))
+  =/  own=(map @t @t)  (fils-own fils)
+  =/  fol=(map @t @t)  (fils-grants fils)
+  ?:  &(=(~ own) =(~ fol))  kids
+  [[rel own fol] kids]
+::  +ug-carry: members and roads INTO the group at `gdir` under /ug,
+::  making it if absent. Only adds. A banned ship stays out (+ug-put).
+++  ug-carry
+  |=  [gdir=path who=(list @p) mk=(list road:tarball) po=(list road:tarball) pk=(list road:tarball)]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
+  =/  cur=(set @p)
+    ?.  ?=([%file *] wv)  ~
+    (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
+  ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
+  %^  ug-put  gdir  (~(gas in cur) who)
+  [(~(gas in make.old) mk) (~(gas in poke.old) po) (~(gas in peek.old) pk)]
+::  +legacy-groups: the groups in /sys/ames/usergroups that reach lattice
+::  but are not lattice's: not /public and not under the shell's
+::  /lattice/ prefix. Lattice made them before the shell took over the
+::  usergroups, and the shell then put them in the owner's own record,
+::  which lattice may not change. They still grant what they granted, so
+::  a share taken back in lattice can still be read through one of them
+::  until the owner removes it on the Peers page. Each comes with its
+::  name, its members and the roads that reach lattice.
+++  legacy-groups
+  =/  m  (fiber:fiber:nexus ,(list [rel=path name=@t who=(list @p) rs=(list road:tarball)]))
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  ;<  sv=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-sys] ~)
+  ?.  ?=([~ %ball *] sv)  (pure:m ~)
+  %-  pure:m
+  %+  murn  (all-groups / ball.u.sv)
+  |=  [rel=path gb=ball:tarball]
+  ^-  (unit [rel=path name=@t who=(list @p) rs=(list road:tarball)])
+  ?:  |(=(/'public.grp' rel) ?=([%lattice *] rel))  ~
+  =/  row  (ug-row rel gb)
+  =/  rs=(list road:tarball)
+    %+  skim  :(weld mk.row po.row pk.row)
+    |=(r=road:tarball ?=(^ (road-text:ls sb r)))
+  ?~  rs  ~
+  `[rel name.row who.row rs]
+::  +carry-groups: once, lattice's sharing groups into /ug, where it has
+::  kept them since the shell took over /sys/ames/usergroups. It only
+::  adds to /ug: nothing anywhere else is deleted or rewritten.
+::    1. each group from before (+legacy-groups): its members and the
+::       roads that reach lattice. The group itself stays where it is,
+::       in the owner's record, until the owner removes it.
+::    2. every share lattice recorded, a page's own grants and a folder's
+::       ship grants, made again as the share made it. The shell deleted
+::       the groups of shares made after it took over, and these records
+::       are where they come back from. A group named after a ship gets
+::       that ship. Any other group keeps the members step 1 found.
+::  No ship is told: each already heard of its share when it was made.
+::  The flag is set last, so a carry cut short runs again, and running
+::  again only adds what is already there.
+++  carry-groups
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  flag=road:tarball  (rf root / %'ug-carried.json')
+  ;<  done=json  bind:m  (json-at flag)
+  ?:  =(b+& done)  (pure:m ~)
+  ;<  sb=path  bind:m  self-base
+  ;<  ub=path  bind:m  ug-dir
+  ;<  olds=(list [rel=path name=@t who=(list @p) rs=(list road:tarball)])  bind:m
+    legacy-groups
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  olds  (pure:m ~)
+    ;<  ow=weir:nexus  bind:m  (ug-read-weir-soft (weld ug-sys rel.i.olds))
+    ::  each kind of road, only those that reach lattice
+    =/  mine  |=(r=road:tarball (lien rs.i.olds |=(q=road:tarball =(q r))))
+    ;<  *  bind:m
+      %:  ug-carry  (weld ub rel.i.olds)  who.i.olds
+        (skim ~(tap in make.ow) mine)
+        (skim ~(tap in poke.ow) mine)
+        (skim ~(tap in peek.ow) mine)
+      ==
+    $(olds t.olds)
+  ;<  pv=view:nexus  bind:m  (peek:fio (rv root /page) ~)
+  =/  recs  ?.(?=([%ball *] pv) ~ (grant-records ball.pv ~))
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  recs  (pure:m ~)
+    =/  pg=(list [g=@t md=@t])  ~(tap by own.i.recs)
+    ;<  ~  bind:m
+      |-  ^-  form:m
+      ?~  pg  (pure:m ~)
+      =/  croad=road:tarball  [%& %& :(weld sb /page rel.i.recs) %code]
+      ;<  *  bind:m
+        %:  ug-merge  g.i.pg  (grant-who g.i.pg)
+          (silt ~[croad])
+          ?.(=('edit' md.i.pg) ~ (silt ~[croad]))
+        ==
+      $(pg t.pg)
+    =/  fg=(list [g=@t md=@t])  ~(tap by fol.i.recs)
+    ;<  ~  bind:m
+      |-  ^-  form:m
+      ?~  fg  (pure:m ~)
+      ;<  *  bind:m
+        (share-folder-grant-in g.i.fg (grant-who g.i.fg) md.i.fg rel.i.recs |)
+      $(fg t.fg)
+    $(recs t.recs)
+  ;<  *  bind:m  (over-as-soft:io flag [[/ %json] b+&] [/ %json])
+  (pure:m ~)
 ::  +all-groups: every usergroup in a usergroups ball, found the way
 ::  grubbery's +find-groups finds them: a child named *.grp is a group, and
 ::  any other child is a folder that may hold more. Each comes back as its
@@ -13579,7 +13831,8 @@
 ++  narrow-page-grants
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ;<  ub=path  bind:m  ug-dir
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ub] ~)
   ?.  ?=([~ %ball *] vw)  (pure:m ~)
   =/  gs=(list [rel=path gb=ball:tarball])  (all-groups / ball.u.vw)
   =/  dirs
@@ -13603,7 +13856,7 @@
   =/  nw=weir:nexus  [(~(uni in (rest make.u.w)) mk) poke.u.w (~(uni in (rest peek.u.w)) pk)]
   ?:  =(nw u.w)  $(gs t.gs)
   ;<  *  bind:m
-    (ug-over [%& %& (weld ug-base rel.i.gs) %'how.weir'] [[/ %weir] nw])
+    (ug-over [%& %& (weld ub rel.i.gs) %'how.weir'] [[/ %weir] nw])
   $(gs t.gs)
 ::  +fix-folder-grants: a folder shared with a ship is two writes, the
 ::  group's weir (+ug-merge) and the folder's note (%folder-grant). A
@@ -13617,7 +13870,8 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  sb=path  bind:m  self-base
-  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ;<  ub=path  bind:m  ug-dir
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ub] ~)
   ?.  ?=([~ %ball *] vw)  (pure:m ~)
   =/  pre=path  (weld sb /page)
   =/  n=@ud  (lent pre)
@@ -13770,7 +14024,8 @@
   ::  one SOFT deep read of every group. The usergroup read is optional
   ::  (weir.json), and this runs on every move and delete: a hard peek
   ::  there would park each one on an install that refused it.
-  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ;<  ub=path  bind:m  ug-dir
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ub] ~)
   ?.  ?=([~ %ball *] vw)  (pure:m ~)
   =/  gs=(list [rel=path gb=ball:tarball])  (all-groups / ball.u.vw)
   |-  ^-  form:m
@@ -13784,13 +14039,13 @@
   =/  nw=weir:nexus  [(re make.u.w) poke.u.w (re peek.u.w)]
   ?:  =(nw u.w)  $(gs t.gs)
   ;<  *  bind:m
-    (ug-over [%& %& (weld ug-base rel.i.gs) %'how.weir'] [[/ %weir] nw])
+    (ug-over [%& %& (weld ub rel.i.gs) %'how.weir'] [[/ %weir] nw])
   $(gs t.gs)
 ::  +ug-refused: the answer when lattice may not write usergroups.
 ++  ug-refused
   |=  eyre-id=@ta
   %^  send-err  eyre-id  403
-  'lattice may not change your sharing groups: grant it make /sys/ames/usergroups/ at /apps/grubbery/permits'
+  'lattice could not save its sharing groups. Nothing was shared or taken back'
 ::  +ug-read-weir: a group's stored weir, bunt if absent/undecodable.
 ++  ug-read-weir
   |=  gdir=path
@@ -13799,11 +14054,21 @@
   ;<  hv=view:nexus  bind:m  (peek:fio [%& %& gdir %'how.weir'] ~)
   ?.  ?=([%file *] hv)  (pure:m *weir:nexus)
   (pure:m (fall (mole |.(;;(weir:nexus (sang-noun:tarball sang.hv)))) *weir:nexus))
+::  +ug-read-weir-soft: +ug-read-weir through a soft peek, for a group
+::  under /sys/ames/usergroups, whose read lattice may be refused
+++  ug-read-weir-soft
+  |=  gdir=path
+  =/  m  (fiber:fiber:nexus ,weir:nexus)
+  ^-  form:m
+  ;<  hv=(unit view:nexus)  bind:m  (peek-soft:io [%& %& gdir %'how.weir'] ~)
+  ?.  ?=([~ %file *] hv)  (pure:m *weir:nexus)
+  (pure:m (fall (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hv)))) *weir:nexus))
 ::  +share-groups-json: every usergroup, decoded for the editor.
 ++  share-groups-json
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
-  ;<  dn=view:nexus  bind:m  (peek:fio [%& %| ug-base] ~)
+  ;<  ub=path  bind:m  ug-dir
+  ;<  dn=view:nexus  bind:m  (peek:fio [%& %| ub] ~)
   ?.  ?=([%ball *] dn)  (pure:m a+~)
   ::  nested groups too (+all-groups), named by their path, so the owner
   ::  sees every grant. The editor saves and deletes by a plain name only,
@@ -13814,7 +14079,7 @@
   ?~  names  (pure:m a+(flop out))
   =/  nt=tape  (trip (spat i.names))
   =/  base=@t  (crip (slag 1 (scag (sub (lent nt) 4) nt)))
-  =/  gdir=path  (weld ug-base i.names)
+  =/  gdir=path  (weld ub i.names)
   ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
   =/  ships=(list @p)
     ?.  ?=([%file *] wv)  ~
@@ -14469,7 +14734,8 @@
   |=  who=@p
   =/  m  (fiber:fiber:nexus ,(unit @ud))
   ^-  form:m
-  ;<  dn=view:nexus  bind:m  (peek:fio [%& %| ug-base] ~)
+  ;<  ub=path  bind:m  ug-dir
+  ;<  dn=view:nexus  bind:m  (peek:fio [%& %| ub] ~)
   ?.  ?=([%ball *] dn)  (pure:m `0)
   ::  every member the ban covers goes (+ban-drop:ls): the ship, its
   ::  moons when it is a planet, every comet when it is the comets, as
@@ -14490,7 +14756,7 @@
     ;<  h1=holds:ls  bind:m  holds-now
     ;<  ~  bind:m  (tell-holds h0 h1)
     (pure:m `(add hit u.dropped))
-  =/  gdir=path  (weld ug-base i.gs)
+  =/  gdir=path  (weld ub i.gs)
   ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
   =/  ships=(set @p)
     ?.  ?=([%file *] wv)  ~
@@ -14510,7 +14776,8 @@
   |=  bans=banned:ls
   =/  m  (fiber:fiber:nexus ,(unit @ud))
   ^-  form:m
-  ;<  dn=view:nexus  bind:m  (peek:fio [%& %| ug-base] ~)
+  ;<  ub=path  bind:m  ug-dir
+  ;<  dn=view:nexus  bind:m  (peek:fio [%& %| ub] ~)
   ?.  ?=([%ball *] dn)  (pure:m `0)
   =/  gs=(list @t)
     %+  ban-groups:ls  bans
@@ -14526,7 +14793,7 @@
   =|  hit=@ud
   |-  ^-  form:m
   ?~  gs  (pure:m `hit)
-  =/  gdir=path  (snoc ug-base (crip (weld (trip i.gs) ".grp")))
+  =/  gdir=path  (snoc ub (crip (weld (trip i.gs) ".grp")))
   ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
   ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| gdir])
   ?^  e  (pure:m ~)
@@ -14559,7 +14826,8 @@
   |=  [gname=@t ships=(set @p) pk=(set road:tarball) mk=(set road:tarball)]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
+  ;<  ub=path  bind:m  ug-dir
+  =/  gdir=path  (snoc ub (crip (weld (trip gname) ".grp")))
   ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
   =/  cur=(set @p)
     ?.  ?=([%file *] wv)  ~
@@ -20143,7 +20411,8 @@
 ++  revoke-old-roads
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ;<  ub=path  bind:m  ug-dir
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ub] ~)
   ?~  vw  (pure:m |)
   ?.  ?=([%ball *] u.vw)  (pure:m &)
   =/  gs=(list [rel=path gb=ball:tarball])  (all-groups / ball.u.vw)
@@ -20169,7 +20438,7 @@
   =/  nw=weir:nexus  [(keep make.u.w) (keep poke.u.w) (keep peek.u.w)]
   ?:  =(nw u.w)  $(gs t.gs)
   ;<  wrote=?  bind:m
-    (ug-over [%& %& (weld ug-base rel.i.gs) %'how.weir'] [[/ %weir] nw])
+    (ug-over [%& %& (weld ub rel.i.gs) %'how.weir'] [[/ %weir] nw])
   $(gs t.gs, ok &(ok wrote))
 ::  +cull-old-app: delete the old tree. The whole tree in one cull when our
 ::  road covers it, else what is in it: its root's grubs one by one and
@@ -20300,17 +20569,17 @@
         ['poke' (arr ~['/shares.sig' '/comments.sig' '/forum.sig' '/access.sig'])]
         ['peek' (arr ['/pub/' (weld peeks bpeeks)])]
     ==
-  =/  gfile=road:tarball  (rf up / %'groups.json')
-  ;<  cur=json  bind:m  (json-at gfile)
-  =/  obj=(map @t json)  (rise-omap cur)
-  ?:  =(`ent (~(get by obj) '/public'))
-    (fault-clear ~['public-group' 'registry-road' 'public-grant'])
+  ::  into public-how.json, which /groups.sig, the one writer of
+  ::  groups.json, puts there as /public (+publish-groups)
+  =/  pfile=road:tarball  (rf up / %'public-how.json')
+  ;<  cur=json  bind:m  (json-at pfile)
+  ?:  =(ent cur)  (fault-clear ~['public-group' 'registry-road'])
   ::  SOFT, because a veto is a crashed event that rolls back everything
   ::  this fiber already wrote
   ;<  how=(unit tang)  bind:m
-    (over-as-soft:io gfile [[/ %json] [%o (~(put by obj) '/public' ent)]] [/ %json])
-  ?~  how  (fault-clear ~['public-group' 'registry-road' 'public-grant'])
-  (fault 'public-grant' 0 "lattice: published pages stay on this ship: groups.json was not written" ~)
+    (over-as-soft:io pfile [[/ %json] ent] [/ %json])
+  ?~  how  (fault-clear ~['public-group' 'registry-road'])
+  (fault 'public-grant' 0 "lattice: published pages stay on this ship: public-how.json was not written" ~)
 ::  +public-boards: the names of the boards under a /forum/boards ball whose
 ::  card says public. An unreadable card is not public. Pure.
 ::
@@ -20908,6 +21177,12 @@
 ::  (/access-answer) grants through here too.
 ++  share-folder-grant
   |=  [shp=@p mode=@t pax=path]
+  (share-folder-grant-in (crip (slag 1 (scow %p shp))) (silt ~[shp]) mode pax &)
+::  +share-folder-grant-in: +share-folder-grant for group `gname` with
+::  members `who`. `tell` is whether the ships that gain or lose a page
+::  hear of it: +carry-groups makes old shares again and tells no one.
+++  share-folder-grant-in
+  |=  [gname=@t who=(set @p) mode=@t pax=path tell=?]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -20929,12 +21204,12 @@
     %-  silt
     :-  [%& %& (at ~) %'dir-index']
     (murn all |=([p=path page=?] ?:(page ~ `[%& %& (at p) %'dir-index'])))
-  =/  gname=@t  (crip (slag 1 (scow %p shp)))
   ::  what the ship holds by hand on each page under the folder is noted
   ::  as the page's own grant (+own-infer:ls), so unsharing the folder
   ::  later leaves it at its own mode
+  ;<  ub=path  bind:m  ug-dir
   ;<  wr=weir:nexus  bind:m
-    (ug-read-weir (snoc ug-base (crip (weld (trip gname) ".grp"))))
+    (ug-read-weir (snoc ub (crip (weld (trip gname) ".grp"))))
   ;<  own=(list [p=path md=@t])  bind:m
     ?.  ?=([%ball *] dv)  (pure:(fiber:fiber:nexus ,(list [p=path md=@t])) ~)
     (own-held ball.dv wr gname at)
@@ -20943,7 +21218,7 @@
   ;<  h0=holds:ls  bind:m  holds-now
   ;<  ok=?  bind:m
     %:  ug-merge  gname
-      (~(gas in *(set @p)) ~[shp])
+      who
       (~(uni in codes) idx)
       ?.(=('edit' mode) ~ codes)
     ==
@@ -20955,6 +21230,7 @@
     ?~  own  (pure:n ~)
     ;<  ~  bind:n  (poke-eval [%grant-own (weld pax p.i.own) gname md.i.own])
     $(own t.own)
+  ?.  tell  (pure:m &)
   ;<  h1=holds:ls  bind:m  holds-now
   ;<  ~  bind:m  (tell-holds h0 h1)
   (pure:m &)
@@ -21176,7 +21452,8 @@
     ;<  *  bind:m  (cull-soft:io (rf up (weld /page rel) %'grant-via'))
     $(ps t.ps)
   ::  group folder roads over a sensitive page
-  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ;<  ub=path  bind:m  ug-dir
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ub] ~)
   ;<  ~  bind:m
     ?.  ?=([~ %ball *] vw)  (pure:m ~)
     =/  pre=path  (weld sb /page)
@@ -21296,7 +21573,8 @@
   |=  [gname=@t rs=(set road:tarball) ro=(set road:tarball)]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
+  ;<  ub=path  bind:m  ug-dir
+  =/  gdir=path  (snoc ub (crip (weld (trip gname) ".grp")))
   ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
   =/  cur=(set @p)
     ?.  ?=([%file *] wv)  ~
@@ -21499,7 +21777,8 @@
   |=  [gname=@t act=action:ls]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
+  ;<  ub=path  bind:m  ug-dir
+  =/  gdir=path  (snoc ub (crip (weld (trip gname) ".grp")))
   ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
   =/  ships=(list @p)
     ?.  ?=([%file *] wv)  ~
@@ -21610,7 +21889,8 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  sb=path  bind:m  self-base
-  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ;<  ub=path  bind:m  ug-dir
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ub] ~)
   ?.  ?=([~ %ball *] vw)  (pure:m ~)
   =/  pre=path  (weld sb /page)
   =/  n=@ud  (lent pre)

@@ -35,6 +35,15 @@
       <button id="aclnewbtn">create group</button>
     </div>
     <div id="aclgrid" class="aclgrid"></div>
+    <section class="aclold" id="aclold" hidden aria-labelledby="acloldh">
+      <h4 id="acloldh">old sharing groups</h4>
+      <p class="aclnote">These groups were made before lattice kept its own, and
+      your ship now keeps them in its own settings, which lattice cannot change.
+      They still let their ships read what is listed, even after you unshare it
+      here. Your shares themselves are already carried into the groups above.
+      Remove each one on the Peers page once you no longer need it.</p>
+      <div id="acloldlist"></div>
+    </section>
     <section class="aclpub" id="aclpub" data-action="published" aria-labelledby="aclpubh">
       <h4 id="aclpubh">published pages</h4>
       <p class="aclnote">Pages anyone can read without a grant. Any ship can read
@@ -327,6 +336,29 @@
     const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
     const disp = (v) => shortPath(v, allPaths);
     for (const g of permGroups) grid.appendChild(aclCard(g, disp));
+  }
+  // the groups from before lattice kept its own (/legacy-groups): listed so
+  // the owner can remove them on the Peers page, since lattice may not
+  function renderLegacy() {
+    const box = $('aclold'), list = $('acloldlist');
+    if (!box || !list) return;
+    list.textContent = '';
+    box.hidden = !permLegacy.length;
+    for (const g of permLegacy) {
+      const row = document.createElement('div');
+      row.className = 'acloldrow';
+      const what = document.createElement('span');
+      what.textContent = g.name + ': ' + (g.ships.join(' ') || 'no ships') + ' can read '
+        + g.roads.length + ' item' + (g.roads.length === 1 ? '' : 's');
+      what.title = g.roads.join('\n');
+      const a = document.createElement('a');
+      a.href = g.peers;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = 'remove on Peers page';
+      row.append(what, ' ', a);
+      list.appendChild(row);
+    }
   }
 
   // ── banlist ──────────────────────────────────────────────────────────────

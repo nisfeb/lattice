@@ -10,6 +10,8 @@
   // non-directory rules are real but dojo territory. The server preserves
   // them verbatim on every save, and the ACL pane reports how many exist.
   let permGroups = [];
+  // the groups from before lattice kept its own (72-acl.js renderLegacy)
+  let permLegacy = [];
   // "no groups yet" and "not loaded yet" are different claims, and the group
   // list is deferred off boot's critical path. Without this flag the panel
   // asserts you have no groups for the second or two before the answer lands.
@@ -39,8 +41,14 @@
     permGroups = await r.json();
     permsLoaded = true;
     permsErr = null;
+    // optional: a ship that refused lattice the usergroups read lists none
+    try {
+      const lr = await get(api + '/legacy-groups');
+      permLegacy = lr.ok ? await lr.json() : [];
+    } catch { permLegacy = []; }
     // every surface that renders groups repaints from this one load
     renderAcl();
+    renderLegacy();
     renderGroupAccess();
   }
   async function permSave(g) {

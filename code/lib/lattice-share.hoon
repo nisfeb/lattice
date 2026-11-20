@@ -360,6 +360,56 @@
   =/  d  (mole |.(;;([%& %| p=path] r)))
   ?^  d  `[%| p.u.d]
   ~
+::  +road-text: an absolute road as an app's groups.json names it,
+::  relative to `sb`, the app's root: a directory ends in /, a file does
+::  not (the shell's +app-parse-road). ~ for a road outside `sb`, or a
+::  relative road or any other shape.
+++  road-text
+  |=  [sb=path r=*]
+  ^-  (unit @t)
+  =/  l  (road-lane r)
+  ?~  l  ~
+  =/  p=path  ?-(-.u.l %& p.u.l, %| p.u.l)
+  ?.  =(sb (scag (lent sb) p))  ~
+  =/  rel=path  (slag (lent sb) p)
+  ?:  ?=(%& -.u.l)
+    ?~  rel  ~
+    `(crip (spud rel))
+  ?~  rel  `'/'
+  `(crip (weld (spud rel) "/"))
+::  +groups-entry: lattice's own sharing groups as the value of the
+::  `/lattice/` key in its groups.json, the prefix it runs groups under.
+::  The shell makes /sys/ames/usergroups/lattice/<name>.grp from each
+::  sub-key. `gs` holds each group's name (its path under the prefix,
+::  without .grp), members and the three road sets, absolute. A road
+::  outside `sb` cannot be named there: it is left out and counted in
+::  `lost`, so the caller can say so. Members and roads are sorted, so an
+::  unchanged set gives an equal entry.
+++  groups-entry
+  |=  [sb=path gs=(list [name=@t who=(list @p) mk=(list *) po=(list *) pk=(list *)])]
+  ^-  [ent=json lost=@ud]
+  =/  txt
+    |=  rs=(list *)
+    ^-  [(list @t) @ud]
+    =/  ok=(list @t)  (murn rs |=(r=* (road-text sb r)))
+    [(sort ok aor) (sub (lent rs) (lent ok))]
+  =|  lost=@ud
+  =|  out=(map @t json)
+  |-  ^-  [ent=json lost=@ud]
+  ?~  gs  [[%o out] lost]
+  =/  [mk=(list @t) a=@ud]  (txt mk.i.gs)
+  =/  [po=(list @t) b=@ud]  (txt po.i.gs)
+  =/  [pk=(list @t) c=@ud]  (txt pk.i.gs)
+  =/  arr  |=(ts=(list @t) `json`a+(turn ts |=(t=@t s+t)))
+  =/  g=json
+    :-  %o
+    %-  my
+    :~  ['members' (arr (turn (sort who.i.gs lth) |=(w=@p (scot %p w))))]
+        ['make' (arr mk)]
+        ['poke' (arr po)]
+        ['peek' (arr pk)]
+    ==
+  $(gs t.gs, out (~(put by out) name.i.gs g), lost :(add lost a b c))
 ::  +grant-covers: does road `r` grant the page whose dir is `pg`? A dir
 ::  road at or above the page does, and so does a file road on a file in
 ::  the page's dir or below. With mak (the make side), a dir road below
