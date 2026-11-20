@@ -73,7 +73,21 @@ fn hunks(base: &[&str], side: &[&str]) -> Vec<Hunk> {
 /// dropped without being said. Every block of the base that neither
 /// side changed is kept, as this window has it.
 // ponytail: blocks are alike only when their text is the same, and a block one side moved is a cut and a write. Two sides that move the same block to different places leave it twice. A merge that knows a move is the fix
-pub fn merge3(kind: &str, base: &str, mine: &str, theirs: &str) -> Merged {
+/// The merge, or nothing when it cannot be trusted: a block was moved, or
+/// a text stands more than once, in a way the merge would lose or double.
+/// Then the owner chooses between the two whole, as before there was a merge.
+pub fn safe(kind: &str, base: &str, mine: &str, theirs: &str) -> Option<Merged> {
+    Some(walk(kind, base, mine, theirs)).filter(|w| w.1).map(|w| w.0)
+}
+
+/// The merge whether it can be trusted or not.
+#[cfg(test)]
+fn merge3(kind: &str, base: &str, mine: &str, theirs: &str) -> Merged {
+    walk(kind, base, mine, theirs).0
+}
+
+/// The merge, and whether every text of the base stands in it as often as it should.
+fn walk(kind: &str, base: &str, mine: &str, theirs: &str) -> (Merged, bool) {
     let (b, m, t) = (parts(kind, base), parts(kind, mine), parts(kind, theirs));
     let trim = |v: &[&'_ str]| -> Vec<String> { v.iter().map(|s| s.trim_end().to_owned()).collect() };
     let (bt, mt, tt) = (trim(&b), trim(&m), trim(&t));
@@ -135,31 +149,36 @@ pub fn merge3(kind: &str, base: &str, mine: &str, theirs: &str) -> Merged {
         }
         (i, mp, tp) = (g1, m1, t1);
     }
-    // A block one side moved is, to the walk, cut in one place and
-    // written in another, so it can come out once more than it should:
-    // twice when both sides moved it alike, and back again when this
-    // window cut it and they moved it. Each block of the base is counted,
-    // and a copy too many is taken out where it came from their side.
-    // ponytail: a move is not known as a move. Their copy goes and this window's stays, which is right for these two cases and says nothing. A diff that knows a move is the fix
-    let count = |v: &[String], x: &str| v.iter().filter(|b| b.as_str() == x).count();
-    let said = |o: &(bool, usize)| if o.0 { mt[o.1].as_str() } else { tt[o.1].as_str() };
-    let mut seen = std::collections::HashSet::new();
-    for x in bt.iter().filter(|x| !x.is_empty()) {
-        if !seen.insert(x.as_str()) {
-            continue;
+    // The walk knows a block by where it stands, so a block one side
+    // moved, or a text that stands more than once, can come out a time
+    // too many or too few. Each text of the base is counted in all four.
+    // What neither side changed the count of stands as often as it did,
+    // and what one side alone changed the count of stands as often as
+    // that side has it. Where both wrote, this window's stays, so only
+    // its count is held to then.
+    // ponytail: a merge that fails this is not mended, it is not made. A diff that knows a move is the fix
+    fn counts<'a>(v: impl Iterator<Item = &'a str>) -> std::collections::HashMap<&'a str, usize> {
+        let mut n = std::collections::HashMap::new();
+        for x in v {
+            *n.entry(x).or_default() += 1;
         }
-        let (cb, cm, ct) = (count(&bt, x), count(&mt, x), count(&tt, x));
-        let want = if cm == cb { ct } else if ct == cb { cm } else { cm.max(ct) };
-        let mut have = out.iter().filter(|o| said(o) == x).count();
-        while have > want {
-            let Some(at) = out.iter().rposition(|o| !o.0 && said(o) == x) else { break };
-            out.remove(at);
-            for mark in marks.iter_mut().filter(|mark| mark.0 > at) {
-                mark.0 -= 1;
-            }
-            have -= 1;
-        }
+        n
     }
+    let (cm, ct) = (counts(mt.iter().map(String::as_str)), counts(tt.iter().map(String::as_str)));
+    let co = counts(out.iter().map(|o| if o.0 { mt[o.1].as_str() } else { tt[o.1].as_str() }));
+    let sound = counts(bt.iter().map(String::as_str)).into_iter().filter(|(x, _)| !x.is_empty()).all(|(x, b)| {
+        let at = |c: &std::collections::HashMap<&str, usize>| c.get(x).copied().unwrap_or(0);
+        let (m, t, o) = (at(&cm), at(&ct), at(&co));
+        if t == b {
+            o == m
+        } else if m == b {
+            // theirs, or as far towards this window's as what was kept over theirs goes
+            o == t || (!marks.is_empty() && o >= m.min(t) && o <= m.max(t))
+        } else {
+            // both changed how often it stands: no more than either has it, and no fewer, unless this window's was kept over theirs
+            (m > b || t > b || o <= m.max(t)) && (o >= m.min(t) || !marks.is_empty())
+        }
+    });
     let mut text = String::new();
     let mut starts = Vec::with_capacity(out.len());
     for (n, (mine_one, x)) in out.iter().enumerate() {
@@ -189,7 +208,7 @@ pub fn merge3(kind: &str, base: &str, mine: &str, theirs: &str) -> Merged {
             Conflict { place, mine, theirs }
         })
         .collect();
-    Merged { text, conflicts }
+    (Merged { text, conflicts }, sound)
 }
 
 #[cfg(test)]
@@ -340,17 +359,113 @@ mod tests {
     }
 
     #[test]
-    fn a_block_both_moved_alike_is_not_doubled() {
-        let m = merge3("md", "C.\n\nD.\n\nE.", "D.\n\nC.", "D.\n\nC.\n\nE.");
-        assert_eq!((m.text.as_str(), m.conflicts.len()), ("D.\n\nC.", 0));
-        let m = merge3("md", "C.\n\nD.\n\nE.", "D.\n\nC.\n\nE.", "D.\n\nC.");
-        assert_eq!(m.text.matches("C.").count(), 1);
+    fn a_merge_that_would_double_or_lose_a_block_is_not_made() {
+        // both moved a block alike, which the walk would put twice
+        assert_eq!(safe("md", "C.\n\nD.\n\nE.", "D.\n\nC.", "D.\n\nC.\n\nE."), None);
+        // this window cut a block and they moved it: it would come back
+        assert_eq!(safe("md", "A.\n\nB.\n", "B.\n", "B.\n\nA.\n"), None);
+        // this window moved a block and they cut it: it would stay without a word
+        assert_eq!(safe("md", "x\n\ny\n", "y\n\nx\n", "y\n"), None);
+        // a text that stands twice, and one of the two would go
+        assert_eq!(safe("md", "x\n\nx\n\ny\n", "x\n\ny\n\nx\n", "y\n\nx\n\ny\n\nx\n"), None);
+        assert_eq!(safe("md", "A.\n\nx\n\nx\n", "M.\n\nx\n\nE1.\n", "A.\n\nx\n\nE2.\n"), None);
+        // a block neither touched that would be left only in what is handed back
+        assert_eq!(safe("md", "A.\n\nB.\n\nC.\n", "A.\n", "B.\n\nA.\n"), None);
     }
 
     #[test]
-    fn a_block_this_window_cut_does_not_come_back_moved() {
-        let m = merge3("md", "A.\n\nB.\n", "B.\n", "B.\n\nA.\n");
-        assert_eq!(m.text, "B.\n");
+    fn a_plain_merge_is_made() {
+        let m = safe("md", "A.\n\nB.\n\nC.\n", "A mine.\n\nB.\n\nC.\n", "A.\n\nB.\n\nC theirs.\n").unwrap();
+        assert_eq!((m.text.as_str(), m.conflicts.len()), ("A mine.\n\nB.\n\nC theirs.\n", 0));
+        // a rule each side wrote beside its own writing: all three stay
+        let m = safe("md", "Intro.\n\n---\n\nEnd.\n", "Intro.\n\n---\n\nEnd.\n\n---\n\nMine.\n", "Theirs.\n\n---\n\nIntro.\n\n---\n\nEnd.\n").unwrap();
+        assert_eq!(m.text.matches("---").count(), 3, "{}", m.text);
+        // both wrote in one block: this window's stays and theirs is handed back
+        let m = safe("md", "A.\n\nB.\n", "A mine.\n\nB.\n", "A theirs.\n\nB.\n").unwrap();
+        assert_eq!((m.text.as_str(), m.conflicts.len()), ("A mine.\n\nB.\n", 1));
+        // one cut a block the other left, beside a block both wrote
+        assert!(safe("md", "Base0.\n\nBase1.", "Base1.", "").is_some());
+    }
+
+    /// Every page of up to `most` blocks from `of`, as texts.
+    fn pages(of: &[&str], most: usize) -> Vec<String> {
+        let mut all = vec![Vec::<&str>::new()];
+        let mut from = 0;
+        for _ in 0..most {
+            let upto = all.len();
+            for i in from..upto {
+                for w in of {
+                    let mut next = all[i].clone();
+                    next.push(w);
+                    all.push(next);
+                }
+            }
+            from = upto;
+        }
+        all.into_iter().map(|p| p.join("\n\n")).collect()
+    }
+
+    #[test]
+    fn a_merge_that_is_made_holds_every_block_as_often_as_it_should() {
+        let count = |text: &str, w: &str| text.split("\n\n").filter(|b| b.trim() == w).count();
+        let (mut made, mut not) = (0, 0);
+        for base in pages(&["x", "y"], 3) {
+            for mine in pages(&["x", "y", "z"], 3) {
+                for theirs in pages(&["x", "y", "z"], 3) {
+                    let Some(m) = safe("txt", &base, &mine, &theirs) else {
+                        not += 1;
+                        continue;
+                    };
+                    made += 1;
+                    let case = format!("{base:?} {mine:?} {theirs:?} -> {:?}", m.text);
+                    for w in ["x", "y", "z"] {
+                        let (b, mi, th, o) = (count(&base, w), count(&mine, w), count(&theirs, w), count(&m.text, w));
+                        let handed = m.conflicts.iter().any(|c| count(&c.theirs, w) > 0);
+                        // what either wrote is in the text or handed back
+                        assert!(o > 0 || handed || (mi == 0 && th == 0) || b > 0, "lost {w}: {case}");
+                        if th == b {
+                            assert_eq!(o, mi, "this window's {w}: {case}");
+                        } else if mi == b && m.conflicts.is_empty() {
+                            assert_eq!(o, th, "their {w}: {case}");
+                        }
+                        if b > 0 && mi <= b && th <= b {
+                            assert!(o <= mi.max(th), "a {w} too many: {case}");
+                        }
+                    }
+                    if mine == base {
+                        assert_eq!(m.text.trim_end(), theirs.trim_end(), "{case}");
+                    }
+                    if theirs == base {
+                        assert_eq!(m.text, mine, "{case}");
+                    }
+                }
+            }
+        }
+        // most are made: the refusals are the moves and the repeats
+        assert!(made > not * 3, "{made} made, {not} not");
+    }
+
+    #[test]
+    fn edits_cuts_and_writes_of_blocks_that_stand_once_are_always_merged() {
+        let base = ["A.", "B.", "C.", "D.", "E."];
+        // each side does one thing to each block: 0 leaves it, 1 edits it, 2 cuts it, 3 writes a block after it
+        let side = |ops: usize, tag: &str| -> String {
+            let mut out = Vec::new();
+            for (i, b) in base.iter().enumerate() {
+                match (ops >> (2 * i)) & 3 {
+                    1 => out.push(format!("{b} {tag}{i}")),
+                    2 => {}
+                    3 => out.extend([(*b).to_owned(), format!("new {tag}{i}")]),
+                    _ => out.push((*b).to_owned()),
+                }
+            }
+            out.join("\n\n")
+        };
+        for a in 0..1024 {
+            for b in (0..1024).step_by(7) {
+                assert!(safe("md", &base.join("\n\n"), &side(a, "m"), &side(b, "t")).is_some(), "{a} {b}");
+            }
+        }
     }
 
     #[test]

@@ -11791,7 +11791,8 @@ fn link_menu_view(s: &App, k: &Kit, layer: &mut Vec<El>) -> El {
             let Some((url, _)) = s.link_menu.take() else { return };
             match id {
                 "copy" => {
-                    tx.copy(url);
+                    // a link from another ship's page may hold a new line or a mark that turns the text: neither is put where it may be pasted
+                    tx.copy(notify::text(&url, 4096));
                     s.note = "Link copied".to_owned();
                 }
                 _ => follow_in(s, &url, id == "tab", tx),
@@ -12622,7 +12623,7 @@ fn here_listen(s: &mut App, page: String) {
     (s.here_stop, s.here) = (stop.clone(), heard.clone());
     let id = s.client_id.clone();
     std::thread::spawn(move || {
-        let mut fail = 0u32;
+        let (mut fail, mut barren) = (0u32, 0u32);
         while !stop.load(Ordering::Relaxed) {
             let mut any = false;
             let got = c.here_stream(&page, &id, |t| {
@@ -12636,7 +12637,10 @@ fn here_listen(s: &mut App, page: String) {
                 // asked at every word from the ship, a table or not, so a stop is heard within its 30 seconds
                 !stop.load(Ordering::Relaxed)
             });
-            let off = got.as_ref().is_err_and(|e| no_presence(e));
+            // a ship that ends each stream at once, as one at its cap of streams does, or fails each time, is let be after five
+            let ended = !any && got.as_ref().map_or_else(|e| e.starts_with('5'), |()| true);
+            barren = if ended { barren + 1 } else { 0 };
+            let off = got.as_ref().is_err_and(|e| no_presence(e)) || barren >= 5;
             if let Ok(mut h) = heard.lock() {
                 (h.table, h.down, h.off) = (None, true, off);
             }
@@ -12703,11 +12707,15 @@ fn sync_here(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     if let Ok(mut h) = s.here.lock() {
         if std::mem::take(&mut h.off) {
-            s.here_off_until = clock + 600.0;
+            // the page is left without a word: a ship that refused the stream has no row to take away
+            (s.here_off_until, s.here_for, s.here_now) = (clock + 600.0, None, None);
         }
-        // nobody is shown from a stream that has ended: they may have gone since
-        if std::mem::take(&mut h.down) && s.here_shown.take().is_some() {
-            (s.here_heard, changed) = (s.here_heard + 1, true);
+        // nobody is shown from a stream that has ended: they may have gone since. The ship has lost this window's place with it, so it is told again
+        if std::mem::take(&mut h.down) {
+            s.here_tries = 0;
+            if s.here_shown.take().is_some() {
+                (s.here_heard, changed) = (s.here_heard + 1, true);
+            }
         }
         // a table for a page since left is not this page's
         if let Some(t) = h.table.take().filter(|t| Some(&t.page) == s.here_for.as_ref()) {
@@ -12781,8 +12789,11 @@ fn sync_merge(s: &mut App) {
         return;
     }
     s.merge_key = key;
-    s.merge_said = s.open.as_ref().zip(stale_theirs(s)).map(|(p, theirs)| merge::merge3(&p.kind, &p.body, &edited(s), &theirs.body).conflicts.len());
+    s.merge_said = s.open.as_ref().zip(stale_theirs(s)).map(|(p, theirs)| merge::safe(&p.kind, &p.body, &edited(s), &theirs.body).map_or(NO_MERGE, |m| m.conflicts.len()));
 }
+
+/// What the banner's count is when the two texts cannot be merged safely (`merge::safe`).
+const NO_MERGE: usize = usize::MAX;
 
 /// Merges what was saved somewhere else into what is typed here, by the
 /// page's blocks. What only they changed is taken, what only this
@@ -12791,7 +12802,7 @@ fn sync_merge(s: &mut App) {
 /// so the next save lands. Nothing is saved by this.
 fn merge_theirs(s: &mut App) {
     let (Some(p), Some(theirs)) = (s.open.clone(), stale_theirs(s).cloned()) else { return };
-    let m = merge::merge3(&p.kind, &p.body, &edited(s), &theirs.body);
+    let Some(m) = merge::safe(&p.kind, &p.body, &edited(s), &theirs.body) else { return };
     // the caret is a place in the editor's bytes
     let (was, caret) = (s.edit.text.clone(), s.edit.focus);
     // the editor shows the merged text in the way it was showing the page
@@ -12946,7 +12957,7 @@ fn start_scrub(s: &mut App) {
 /// Takes the film when it is whole, and steps it while it plays. Whether anything changed.
 fn sync_scrub(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     // the page was left: its history goes with it
-    if s.scrub.as_ref().is_some_and(|sc| s.editing || s.open.as_ref().is_none_or(|p| p.name != sc.name)) {
+    if s.scrub.as_ref().is_some_and(|sc| s.editing || s.memory || s.remote.is_some() || s.open.as_ref().is_none_or(|p| p.name != sc.name)) {
         s.scrub = None;
         return true;
     }
@@ -13105,7 +13116,7 @@ fn history_view(s: &App, k: &Kit) -> El {
                     .radius(k.radius.sm)
                     .on_press(move |s: &mut App| match s.scrub.as_ref().and_then(|sc| sc.film.as_ref()?.frames.iter().position(|f| f.rev == rev)) {
                         Some(at) => scrub_to(s, at),
-                        // a film still being read may yet hold it: the press waits for that
+                        // a film still being read may yet hold it: the press does nothing until it is read
                         None if s.scrub.as_ref().is_some_and(|sc| sc.film.is_none()) => {}
                         // a revision the film does not hold, older than it reaches: the scrubber is left for it
                         None => {
@@ -13176,6 +13187,7 @@ fn body(s: &App, k: &Kit) -> El {
     } else if s.editing && s.stale {
         // their text can be merged into what is typed here, by the page's blocks, or written over
         let say = match s.merge_said {
+            Some(NO_MERGE) => "This page was changed somewhere else while you were editing. Parts were moved or stand twice, so the two cannot be merged safely. Copy what you need, or save over theirs: their text stays in the history.".to_owned(),
             Some(0) => "This page was changed somewhere else while you were editing. Their changes are in other parts of it than yours.".to_owned(),
             Some(1) => "This page was changed somewhere else while you were editing. One part was changed both here and there.".to_owned(),
             Some(n) => format!("This page was changed somewhere else while you were editing. {n} parts were changed both here and there."),
@@ -13191,7 +13203,7 @@ fn body(s: &App, k: &Kit) -> El {
                 save(s);
             }
         }).build(k).key("stale-act");
-        let merge = s.merge_said.map(|both| {
+        let merge = s.merge_said.filter(|both| *both != NO_MERGE).map(|both| {
             Button::new(if both == 0 { "Merge theirs in" } else { "Merge, keeping mine there" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).help("Take what they changed into what is typed here. Nothing is saved until you save").on_press(merge_theirs).build(k).key("stale-merge")
         });
         Some(row().key("stale").w_full().px(16.0).py(8.0).gap(8.0).center_y().fill(k.c.layer_01).child(text(say).font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0)).children(merge).child(over))

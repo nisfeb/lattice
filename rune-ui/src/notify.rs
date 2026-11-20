@@ -23,7 +23,8 @@ const BODY_MAX: usize = 200;
 /// that turn the direction of the text after them, and `max` characters
 /// at most. A page's name comes from another ship.
 pub fn text(s: &str, max: usize) -> String {
-    let turns = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    // the marks that turn the text, break the line, or take no room
+    let turns = |c: char| matches!(c, '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}');
     s.chars().filter(|c| !c.is_control() && !turns(*c)).take(max).collect()
 }
 

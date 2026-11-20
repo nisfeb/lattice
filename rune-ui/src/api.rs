@@ -967,9 +967,9 @@ fn session_path() -> Option<std::path::PathBuf> {
 /// The app's own folder for what it keeps between runs.
 // ponytail: XDG_CONFIG_HOME, then HOME. Windows sets neither, so nothing is kept there. The system's own folder for it is the fix
 pub(crate) fn config_dir() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+    // one set and empty is not set: it would name the folder the app was started in
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+    let base = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|h| h.join(".config")))?;
     Some(base.join("lattice-rune"))
 }
 

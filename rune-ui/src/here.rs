@@ -47,7 +47,22 @@ const ROWS_MOST: usize = 256;
 /// not printed, and no longer than the ship lets one be.
 fn clean(s: &mut String, most: usize) {
     if s.len() > most || s.chars().any(char::is_control) {
-        *s = s.chars().filter(|c| !c.is_control()).take(most).collect();
+        s.retain(|c| !c.is_control());
+        let mut end = most.min(s.len());
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+}
+
+/// A place as the ship sent it, or no place when it is not one this
+/// client could have named: too long, or with something unprinted other
+/// than the mark `place` puts between a heading and a count. It is
+/// compared whole, so it is never cut.
+fn clean_place(s: &mut String) {
+    if s.len() > 128 || s.chars().any(|c| c.is_control() && c != '\u{1f}') {
+        s.clear();
     }
 }
 
@@ -58,9 +73,10 @@ pub fn table(data: &str) -> Option<Table> {
     let mut t: Table = serde_json::from_str(data).ok()?;
     t.here.truncate(ROWS_MOST);
     for r in &mut t.here {
-        clean(&mut r.who, 96);
+        // a comet's name, a stroke and 64 bytes of window
+        clean(&mut r.who, 160);
         clean(&mut r.ship, 64);
-        clean(&mut r.block, 128);
+        clean_place(&mut r.block);
     }
     Some(t)
 }
@@ -245,7 +261,12 @@ mod tests {
         let t = table(&format!(r#"{{"page":"a","here":[{{"who":"~zod/1","ship":"~z\u0007od\n{long}","block":"{long}","mode":"edit"}}]}}"#)).unwrap();
         assert_eq!(t.here[0].ship.len(), 64);
         assert!(t.here[0].ship.starts_with("~zodx"));
-        assert_eq!(t.here[0].block.len(), 128);
+        assert_eq!(t.here[0].block, "");
+        // a place comes back as it was named, mark and all
+        let named = place("md", "# Site\n\none\n\ntwo\n", 12);
+        assert!(named.contains('\u{1f}'));
+        let t = table(&serde_json::json!({"page": "a", "here": [{"who": "~zod/1", "ship": "~zod", "block": named, "mode": "edit"}]}).to_string()).unwrap();
+        assert_eq!(t.here[0].block, named);
     }
 
     #[test]

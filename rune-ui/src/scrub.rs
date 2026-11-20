@@ -58,15 +58,20 @@ pub fn blocks(src: &str) -> Vec<std::ops::Range<usize>> {
 // ponytail: likeness is shared words over the longer block, and half alike counts as the same block. A proper diff if blocks are matched wrongly or a revision that rewrites a long page is slow
 fn alike(a: &str, b: &str) -> f32 {
     let words = |s: &str| -> Vec<String> { s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect() };
-    let (wa, mut wb) = (words(a), words(b));
+    let (wa, wb) = (words(a), words(b));
     let most = wa.len().max(wb.len());
     if most == 0 {
         return if a.trim() == b.trim() { 1.0 } else { 0.0 };
     }
+    // each word of the one counts once against a word of the other
+    let mut left: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for w in &wb {
+        *left.entry(w).or_default() += 1;
+    }
     let mut shared = 0;
     for w in &wa {
-        if let Some(i) = wb.iter().position(|x| x == w) {
-            wb.swap_remove(i);
+        if let Some(n) = left.get_mut(w.as_str()).filter(|n| **n > 0) {
+            *n -= 1;
             shared += 1;
         }
     }
@@ -88,8 +93,15 @@ pub(crate) fn same(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
     out
 }
 
+/// The most cells the table of `same_in` may have: 16 MB of it.
+const SAME_MOST: usize = 4_000_000;
+
 fn same_in(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
     let (n, m) = (a.len(), b.len());
+    // ponytail: two texts that differ in more blocks than the table may hold are taken to share none of them. The scrubber then shows them all as changed, and a merge keeps this window's and says so. A linear diff is the fix
+    if n.saturating_mul(m) > SAME_MOST {
+        return Vec::new();
+    }
     let mut len = vec![vec![0u32; m + 1]; n + 1];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
@@ -284,7 +296,8 @@ pub fn doc_md(body: &str) -> String {
                         let level = tag.split_once("text:outline-level=\"").and_then(|(_, r)| r.split('"').next()?.parse::<usize>().ok()).unwrap_or(1);
                         format!("{} ", "#".repeat(level.clamp(1, 6)))
                     }
-                    _ if lists > 0 => format!("{}- ", "  ".repeat(lists - 1)),
+                    // no deeper than eight: a file may nest lists without end
+                    _ if lists > 0 => format!("{}- ", "  ".repeat((lists - 1).min(8))),
                     _ => String::new(),
                 };
             }
@@ -339,7 +352,8 @@ impl Film {
                     let mut i = i0;
                     for j in j0..j1 {
                         touched += 1;
-                        match (i..i1).find(|&x| alike(was[x], text[j]) >= 0.5) {
+                        // looked for among the next sixty-four, so a page rewritten whole is not every block against every other
+                        match (i..i1.min(i + 64)).find(|&x| alike(was[x], text[j]) >= 0.5) {
                             Some(x) => {
                                 cut += x - i;
                                 names[j] = was_name(x).unwrap_or_else(&mut fresh);
