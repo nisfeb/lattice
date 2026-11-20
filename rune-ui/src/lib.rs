@@ -19,6 +19,7 @@ mod mounts;
 mod notify;
 mod funcs;
 mod head;
+mod here;
 mod linkedit;
 mod map;
 mod marks;
@@ -842,6 +843,21 @@ struct App {
     tree_menu: Option<(String, rune::PointerPress)>,
     /// The link in a page a right-click was on, and where: its menu is open.
     link_menu: Option<(String, rune::PointerPress)>,
+    /// This run's id among the ship's windows, and who it is in a page's table.
+    client_id: String,
+    /// What the thread listening to who is on a page heard, and the page it listens on.
+    here: std::sync::Arc<std::sync::Mutex<HereHeard>>,
+    here_for: Option<String>,
+    here_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The table showing.
+    here_shown: Option<here::Table>,
+    /// What this window last said of itself (page, place, mode), when by the clock, and when it says so again.
+    here_said: Option<(String, String, String)>,
+    here_at: f64,
+    here_next: f64,
+    here_req: Latest<Result<(), String>>,
+    /// The ship has no presence: it is not asked again in this run.
+    here_off: bool,
     /// A page's history being dragged through, when it is.
     scrub: Option<Scrub>,
     /// What the thread reading that history has so far.
@@ -1281,6 +1297,16 @@ fn init() -> App {
         page_menu: false,
         tree_menu: None,
         link_menu: None,
+        client_id: here::client_id(),
+        here: Default::default(),
+        here_for: None,
+        here_stop: Default::default(),
+        here_shown: None,
+        here_said: None,
+        here_at: 0.0,
+        here_next: 0.0,
+        here_req: Latest::default(),
+        here_off: false,
         scrub: None,
         scrub_load: Default::default(),
         tab_drag: rune_kit::shell::TabDragState::new(),
@@ -1641,6 +1667,8 @@ fn switch_ship(s: &mut App, url: &str) {
 /// Builds the window's state again from what is kept: for the ship now in front when `signed`,
 /// or for no ship. Everything the window held of the ship before is let go.
 fn reset(s: &mut App, signed: bool) {
+    // the thread listening to who is on a page is for the ship that was in front
+    s.here_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut fresh = init();
     if !signed {
         fresh.conn = None;
@@ -2372,6 +2400,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.marks_req.set_waker(waker.clone());
     s.theme_req.set_waker(waker.clone());
     s.font_req.set_waker(waker.clone());
+    s.here_req.set_waker(waker.clone());
     s.folds_req.set_waker(waker.clone());
     s.sugg_req.set_waker(waker.clone());
     s.visits_req.set_waker(waker.clone());
@@ -5482,6 +5511,7 @@ const SYNC_LIVE: f64 = 300.0;
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     changed |= sync_scrub(s, clock, tx);
+    changed |= sync_here(s, clock, tx);
     changed |= sync_draft(s);
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -12371,6 +12401,167 @@ fn sidebar(s: &App, k: &Kit) -> El {
 }
 
 /// The history pane: the open page's revisions, newest first.
+/// What the thread listening to a page's table has for the window: the
+/// newest table, and whether the ship turned out to have no such stream.
+#[derive(Default)]
+struct HereHeard {
+    table: Option<here::Table>,
+    off: bool,
+}
+
+/// How often a window says it is still there, in seconds. The ship drops one unheard for a minute.
+const HERE_EVERY: f64 = 20.0;
+
+/// The page whose table this window is on: the open page, when it is
+/// one of this ship's that is shared. Not a memory, not another ship's
+/// page, not a private page: nothing is said of where one is in those.
+// ponytail: a page granted to named ships and not published is not known to be shared here, and a page another ship shared with this one has its table on that ship, which is not asked yet
+fn here_page(s: &App) -> Option<String> {
+    if s.here_off || s.memory || s.anon || s.sample || s.remote.is_some() || s.conn.is_none() || cfg!(target_arch = "wasm32") {
+        return None;
+    }
+    let p = s.open.as_ref()?;
+    s.shares.contains_key(&p.name).then(|| p.name.clone())
+}
+
+/// Who this window is in a page's table.
+fn here_me(s: &App) -> String {
+    format!("{}/{}", s.conn.as_ref().map_or("", |c| c.ship()), s.client_id)
+}
+
+/// The other windows on the page showing.
+fn here_others(s: &App) -> Vec<here::Row> {
+    let me = here_me(s);
+    s.here_shown.as_ref().filter(|t| Some(&t.page) == s.here_for.as_ref()).map(|t| here::others(t, &me)).unwrap_or_default()
+}
+
+/// Where this window is in the page, when it is editing: the place of its caret.
+fn here_place(s: &App) -> String {
+    match (&s.open, s.editing) {
+        (Some(p), true) => here::place(&p.kind, &s.edit.text, byte_at(&s.edit.text, s.edit.focus)),
+        _ => String::new(),
+    }
+}
+
+/// Keeps this window on the table of the page it shows: listens on that
+/// page's stream, on a thread of its own, says where the window is when
+/// that changes and every twenty seconds, and says it is gone when the
+/// page is left. Whether anything on screen changed.
+fn sync_here(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
+    use std::sync::atomic::Ordering;
+    let mut changed = false;
+    let want = here_page(s);
+    if want != s.here_for {
+        s.here_stop.store(true, Ordering::Relaxed);
+        if let (Some(c), Some(old)) = (s.conn.clone(), s.here_for.take()) {
+            // said once, and not waited for: the ship drops a window it does not hear from anyway
+            let id = s.client_id.clone();
+            spawn(move || drop(c.here_say(&old, &id, "", "gone")));
+        }
+        (s.here_shown, s.here_said) = (None, None);
+        if let (Some(c), Some(page), Some(waker)) = (s.conn.clone(), want.clone(), s.waker.clone()) {
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let heard = std::sync::Arc::new(std::sync::Mutex::new(HereHeard::default()));
+            (s.here_stop, s.here) = (stop.clone(), heard.clone());
+            std::thread::spawn(move || {
+                let mut fail = 0u32;
+                while !stop.load(Ordering::Relaxed) {
+                    // a table that comes late, after a newer one, is not shown. A new stream starts the count again
+                    let mut last = None;
+                    let got = c.here_stream(&page, |t| {
+                        if here::takes(last, t.seq) {
+                            last = Some(t.seq);
+                            if let Ok(mut h) = heard.lock() {
+                                h.table = Some(t);
+                            }
+                            waker();
+                        }
+                        !stop.load(Ordering::Relaxed)
+                    });
+                    if got.as_ref().is_err_and(|e| e.starts_with("404") || e.starts_with("405")) {
+                        if let Ok(mut h) = heard.lock() {
+                            h.off = true;
+                        }
+                        waker();
+                        return;
+                    }
+                    fail = if last.is_some() { 1 } else { (fail + 1).min(5) };
+                    let until = std::time::Instant::now() + std::time::Duration::from_millis(api::beacon_wait(fail, 0.5));
+                    while std::time::Instant::now() < until && !stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                    }
+                }
+            });
+        }
+        s.here_for = want.clone();
+        changed = true;
+    }
+    if let Ok(mut h) = s.here.lock() {
+        s.here_off |= h.off;
+        if let Some(t) = h.table.take() {
+            s.here_shown = Some(t);
+            changed = true;
+        }
+    }
+    if s.here_req.take().is_some_and(|r| r.is_err_and(|e| e.starts_with("404") || e.starts_with("405"))) {
+        s.here_off = true;
+    }
+    if let (Some(c), Some(page)) = (s.conn.clone(), want) {
+        let now = (page, here_place(s), if s.editing { "edit" } else { "read" }.to_owned());
+        let moved = s.here_said.as_ref() != Some(&now);
+        if moved && clock < s.here_at + 1.0 {
+            // a caret crossing blocks is said once a second at most
+            tx.wake_after(std::time::Duration::from_secs_f64((s.here_at + 1.0 - clock).max(0.05)));
+        } else if moved || clock >= s.here_next {
+            let id = s.client_id.clone();
+            s.here_req.request((c, now.clone(), id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
+            (s.here_said, s.here_at, s.here_next) = (Some(now), clock, clock + HERE_EVERY);
+            tx.wake_after(std::time::Duration::from_secs_f64(HERE_EVERY));
+        }
+    }
+    changed
+}
+
+/// The others on the page, in the page's bar: up to three named, and a count of the rest.
+fn here_chips(s: &App, k: &Kit) -> Option<El> {
+    let others = here_others(s);
+    if others.is_empty() {
+        return None;
+    }
+    let our = s.conn.as_ref().map_or("", |c| c.ship()).to_owned();
+    let mut chips = row().key("here").role("group").label(format!("{} more on this page", others.len())).gap(4.0).center_y();
+    for (i, r) in others.iter().take(3).enumerate() {
+        let tint = if r.editing() { k.c.text_accent } else { k.c.text_muted };
+        let help = if r.editing() { format!("Editing {}", here::place_said(&r.block)) } else { "Reading this page".to_owned() };
+        chips = chips.child(
+            row().key(format!("here-{i}")).h(22.0).px(8.0).gap(6.0).center_y().radius(11.0).fill(tint.alpha(0.14)).help(help)
+                .child(el().w(6.0).h(6.0).radius(3.0).fill(tint))
+                .child(text(here::said(r, &our)).font(k.ty.small).color(k.c.text_base)),
+        );
+    }
+    if others.len() > 3 {
+        chips = chips.child(text(format!("+{}", others.len() - 3)).key("here-more").font(k.ty.small).color(k.c.text_muted));
+    }
+    Some(chips)
+}
+
+/// The blocks others are editing, in the text being edited: tinted, so it is seen before it is typed into.
+fn here_spans(s: &App, k: &Kit) -> Vec<Span> {
+    let Some(p) = s.open.as_ref().filter(|_| s.editing) else { return Vec::new() };
+    here_others(s).iter().filter(|r| r.editing()).filter_map(|r| here::place_range(&p.kind, &s.edit.text, &r.block)).map(|r| Span::new(r.start, r.end).bg(k.c.text_accent.alpha(0.2), 1.0)).collect()
+}
+
+/// Who else is editing the block this window's caret is in, when anyone is.
+fn here_collides(s: &App) -> Option<String> {
+    let mine = here_place(s);
+    if mine.is_empty() {
+        return None;
+    }
+    let our = s.conn.as_ref().map_or("", |c| c.ship()).to_owned();
+    let who: Vec<String> = here_others(s).iter().filter(|r| r.editing() && r.block == mine).map(|r| if r.ship == our { "Another window of yours".to_owned() } else { r.ship.clone() }).collect();
+    (!who.is_empty()).then(|| who.join(", "))
+}
+
 /// A page's history being dragged through: every revision, read once,
 /// and the one showing.
 struct Scrub {
@@ -12707,6 +12898,9 @@ fn body(s: &App, k: &Kit) -> El {
             },
             k,
         ))
+    } else if let Some(who) = here_collides(s) {
+        // a warning and not a lock: the typing is not stopped
+        Some(row().key("here-warn").w_full().px(16.0).py(8.0).gap(12.0).center_y().fill(k.c.layer_01).child(text(format!("{who} is editing this section too. What you both type here may not both be kept.")).font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0)))
     } else if let Some(q) = s.find.as_ref().filter(|_| !s.access && !s.shared_open && !s.inbox && s.folder.is_none() && find_where(s) != FindIn::Nothing) {
         Some(find_bar(q, s, k))
     } else if held_back(s) > 0 && !s.access && !s.shared_open && !s.inbox && s.folder.is_none() {
@@ -13452,6 +13646,7 @@ fn page_body(s: &App, k: &Kit) -> El {
     if s.editing && s.rich {
         let mut spans = rich_spans(&s.edit, k);
         spans.extend(find_spans(s, k));
+        spans.extend(here_spans(s, k));
         let field = fill_editor(s, "Page", spans, k);
         return col()
             .key("editor")
@@ -13465,6 +13660,7 @@ fn page_body(s: &App, k: &Kit) -> El {
         // the source, coloured as Markdown: colour only, so nothing moves as it is typed
         let mut marks = code_spans(&p.kind, &s.edit.text, k);
         marks.extend(find_spans(s, k));
+        marks.extend(here_spans(s, k));
         // vim's block: the character under the cursor, or underlined while r waits for its character
         if let Some((at, under)) = s.prefs.vim.then(|| s.vim.block(&vim_buf(&s.edit))).flatten() {
             let from = byte_at(&s.edit.text, at);
@@ -13796,6 +13992,10 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // the Edit and Read switch: a page shows it, a screen that is no page (the forum, the inbox, a folder) does not
     let (editing, can_edit) = (page && s.editing, remote.is_none_or(Shared::editable));
     let mut trailing = row().gap(6.0).center_y();
+    // who else is on the page comes first, where it is seen without looking for it
+    if let Some(chips) = here_chips(s, &k).filter(|_| page) {
+        trailing = trailing.child(chips);
+    }
     // a page that is not Markdown says what it is, since it is read and edited by that kind's rules. Pressed, it asks for another
     if let Some(p) = s.open.as_ref().filter(|p| page && remote.is_none() && !s.memory && p.kind != "md" && s.old.is_none()) {
         let can = usable(s, "kind");

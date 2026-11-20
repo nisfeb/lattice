@@ -2313,6 +2313,54 @@ impl Conn {
         v["base"].as_str().filter(|b| !b.is_empty()).map(str::to_owned).ok_or_else(|| "the ship named no base".into())
     }
 
+    /// Says where this window is on a page: reading, or editing in a
+    /// block, or gone (`mode`). `client` tells this window from another
+    /// of the ship's. Nothing is written on the ship for it.
+    pub fn here_say(&self, page: &str, client: &str, block: &str, mode: &str) -> Result<(), String> {
+        self.call_in(15, "POST", &format!("presence?page={}&client={}&block={}&mode={}", enc(page), enc(client), enc(block), enc(mode)), Some("")).map(drop)
+    }
+
+    /// Listens to who is on a page until the stream ends, giving each
+    /// table to `on`. `on` answering false stops the listening. An error
+    /// that starts with 404 is a ship with no such stream.
+    pub fn here_stream(&self, page: &str, mut on: impl FnMut(crate::here::Table) -> bool) -> Result<(), String> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (page, &mut on);
+            Err("no stream in the browser build".into())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::io::Read;
+            // the ship sends a comment every 25 seconds: a minute with nothing is a dead stream
+            let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(60)).build();
+            let resp = match agent.get(&format!("{}/apps/lattice/presence-stream?page={}", self.url, enc(page))).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
+                Ok(r) => r,
+                Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: no stream")),
+                Err(e) => return Err(e.to_string()),
+            };
+            let (mut rd, mut buf, mut chunk) = (resp.into_reader(), String::new(), [0u8; 4096]);
+            loop {
+                let n = match rd.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                for (name, data) in sse_events(&mut buf) {
+                    if name != "here" {
+                        continue;
+                    }
+                    if let Some(t) = crate::here::table(&data) {
+                        if !on(t) {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
     /// Listens to the ship's change stream until it ends, giving each event to `on`. Answers whether the stream was registered, and whether a change came after that. `on` answering false stops the listening.
     pub fn beacon_stream(&self, base: &str, mut on: impl FnMut(Beacon) -> bool) -> Result<(bool, bool), String> {
         #[cfg(target_arch = "wasm32")]
