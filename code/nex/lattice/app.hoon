@@ -15291,9 +15291,12 @@
         last   (presence-forget i.due tab subs (~(put by last) i.due now))
       ==
     ?:  =(~ dirty)  ^$
+    ::  the earliest of them: dirty is not empty here
     =/  next=@da
-      %+  roll  ~(tap in dirty)
-      |=([p=@t a=@da] (max a (add (~(gut by last) p *@da) ~s1)))
+      %+  snag  0
+      %+  sort
+        (turn ~(tap in dirty) |=(p=@t (add (~(gut by last) p *@da) ~s1)))
+      lth
     ;<  ~  bind:m  (set-timer:io /cast next)
     ^$
   ?.  =([/ %json] p.sage)  $
