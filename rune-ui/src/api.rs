@@ -751,7 +751,7 @@ pub fn ships() -> Vec<Ship> {
     if !cfg!(test) {
         if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
             let all = crate::accounts::load_at(dir, now_secs());
-            return all.list.iter().map(|a| Ship { url: a.url.clone(), name: a.name().to_owned(), ship: a.ship().to_owned(), expired: a.expired, front: all.front.as_deref() == Some(a.url.as_str()) }).collect();
+            return all.list.iter().map(|a| Ship { url: a.url.clone(), name: a.name().to_owned(), ship: a.ship().to_owned(), expired: a.expired, front: all.front.as_deref() == Some(a.url.as_str()), label: a.label.clone(), colour: a.colour.clone() }).collect();
         }
     }
     Vec::new()
@@ -766,6 +766,44 @@ pub struct Ship {
     pub ship: String,
     pub expired: bool,
     pub front: bool,
+    /// The owner's own name for it and the colour they gave it, when they gave any.
+    pub label: String,
+    pub colour: String,
+}
+
+/// The colours a ship can be given, to tell it from the others at a glance.
+pub const SHIP_COLOURS: [&str; 8] = ["#D1495B", "#E08E45", "#E6C229", "#4A7C59", "#2A9D8F", "#3A86C8", "#7A5AF8", "#B5179E"];
+
+/// Gives a ship a label and a colour, or takes them off. False when it is not signed in.
+pub fn ship_dress(url: &str, label: &str, colour: &str) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !cfg!(test) {
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let mut all = crate::accounts::load_at(dir, now_secs());
+            return all.dress(url, label, colour) && crate::accounts::store_at(dir, &all).is_ok();
+        }
+    }
+    let _ = (url, label, colour);
+    false
+}
+
+/// What to say when a ship's sign-in page answers with an error. Only a code turned away is the code's fault.
+pub fn login_refused(url: &str, status: u16) -> String {
+    match status {
+        400 | 401 | 403 => "that access code was refused".to_owned(),
+        404 => format!("{url} answers, but has no sign-in page there. Is it the ship's own address?"),
+        500..=599 => format!("{url} answered with an error of its own ({status}). It may be starting up: try again in a moment"),
+        other => format!("{url} answered {other} to the sign-in"),
+    }
+}
+
+/// What a ship that took the code says of lattice, from its answer to an owner's route: nothing
+/// when it is there or cannot be told, and why not when it is plainly missing.
+pub fn lattice_missing(ship: &str, answer: &Result<String, String>) -> Option<String> {
+    match answer {
+        Err(e) if e.starts_with("404") => Some(format!("{ship} took the code, but lattice does not answer there. It needs grubbery installed, and lattice on it")),
+        _ => None,
+    }
 }
 
 /// The session of every ship signed in whose session still stands: its address and its cookie.
@@ -780,6 +818,40 @@ pub fn ship_sessions() -> Vec<(String, String)> {
     Vec::new()
 }
 
+/// One thing the watcher sent to a ship while it was not in front.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BgSent {
+    Save(String, Queued),
+    Op(QueuedOp),
+}
+
+/// Held while anything that waited is being sent to a ship, by the window or by the watcher of the
+/// ships not in front: one sender at a time, so nothing is ever sent by both.
+static SENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// What the watcher sent, by the ship's address, until the window has taken it out of its own list.
+static BG_SENT: std::sync::Mutex<Vec<(String, BgSent)>> = std::sync::Mutex::new(Vec::new());
+
+/// The lock every sender of waiting saves holds.
+pub fn send_lock() -> std::sync::MutexGuard<'static, ()> {
+    SENDING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// What the watcher has sent to the ship at `url` that the window has not yet been told of.
+pub fn bg_sent(url: &str, take: bool) -> Vec<BgSent> {
+    let mut all = BG_SENT.lock().unwrap_or_else(|e| e.into_inner());
+    let mine: Vec<BgSent> = all.iter().filter(|(u, _)| u == url).map(|(_, x)| x.clone()).collect();
+    if take {
+        all.retain(|(u, _)| u != url);
+    }
+    mine
+}
+
+/// Notes a thing as sent by the watcher, for a test of how the window takes it.
+#[cfg(test)]
+pub fn bg_note_for_test(url: &str, x: BgSent) {
+    BG_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((url.to_owned(), x));
+}
+
 /// What is known of a ship signed in that is not in front, from one look at it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShipSeen {
@@ -791,24 +863,31 @@ pub struct ShipSeen {
     pub waiting: usize,
     /// It turned the session away: its code is wanted again.
     pub expired: bool,
+    /// How many of the waiting saves the ship refused for good, each kept as a page of its own there.
+    pub aside: usize,
 }
 
 /// What a ship's answer to a look says of it. `waiting` is counted from what is kept here.
 pub fn ship_seen(notices: Result<Vec<Notice>, String>, waiting: usize) -> ShipSeen {
     match notices {
-        Ok(n) => ShipSeen { up: true, unread: n.iter().filter(|x| !x.read).count(), waiting, expired: false },
+        Ok(n) => ShipSeen { up: true, unread: n.iter().filter(|x| !x.read).count(), waiting, expired: false, aside: 0 },
         // the ship answers and will not have this session
-        Err(e) if e.starts_with("401:") || e.starts_with("403:") => ShipSeen { up: true, unread: 0, waiting, expired: true },
-        Err(_) => ShipSeen { up: false, unread: 0, waiting, expired: false },
+        Err(e) if e.starts_with("401:") || e.starts_with("403:") => ShipSeen { up: true, unread: 0, waiting, expired: true, aside: 0 },
+        Err(_) => ShipSeen { up: false, unread: 0, waiting, expired: false, aside: 0 },
     }
 }
 
 /// Looks at a ship signed in: one light request, its notices. A session it turns away is marked,
 /// so the list of ships says its code is wanted again.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn ship_look(url: &str, cookie: &str) -> ShipSeen {
+pub fn ship_look(url: &str, cookie: &str, stop: &std::sync::atomic::AtomicBool) -> ShipSeen {
     let c = Conn { url: url.to_owned(), cookie: cookie.to_owned() };
-    let seen = ship_seen(c.notices(), c.queue().len() + c.ops().len());
+    let mut seen = ship_seen(c.notices(), c.queue().len() + c.ops().len());
+    // a ship that answers is sent what waited for it, as it would be were it in front
+    if seen.up && !seen.expired && seen.waiting > 0 {
+        seen.aside = c.send_waiting(stop);
+        seen.waiting = c.queue().len() + c.ops().len();
+    }
     if seen.expired && !cfg!(test) {
         if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
             let mut all = crate::accounts::load_at(dir, now_secs());
@@ -2310,6 +2389,59 @@ impl Conn {
         queue_path(&self.url).map(|p| queue_at(&p)).unwrap_or_default()
     }
 
+    /// Sends what waits for this ship while it is not in front, as the window sends it for the ship
+    /// in front: the deletes and moves first in the order made, then the saves, the new pages
+    /// before the edits, stopping at the first the ship neither takes nor refuses for good. Each
+    /// one is sent under the senders' lock and taken out of the kept list as soon as the ship has
+    /// it, and is noted for the window, so going to the ship mid-way sends nothing twice. `stop`
+    /// ends it between two sends. The number the ship refused for good and kept as pages of their own.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn send_waiting(&self, stop: &std::sync::atomic::AtomicBool) -> usize {
+        use std::sync::atomic::Ordering;
+        let note = |x: BgSent| BG_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((self.url.clone(), x));
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                return 0;
+            }
+            let _held = send_lock();
+            let mut ops = self.ops();
+            let Some(op) = ops.first().cloned() else { break };
+            if self.send_op(&op).is_err_and(|e| !replay_drop(&e)) {
+                return 0;
+            }
+            ops.remove(0);
+            if self.store_ops(&ops).is_err() {
+                return 0;
+            }
+            note(BgSent::Op(op));
+        }
+        let mut names: Vec<(String, bool)> = self.queue().iter().map(|(n, q)| (n.clone(), q.is_new)).collect();
+        names.sort_by_key(|(_, new)| !new);
+        let mut aside = 0;
+        for (name, _) in names {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            let _held = send_lock();
+            let mut q = self.queue();
+            let Some(item) = q.get(&name).cloned() else { continue };
+            match self.send_queued(&name, &item) {
+                Sent::Stop(_) => break,
+                sent => {
+                    q.remove(&name);
+                    if self.store_queue(&q).is_err() {
+                        break;
+                    }
+                    if matches!(sent, Sent::Aside(..)) {
+                        aside += 1;
+                    }
+                    note(BgSent::Save(name, item));
+                }
+            }
+        }
+        aside
+    }
+
     /// Keeps the saves that wait. They are nowhere else, so a failure here is one to say.
     pub fn store_queue(&self, q: &Queue) -> Result<(), String> {
         write_private(&queue_path(&self.url).ok_or("no home directory")?, &serde_json::to_vec(q).map_err(|e| e.to_string())?)
@@ -2374,14 +2506,19 @@ impl Conn {
                 .send_string(&format!("password={}", enc(code.trim())));
             let res = match res {
                 Ok(r) => r,
-                Err(ureq::Error::Status(_, _)) => return Err("that access code was refused".into()),
-                Err(e) => return Err(format!("could not reach {url}: {e}")),
+                Err(ureq::Error::Status(code, _)) => return Err(login_refused(&url, code)),
+                Err(e) => return Err(format!("{url} does not answer: {e}")),
             };
             let cookie = res.header("set-cookie").and_then(|c| c.split(';').next()).unwrap_or("").trim().to_owned();
             if !cookie.starts_with("urbauth-~") {
                 return Err("the ship gave no session".into());
             }
-            Ok(Conn { url, cookie })
+            let c = Conn { url, cookie };
+            // the ship is there and took the code: is lattice on it? Where that cannot be told, it is let through
+            if let Some(why) = lattice_missing(c.ship(), &c.call("GET", "streams", None)) {
+                return Err(why);
+            }
+            Ok(c)
         }
     }
 
@@ -3347,11 +3484,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_sign_in_that_fails_says_which_of_three_things_it_was() {
+        assert_eq!(login_refused("https://zod.test", 400), "that access code was refused");
+        assert!(login_refused("https://zod.test", 404).contains("no sign-in page"));
+        assert!(login_refused("https://zod.test", 502).contains("error of its own"));
+        // the code was taken and lattice is not there
+        let missing = lattice_missing("~zod", &Err("404: missing".into())).unwrap();
+        assert!(missing.contains("~zod took the code") && missing.contains("grubbery"));
+        // there, or not to be told: let through
+        assert_eq!(lattice_missing("~zod", &Ok("{}".into())), None);
+        assert_eq!(lattice_missing("~zod", &Err("could not reach".into())), None);
+        assert_eq!(lattice_missing("~zod", &Err("500: oops".into())), None);
+    }
+
+    #[test]
     fn a_look_at_a_ship_says_whether_it_answers_what_is_unread_and_whether_its_session_stands() {
         let note = |read: bool| Notice { read, ..Notice::default() };
-        assert_eq!(ship_seen(Ok(vec![note(false), note(true), note(false)]), 1), ShipSeen { up: true, unread: 2, waiting: 1, expired: false });
-        assert_eq!(ship_seen(Err("403: missing".into()), 0), ShipSeen { up: true, unread: 0, waiting: 0, expired: true });
-        assert_eq!(ship_seen(Err("could not reach https://zod.test: timed out".into()), 3), ShipSeen { up: false, unread: 0, waiting: 3, expired: false });
+        assert_eq!(ship_seen(Ok(vec![note(false), note(true), note(false)]), 1), ShipSeen { up: true, unread: 2, waiting: 1, expired: false, aside: 0 });
+        assert_eq!(ship_seen(Err("403: missing".into()), 0), ShipSeen { up: true, unread: 0, waiting: 0, expired: true, aside: 0 });
+        assert_eq!(ship_seen(Err("could not reach https://zod.test: timed out".into()), 3), ShipSeen { up: false, unread: 0, waiting: 3, expired: false, aside: 0 });
     }
 
     #[test]

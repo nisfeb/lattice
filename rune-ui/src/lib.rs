@@ -367,6 +367,8 @@ enum Prompt {
     Tag(TextEdit),
     /// Signing out of the ship in front, or of every ship, while folders of theirs are mounted.
     ShipOut(bool),
+    /// What to call a ship signed in: its address, and the label.
+    ShipLabel(String, TextEdit),
     /// The kind of the page in front, to change: Markdown, gemtext, HTML and the rest.
     Kind(TextEdit),
     /// The tags of the forum thread showing, to set.
@@ -578,6 +580,8 @@ struct App {
     watch_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Another ship is being signed in to, with the one in front left as it is until that is done.
     adding: bool,
+    /// The window's title as it was last set.
+    titled: String,
     restored: bool,
     /// The page asked for whose text has not come yet: a page just made,
     /// or one opened before the first tree arrived. Its answer is shown.
@@ -1105,6 +1109,7 @@ fn init() -> App {
         seen: Default::default(),
         watch_stop: Default::default(),
         adding: false,
+        titled: "lattice".into(),
         restored: false,
         want: None,
         folder: None,
@@ -1475,8 +1480,8 @@ fn sign_in(s: &mut App) {
 
 /// Watches the ships signed in that are not in front, on one thread of its own: once a minute each
 /// is asked for its notices, which says whether it answers, how many are unread, and whether its
-/// session stands. Nothing else is read of them, and nothing is written to them: what waits to be
-/// sent to a ship goes when it is gone to, where a refusal can be shown and settled.
+/// session stands. A ship that answers is sent the saves that waited for it (`Conn::send_waiting`).
+/// Nothing else is read of them or written to them.
 fn watch_ships(s: &mut App) {
     use std::sync::atomic::Ordering;
     s.watch_stop.store(true, Ordering::Relaxed);
@@ -1499,7 +1504,7 @@ fn watch_ships(s: &mut App) {
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
-                let got = api::ship_look(url, cookie);
+                let got = api::ship_look(url, cookie, &stop);
                 let changed = seen.lock().map(|mut m| m.insert(url.clone(), got.clone()) != Some(got)).unwrap_or(false);
                 if changed {
                     waker();
@@ -1514,6 +1519,30 @@ fn watch_ships(s: &mut App) {
             }
         });
     }
+}
+
+/// The colour after `now` among those a ship can be given, and none after the last.
+fn ship_colour_after(now: &str) -> &'static str {
+    match api::SHIP_COLOURS.iter().position(|c| c.eq_ignore_ascii_case(now)) {
+        Some(i) => api::SHIP_COLOURS.get(i + 1).copied().unwrap_or(""),
+        None => api::SHIP_COLOURS[0],
+    }
+}
+
+/// Leaves the anonymous reader or the sample pages: back to the ship in front when one is signed
+/// in, and to the sign-in when none is. No ship is signed out of.
+fn leave_guest(s: &mut App) {
+    reset(s, true);
+}
+
+/// Reads with no ship, from the list of ships. Every ship stays signed in, to come back to.
+#[cfg(unix)]
+fn go_anon(s: &mut App) {
+    if !leave_edit(s) {
+        return;
+    }
+    reset(s, false);
+    browse_anon(s);
 }
 
 /// What the watcher saw of a ship, in a few words for the list of ships. Nothing for a ship that
@@ -1531,6 +1560,9 @@ fn ship_news(seen: Option<&api::ShipSeen>) -> String {
     }
     if x.waiting > 0 {
         out.push(format!("{} waiting to be sent", x.waiting));
+    }
+    if x.aside > 0 {
+        out.push(format!("{} kept aside there", x.aside));
     }
     out.join(" \u{b7} ")
 }
@@ -1594,6 +1626,8 @@ fn reset(s: &mut App, signed: bool) {
         fresh.conn = None;
         fresh.prefs = Prefs::load();
     }
+    // the window's title is as it was set: what it should say now is worked out against that
+    fresh.titled = s.titled.clone();
     // the wakers were set once, on the requests this window keeps
     fresh.tree_req = std::mem::take(&mut s.tree_req);
     fresh.page_req = std::mem::take(&mut s.page_req);
@@ -1754,6 +1788,13 @@ fn confirm(s: &mut App) {
                 save_body(s, Page { kind: k.to_owned(), ..open }, body);
             }
         }
+        return;
+    }
+    if let Prompt::ShipLabel(url, t) = &p {
+        let colour = s.ships.iter().find(|x| x.url == *url).map(|x| x.colour.clone()).unwrap_or_default();
+        api::ship_dress(url, &t.text, &colour);
+        s.ships = api::ships();
+        s.ships_open = true;
         return;
     }
     if let Prompt::ShipOut(all) = &p {
@@ -5119,12 +5160,30 @@ fn write(s: &mut App) {
 /// the ship does not take or refuse outright.
 // ponytail: one request for each page. The ship's batch route is for when a queue of hundreds shows up
 fn drain(s: &mut App) {
+    bg_taken(s);
     if (s.queue.is_empty() && s.ops.is_empty()) || s.drain_req.is_pending() {
         return;
     }
     let Some(c) = s.conn.clone() else { return };
     s.note = format!("sending {} saved on this device\u{2026}", s.queue.len() + s.ops.len());
-    s.drain_req.request((c, s.ops.clone(), s.queue.clone()), |(c, ops, q)| {
+    s.drain_req.request((c, s.ops.clone(), s.queue.clone()), |(c, mut ops, mut q)| {
+        // one sender at a time: the watcher of the ships not in front may be part way through this ship's
+        // list, from before it came to the front. What it sent is not sent again
+        let _held = api::send_lock();
+        for sent in api::bg_sent(&c.url, false) {
+            match sent {
+                api::BgSent::Op(op) => {
+                    if ops.first() == Some(&op) {
+                        ops.remove(0);
+                    }
+                }
+                api::BgSent::Save(name, item) => {
+                    if q.get(&name) == Some(&item) {
+                        q.remove(&name);
+                    }
+                }
+            }
+        }
         // the deletes and moves first, in the order made: what they meant for the saves was settled when they were put by
         let mut did = Vec::new();
         for op in ops {
@@ -5151,6 +5210,31 @@ fn drain(s: &mut App) {
     });
 }
 
+/// Takes out of this window's lists what the watcher sent to this ship while it was not in front:
+/// the kept lists already lack them, and the window's own were read a moment before the last of
+/// them went. Each is taken only where the window still holds that very save.
+fn bg_taken(s: &mut App) {
+    let Some(c) = s.conn.clone() else { return };
+    let sent = api::bg_sent(&c.url, true);
+    if sent.is_empty() {
+        return;
+    }
+    for x in sent {
+        match x {
+            api::BgSent::Op(op) => {
+                if s.ops.first() == Some(&op) {
+                    s.ops.remove(0);
+                }
+            }
+            api::BgSent::Save(name, item) => {
+                if s.queue.get(&name) == Some(&item) {
+                    s.queue.remove(&name);
+                }
+            }
+        }
+    }
+}
+
 /// How sending what waited came out: each delete or move with the ship's answer, then each save as it was sent.
 type Drained = (Vec<(api::QueuedOp, Result<(), String>)>, Vec<(String, api::Queued, api::Sent)>);
 
@@ -5159,6 +5243,7 @@ type Drained = (Vec<(api::QueuedOp, Result<(), String>)>, Vec<(String, api::Queu
 /// meanwhile, and that newer save then goes. A conflict or a refusal is
 /// said with the name its other text is kept under.
 fn drained(s: &mut App, (did, out): Drained) {
+    bg_taken(s);
     // taken whatever comes of it: it speaks for this sending and no later one
     let read_save = std::mem::take(&mut s.read_save);
     let mut hist = false;
@@ -6110,6 +6195,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             // the reader's own words are whole sentences
             Err(e) => s.note = e,
         }
+    }
+    // the window says which ship it is on, so two windows or a glance at the task bar tell them apart
+    let titled = s.conn.as_ref().map_or_else(|| "lattice".to_owned(), |c| format!("lattice \u{b7} {}", s.ships.iter().find(|x| x.front && !x.label.is_empty()).map_or(c.ship(), |x| x.label.as_str())));
+    if s.titled != titled {
+        tx.set_title(titled.clone());
+        s.titled = titled;
     }
     #[cfg(unix)]
     if id_drained(s) {
@@ -9741,7 +9832,24 @@ fn ships_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
                 .fill(if sh.front { c.layer_01 } else { rune::Color::TRANSPARENT })
                 .hover(c.hover)
                 .on_press(move |s: &mut App| switch_ship(s, &url))
-                .child(col().grow(1.0).min_w(0.0).gap(1.0).child(text(sh.name.clone()).font(k.ty.ui_medium).color(c.text_base).truncate()).child(text(said).font(k.ty.small).color(c.text_muted).truncate())),
+                .child(el().size(10.0, 10.0).radius(5.0).fill(rune::color::hex(&sh.colour.to_lowercase()).unwrap_or(c.border_base)))
+                .child(col().grow(1.0).min_w(0.0).gap(1.0).child(text(sh.name.clone()).font(k.ty.ui_medium).color(c.text_base).truncate()).child(text(said).font(k.ty.small).color(c.text_muted).truncate()))
+                .child({
+                    let (u, label) = (sh.url.clone(), sh.label.clone());
+                    Button::new("Name").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Give this ship a name of your own").on_press(move |s: &mut App| {
+                        let mut t = TextEdit::new(label.clone());
+                        t.focused = true;
+                        (s.ships_open, s.prompt) = (false, Some(Prompt::ShipLabel(u.clone(), t)));
+                    }).build(k).key(format!("ship-name-{i}"))
+                })
+                .child({
+                    // each press gives it the next colour, and after the last none
+                    let (u, label, now) = (sh.url.clone(), sh.label.clone(), sh.colour.clone());
+                    Button::new("Colour").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Give this ship a colour, to tell it from the others").on_press(move |s: &mut App| {
+                        api::ship_dress(&u, &label, ship_colour_after(&now));
+                        s.ships = api::ships();
+                    }).build(k).key(format!("ship-colour-{i}"))
+                }),
         );
     }
     if s.ships.is_empty() {
@@ -9758,6 +9866,10 @@ fn ships_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
     }).build(k).key("ship-add"));
     if let Some(name) = front {
         acts = acts.child(Button::new(format!("Sign out of {name}")).variant(ButtonVariant::Ghost).on_press(|s: &mut App| sign_out_asked(s, false)).build(k).key("ship-out"));
+    }
+    #[cfg(unix)]
+    {
+        acts = acts.child(Button::new("Use anonymously").variant(ButtonVariant::Ghost).help("Read published pages as this computer's anonymous reader. Your ships stay signed in").on_press(go_anon).build(k).key("ship-anon"));
     }
     if s.ships.len() > 1 {
         acts = acts.child(Button::new("Sign out of every ship").variant(ButtonVariant::Ghost).on_press(|s: &mut App| sign_out_asked(s, true)).build(k).key("ship-out-all"));
@@ -9785,7 +9897,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::Kind(t) | Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
+                Prompt::ShipLabel(_, t) | Prompt::Kind(t) | Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
                 Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) | Prompt::ShipOut(_) => unreachable!("it has no field of this kind"),
                 #[cfg(unix)]
                 Prompt::IdOut(..) | Prompt::IdIn(..) | Prompt::IdUse(..) => unreachable!("it has fields of its own"),
@@ -9853,6 +9965,10 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::ForumRowDelete(..) => ("Delete this thread?", text("The thread and its comments are gone for everyone who reads the board.").font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::CommentRemove(page, _) => ("Remove this comment?", text(format!("It is gone from {page} for everyone who reads it, and cannot be brought back.")).key("comment-remove-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
+        Prompt::ShipLabel(..) => ("What to call this ship", match p {
+            Prompt::ShipLabel(_, t) => field(t, "A name of your own for it, or nothing for the ship's"),
+            _ => unreachable!(),
+        }, "Set", ButtonVariant::Contrast),
         Prompt::ShipOut(all) => {
             let held = ship_mounts(s, *all);
             let folders = held.iter().map(|m| m.mountpoint.clone()).collect::<Vec<_>>().join(", ");
@@ -11942,7 +12058,8 @@ fn sidebar(s: &App, k: &Kit) -> El {
             }
         }).build(k).key(tab.key));
     }
-    let who = s.conn.as_ref().map_or(if s.anon { "anonymous" } else { "sample pages" }.to_owned(), |c| c.ship().to_owned());
+    // the ship in front by the owner's own name for it, when they gave one
+    let who = s.conn.as_ref().map_or(if s.anon { "anonymous" } else { "sample pages" }.to_owned(), |c| s.ships.iter().find(|x| x.front && !x.label.is_empty()).map_or_else(|| c.ship().to_owned(), |x| format!("{} ({})", x.label, x.ship)));
     let theme = Button::new(match s.prefs.theme.as_str() {
         "dark" => "Dark",
         "light" => "Light",
@@ -11963,7 +12080,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
             row().role("button").label(if more > 0 { format!("{who}, and {more} more signed in. Ships") } else { format!("{who}. Ships") }).help("Ships signed in: go to another, add one, or sign out").grow(1.0).min_w(0.0).px(4.0).py(2.0).radius(k.radius.sm).hover(k.c.hover).on_press(|s: &mut App| {
                 s.ships = api::ships();
                 s.ships_open = true;
-            }).gap(6.0).center_y().child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).truncate()).children({
+            }).gap(6.0).center_y().children(s.ships.iter().find(|x| x.front).and_then(|x| rune::color::hex(&x.colour.to_lowercase())).map(|col| el().size(8.0, 8.0).radius(4.0).fill(col))).child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).truncate()).children({
                 // what is unread on the ships not in front, so it is seen without going to them
                 let unread: usize = s.seen.lock().map(|m| s.ships.iter().filter(|x| !x.front).filter_map(|x| m.get(&x.url)).map(|x| x.unread).sum()).unwrap_or(0);
                 (unread > 0).then(|| text(format!("+{unread}")).key("ship-unread").label(format!("{unread} unread on your other ships")).font(k.ty.small_medium).color(k.c.text_accent))
@@ -11972,7 +12089,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
             row().grow(1.0).min_w(0.0).child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).truncate())
         })
         .child(theme)
-        .child(Button::new(if s.conn.is_some() { "Sign out" } else if s.anon { "Leave" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| sign_out_asked(s, false)).build(k).key("sign-out"));
+        .child(Button::new(if s.conn.is_some() { "Sign out" } else if s.anon { "Leave" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| if s.conn.is_some() { sign_out_asked(s, false) } else { leave_guest(s) }).build(k).key("sign-out"));
     // rune-kit keeps a band over the sidebar for its own toggle, level with the top bar. The toggle is the
     // ribbon's here, so the pane's tabs go up into the band, beside the top bar, and nothing is left blank
     let side = col().key("pages").w_full().grow(1.0).min_h(0.0).mt(-rune_kit::shell::TOOLBAR_HEIGHT).padding(8.0).gap(8.0).child(halves);
@@ -13806,8 +13923,40 @@ mod tests {
     }
 
     #[test]
+    fn what_the_watcher_sent_is_taken_out_of_the_windows_own_list_once() {
+        let mut s = sample("welcome");
+        s.conn = Some(Conn { url: "https://bg-test.invalid".into(), cookie: "urbauth-~zod=0v1".into() });
+        let save = |body: &str| api::Queued { kind: "md".into(), body: body.into(), base: 3, ..api::Queued::default() };
+        s.queue.insert("notes/a".into(), save("sent by the watcher"));
+        s.queue.insert("notes/b".into(), save("typed again since"));
+        s.ops = vec![api::QueuedOp::Del("old".into()), api::QueuedOp::Del("other".into())];
+        // nothing noted, nothing taken
+        bg_taken(&mut s);
+        assert_eq!((s.queue.len(), s.ops.len()), (2, 2));
+        assert!(api::bg_sent("https://bg-test.invalid", false).is_empty());
+        api::bg_note_for_test("https://bg-test.invalid", api::BgSent::Op(api::QueuedOp::Del("old".into())));
+        api::bg_note_for_test("https://bg-test.invalid", api::BgSent::Save("notes/a".into(), save("sent by the watcher")));
+        // a save the window has changed since is another save: it stays
+        api::bg_note_for_test("https://bg-test.invalid", api::BgSent::Save("notes/b".into(), save("an older text")));
+        api::bg_note_for_test("https://elsewhere.invalid", api::BgSent::Op(api::QueuedOp::Del("other".into())));
+        bg_taken(&mut s);
+        assert_eq!(s.queue.keys().cloned().collect::<Vec<_>>(), ["notes/b"]);
+        assert_eq!(s.ops, vec![api::QueuedOp::Del("other".into())], "another ship's is not this one's");
+        assert!(api::bg_sent("https://bg-test.invalid", false).is_empty(), "taken once");
+        assert_eq!(api::bg_sent("https://elsewhere.invalid", true).len(), 1);
+    }
+
+    #[test]
+    fn a_ships_colour_goes_round_the_eight_and_then_to_none() {
+        assert_eq!(ship_colour_after(""), api::SHIP_COLOURS[0]);
+        assert_eq!(ship_colour_after(&api::SHIP_COLOURS[0].to_lowercase()), api::SHIP_COLOURS[1]);
+        assert_eq!(ship_colour_after(api::SHIP_COLOURS[7]), "");
+        assert_eq!(ship_colour_after("#123456"), api::SHIP_COLOURS[0], "a colour that is not one of them starts again");
+    }
+
+    #[test]
     fn a_ship_not_in_front_says_what_is_new_on_it() {
-        let seen = |up, unread, waiting, expired| api::ShipSeen { up, unread, waiting, expired };
+        let seen = |up, unread, waiting, expired| api::ShipSeen { up, unread, waiting, expired, aside: 0 };
         assert_eq!(ship_news(None), "");
         assert_eq!(ship_news(Some(&seen(true, 0, 0, false))), "", "a ship that answers with nothing new says nothing");
         assert_eq!(ship_news(Some(&seen(true, 3, 0, false))), "3 unread");

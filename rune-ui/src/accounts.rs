@@ -118,6 +118,13 @@ impl Accounts {
         Some(gone)
     }
 
+    /// What the owner calls a ship and the colour they give it. Either left empty is none.
+    pub fn dress(&mut self, url: &str, label: &str, colour: &str) -> bool {
+        let Some(a) = self.list.iter_mut().find(|a| a.url == plain(url)) else { return false };
+        (a.label, a.colour) = (label.trim().chars().take(40).collect(), colour.trim().to_owned());
+        true
+    }
+
     /// Marks a session the ship turned away. The account stays, to be signed in again.
     pub fn expire(&mut self, url: &str) {
         if let Some(a) = self.list.iter_mut().find(|a| a.url == plain(url)) {
@@ -198,6 +205,16 @@ mod tests {
         a.expire("https://zod.test");
         a.remove("https://nec.test");
         assert_eq!(a.front().map(Account::ship), Some("~bus"), "the ship whose session ended is passed over");
+    }
+
+    #[test]
+    fn a_ship_is_given_a_label_and_a_colour_and_they_are_taken_off_again() {
+        let mut a = Accounts::default();
+        a.put("https://zod.test", "urbauth-~zod=0v1", 1);
+        assert!(a.dress("https://zod.test/", "  home  ", "#4A7C59") && !a.dress("https://nec.test", "x", ""));
+        assert_eq!((a.list[0].name(), a.list[0].colour.as_str()), ("home", "#4A7C59"));
+        a.dress("https://zod.test", "", "");
+        assert_eq!((a.list[0].name(), a.list[0].colour.as_str()), ("~zod", ""), "with no label it goes by its name");
     }
 
     #[test]
