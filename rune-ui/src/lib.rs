@@ -858,7 +858,13 @@ struct App {
     /// What this window last said of itself (page, place, mode), when by the clock, and when it says so again.
     here_said: Option<(String, String, String)>,
     here_at: f64,
-    here_next: f64,
+    /// A key or the pointer moved in this window since the last look, when one last did, and since when the window has not been in front.
+    touched: bool,
+    touched_at: f64,
+    behind: Option<f64>,
+    in_front: bool,
+    /// The window has gone quiet: it is on no page's table, and says so in nothing.
+    here_quiet: bool,
     here_req: Latest<Result<(), String>>,
     /// The ship has no presence: it is not asked again in this run.
     here_off: bool,
@@ -1316,7 +1322,12 @@ fn init() -> App {
         here_shown: None,
         here_said: None,
         here_at: 0.0,
-        here_next: 0.0,
+        // a window is in front and in use when it opens
+        touched: true,
+        touched_at: 0.0,
+        behind: None,
+        in_front: true,
+        here_quiet: false,
         here_req: Latest::default(),
         here_off: false,
         here_mine: String::new(),
@@ -12460,15 +12471,12 @@ struct HereHeard {
     off: bool,
 }
 
-/// How often a window says it is still there, in seconds. The ship drops one unheard for a minute.
-const HERE_EVERY: f64 = 20.0;
-
 /// The page whose table this window is on: the open page, when it is
 /// one of this ship's that is shared. Not a memory, not another ship's
 /// page, not a private page: nothing is said of where one is in those.
 // ponytail: a page granted to named ships and not published is not known to be shared here, and a page another ship shared with this one has its table on that ship, which is not asked yet
 fn here_page(s: &App) -> Option<String> {
-    if s.here_off || s.memory || s.anon || s.sample || s.remote.is_some() || s.conn.is_none() || cfg!(target_arch = "wasm32") {
+    if s.here_off || s.here_quiet || s.memory || s.anon || s.sample || s.remote.is_some() || s.conn.is_none() || cfg!(target_arch = "wasm32") {
         return None;
     }
     let p = s.open.as_ref()?;
@@ -12514,14 +12522,33 @@ fn here_work(s: &mut App) {
         .collect();
 }
 
-/// Keeps this window on the table of the page it shows: listens on that
-/// page's stream, on a thread of its own, says where the window is when
-/// that changes and every twenty seconds, and says it is gone when the
-/// page is left. Whether anything on screen changed.
+/// Keeps this window on the table of the page it shows. Holding that
+/// page's stream open, on a thread of its own, is what puts it there:
+/// nothing is sent to say it is still there. Where the window is in the
+/// page is said when that changes, and that it is gone when the page is
+/// left. A window gone quiet (`here::quiet`) is on no table and asks
+/// the ship nothing for this. Whether anything on screen changed.
 fn sync_here(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     use std::sync::atomic::Ordering;
     let mut changed = false;
+    // whether anyone is at this window: a key or the pointer moved, and it is the window in front
+    if std::mem::take(&mut s.touched) || s.touched_at == 0.0 {
+        s.touched_at = clock;
+    }
+    s.behind = match (s.in_front, s.behind) {
+        (true, _) => None,
+        (false, None) => Some(clock),
+        (false, since) => since,
+    };
+    let quiet = here::quiet(clock, s.touched_at, s.behind);
+    if quiet != s.here_quiet {
+        (s.here_quiet, changed) = (quiet, true);
+    }
     let want = here_page(s);
+    if want.is_some() {
+        // looked at again when the window would have gone quiet, which costs the ship nothing
+        tx.wake_after(std::time::Duration::from_secs_f64(here::quiet_in(clock, s.touched_at, s.behind) + 0.5));
+    }
     if want != s.here_for {
         s.here_stop.store(true, Ordering::Relaxed);
         if let (Some(c), Some(old)) = (s.conn.clone(), s.here_for.take()) {
@@ -12534,12 +12561,13 @@ fn sync_here(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let heard = std::sync::Arc::new(std::sync::Mutex::new(HereHeard::default()));
             (s.here_stop, s.here) = (stop.clone(), heard.clone());
+            let id = s.client_id.clone();
             std::thread::spawn(move || {
                 let mut fail = 0u32;
                 while !stop.load(Ordering::Relaxed) {
                     // a table that comes late, after a newer one, is not shown. A new stream starts the count again
                     let mut last = None;
-                    let got = c.here_stream(&page, |t| {
+                    let got = c.here_stream(&page, &id, |t| {
                         if here::takes(last, t.seq) {
                             last = Some(t.seq);
                             if let Ok(mut h) = heard.lock() {
@@ -12578,17 +12606,24 @@ fn sync_here(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         s.here_off = true;
     }
     here_work(s);
+    // where this window is, said when the table has it otherwise: the ship puts a window on the
+    // page as reading when its stream opens, so a reader says nothing at all
     if let (Some(c), Some(page)) = (s.conn.clone(), want) {
+        let me = here_me(s);
+        let row = s.here_shown.as_ref().filter(|t| t.page == page).and_then(|t| t.here.iter().find(|r| r.who == me)).cloned();
         let now = (page, s.here_mine.clone(), if s.editing { "edit" } else { "read" }.to_owned());
-        let moved = s.here_said.as_ref() != Some(&now);
-        if moved && clock < s.here_at + 1.0 {
-            // a caret crossing blocks is said once a second at most
-            tx.wake_after(std::time::Duration::from_secs_f64((s.here_at + 1.0 - clock).max(0.05)));
-        } else if moved || clock >= s.here_next {
-            let id = s.client_id.clone();
-            s.here_req.request((c, now.clone(), id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
-            (s.here_said, s.here_at, s.here_next) = (Some(now), clock, clock + HERE_EVERY);
-            tx.wake_after(std::time::Duration::from_secs_f64(HERE_EVERY));
+        // not said twice while the ship's table catches up, and a caret crossing blocks once a second at most
+        let wrong = row.is_some_and(|r| r.block != now.1 || r.mode != now.2);
+        let waiting = s.here_said.as_ref() == Some(&now) && clock < s.here_at + 3.0;
+        if wrong && !waiting {
+            if clock < s.here_at + 1.0 {
+                tx.wake_after(std::time::Duration::from_secs_f64((s.here_at + 1.0 - clock).max(0.05)));
+            } else {
+                let id = s.client_id.clone();
+                s.here_req.request((c, now.clone(), id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
+                (s.here_said, s.here_at) = (Some(now), clock);
+                tx.wake_after(std::time::Duration::from_secs(3));
+            }
         }
     }
     changed
@@ -14313,7 +14348,18 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let ground = if s.prefs.worn.look().bg.is_some() { k.c.page } else { rune::Color::TRANSPARENT };
     let shell = row().w_full().h_full().min_h(0.0).fill(ground).child(ribbon_view(s, &k, if inset > 0.0 { 32.0 } else { 0.0 })).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(el().w_full().grow(1.0).min_h(0.0).child(shell)).child(status_bar(s, &k, busy)));
     let shell = link_menu_view(s, &k, shell, &mut layer);
-    rune_kit::root(shell, layer).on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec())).on_drop_hover(|s: &mut App, over, _| s.dropping = over)
+    rune_kit::root(shell, layer)
+        .on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec()))
+        .on_drop_hover(|s: &mut App, over, _| s.dropping = over)
+        // whether anyone is at the window, for what is only worth the ship's while when someone is
+        .on_window_focus(|s: &mut App, front, _| (s.in_front, s.touched) = (front, true))
+        .on_pointer_move_local(|s: &mut App, _, tx| {
+            s.touched = true;
+            // a pointer moving over a window in use changes nothing drawn: one coming back to a quiet window does
+            if !s.here_quiet {
+                tx.live_only();
+            }
+        })
 }
 
 /// A chord the web client binds (`ui-src/lattice`: 21-tabs, 23-tabhead,
@@ -14397,6 +14443,7 @@ fn chord(s: &App, ev: &KeyEvent) -> Option<Chord> {
 }
 
 fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    s.touched = true;
     if s.conn.is_none() && !s.sample {
         return false;
     }

@@ -2343,27 +2343,28 @@ impl Conn {
     }
 
     /// Says where this window is on a page: reading, or editing in a
-    /// block, or gone (`mode`). `client` tells this window from another
+    /// block, or gone (`mode`). Sent when that changes, never on a timer. `client` tells this window from another
     /// of the ship's. Nothing is written on the ship for it.
     pub fn here_say(&self, page: &str, client: &str, block: &str, mode: &str) -> Result<(), String> {
         self.call_in(15, "POST", &format!("presence?page={}&client={}&block={}&mode={}", enc(page), enc(client), enc(block), enc(mode)), Some("")).map(drop)
     }
 
     /// Listens to who is on a page until the stream ends, giving each
-    /// table to `on`. `on` answering false stops the listening. An error
+    /// table to `on`. Holding the stream open is what puts this window,
+    /// `client`, on the page: nothing is sent to say it is still there. `on` answering false stops the listening. An error
     /// that starts with 404 is a ship with no such stream.
-    pub fn here_stream(&self, page: &str, mut on: impl FnMut(crate::here::Table) -> bool) -> Result<(), String> {
+    pub fn here_stream(&self, page: &str, client: &str, mut on: impl FnMut(crate::here::Table) -> bool) -> Result<(), String> {
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = (page, &mut on);
+            let _ = (page, client, &mut on);
             Err("no stream in the browser build".into())
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
             use std::io::Read;
-            // the ship sends a comment every 25 seconds: a minute with nothing is a dead stream
+            // the ship sends a comment every 30 seconds: a minute with nothing is a dead stream
             let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(60)).build();
-            let resp = match agent.get(&format!("{}/apps/lattice/presence-stream?page={}", self.url, enc(page))).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
+            let resp = match agent.get(&format!("{}/apps/lattice/presence-stream?page={}&client={}", self.url, enc(page), enc(client))).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
                 Ok(r) => r,
                 Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: no stream")),
                 Err(e) => return Err(e.to_string()),

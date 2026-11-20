@@ -65,6 +65,37 @@ pub fn said(r: &Row, our: &str) -> String {
     if r.editing() { format!("{who} \u{b7} editing") } else { who }
 }
 
+/// How long a window in the background stays on a page's table, and how
+/// long one in front that nothing has touched, in seconds.
+pub const AWAY_AFTER: f64 = 60.0;
+pub const STILL_AFTER: f64 = 300.0;
+
+/// Whether this window has gone quiet: in the background for a minute,
+/// or untouched for five. A quiet window leaves the table and stops
+/// asking the ship anything for it, so a computer left on with a shared
+/// page open costs the ship nothing. `touched` is when a key or the
+/// pointer last moved here, `behind` since when the window has not been
+/// the one in front.
+pub fn quiet(now: f64, touched: f64, behind: Option<f64>) -> bool {
+    behind.is_some_and(|b| now - b >= AWAY_AFTER) || now - touched >= still_after()
+}
+
+/// `STILL_AFTER`, or in a debug build the seconds `LATTICE_STILL_AFTER` names, so a check need not wait five minutes.
+fn still_after() -> f64 {
+    if cfg!(debug_assertions) && !cfg!(test) {
+        if let Some(s) = std::env::var("LATTICE_STILL_AFTER").ok().and_then(|v| v.parse::<f64>().ok()) {
+            return s;
+        }
+    }
+    STILL_AFTER
+}
+
+/// How long until a window that is not quiet would be, if nothing more happens: when to look again.
+pub fn quiet_in(now: f64, touched: f64, behind: Option<f64>) -> f64 {
+    let still = touched + still_after() - now;
+    behind.map_or(still, |b| still.min(b + AWAY_AFTER - now)).max(0.0)
+}
+
 /// An id for this run of the app, to tell its window from another of the
 /// same ship's: sixteen hex figures from the clock and the process.
 pub fn client_id() -> String {
@@ -246,6 +277,20 @@ mod tests {
         // a line that is not there lands on a line's start, never mid-character
         assert_eq!(across("zzz", 1, "caf\u{e9}\nb"), 0);
         assert_eq!(across("", 0, ""), 0);
+    }
+
+    #[test]
+    fn a_window_goes_quiet_in_the_background_or_left_alone() {
+        // in front and touched a moment ago
+        assert!(!quiet(1000.0, 990.0, None));
+        // in front, and nothing touched for five minutes
+        assert!(!quiet(1000.0, 701.0, None) && quiet(1000.0, 700.0, None));
+        // behind another window for a minute, however lately it was touched
+        assert!(!quiet(1000.0, 999.0, Some(941.0)) && quiet(1000.0, 999.0, Some(940.0)));
+        // when to look again: the sooner of the two
+        assert_eq!(quiet_in(1000.0, 990.0, None), 290.0);
+        assert_eq!(quiet_in(1000.0, 990.0, Some(970.0)), 30.0);
+        assert_eq!(quiet_in(1000.0, 0.0, None), 0.0);
     }
 
     #[test]
