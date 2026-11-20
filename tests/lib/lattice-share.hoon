@@ -1097,5 +1097,14 @@
     (expect-eq !>(want) !>(ent.r))
     (expect-eq !>(1) !>(lost.r))
   ==
+::  +code-page: a path to a page's code grub names the page
+++  test-code-page
+  ;:  weld
+    (expect-eq !>(`/reports/article) !>((code-page:ls /reports/article/code)))
+    (expect-eq !>(`/a) !>((code-page:ls /a/code)))
+    ::  the page itself, a bare code, and any other grub name nothing
+    (expect-eq !>(~) !>((code-page:ls /reports/article)))
+    (expect-eq !>(~) !>((code-page:ls /code)))
+    (expect-eq !>(~) !>((code-page:ls /reports/article/data)))
+  ==
 --
-

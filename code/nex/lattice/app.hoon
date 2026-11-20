@@ -13815,11 +13815,22 @@
   |-  ^-  form:m
   ?~  ps  (pure:m out)
   =/  rel=path  (slag (lent pre) i.ps)
+  =/  ours=?  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))
   ;<  pe=?  bind:m
-    ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))
-      (pure:(fiber:fiber:nexus ,?) |)
+    ?.  ours  (pure:(fiber:fiber:nexus ,?) |)
     (peek-exists:fio (rf up (weld /page rel) %code))
-  =/  r=road:tarball  ?:(pe [%& %& i.ps %code] [%& %| i.ps])
+  ::  a path to a page's code grub names that page (the Rune client sends
+  ::  this shape). As a dir road it would grant nothing, code being a
+  ::  file, so it is the file road on that page's code, as the page's own
+  ::  path gives (+code-page:ls)
+  =/  cp=(unit path)  ?.(ours ~ (code-page:ls rel))
+  ;<  pc=?  bind:m
+    ?:  |(pe ?=(~ cp))  (pure:(fiber:fiber:nexus ,?) |)
+    (peek-exists:fio (rf up (weld /page u.cp) %code))
+  =/  r=road:tarball
+    ?:  pe  [%& %& i.ps %code]
+    ?:  pc  [%& %& (snip i.ps) %code]
+    [%& %| i.ps]
   $(ps t.ps, out (~(put in out) r))
 ::  +narrow-page-grants: a page grant used to be a dir road on the page's
 ::  dir, which also reached its owner-only grubs and the pages nested under
@@ -13828,7 +13839,23 @@
 ::  narrows: a folder's road stays, and so does every other road. Soft, so
 ::  an install that refused the usergroup roads keeps its grants as they
 ::  were.
+::
+::  The ships whose reads change hear of it (+share-tell-do, called here
+::  and not through the writer's %share-tell, since this runs in the
+::  writer). A dir road on a page's code grub read as a folder, so a ship
+::  was told of a folder that is not one: narrowed, it is told that
+::  folder is gone and the page is shared.
 ++  narrow-page-grants
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  h0=holds:ls  bind:m  holds-now
+  ;<  ~  bind:m  narrow-page-grants-in
+  ;<  h1=holds:ls  bind:m  holds-now
+  =/  d  (holds-diff:ls h0 h1)
+  ?:  &(?=(~ add.d) ?=(~ del.d))  (pure:m ~)
+  (share-tell-do add.d del.d)
+::  +narrow-page-grants-in: the narrowing itself
+++  narrow-page-grants-in
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  ub=path  bind:m  ug-dir
