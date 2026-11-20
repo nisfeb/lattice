@@ -480,6 +480,13 @@
         ::  from the transport.
             [%fall %& [/ %shared] [[/lattice %shared] *shared:ls]]
             [%fall %& [/ %'shares.sig'] [[/ %sig] ~]]
+        ::  /presence.sig: who has which shared page open, and where in it
+        ::  (+presence-loop). The table is the process's own, held in its
+        ::  loop and nowhere else: no grub is written for it, so nothing of
+        ::  it reaches a page's history, a backup or the event log's bulk,
+        ::  and a reload starts it empty, which is right for what expires
+        ::  in a minute anyway.
+            [%fall %& [/ %'presence.sig'] [[/ %sig] ~]]
         ::  /access.sig: the edit access inbox (+apply-access-notice). Any
         ::  ship may ask for edit on a page or folder it reads, as any ship
         ::  may notify /shares.sig, and a host tells an asker it declined
@@ -711,6 +718,10 @@
         ;<  ~  bind:m  (publish-groups root)
         ;<  ~  bind:m  take-groups-news
         $
+      ::  /presence.sig: the table of who is where (+presence-loop)
+          [~ %'presence.sig']
+        ;<  ~  bind:m  (rise-later prod "lattice /presence.sig" "")
+        (presence-loop (lent path.rail))
       ::  /access.sig: edit access requests, and a host's answer to ours
       ::  (+apply-access-notice). The same take-poke loop as /shares.sig.
           [~ %'access.sig']
@@ -3721,6 +3732,32 @@
   ::  snapshot, then on add/upd upsert <name> with its data, on del drop it. know
   ::  and pub are DIRECTORY subscriptions (one frame per changed entry/page).
   ::  follows is the single follow-set grub.
+  ::  ── presence ──
+  ::  POST /presence?page=&client=&block=&mode=read|edit|gone: where one
+  ::  of the owner's windows is. `client` tells one window from another.
+  ::  It is passed to /presence.sig and nothing is written.
+      [%'POST' %presence]
+    =/  page=(unit @t)  (~(get by args) 'page')
+    ?~  page  (send-err eyre-id 400 'missing page')
+    =/  mode=@t  (~(gut by args) 'mode' 'read')
+    ;<  ~  bind:m
+      %+  poke:io  (rf up / %'presence.sig')
+      :-  [/ %json]
+      %-  pairs:enjs:format
+      :~  ['op' s+?:(=('gone' mode) 'gone' 'here')]
+          ['page' s+u.page]
+          ['who' s+(rap 3 ~[(scot %p src) '/' (~(gut by args) 'client' '')])]
+          ['ship' s+(scot %p src)]
+          ['block' s+(~(gut by args) 'block' '')]
+          ['mode' s+mode]
+      ==
+    (send-ok eyre-id)
+  ::  GET /presence-stream?page=: an SSE stream of that page's table,
+  ::  one `here` frame whenever it changes (+presence-stream)
+      [%'GET' %presence-stream]
+    =/  page=(unit @t)  (~(get by args) 'page')
+    ?~  page  (send-err eyre-id 400 'missing page')
+    (presence-stream up eyre-id u.page)
       [%'GET' %streams]
     ;<  sb=path  bind:m  self-base
     =/  base=tape  (weld (keep-url sb "") "")
@@ -15036,6 +15073,179 @@
 ::  The crash record is /rise.json at the nexus root, one row per fiber,
 ::  so a page's fiber leaves nothing in the page's own tree. A reload
 ::  prunes it, which resets the counts.
+::  ── presence: who has a shared page open, and where ──
+::
+::  One process, /presence.sig, holds a table for each page: a row for
+::  each window that said it is there (POST /presence), dropped a minute
+::  after it was last heard. A window that wants the table holds a stream
+::  open (GET /presence-stream), and its request's own process is poked
+::  the table when it changes, once a second at most for a page.
+::
+::  These are the owner's own windows, each a request that has already
+::  cost what a request costs, so nothing is refused here for coming too
+::  often: a change is never dropped, and many in one second are sent as
+::  one. A limit on what another ship may send belongs where another
+::  ship's word comes in, which is not built.
+::
+::  Three rules keep one slow or dead listener from costing the others:
+::  the table is sent without waiting for anyone to take it, a listener
+::  whose send failed is dropped, and every table carries a number that
+::  only goes up, so one that arrives late can be told from the newest.
+::
+++  presence-row  ,[ship=@t block=@t mode=@t heard=@da]
+::  +presence-in: the next thing /presence.sig has to act on. A poke is
+::  handed over, a timer's wake among them. A table that could not be
+::  delivered is handed over as the id of the stream it was for. All
+::  else is taken and dropped, so nothing is left to queue.
+++  presence-in
+  =/  m  (fiber:fiber:nexus ,(unit (each sage:tarball @ta)))
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%done ~]
+      ~  [%wait ~]
+      [~ %poke * *]  [%done `[%& sage.u.in]]
+      [~ %veto %node * * *]
+    ?.  ?=([%here @ ~] wire.dart.u.in)  [%done ~]
+    [%done `[%| i.t.wire.dart.u.in]]
+      [~ %pack * *]
+    ?~  err.u.in  [%done ~]
+    ?.  ?=([%here @ ~] wire.u.in)  [%done ~]
+    [%done `[%| i.t.wire.u.in]]
+  ==
+::  +presence-live: a page's rows without those last heard over a minute ago
+++  presence-live
+  |=  [rows=(map @t presence-row) now=@da]
+  ^-  (map @t presence-row)
+  %-  ~(gas by *(map @t presence-row))
+  %+  skim  ~(tap by rows)
+  |=([who=@t row=presence-row] (gth (add heard.row ~m1) now))
+::  +presence-json: a page's table as its streams are sent it
+++  presence-json
+  |=  [page=@t seq=@ud rows=(map @t presence-row)]
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['page' s+page]
+      ['seq' (numb:enjs:format seq)]
+      :-  'here'
+      :-  %a
+      %+  turn
+        %+  sort  ~(tap by rows)
+        |=([a=[who=@t presence-row] b=[who=@t presence-row]] (aor who.a who.b))
+      |=  [who=@t row=presence-row]
+      %-  pairs:enjs:format
+      ~[['who' s+who] ['ship' s+ship.row] ['block' s+block.row] ['mode' s+mode.row]]
+  ==
+::  +presence-send: poke a table to each of these streams, waiting for none
+++  presence-send
+  |=  [root=@ud ids=(list @ta) j=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  ids  (pure:m ~)
+  ;<  ~  bind:m
+    (send-dart:io %node /here/[i.ids] (rf root /ui/requests i.ids) %poke [[/ %json] j])
+  $(ids t.ids)
+::  +presence-cast: a page's table to every stream held on that page
+++  presence-cast
+  |=  [root=@ud page=@t seq=@ud rows=(map @t presence-row) subs=(map @ta @t)]
+  =/  ids=(list @ta)
+    (murn ~(tap by subs) |=([id=@ta p=@t] ?:(=(p page) `id ~)))
+  (presence-send root ids (presence-json page seq rows))
+::  +presence-loop: /presence.sig. `tab` is each page's rows by window,
+::  `subs` the page each open stream is held on, `last` when a page's
+::  table was last sent and `dirty` the pages that changed since, to be
+::  sent when their second is up.
+++  presence-loop
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =|  tab=(map @t (map @t presence-row))
+  =|  subs=(map @ta @t)
+  =|  last=(map @t @da)
+  =|  dirty=(set @t)
+  =|  seq=@ud
+  |-
+  ;<  got=(unit (each sage:tarball @ta))  bind:m  presence-in
+  ?~  got  $
+  ::  a stream that did not take its table is gone
+  ?:  ?=(%| -.u.got)  $(subs (~(del by subs) p.u.got))
+  =/  =sage:tarball  p.u.got
+  ;<  now=@da  bind:m  bowl-now
+  ?:  =([/ %timer-wake] p.sage)
+    =/  due=(list @t)  ~(tap in dirty)
+    =.  dirty  ~
+    |-
+    ?~  due  ^$
+    =.  seq  +(seq)
+    =/  rows=(map @t presence-row)  (presence-live (~(gut by tab) i.due ~) now)
+    ;<  ~  bind:m  (presence-cast root i.due seq rows subs)
+    $(due t.due, last (~(put by last) i.due now))
+  ?.  =([/ %json] p.sage)  $
+  =/  j=json  !<(json q.sage)
+  ?.  ?=([%o *] j)  $
+  =/  str
+    |=  k=@t
+    ^-  @t
+    =/  v=(unit json)  (~(get by p.j) k)
+    ?:(?=([~ %s *] v) p.u.v '')
+  =/  op=@t  (str 'op')
+  =/  page=@t  (str 'page')
+  ?:  |(=('' page) (gth (met 3 page) 256))  $
+  =/  rows=(map @t presence-row)  (~(gut by tab) page ~)
+  =/  live=(map @t presence-row)  (presence-live rows now)
+  ?:  =('sub' op)
+    =/  id=@ta  (str 'id')
+    ?:  |(=('' id) (gth ~(wyt by subs) 256))  $
+    ;<  ~  bind:m  (presence-send root ~[id] (presence-json page seq live))
+    $(subs (~(put by subs) id page))
+  =/  who=@t  (str 'who')
+  ?:  |(=('' who) (gth (met 3 who) 80))  $
+  =/  old=(unit presence-row)  (~(get by live) who)
+  =/  next=(map @t presence-row)
+    ?:  =('gone' op)  (~(del by live) who)
+    ::  a page takes 64 windows and no more
+    ?:  &(?=(~ old) (gte ~(wyt by live) 64))  live
+    %+  ~(put by live)  who
+    [(str 'ship') (end [3 128] (str 'block')) ?:(=('edit' (str 'mode')) 'edit' 'read') now]
+  ::  what the streams are shown: the rows, whenever each was heard
+  =/  shown
+    |=  r=(map @t presence-row)
+    (~(run by r) |=(p=presence-row p(heard *@da)))
+  =/  same=?  =((shown rows) (shown next))
+  =.  tab  ?:(=(~ next) (~(del by tab) page) (~(put by tab) page next))
+  ?:  same  $
+  =/  was=@da  (~(gut by last) page *@da)
+  ?:  (gte now (add was ~s1))
+    =.  seq  +(seq)
+    ;<  ~  bind:m  (presence-cast root page seq next subs)
+    $(last (~(put by last) page now))
+  ;<  ~  bind:m  (send-wait:io (add was ~s1))
+  $(dirty (~(put in dirty) page))
+::  +presence-stream: GET /presence-stream. The request's own process
+::  says which page it is held on, then sends on each table it is poked,
+::  and a comment every 25 seconds so the stream is not taken for dead.
+++  presence-stream
+  |=  [up=@ud eyre-id=@ta page=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m  (send-header:http-res:io eyre-id sse-header:http-utils)
+  ;<  ~  bind:m
+    %+  poke:io  (rf up / %'presence.sig')
+    [[/ %json] (pairs:enjs:format ~[['op' s+'sub'] ['page' s+page] ['id' s+eyre-id]])]
+  ;<  now=@da  bind:m  bowl-now
+  ;<  ~  bind:m  (send-wait:io (add now ~s25))
+  |-
+  ;<  =sage:tarball  bind:m  take-poke:io
+  ?:  =([/ %timer-wake] p.sage)
+    ;<  ~  bind:m  (send-data:http-res:io eyre-id `sse-keep-alive:http-utils)
+    ;<  now=@da  bind:m  bowl-now
+    ;<  ~  bind:m  (send-wait:io (add now ~s25))
+    $
+  ?.  =([/ %json] p.sage)  $
+  =/  txt=@t  (en:json:html !<(json q.sage))
+  ;<  ~  bind:m
+    (send-data:http-res:io eyre-id `(sse-encode:http-utils ~[[~ `'here' ~[txt]]]))
+  $
 ++  rise-later
   |=  [=prod:fiber:nexus kind=tape who=tape]
   (rise-later-as prod kind who &)
