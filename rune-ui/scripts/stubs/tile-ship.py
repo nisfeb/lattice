@@ -73,7 +73,7 @@ class H(BaseHTTPRequestHandler):
         if p == 'page-source-at' and HISTORY:
             n = int(q.get('rev', ['0'])[0])
             if not 1 <= n <= len(HISTORY): return self.send(404, 'not found', 'text/plain')
-            return self.send(200, json.dumps({"body": HISTORY[n - 1], "kind": "md", "rev": n, "mtime": "~2026.11.17"}))
+            return self.send(200, json.dumps({"body": HISTORY[n - 1], "kind": os.environ.get('LR_KIND', 'md'), "rev": n, "mtime": "~2026.11.17"}))
         if p == 'page-source':
             l = LINKS.get(q.get('name', [''])[0])
             if l: return self.send(200, json.dumps({"body":l["body"],"kind":"md","rev":l["rev"],"mtime":"~2026.11.17"}))
@@ -170,7 +170,7 @@ HISTORY = []
 if os.environ.get('LR_HISTORY'):
     _d = os.environ['LR_HISTORY']
     HISTORY = [open(os.path.join(_d, f)).read() for f in sorted(os.listdir(_d))]
-    PAGES[os.environ.get('LR_NAME', 'places')] = [HISTORY[-1], 'md', len(HISTORY)]
+    PAGES[os.environ.get('LR_NAME', 'places')] = [HISTORY[-1], os.environ.get('LR_KIND', 'md'), len(HISTORY)]
 COMMENTS = [{"page": os.environ.get('LR_NAME', 'places'), "id": "0v1.a", "author": "~sampel-palnet", "when": "~2026.11.17..9.30.0", "body": "A first comment."}]
 COMMENTS_ON = {}
 PENDING = [{"id": "0v9.held", "author": "~doznec-salfun-naptul-habrys--todlux-mosmep-linsub-binzod", "when": 1795000000000, "body": "A comet's comment, held."}]

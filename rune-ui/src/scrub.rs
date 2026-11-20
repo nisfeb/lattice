@@ -17,6 +17,8 @@ pub struct Frame {
     pub keys: Vec<(usize, String)>,
     /// The blocks written or changed in this revision: where each lies in `src`.
     pub changed: Vec<std::ops::Range<usize>>,
+    /// How many blocks this revision wrote or changed.
+    pub touched: usize,
     /// How many blocks the revision before had that this one has not.
     pub cut: usize,
 }
@@ -93,6 +95,135 @@ fn same(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
     out
 }
 
+/// What to mark of a block that was changed: the lines it did not have
+/// before, and of a table's row only the cells that differ, each as
+/// where it lies in the whole text (`base` is where the block starts).
+fn marks_in(old: &str, new: &str, base: usize) -> Vec<std::ops::Range<usize>> {
+    let was: Vec<&str> = old.lines().map(str::trim_end).collect();
+    let cells = |line: &str| -> Vec<(usize, usize)> {
+        // each cell of a table's row: where its text starts and ends in the line
+        let mut out = Vec::new();
+        let mut from = 0;
+        for (i, ch) in line.char_indices() {
+            if ch == '|' && !line[..i].ends_with('\\') {
+                out.push((from, i));
+                from = i + 1;
+            }
+        }
+        out.push((from, line.len()));
+        out.into_iter().map(|(a, b)| (a + (line[a..b].len() - line[a..b].trim_start().len()), a + line[a..b].trim_end().len())).collect()
+    };
+    let (mut out, mut at) = (Vec::new(), 0);
+    for (i, raw) in new.split_inclusive('\n').enumerate() {
+        let line = raw.trim_end();
+        if !line.is_empty() && !was.contains(&line) {
+            let lead = line.len() - line.trim_start().len();
+            let before = was.get(i).filter(|w| w.trim_start().starts_with('|') && line.trim_start().starts_with('|')).map(|w| cells(w));
+            let now = cells(line);
+            match before.filter(|b| b.len() == now.len()) {
+                Some(b) => {
+                    let w = was[i];
+                    out.extend(now.iter().zip(&b).filter(|((a0, a1), (b0, b1))| a1 > a0 && line[*a0..*a1] != w[*b0..*b1]).map(|((a0, a1), _)| base + at + a0..base + at + a1));
+                }
+                None => out.push(base + at + lead..base + at + line.len()),
+            }
+        }
+        at += raw.len();
+    }
+    out
+}
+
+/// A text as Markdown shows it plainly: what would be read as its marks is escaped.
+fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    for ch in text.chars() {
+        if matches!(ch, '\\' | '*' | '_' | '`' | '[' | ']' | '<' | '|' | '#' | '~') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    let t = out.trim();
+    // a line that would start a list, a quote or a numbered item is said to be text
+    let first = t.chars().next();
+    let numbered = t.split_once(['.', ')']).is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    if matches!(first, Some('-' | '+' | '>' | '=')) || numbered { format!("\\{t}") } else { t.to_owned() }
+}
+
+/// A spreadsheet's sheets as Markdown: a table for each, under its name
+/// when there is more than one, with the columns' letters over it and
+/// the rows' numbers beside it. The first 200 rows and 26 columns.
+pub fn sheets_md(sheets: &[crate::sheet::Sheet]) -> String {
+    let mut out = String::new();
+    for sh in sheets {
+        if sheets.len() > 1 {
+            out.push_str(&format!("## {}\n\n", plain(&sh.name)));
+        }
+        let wide = sh.width().min(26);
+        if wide == 0 {
+            out.push_str("*An empty sheet*\n\n");
+            continue;
+        }
+        let cols: Vec<String> = (0..wide).map(crate::sheet::column_name).collect();
+        out.push_str(&format!("|   | {} |\n|---|{}\n", cols.join(" | "), "---|".repeat(wide)));
+        for (r, row) in sh.rows.iter().take(200).enumerate() {
+            let cells: Vec<String> = (0..wide).map(|c| row.get(c).map_or(String::new(), |v| plain(&v.replace(['\n', '\r'], " ")))).collect();
+            out.push_str(&format!("| {} | {} |\n", r + 1, cells.join(" | ")));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// A document (flat ODT) as Markdown: its headings, paragraphs and list
+/// items, in order, as plain text. What a document has beyond that
+/// (type, tables' shape, pictures) is not shown.
+pub fn doc_md(body: &str) -> String {
+    let mut rest = body.split_once("<office:body>").map_or("", |(_, b)| b);
+    let (mut out, mut text, mut lead, mut lists) = (String::new(), String::new(), String::new(), 0usize);
+    let unescape = |s: &str| s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&");
+    while let Some(lt) = rest.find('<') {
+        text.push_str(&rest[..lt]);
+        let Some(gt) = rest[lt..].find('>') else { break };
+        let tag = &rest[lt + 1..lt + gt];
+        rest = &rest[lt + gt + 1..];
+        let (closing, alone) = (tag.starts_with('/'), tag.ends_with('/'));
+        let name = tag.trim_start_matches('/').split(|c: char| c.is_whitespace() || c == '/').next().unwrap_or("");
+        match name {
+            "text:list" if !alone => lists = if closing { lists.saturating_sub(1) } else { lists + 1 },
+            "text:h" | "text:p" if !closing => {
+                text.clear();
+                lead = match name {
+                    "text:h" => {
+                        let level = tag.split_once("text:outline-level=\"").and_then(|(_, r)| r.split('"').next()?.parse::<usize>().ok()).unwrap_or(1);
+                        format!("{} ", "#".repeat(level.clamp(1, 6)))
+                    }
+                    _ if lists > 0 => format!("{}- ", "  ".repeat(lists - 1)),
+                    _ => String::new(),
+                };
+            }
+            "text:h" | "text:p" => {
+                let said = plain(&unescape(&text));
+                if !said.is_empty() {
+                    // the items of one list stand together, and anything else stands apart
+                    let together = lead.trim_start().starts_with("- ") && out.lines().last().is_some_and(|l| l.trim_start().starts_with("- "));
+                    if !out.is_empty() {
+                        out.push_str(if together { "\n" } else { "\n\n" });
+                    }
+                    out.push_str(&lead);
+                    out.push_str(&said);
+                }
+                text.clear();
+            }
+            "text:s" | "text:tab" | "text:line-break" => text.push(' '),
+            _ => {}
+        }
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
 impl Film {
     /// Adds the next revision, newer than every one added before. A
     /// block that is the same text as one in the revision before keeps
@@ -106,7 +237,7 @@ impl Film {
             self.names += 1;
             format!("s{}", self.names)
         };
-        let (mut names, mut changed, mut cut) = (vec![String::new(); at.len()], Vec::new(), 0);
+        let (mut names, mut changed, mut cut, mut touched) = (vec![String::new(); at.len()], Vec::new(), 0, 0);
         match self.frames.last() {
             None => names.iter_mut().for_each(|n| *n = fresh()),
             Some(before) => {
@@ -120,15 +251,20 @@ impl Film {
                     // between two blocks that stayed: the ones much alike, in order, are one block changed
                     let mut i = i0;
                     for j in j0..j1 {
+                        touched += 1;
                         match (i..i1).find(|&x| alike(was[x], text[j]) >= 0.5) {
                             Some(x) => {
                                 cut += x - i;
                                 names[j] = was_name(x).unwrap_or_else(&mut fresh);
                                 i = x + 1;
+                                // of a block changed, what is new in it
+                                changed.extend(marks_in(was[x], text[j], at[j].start));
                             }
-                            None => names[j] = fresh(),
+                            None => {
+                                names[j] = fresh();
+                                changed.push(at[j].start..at[j].start + text[j].len());
+                            }
                         }
-                        changed.push(at[j].clone());
                     }
                     cut += i1 - i;
                     if j1 < text.len() {
@@ -139,7 +275,7 @@ impl Film {
             }
         }
         let keys = at.iter().zip(names).map(|(r, n)| (r.start, n)).collect();
-        self.frames.push(Frame { rev, when, src, keys, changed, cut });
+        self.frames.push(Frame { rev, when, src, keys, changed, touched, cut });
     }
 
     /// What a frame's revision did, in a few words.
@@ -149,7 +285,7 @@ impl Film {
             return "the first kept".to_owned();
         }
         let part = |n: usize, what: &str| (n > 0).then(|| format!("{n} {what}"));
-        let fresh = f.changed.len();
+        let fresh = f.touched;
         let parts: Vec<String> = [part(fresh, if fresh == 1 { "block written or changed" } else { "blocks written or changed" }), part(f.cut, "cut")].into_iter().flatten().collect();
         if parts.is_empty() { "nothing a reader sees".to_owned() } else { parts.join(", ") }
     }
@@ -207,8 +343,42 @@ mod tests {
         let mut film = Film::default();
         film.push(1, String::new(), "One.\n\nTwo.\n".into());
         film.push(2, String::new(), "One.\n\nTwo.\n\n".into());
-        assert_eq!((film.frames[1].changed.len(), film.frames[1].cut, film.said(1).as_str()), (0, 0, "nothing a reader sees"));
+        assert_eq!((film.frames[1].touched, film.frames[1].cut, film.said(1).as_str()), (0, 0, "nothing a reader sees"));
         assert_eq!(names(&film.frames[0]), names(&film.frames[1]));
+    }
+
+    #[test]
+    fn a_changed_sheet_marks_the_cells_that_changed() {
+        let sheet = |rows: &[&[&str]]| vec![crate::sheet::Sheet { name: "Costs".into(), rows: rows.iter().map(|r| r.iter().map(|c| (*c).to_owned()).collect()).collect() }];
+        let one = sheets_md(&sheet(&[&["Thing", "Cost"], &["Timber", "240"], &["Felt", "35"]]));
+        assert_eq!(one, "|   | A | B |\n|---|---|---|\n| 1 | Thing | Cost |\n| 2 | Timber | 240 |\n| 3 | Felt | 35 |\n\n");
+        let two = sheets_md(&sheet(&[&["Thing", "Cost"], &["Timber", "260"], &["Felt", "35"], &["Paint", "18"]]));
+        let mut film = Film::default();
+        film.push(1, String::new(), one);
+        film.push(2, String::new(), two);
+        let f = &film.frames[1];
+        assert_eq!(f.keys.len(), 1, "one table, the same one");
+        assert_eq!(f.keys[0].1, film.frames[0].keys[0].1);
+        // the cell that changed, and the row that was written
+        assert_eq!(f.changed.iter().map(|r| &f.src[r.clone()]).collect::<Vec<_>>(), ["260", "| 4 | Paint | 18 |"]);
+        assert_eq!(film.said(1), "1 block written or changed");
+        // a cell with a bar or a star in it stays one cell of text
+        assert!(sheets_md(&sheet(&[&["a|b", "*c*"]])).contains("| 1 | a\\|b | \\*c\\* |"));
+        assert_eq!(sheets_md(&[crate::sheet::Sheet { name: "S".into(), rows: Vec::new() }]), "*An empty sheet*\n\n");
+    }
+
+    #[test]
+    fn a_document_is_read_as_its_headings_paragraphs_and_lists() {
+        let doc = r#"<?xml version="1.0"?><office:document><office:styles><style:style style:name="x"/></office:styles><office:body><office:text>
+            <text:h text:style-name="Heading_20_2" text:outline-level="2">The shed</text:h>
+            <text:p text:style-name="P1">A plan, <text:span text:style-name="T1">to be done</text:span> by June &amp; no later.</text:p>
+            <text:p/>
+            <text:list><text:list-item><text:p>Timber</text:p></text:list-item><text:list-item><text:p>Screws<text:s/>*</text:p></text:list-item></text:list>
+            <text:p>1. Not a list</text:p>
+        </office:text></office:body></office:document>"#;
+        assert_eq!(doc_md(doc), "## The shed\n\nA plan, to be done by June & no later.\n\n- Timber\n- Screws \\*\n\n\\1. Not a list\n");
+        assert_eq!(blocks(&doc_md(doc)).len(), 4);
+        assert_eq!(doc_md("not a document"), "");
     }
 
     #[test]

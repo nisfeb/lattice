@@ -12396,10 +12396,27 @@ const SCRUB_MOST: usize = 150;
 /// How long a frame stands while the film plays, in seconds.
 const SCRUB_STEP: f64 = 0.9;
 
-/// Whether the open page's history can be dragged through: a Markdown page of this ship's, being read.
+/// The kinds of page whose history can be dragged through: each has a
+/// way to be read as Markdown. A sheet is its tables and a document its
+/// text, which is less than either is.
+const SCRUB_KINDS: [&str; 5] = ["md", "fods", "fodt", "html", "gmi"];
+
+/// A revision as the scrubber's reader is given it, by its kind.
+fn scrub_src(kind: &str, body: &str, ghost: &dyn Fn(&str) -> bool) -> String {
+    match kind {
+        "fods" => scrub::sheets_md(&sheet::parse(body)),
+        "fodt" => scrub::doc_md(body),
+        "html" => html::to_markdown(body),
+        "gmi" => html::gemtext(body),
+        // as the reader draws it: its HTML made Markdown, its wiki links made links
+        _ => md::wikilinks(&md::html_made(body), ghost),
+    }
+}
+
+/// Whether the open page's history can be dragged through: a page of this ship's of such a kind, being read.
 fn can_scrub(s: &App) -> bool {
     // the browser build has one thread, and a history is many requests waited for
-    !cfg!(target_arch = "wasm32") && s.conn.is_some() && !s.memory && s.remote.is_none() && !s.editing && s.open.as_ref().is_some_and(|p| p.kind == "md")
+    !cfg!(target_arch = "wasm32") && s.conn.is_some() && !s.memory && s.remote.is_none() && !s.editing && s.open.as_ref().is_some_and(|p| SCRUB_KINDS.contains(&p.kind.as_str()))
 }
 
 /// Starts reading every revision of the open page, on a thread of its
@@ -12408,7 +12425,7 @@ fn start_scrub(s: &mut App) {
     if !can_scrub(s) {
         return;
     }
-    let (Some(c), Some(name)) = (s.conn.clone(), s.open.as_ref().map(|p| p.name.clone())) else { return };
+    let (Some(c), Some((name, kind))) = (s.conn.clone(), s.open.as_ref().map(|p| (p.name.clone(), p.kind.clone()))) else { return };
     s.old = None;
     s.scrub = Some(Scrub { name: name.clone(), film: None, at: 0, playing: false, next: 0.0 });
     // a load of its own: one begun before, for another page, writes where nothing reads
@@ -12429,8 +12446,8 @@ fn start_scrub(s: &mut App) {
             let mut film = scrub::Film::default();
             for (i, r) in revs.iter().enumerate() {
                 let p = c.page_at(&name, r.rev)?;
-                // as the reader draws it: its HTML made Markdown, its wiki links made links
-                let src = md::wikilinks(&md::html_made(&p.body), &|n| !names.iter().any(|x| x == n) && !other.iter().any(|x| x == n));
+                // a revision is read as the kind the page is now: the ship keeps one kind for a page
+                let src = scrub_src(&kind, &p.body, &|n| !names.iter().any(|x| x == n) && !other.iter().any(|x| x == n));
                 film.push(r.rev, r.when(), src);
                 if let Ok(mut l) = load.lock() {
                     (l.got, l.of) = (i + 1, revs.len());
