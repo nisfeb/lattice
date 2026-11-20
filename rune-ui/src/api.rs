@@ -160,6 +160,35 @@ pub struct Group {
     pub make: Vec<String>,
 }
 
+/// A sharing group from before lattice kept its own (`/legacy-groups`,
+/// since lattice 141). The ship keeps it in its own settings, where
+/// lattice may not change it: the owner removes it on the Peers page.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct OldGroup {
+    pub name: String,
+    #[serde(default)]
+    pub ships: Vec<String>,
+    /// What its ships can read, as paths on the ship.
+    #[serde(default)]
+    pub roads: Vec<String>,
+    /// Where it is removed: a path on the ship, to its Peers page.
+    #[serde(default)]
+    pub peers: String,
+}
+
+impl OldGroup {
+    /// The group in a line, as the web client says it.
+    pub fn said(&self) -> String {
+        let ships = if self.ships.is_empty() { "no ships".to_owned() } else { self.ships.join(" ") };
+        format!("{}: {ships} can read {} item{}", self.name, self.roads.len(), if self.roads.len() == 1 { "" } else { "s" })
+    }
+}
+
+/// The old groups in what `/legacy-groups` answers. None for what is not a list of them.
+pub fn old_groups(raw: &str) -> Option<Vec<OldGroup>> {
+    serde_json::from_str(raw).ok()
+}
+
 /// What a group may do with one page.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Level {
@@ -3169,6 +3198,13 @@ impl Conn {
     }
 
     /// The ship's access list: every group with its ships and paths.
+    /// The sharing groups from before lattice kept its own. None from a
+    /// ship older than 141, or one that refused lattice the read: the
+    /// list is an extra, and its absence is not said.
+    pub fn legacy_groups(&self) -> Vec<OldGroup> {
+        self.call("GET", "legacy-groups", None).ok().and_then(|raw| old_groups(&raw)).unwrap_or_default()
+    }
+
     pub fn groups(&self) -> Result<Vec<Group>, String> {
         serde_json::from_str(&self.call("GET", "share-groups", None)?).map_err(|e| e.to_string())
     }
@@ -5032,6 +5068,15 @@ mod tests {
     }
 
     /// `LATTICE_URL=.. LATTICE_CODE=.. cargo test -- --ignored login`
+    #[test]
+    fn old_sharing_groups_are_read_and_said_as_the_web_says_them() {
+        let got = old_groups(r#"[{"name":"sarlev","ships":["~sarlev"],"roads":["/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/x/code"],"peers":"/apps/grubbery/peers/usergroups/sarlev"},{"name":"empty","ships":[],"roads":["/a","/b"],"peers":"/apps/grubbery/peers/usergroups/empty"}]"#).unwrap();
+        assert_eq!(got[0].said(), "sarlev: ~sarlev can read 1 item");
+        assert_eq!(got[1].said(), "empty: no ships can read 2 items");
+        assert_eq!(got[0].peers, "/apps/grubbery/peers/usergroups/sarlev");
+        assert_eq!((old_groups("[]"), old_groups("not found")), (Some(Vec::new()), None));
+    }
+
     #[test]
     #[ignore]
     fn live_login() {

@@ -666,6 +666,9 @@ struct App {
     /// ship being typed there.
     groups: Vec<Group>,
     groups_req: Latest<Result<Vec<Group>, String>>,
+    /// The sharing groups from before lattice kept its own, for the access screen.
+    old_groups: Vec<api::OldGroup>,
+    old_groups_req: Latest<Vec<api::OldGroup>>,
     grant_to: TextEdit,
     /// Where the lattice lives on the ship (the start of grant paths), the
     /// access screen in place of a page, and the new group being typed.
@@ -1197,6 +1200,8 @@ fn init() -> App {
         sens_req: Latest::default(),
         groups: Vec::new(),
         groups_req: Latest::default(),
+        old_groups: Vec::new(),
+        old_groups_req: Latest::default(),
         grant_to: TextEdit::new(""),
         base: String::new(),
         base_req: Latest::default(),
@@ -2373,6 +2378,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.hist_req.set_waker(waker.clone());
     s.know_req.set_waker(waker.clone());
     s.groups_req.set_waker(waker.clone());
+    s.old_groups_req.set_waker(waker.clone());
     s.base_req.set_waker(waker.clone());
     s.bans_req.set_waker(waker.clone());
     s.sens_req.set_waker(waker.clone());
@@ -5816,6 +5822,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Ok(b) => s.base = b,
             Err(e) => s.note = format!("access: {e}"),
         }
+    }
+    if let Some(g) = s.old_groups_req.take() {
+        changed |= g != s.old_groups;
+        s.old_groups = g;
     }
     if let Some(r) = s.groups_req.take() {
         changed = true;
@@ -11167,6 +11177,7 @@ fn flip_sens(s: &mut App) {
 fn load_groups(s: &mut App) {
     if let Some(c) = s.conn.clone() {
         s.groups_req.request(c.clone(), |c| c.groups());
+        s.old_groups_req.request(c.clone(), |c| c.legacy_groups());
         // a ban takes ships out of groups, so the two are read together
         s.bans_req.request(c.clone(), |c| c.bans());
         s.asks_req.request(c.clone(), |c| c.asks());
@@ -11300,6 +11311,34 @@ fn access_view(s: &App, k: &Kit) -> El {
     }
     if s.groups.iter().all(|g| g.name == "public") {
         list = list.child(text(if s.conn.is_some() { "No groups yet." } else { "Sample pages have no groups." }).font(k.ty.small).color(c.text_muted));
+    }
+    // the groups from before lattice kept its own: listed so the owner can remove them where the ship keeps them
+    if !s.old_groups.is_empty() {
+        let mut old = col().key("old-groups").w_full().gap(6.0).child(text("Old sharing groups").font(k.ty.small_medium).color(c.text_muted)).child(
+            text("These groups were made before lattice kept its own, and your ship now keeps them in its own settings, which lattice cannot change. They still let their ships read what is listed, even after you unshare it here. Your shares themselves are already carried into the groups above. Remove each one on the Peers page once you no longer need it.")
+                .font(k.ty.small)
+                .color(c.text_muted)
+                .wrap(),
+        );
+        for (i, g) in s.old_groups.iter().enumerate() {
+            let peers = g.peers.clone();
+            old = old.child(
+                row().key(format!("old-group-{i}")).w_full().gap(8.0).center_y().child(text(g.said()).font(k.ty.small).color(c.text_base).help(g.roads.join("\n")).grow(1.0).min_w(0.0)).child(
+                    Button::new("Remove on Peers page")
+                        .control_size(ControlSize::Small)
+                        .help("Opens your ship's Peers page in the browser")
+                        .on_press_tx(move |s: &mut App, tx| {
+                            let Some(c) = &s.conn else { return };
+                            if let Err(e) = tx.open_url(&format!("{}{peers}", c.url)) {
+                                s.note = format!("could not open the Peers page: {e:?}");
+                            }
+                        })
+                        .build(k)
+                        .key(format!("old-group-remove-{i}")),
+                ),
+            );
+        }
+        list = list.child(old);
     }
     let form = col()
         .key("group-form")
