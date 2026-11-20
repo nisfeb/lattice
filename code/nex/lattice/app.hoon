@@ -13839,7 +13839,23 @@
 ::  narrows: a folder's road stays, and so does every other road. Soft, so
 ::  an install that refused the usergroup roads keeps its grants as they
 ::  were.
+::
+::  The ships whose reads change hear of it (+share-tell-do, called here
+::  and not through the writer's %share-tell, since this runs in the
+::  writer). A dir road on a page's code grub read as a folder, so a ship
+::  was told of a folder that is not one: narrowed, it is told that
+::  folder is gone and the page is shared.
 ++  narrow-page-grants
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  h0=holds:ls  bind:m  holds-now
+  ;<  ~  bind:m  narrow-page-grants-in
+  ;<  h1=holds:ls  bind:m  holds-now
+  =/  d  (holds-diff:ls h0 h1)
+  ?:  &(?=(~ add.d) ?=(~ del.d))  (pure:m ~)
+  (share-tell-do add.d del.d)
+::  +narrow-page-grants-in: the narrowing itself
+++  narrow-page-grants-in
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  ub=path  bind:m  ug-dir
