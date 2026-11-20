@@ -19,9 +19,12 @@ pub struct Share {
 const TITLE_MAX: usize = 120;
 const BODY_MAX: usize = 200;
 
-/// A notification's text: no control characters, and `max` characters at most.
+/// A notification's text: no control characters, none of the marks
+/// that turn the direction of the text after them, and `max` characters
+/// at most. A page's name comes from another ship.
 pub fn text(s: &str, max: usize) -> String {
-    s.chars().filter(|c| !c.is_control()).take(max).collect()
+    let turns = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    s.chars().filter(|c| !c.is_control() && !turns(*c)).take(max).collect()
 }
 
 /// The notification a share stamp asks for: only an `add`, a page or a
@@ -44,6 +47,7 @@ pub fn share(stamp: &str) -> Option<Share> {
 }
 
 /// Takes a telling's key, and says whether it is new. The last fifty are held.
+// ponytail: held in memory. A share told again after a restart is said again. Kept with the preferences if that annoys
 pub fn once(seen: &mut Vec<String>, key: &str) -> bool {
     if seen.iter().any(|k| k == key) {
         return false;
@@ -63,12 +67,11 @@ type Run = (&'static str, Vec<String>, Vec<(&'static str, String)>);
 #[cfg(not(target_arch = "wasm32"))]
 fn notifiers(title: &str, body: &str) -> Vec<Run> {
     let (title, body) = (text(title, TITLE_MAX), text(body, BODY_MAX));
+    // ponytail: the Mac and Windows notifiers are written and were never run. Checked when the app is tried there
     if cfg!(target_os = "macos") {
-        // the words are the script's arguments, so nothing in them is read as script
-        let script = ["on run argv", "display notification (item 2 of argv) with title (item 1 of argv)", "end run"];
-        let mut args: Vec<String> = script.iter().flat_map(|l| ["-e".to_owned(), (*l).to_owned()]).collect();
-        args.extend([title, body]);
-        vec![("osascript", args, Vec::new())]
+        // the words are read from the environment, so nothing in them is read as script or as an option
+        let script = "display notification (system attribute \"LATTICE_NOTE_BODY\") with title (system attribute \"LATTICE_NOTE_TITLE\")";
+        vec![("osascript", vec!["-e".to_owned(), script.to_owned()], vec![("LATTICE_NOTE_TITLE", title), ("LATTICE_NOTE_BODY", body)])]
     } else if cfg!(windows) {
         // a toast, with the words read from the environment
         let script = "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \
@@ -107,12 +110,12 @@ pub fn show(title: &str, body: &str) {
     let _ = (title, body);
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let mut all = notifiers(title, body);
+        let all = notifiers(title, body);
         let test = if cfg!(debug_assertions) { std::env::var("LATTICE_NOTIFIER").ok().filter(|p| !p.is_empty()) } else { None };
+        let said = [text(title, TITLE_MAX), text(body, BODY_MAX)];
         std::thread::spawn(move || {
             if let Some(p) = test {
-                let (_, args, _) = all.remove(0);
-                let _ = std::process::Command::new(p).args(&args[args.len() - 2..]).status();
+                let _ = std::process::Command::new(p).args(said).status();
                 return;
             }
             for (program, args, env) in all {
@@ -160,6 +163,7 @@ mod tests {
         }
         assert_eq!(seen.len(), 50);
         assert_eq!(text("a\u{7}b\nc\u{1b}[31m", 4), "abc[");
+        assert_eq!(text("plan\u{202e}txt.exe\u{2066}", 99), "plantxt.exe");
     }
 
     #[cfg(not(target_arch = "wasm32"))]

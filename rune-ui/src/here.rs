@@ -27,7 +27,7 @@ pub struct Row {
 pub struct Table {
     #[serde(default)]
     pub page: String,
-    /// A number that only goes up while the ship's presence runs.
+    /// A number that goes up with each table while the ship's presence runs. One stream is read in order, so it is not needed to tell a late table: it tells whether anything changed.
     #[serde(default)]
     pub seq: u64,
     #[serde(default)]
@@ -45,12 +45,6 @@ pub fn table(data: &str) -> Option<Table> {
     serde_json::from_str(data).ok()
 }
 
-/// Whether a table is to be shown: newer than the last one shown on this
-/// stream. One that arrives late, after a newer, is not.
-pub fn takes(last: Option<u64>, seq: u64) -> bool {
-    last.is_none_or(|l| seq > l)
-}
-
 /// The windows on the page other than this one, those editing first.
 pub fn others(t: &Table, me: &str) -> Vec<Row> {
     let mut out: Vec<Row> = t.here.iter().filter(|r| r.who != me).cloned().collect();
@@ -63,37 +57,6 @@ pub fn others(t: &Table, me: &str) -> Vec<Row> {
 pub fn said(r: &Row, our: &str) -> String {
     let who = if r.ship == our { "another window".to_owned() } else { r.ship.clone() };
     if r.editing() { format!("{who} \u{b7} editing") } else { who }
-}
-
-/// How long a window in the background stays on a page's table, and how
-/// long one in front that nothing has touched, in seconds.
-pub const AWAY_AFTER: f64 = 60.0;
-pub const STILL_AFTER: f64 = 300.0;
-
-/// Whether this window has gone quiet: in the background for a minute,
-/// or untouched for five. A quiet window leaves the table and stops
-/// asking the ship anything for it, so a computer left on with a shared
-/// page open costs the ship nothing. `touched` is when a key or the
-/// pointer last moved here, `behind` since when the window has not been
-/// the one in front.
-pub fn quiet(now: f64, touched: f64, behind: Option<f64>) -> bool {
-    behind.is_some_and(|b| now - b >= AWAY_AFTER) || now - touched >= still_after()
-}
-
-/// `STILL_AFTER`, or in a debug build the seconds `LATTICE_STILL_AFTER` names, so a check need not wait five minutes.
-fn still_after() -> f64 {
-    if cfg!(debug_assertions) && !cfg!(test) {
-        if let Some(s) = std::env::var("LATTICE_STILL_AFTER").ok().and_then(|v| v.parse::<f64>().ok()) {
-            return s;
-        }
-    }
-    STILL_AFTER
-}
-
-/// How long until a window that is not quiet would be, if nothing more happens: when to look again.
-pub fn quiet_in(now: f64, touched: f64, behind: Option<f64>) -> f64 {
-    let still = touched + still_after() - now;
-    behind.map_or(still, |b| still.min(b + AWAY_AFTER - now)).max(0.0)
 }
 
 /// An id for this run of the app, to tell its window from another of the
@@ -151,7 +114,8 @@ fn heading(block: &str) -> Option<String> {
 
 /// The place of each block: the heading it is under, and which block it
 /// is after that heading, the heading itself being the first.
-fn places(kind: &str, text: &str) -> Vec<(String, std::ops::Range<usize>)> {
+// ponytail: a place is its heading's words and a count. Two headings with the same words share their places, and the first is the one found. The heading's own turn in the page added to the name is the fix
+pub fn places(kind: &str, text: &str) -> Vec<(String, std::ops::Range<usize>)> {
     let (mut under, mut n) = (String::new(), 0usize);
     blocks(kind, text)
         .into_iter()
@@ -170,16 +134,26 @@ fn places(kind: &str, text: &str) -> Vec<(String, std::ops::Range<usize>)> {
 /// block, or a section added elsewhere, leaves every other place its
 /// name. Empty when the page has no text.
 pub fn place(kind: &str, text: &str, caret: usize) -> String {
-    let all = places(kind, text);
+    place_in(&places(kind, text), caret)
+}
+
+/// `place`, among places already worked out.
+pub fn place_in(all: &[(String, std::ops::Range<usize>)], caret: usize) -> String {
     all.iter().rev().find(|(_, r)| r.start <= caret).or(all.first()).map(|(p, _)| p.clone()).unwrap_or_default()
 }
 
 /// Where a place lies in this text, when it has such a place.
+#[cfg(test)]
 pub fn place_range(kind: &str, text: &str, place: &str) -> Option<std::ops::Range<usize>> {
+    range_in(&places(kind, text), text, place)
+}
+
+/// `place_range`, among places already worked out for `text`.
+pub fn range_in(all: &[(String, std::ops::Range<usize>)], text: &str, place: &str) -> Option<std::ops::Range<usize>> {
     if place.is_empty() {
         return None;
     }
-    places(kind, text).into_iter().find(|(p, _)| p == place).map(|(_, r)| r.start..r.start + text[r.clone()].trim_end().len())
+    all.iter().find(|(p, _)| p == place).map(|(_, r)| r.start..r.start + text[r.clone()].trim_end().len())
 }
 
 /// A line without the marks a list, a heading or a quote starts with, for
@@ -196,8 +170,10 @@ fn bare(line: &str) -> &str {
 /// page: the start of the line there that reads the same, the nearest
 /// to where it would be were the two alike. The editor shows a page as
 /// rich text or as its source, and a place is named in the source.
+// ponytail: a line is found again by its text. A line that repeats lands on the nearest copy, and one not found on a guess by its share of the way through. A map kept as the rich text is made into source is the fix
 pub fn across(from: &str, at: usize, to: &str) -> usize {
-    let at = at.min(from.len());
+    // at a whole character, at or before the place asked for
+    let at = (0..=at.min(from.len())).rev().find(|i| from.is_char_boundary(*i)).unwrap_or(0);
     let start = from[..at].rfind('\n').map_or(0, |i| i + 1);
     let key = bare(from[start..].lines().next().unwrap_or(""));
     let guess = (at as f64 / from.len().max(1) as f64 * to.len() as f64) as usize;
@@ -219,7 +195,9 @@ pub fn across(from: &str, at: usize, to: &str) -> usize {
 /// A range of whole lines in one text, as the lines that read the same in another.
 pub fn across_range(from: &str, r: std::ops::Range<usize>, to: &str) -> std::ops::Range<usize> {
     let start = across(from, r.start, to);
-    let last = across(from, r.end.saturating_sub(1).max(r.start), to);
+    // the start of the range's last character, so the line it is on is found without cutting a character
+    let tail = from.get(r.start..r.end.min(from.len())).and_then(|s| s.char_indices().next_back()).map_or(r.start, |(i, _)| r.start + i);
+    let last = across(from, tail, to);
     let end = last + to[last..].lines().next().map_or(0, str::len);
     start..end.max(start)
 }
@@ -274,23 +252,13 @@ mod tests {
         // and a block's range in the source is whole lines of the rich text
         let r = place_range("md", PAGE, "site\u{1f}2").unwrap();
         assert_eq!(&rich[across_range(PAGE, r, rich)], "On the slab.");
+        // a block that ends in a character of more than one byte, and a place asked for inside one
+        let (src, shown) = ("caf\u{e9}\n\nnext\n", "caf\u{e9}\nnext\n");
+        assert_eq!(&shown[across_range(src, 0..5, shown)], "caf\u{e9}");
+        assert_eq!(across(src, 4, shown), 0);
         // a line that is not there lands on a line's start, never mid-character
         assert_eq!(across("zzz", 1, "caf\u{e9}\nb"), 0);
         assert_eq!(across("", 0, ""), 0);
-    }
-
-    #[test]
-    fn a_window_goes_quiet_in_the_background_or_left_alone() {
-        // in front and touched a moment ago
-        assert!(!quiet(1000.0, 990.0, None));
-        // in front, and nothing touched for five minutes
-        assert!(!quiet(1000.0, 701.0, None) && quiet(1000.0, 700.0, None));
-        // behind another window for a minute, however lately it was touched
-        assert!(!quiet(1000.0, 999.0, Some(941.0)) && quiet(1000.0, 999.0, Some(940.0)));
-        // when to look again: the sooner of the two
-        assert_eq!(quiet_in(1000.0, 990.0, None), 290.0);
-        assert_eq!(quiet_in(1000.0, 990.0, Some(970.0)), 30.0);
-        assert_eq!(quiet_in(1000.0, 0.0, None), 0.0);
     }
 
     #[test]
@@ -307,7 +275,6 @@ mod tests {
         let o = others(&t, "~zod/a");
         assert_eq!(o.iter().map(|r| r.who.as_str()).collect::<Vec<_>>(), ["~nec/x", "~zod/b"], "the one editing first");
         assert_eq!([said(&o[0], "~zod"), said(&o[1], "~zod")], ["~nec \u{b7} editing", "another window"]);
-        assert!(takes(None, 0) && takes(Some(6), 7) && !takes(Some(7), 7) && !takes(Some(8), 7));
         assert_eq!(table("not json"), None);
         assert_ne!(client_id(), "");
     }

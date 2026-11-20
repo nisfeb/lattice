@@ -65,14 +65,14 @@ pub fn of_family(family: &str) -> Vec<Vec<u8>> {
 /// every ship, so they are not kept apart by ship.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn kept_dir() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
-    Some(base.join("lattice-rune").join("fonts"))
+    Some(crate::api::config_dir()?.join("fonts"))
 }
 
 /// Whether these bytes are the face of this id: Talon names a font's
 /// file by its sha256, and a file that is not its name is not taken.
 /// Off Unix there is no hash in the build, and the font's own tables are
 /// the only check, as in a browser with no `crypto.subtle`.
+// ponytail: off Unix a fetched font is not checked against its hash, since the build has no hash there. ring built for Windows too is the fix
 pub fn is_face(id: &str, bytes: &[u8]) -> bool {
     if id.len() != 64 || bytes.len() < 12 {
         return false;

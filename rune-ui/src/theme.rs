@@ -436,6 +436,7 @@ impl Worn {
             .collect();
         ids.dedup();
         // a family is a handful of faces
+        // ponytail: 24 faces at most. A larger family loses the rest without a word
         ids.truncate(24);
         ids
     }

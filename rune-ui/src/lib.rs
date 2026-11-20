@@ -7,6 +7,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod accounts;
 mod api;
+mod away;
 mod backups;
 mod browse;
 mod calc;
@@ -669,6 +670,7 @@ struct App {
     /// The sharing groups from before lattice kept its own, for the access screen.
     old_groups: Vec<api::OldGroup>,
     old_groups_req: Latest<Vec<api::OldGroup>>,
+    old_groups_asked: bool,
     grant_to: TextEdit,
     /// Where the lattice lives on the ship (the start of grant paths), the
     /// access screen in place of a page, and the new group being typed.
@@ -849,35 +851,36 @@ struct App {
     link_menu: Option<(String, rune::PointerPress)>,
     /// This run's id among the ship's windows, and who it is in a page's table.
     client_id: String,
-    /// What the thread listening to who is on a page heard, and the page it listens on.
+    /// What the thread listening to who is on a page heard, the page it listens on, and how it is told to stop.
     here: std::sync::Arc<std::sync::Mutex<HereHeard>>,
     here_for: Option<String>,
     here_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The table showing.
     here_shown: Option<here::Table>,
-    /// What this window last said of itself (page, place, mode), when by the clock, and when it says so again.
-    here_said: Option<(String, String, String)>,
+    /// Where this window is now (page, place, mode), since when, when the ship was last told, and how many times it was told this without taking it.
+    here_now: Option<(String, String, String)>,
+    here_moved: f64,
     here_at: f64,
-    /// A key or the pointer moved in this window since the last look, when one last did, and since when the window has not been in front.
+    here_tries: u8,
+    here_req: Latest<Result<(), String>>,
+    /// The ship had no presence when asked: it is not asked again before this, by the clock.
+    here_off_until: f64,
+    /// Where this window's caret is, as a place, and what of the editor's text others are editing: worked out when the text, the caret or the table changes.
+    here_mine: String,
+    here_tints: Vec<std::ops::Range<usize>>,
+    here_key: (usize, usize, u64),
+    /// Whether anyone is at the window (`sync_away`): a key or the pointer moved since the last look, when one last did, since when the window has not been in front, and when it is looked at again.
     touched: bool,
     touched_at: f64,
     behind: Option<f64>,
     in_front: bool,
-    /// The window has gone quiet: it is on no page's table, and says so in nothing.
-    here_quiet: bool,
-    here_req: Latest<Result<(), String>>,
-    /// The ship has no presence: it is not asked again in this run.
-    here_off: bool,
-    /// Where this window's caret is, as a place, and what of the editor's text others are editing: worked out when the text, the caret or the table changes.
-    here_mine: String,
-    here_tints: Vec<std::ops::Range<usize>>,
-    here_key: (usize, usize, bool, u64),
-    /// What a merge of the other's text would do, said in the banner: the parts both changed, and the parts only they did.
-    merge_said: Option<(usize, usize)>,
+    away: bool,
+    away_look: f64,
+    /// How many parts a merge of the other's text would find changed by both, said in the banner, and what it was worked out for.
+    merge_said: Option<usize>,
+    merge_key: (usize, usize, u64),
     /// A page's history being dragged through, when it is.
     scrub: Option<Scrub>,
-    /// What the thread reading that history has so far.
-    scrub_load: std::sync::Arc<std::sync::Mutex<ScrubLoad>>,
     /// The top bar's tabs while one is pressed or dragged.
     tab_drag: rune_kit::shell::TabDragState,
     /// The bookmarks the reader keeps, once read.
@@ -910,6 +913,7 @@ struct App {
     font_set: String,
     /// The shares a notification was raised for, so that one told twice is said once.
     noted: Vec<String>,
+    noted_at: f64,
     /// The faces of Talon's font fetched from the ship, and how many were newly kept.
     font_req: Latest<Result<usize, String>>,
     /// The last read of them failed.
@@ -1208,6 +1212,7 @@ fn init() -> App {
         groups_req: Latest::default(),
         old_groups: Vec::new(),
         old_groups_req: Latest::default(),
+        old_groups_asked: false,
         grant_to: TextEdit::new(""),
         base: String::new(),
         base_req: Latest::default(),
@@ -1320,22 +1325,25 @@ fn init() -> App {
         here_for: None,
         here_stop: Default::default(),
         here_shown: None,
-        here_said: None,
+        here_now: None,
+        here_moved: 0.0,
         here_at: 0.0,
+        here_tries: 0,
+        here_req: Latest::default(),
+        here_off_until: 0.0,
+        here_mine: String::new(),
+        here_tints: Vec::new(),
+        here_key: (0, 0, 0),
         // a window is in front and in use when it opens
         touched: true,
         touched_at: 0.0,
         behind: None,
         in_front: true,
-        here_quiet: false,
-        here_req: Latest::default(),
-        here_off: false,
-        here_mine: String::new(),
-        here_tints: Vec::new(),
-        here_key: (0, 0, false, 0),
+        away: false,
+        away_look: 0.0,
         merge_said: None,
+        merge_key: (0, 0, 0),
         scrub: None,
-        scrub_load: Default::default(),
         tab_drag: rune_kit::shell::TabDragState::new(),
         marks: None,
         marks_req: Latest::default(),
@@ -1346,6 +1354,7 @@ fn init() -> App {
         next_theme: 0.0,
         font_set: APP_FONT.to_owned(),
         noted: Vec::new(),
+        noted_at: -5.0,
         font_req: Latest::default(),
         theme_put: Latest::default(),
         accent_hex: TextEdit::new(""),
@@ -1694,8 +1703,8 @@ fn switch_ship(s: &mut App, url: &str) {
 /// Builds the window's state again from what is kept: for the ship now in front when `signed`,
 /// or for no ship. Everything the window held of the ship before is let go.
 fn reset(s: &mut App, signed: bool) {
-    // the thread listening to who is on a page is for the ship that was in front
-    s.here_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    // this window leaves the table it was on, on the ship that was in front
+    here_leave(s);
     let mut fresh = init();
     if !signed {
         fresh.conn = None;
@@ -2512,10 +2521,7 @@ fn listen(s: &mut App) {
             let (registered, bumped) = got.unwrap_or((false, false));
             fail = api::beacon_fail(fail, registered, began.elapsed().as_millis(), bumped);
             let jitter = f64::from(crate::api::since_epoch().map_or(0, |d| d.subsec_nanos())) / 1e9;
-            let until = std::time::Instant::now() + std::time::Duration::from_millis(api::beacon_wait(fail, jitter));
-            while std::time::Instant::now() < until && !stop.load(Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-            }
+            wait_or_stop(api::beacon_wait(fail, jitter), &stop);
         }
     });
 }
@@ -5539,7 +5545,9 @@ const SYNC_LIVE: f64 = 300.0;
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     changed |= sync_scrub(s, clock, tx);
+    changed |= sync_away(s, clock, tx);
     changed |= sync_here(s, clock, tx);
+    sync_merge(s);
     changed |= sync_draft(s);
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -5582,7 +5590,11 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         if let api::Beacon::Shares { old: false, stamp } = &ev {
             if let Some(n) = notify::share(stamp).filter(|n| notify::once(&mut s.noted, &n.key)) {
                 s.note = n.title.clone();
-                notify::show(&n.title, &n.body);
+                // the system is told of one in five seconds at most: a ship that shares in a loop fills the app's own line, not the desktop
+                if clock >= s.noted_at + 5.0 {
+                    s.noted_at = clock;
+                    notify::show(&n.title, &n.body);
+                }
                 changed = true;
             }
         }
@@ -5648,6 +5660,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     // Rune takes font files at launch alone, so one fetched now is worn from the next
     if s.font_req.take().is_some_and(|r| r.is_ok_and(|n| n > 0)) {
         changed = true;
+        // ponytail: a fetched font is worn only from the next launch. Rune taking fonts while it runs is the fix
         s.note = "Talon\u{2019}s font was fetched from your ship. It is worn the next time lattice starts.".to_owned();
     }
     // a ship that could not be asked leaves the look it had
@@ -6019,7 +6032,6 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 // a page being edited that was written elsewhere: say so, since its save would be refused
                 if s.editing && !away {
                     s.stale = s.open.as_ref().is_some_and(|p| s.cache.get(&p.name).is_some_and(|c| c.rev > p.rev));
-                    s.merge_said = if s.stale && s.editing { merge_look(s) } else { None };
                 }
                 // the open page follows a write made elsewhere, unless it is being edited
                 if !s.editing && !away {
@@ -11188,7 +11200,10 @@ fn flip_sens(s: &mut App) {
 fn load_groups(s: &mut App) {
     if let Some(c) = s.conn.clone() {
         s.groups_req.request(c.clone(), |c| c.groups());
-        s.old_groups_req.request(c.clone(), |c| c.legacy_groups());
+        // lattice cannot change that list, so it is asked for once for a ship and not after each change to a group
+        if !std::mem::replace(&mut s.old_groups_asked, true) {
+            s.old_groups_req.request(c.clone(), |c| c.legacy_groups());
+        }
         // a ban takes ships out of groups, so the two are read together
         s.bans_req.request(c.clone(), |c| c.bans());
         s.asks_req.request(c.clone(), |c| c.asks());
@@ -11332,14 +11347,18 @@ fn access_view(s: &App, k: &Kit) -> El {
                 .wrap(),
         );
         for (i, g) in s.old_groups.iter().enumerate() {
-            let peers = g.peers.clone();
+            // the ship says where: followed only when it is a path of the ship's own
+            let peers = g.peers_path().map(str::to_owned);
             old = old.child(
                 row().key(format!("old-group-{i}")).w_full().gap(8.0).center_y().child(text(g.said()).font(k.ty.small).color(c.text_base).help(g.roads.join("\n")).grow(1.0).min_w(0.0)).child(
                     Button::new("Remove on Peers page")
                         .control_size(ControlSize::Small)
                         .help("Opens your ship's Peers page in the browser")
                         .on_press_tx(move |s: &mut App, tx| {
-                            let Some(c) = &s.conn else { return };
+                            let (Some(c), Some(peers)) = (&s.conn, &peers) else {
+                                s.note = "Your ship did not say where its Peers page is".into();
+                                return;
+                            };
                             if let Err(e) = tx.open_url(&format!("{}{peers}", c.url)) {
                                 s.note = format!("could not open the Peers page: {e:?}");
                             }
@@ -11754,13 +11773,15 @@ fn link_is_page(s: &App, url: &str) -> bool {
     !s.memory && s.remote.is_none() && !url.starts_with("urb://") && md::page_of(url).is_some_and(|n| s.names.contains(&n))
 }
 
-/// The menu a right-click on a link in a page opens, over the window.
+/// The menu a right-click on a link in a page opens, at the pointer.
 /// Rune's Markdown tells of a secondary press on a link, and of no
 /// middle one, so this is where a link is opened in a new tab by the
 /// pointer alone.
-fn link_menu_view(s: &App, k: &Kit, shell: El, layer: &mut Vec<El>) -> El {
+fn link_menu_view(s: &App, k: &Kit, layer: &mut Vec<El>) -> El {
     let page_here = s.link_menu.as_ref().is_some_and(|(url, _)| link_is_page(s, url));
-    let mut menu = rune_kit::context_menu("link-menu", shell, s.link_menu.as_ref().map(|m| m.1)).on_close(|s: &mut App| s.link_menu = None);
+    // the menu opens at the pointer, and what it is hung on is a point of its own with nothing in it: a menu gives
+    // focus back to the first control inside what it hangs on, which hung on the whole window was the ribbon's
+    let mut menu = rune_kit::context_menu("link-menu", el().w(0.0).h(0.0), s.link_menu.as_ref().map(|m| m.1)).on_close(|s: &mut App| s.link_menu = None);
     for (id, label) in link_menu_items(page_here) {
         menu = menu.item(MenuItem::new(label).on_select_tx(move |s: &mut App, tx| {
             let Some((url, _)) = s.link_menu.take() else { return };
@@ -12471,12 +12492,50 @@ struct HereHeard {
     off: bool,
 }
 
+/// This ship's name, or nothing with no ship.
+fn our(s: &App) -> &str {
+    s.conn.as_ref().map_or("", |c| c.ship())
+}
+
+/// Whether an answer says the ship has no presence: a ship before lattice 142 knows neither route.
+fn no_presence(e: &str) -> bool {
+    e.starts_with("404") || e.starts_with("405")
+}
+
+/// Waits `ms`, or until told to stop, whichever is first.
+fn wait_or_stop(ms: u64, stop: &std::sync::atomic::AtomicBool) {
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    while std::time::Instant::now() < until && !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+/// Notes whether anyone is at the window (`away::left`): a key or the
+/// pointer moved, and whether it is the window in front. Whether that
+/// changed. While the window is in use it is looked at again when it
+/// would count as left, which costs the ship nothing.
+fn sync_away(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
+    if std::mem::take(&mut s.touched) || s.touched_at == 0.0 {
+        s.touched_at = clock;
+    }
+    s.behind = if s.in_front { None } else { s.behind.or(Some(clock)) };
+    let was = std::mem::replace(&mut s.away, away::left(clock, s.touched_at, s.behind));
+    let again = clock + away::left_in(clock, s.touched_at, s.behind) + 0.5;
+    // asked for once for each time it moves, not at every look
+    if !s.away && (again - s.away_look).abs() > 1.0 {
+        s.away_look = again;
+        tx.wake_after(std::time::Duration::from_secs_f64(again - clock));
+    }
+    was != s.away
+}
+
 /// The page whose table this window is on: the open page, when it is
-/// one of this ship's that is shared. Not a memory, not another ship's
-/// page, not a private page: nothing is said of where one is in those.
-// ponytail: a page granted to named ships and not published is not known to be shared here, and a page another ship shared with this one has its table on that ship, which is not asked yet
+/// one of this ship's that is shared and someone is at the window. Not
+/// a memory, not another ship's page, not a private page: nothing is
+/// said of where one is in those.
+// ponytail: only this ship's published pages, and not in the browser build. A page granted to named ships, or one another ship shared with this one, has no table here. The ship saying which pages have readers is the fix
 fn here_page(s: &App) -> Option<String> {
-    if s.here_off || s.here_quiet || s.memory || s.anon || s.sample || s.remote.is_some() || s.conn.is_none() || cfg!(target_arch = "wasm32") {
+    if s.away || s.memory || s.anon || s.sample || s.remote.is_some() || s.conn.is_none() || cfg!(target_arch = "wasm32") {
         return None;
     }
     let p = s.open.as_ref()?;
@@ -12485,147 +12544,158 @@ fn here_page(s: &App) -> Option<String> {
 
 /// Who this window is in a page's table.
 fn here_me(s: &App) -> String {
-    format!("{}/{}", s.conn.as_ref().map_or("", |c| c.ship()), s.client_id)
+    format!("{}/{}", our(s), s.client_id)
 }
 
 /// The other windows on the page showing.
 fn here_others(s: &App) -> Vec<here::Row> {
-    let me = here_me(s);
-    s.here_shown.as_ref().filter(|t| Some(&t.page) == s.here_for.as_ref()).map(|t| here::others(t, &me)).unwrap_or_default()
+    s.here_shown.as_ref().map(|t| here::others(t, &here_me(s))).unwrap_or_default()
 }
 
 /// Works out where this window's caret is, as a place, and where in
 /// the editor's text the others are editing. A place is named in the
 /// page's source, and the rich editor's text is not the source, so a
 /// caret and a range are carried across by the line they are on.
-/// Done only when the text, the caret or the table changed.
+/// Done only on a page with a table, and only when the text, the caret
+/// or the table changed.
+// ponytail: the text is taken as unchanged when its length and the caret's place are. The rich text is also made source again each time the caret moves. A count of edits and a kept source if a large shared page is slow to type in
 fn here_work(s: &mut App) {
-    let seq = s.here_shown.as_ref().map_or(0, |t| t.seq);
-    let key = (s.edit.text.len(), s.edit.focus, s.editing, seq);
+    if s.here_for.is_none() || !s.editing {
+        if !s.here_mine.is_empty() || !s.here_tints.is_empty() {
+            (s.here_mine, s.here_tints, s.here_key) = (String::new(), Vec::new(), (0, 0, 0));
+        }
+        return;
+    }
+    let key = (s.edit.text.len(), s.edit.focus, s.here_shown.as_ref().map_or(0, |t| t.seq));
     if key == s.here_key {
         return;
     }
     s.here_key = key;
-    let (Some(p), true) = (s.open.clone(), s.editing) else {
-        (s.here_mine, s.here_tints) = (String::new(), Vec::new());
-        return;
-    };
-    let source = if s.rich { edited(s) } else { s.edit.text.clone() };
-    let caret = byte_at(&s.edit.text, s.edit.focus);
-    let at = if s.rich { here::across(&s.edit.text, caret, &source) } else { caret };
-    s.here_mine = here::place(&p.kind, &source, at);
-    s.here_tints = here_others(s)
+    let Some(kind) = s.open.as_ref().map(|p| p.kind.clone()) else { return };
+    let made = s.rich.then(|| edited(s));
+    let source = made.as_deref().unwrap_or(&s.edit.text);
+    let all = here::places(&kind, source);
+    // the caret is a place in the editor's bytes
+    let at = if s.rich { here::across(&s.edit.text, s.edit.focus, source) } else { s.edit.focus };
+    let mine = here::place_in(&all, at);
+    let tints = here_others(s)
         .iter()
         .filter(|r| r.editing())
-        .filter_map(|r| here::place_range(&p.kind, &source, &r.block))
-        .map(|r| if s.rich { here::across_range(&source, r, &s.edit.text) } else { r })
+        .filter_map(|r| here::range_in(&all, source, &r.block))
+        .map(|r| if s.rich { here::across_range(source, r, &s.edit.text) } else { r })
         .collect();
+    (s.here_mine, s.here_tints) = (mine, tints);
+}
+
+/// Takes this window off the table it is on: the listener is told to
+/// stop, and the ship that the window has gone, which ends the stream
+/// from its side too. Said once and not waited for.
+fn here_leave(s: &mut App) {
+    s.here_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let (Some(c), Some(old)) = (s.conn.clone(), s.here_for.take()) {
+        let id = s.client_id.clone();
+        spawn(move || drop(c.here_say(&old, &id, "", "gone")));
+    }
+    (s.here_shown, s.here_now, s.here_tries) = (None, None, 0);
+}
+
+/// Listens on a page's table, on a thread of its own, until told to
+/// stop. A stream that ends is opened again after a wait, as the change
+/// stream is. A ship with no such stream is not asked again by this
+/// thread: it says so and ends.
+fn here_listen(s: &mut App, page: String) {
+    use std::sync::atomic::Ordering;
+    let (Some(c), Some(waker)) = (s.conn.clone(), s.waker.clone()) else { return };
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(HereHeard::default()));
+    (s.here_stop, s.here) = (stop.clone(), heard.clone());
+    let id = s.client_id.clone();
+    std::thread::spawn(move || {
+        let mut fail = 0u32;
+        while !stop.load(Ordering::Relaxed) {
+            let mut any = false;
+            let got = c.here_stream(&page, &id, |t| {
+                if let Some(t) = t {
+                    any = true;
+                    if let Ok(mut h) = heard.lock() {
+                        h.table = Some(t);
+                    }
+                    waker();
+                }
+                // asked at every word from the ship, a table or not, so a stop is heard within its 30 seconds
+                !stop.load(Ordering::Relaxed)
+            });
+            if got.as_ref().is_err_and(|e| no_presence(e)) {
+                if let Ok(mut h) = heard.lock() {
+                    h.off = true;
+                }
+                waker();
+                return;
+            }
+            fail = if any { 1 } else { (fail + 1).min(5) };
+            let jitter = f64::from(api::since_epoch().map_or(0, |d| d.subsec_nanos())) / 1e9;
+            wait_or_stop(api::beacon_wait(fail, jitter), &stop);
+        }
+    });
+}
+
+/// Says where this window is, when the ship's table has it otherwise.
+/// The ship puts a window on the page as reading when its stream opens,
+/// so a reader says nothing at all. A caret on its way through blocks is
+/// said where it comes to rest, and a ship that does not take what it
+/// is told is told three times and then left alone until the place
+/// changes.
+fn here_tell(s: &mut App, clock: f64, tx: &mut Tx) {
+    let (Some(c), Some(page)) = (s.conn.clone(), s.here_for.clone()) else { return };
+    let now = (page, s.here_mine.clone(), if s.editing { "edit" } else { "read" }.to_owned());
+    if s.here_now.as_ref() != Some(&now) {
+        (s.here_now, s.here_moved, s.here_tries) = (Some(now.clone()), clock, 0);
+    }
+    let me = here_me(s);
+    let told = s.here_shown.as_ref().and_then(|t| t.here.iter().find(|r| r.who == me)).is_some_and(|r| r.block != now.1 || r.mode != now.2);
+    if !told || s.here_tries >= 3 {
+        return;
+    }
+    let due = (s.here_moved + 1.0).max(s.here_at + 3.0);
+    if clock < due {
+        tx.wake_after(std::time::Duration::from_secs_f64((due - clock).max(0.05)));
+        return;
+    }
+    let id = s.client_id.clone();
+    s.here_req.request((c, now, id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
+    (s.here_at, s.here_tries) = (clock, s.here_tries + 1);
+    tx.wake_after(std::time::Duration::from_secs(3));
 }
 
 /// Keeps this window on the table of the page it shows. Holding that
-/// page's stream open, on a thread of its own, is what puts it there:
-/// nothing is sent to say it is still there. Where the window is in the
-/// page is said when that changes, and that it is gone when the page is
-/// left. A window gone quiet (`here::quiet`) is on no table and asks
-/// the ship nothing for this. Whether anything on screen changed.
+/// page's stream open is what puts it there: nothing is sent to say it
+/// is still there. A window nobody is at (`sync_away`) is on no table
+/// and asks the ship nothing for this. Whether anything on screen
+/// changed.
 fn sync_here(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
-    use std::sync::atomic::Ordering;
     let mut changed = false;
-    // whether anyone is at this window: a key or the pointer moved, and it is the window in front
-    if std::mem::take(&mut s.touched) || s.touched_at == 0.0 {
-        s.touched_at = clock;
-    }
-    s.behind = match (s.in_front, s.behind) {
-        (true, _) => None,
-        (false, None) => Some(clock),
-        (false, since) => since,
-    };
-    let quiet = here::quiet(clock, s.touched_at, s.behind);
-    if quiet != s.here_quiet {
-        (s.here_quiet, changed) = (quiet, true);
-    }
-    let want = here_page(s);
-    if want.is_some() {
-        // looked at again when the window would have gone quiet, which costs the ship nothing
-        tx.wake_after(std::time::Duration::from_secs_f64(here::quiet_in(clock, s.touched_at, s.behind) + 0.5));
-    }
+    // a ship that had no presence is asked again after ten minutes: it may have been between two versions
+    let want = here_page(s).filter(|_| clock >= s.here_off_until);
     if want != s.here_for {
-        s.here_stop.store(true, Ordering::Relaxed);
-        if let (Some(c), Some(old)) = (s.conn.clone(), s.here_for.take()) {
-            // said once, and not waited for: the ship drops a window it does not hear from anyway
-            let id = s.client_id.clone();
-            spawn(move || drop(c.here_say(&old, &id, "", "gone")));
+        here_leave(s);
+        if let Some(page) = want.clone() {
+            here_listen(s, page);
         }
-        (s.here_shown, s.here_said) = (None, None);
-        if let (Some(c), Some(page), Some(waker)) = (s.conn.clone(), want.clone(), s.waker.clone()) {
-            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let heard = std::sync::Arc::new(std::sync::Mutex::new(HereHeard::default()));
-            (s.here_stop, s.here) = (stop.clone(), heard.clone());
-            let id = s.client_id.clone();
-            std::thread::spawn(move || {
-                let mut fail = 0u32;
-                while !stop.load(Ordering::Relaxed) {
-                    // a table that comes late, after a newer one, is not shown. A new stream starts the count again
-                    let mut last = None;
-                    let got = c.here_stream(&page, &id, |t| {
-                        if here::takes(last, t.seq) {
-                            last = Some(t.seq);
-                            if let Ok(mut h) = heard.lock() {
-                                h.table = Some(t);
-                            }
-                            waker();
-                        }
-                        !stop.load(Ordering::Relaxed)
-                    });
-                    if got.as_ref().is_err_and(|e| e.starts_with("404") || e.starts_with("405")) {
-                        if let Ok(mut h) = heard.lock() {
-                            h.off = true;
-                        }
-                        waker();
-                        return;
-                    }
-                    fail = if last.is_some() { 1 } else { (fail + 1).min(5) };
-                    let until = std::time::Instant::now() + std::time::Duration::from_millis(api::beacon_wait(fail, 0.5));
-                    while std::time::Instant::now() < until && !stop.load(Ordering::Relaxed) {
-                        std::thread::sleep(std::time::Duration::from_millis(250));
-                    }
-                }
-            });
-        }
-        s.here_for = want.clone();
-        changed = true;
+        (s.here_for, changed) = (want, true);
     }
     if let Ok(mut h) = s.here.lock() {
-        s.here_off |= h.off;
-        if let Some(t) = h.table.take() {
-            s.here_shown = Some(t);
-            changed = true;
+        if std::mem::take(&mut h.off) {
+            s.here_off_until = clock + 600.0;
+        }
+        // a table for a page since left is not this page's
+        if let Some(t) = h.table.take().filter(|t| Some(&t.page) == s.here_for.as_ref()) {
+            (s.here_shown, changed) = (Some(t), true);
         }
     }
-    if s.here_req.take().is_some_and(|r| r.is_err_and(|e| e.starts_with("404") || e.starts_with("405"))) {
-        s.here_off = true;
-    }
+    // an answer to what was said is not waited on: the table says whether it took
+    let _ = s.here_req.take();
     here_work(s);
-    // where this window is, said when the table has it otherwise: the ship puts a window on the
-    // page as reading when its stream opens, so a reader says nothing at all
-    if let (Some(c), Some(page)) = (s.conn.clone(), want) {
-        let me = here_me(s);
-        let row = s.here_shown.as_ref().filter(|t| t.page == page).and_then(|t| t.here.iter().find(|r| r.who == me)).cloned();
-        let now = (page, s.here_mine.clone(), if s.editing { "edit" } else { "read" }.to_owned());
-        // not said twice while the ship's table catches up, and a caret crossing blocks once a second at most
-        let wrong = row.is_some_and(|r| r.block != now.1 || r.mode != now.2);
-        let waiting = s.here_said.as_ref() == Some(&now) && clock < s.here_at + 3.0;
-        if wrong && !waiting {
-            if clock < s.here_at + 1.0 {
-                tx.wake_after(std::time::Duration::from_secs_f64((s.here_at + 1.0 - clock).max(0.05)));
-            } else {
-                let id = s.client_id.clone();
-                s.here_req.request((c, now.clone(), id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
-                (s.here_said, s.here_at) = (Some(now), clock);
-                tx.wake_after(std::time::Duration::from_secs(3));
-            }
-        }
-    }
+    here_tell(s, clock, tx);
     changed
 }
 
@@ -12635,7 +12705,6 @@ fn here_chips(s: &App, k: &Kit) -> Option<El> {
     if others.is_empty() {
         return None;
     }
-    let our = s.conn.as_ref().map_or("", |c| c.ship()).to_owned();
     let mut chips = row().key("here").role("group").label(format!("{} more on this page", others.len())).gap(4.0).center_y();
     for (i, r) in others.iter().take(3).enumerate() {
         let tint = if r.editing() { k.c.text_accent } else { k.c.text_muted };
@@ -12643,7 +12712,7 @@ fn here_chips(s: &App, k: &Kit) -> Option<El> {
         chips = chips.child(
             row().key(format!("here-{i}")).h(22.0).px(8.0).gap(6.0).center_y().radius(11.0).fill(tint.alpha(0.14)).help(help)
                 .child(el().w(6.0).h(6.0).radius(3.0).fill(tint))
-                .child(text(here::said(r, &our)).font(k.ty.small).color(k.c.text_base)),
+                .child(text(here::said(r, our(s))).font(k.ty.small).color(k.c.text_base)),
         );
     }
     if others.len() > 3 {
@@ -12665,8 +12734,7 @@ fn here_collides(s: &App) -> Option<String> {
     if s.here_mine.is_empty() || !s.editing {
         return None;
     }
-    let our = s.conn.as_ref().map_or("", |c| c.ship()).to_owned();
-    let who: Vec<String> = here_others(s).iter().filter(|r| r.editing() && r.block == s.here_mine).map(|r| if r.ship == our { "Another window of yours".to_owned() } else { r.ship.clone() }).collect();
+    let who: Vec<String> = here_others(s).iter().filter(|r| r.editing() && r.block == s.here_mine).map(|r| if r.ship == our(s) { "Another window of yours".to_owned() } else { r.ship.clone() }).collect();
     (!who.is_empty()).then(|| who.join(", "))
 }
 
@@ -12676,12 +12744,22 @@ fn stale_theirs(s: &App) -> Option<&Page> {
     s.cache.get(&p.name).filter(|c| c.rev > p.rev)
 }
 
-/// What merging their text into what is typed here would do: how many
-/// parts both changed, and how many only they did.
-fn merge_look(s: &App) -> Option<(usize, usize)> {
-    let (p, theirs) = (s.open.as_ref()?, stale_theirs(s)?);
-    let m = merge::merge3(&p.kind, &p.body, &edited(s), &theirs.body);
-    Some((m.conflicts.len(), m.taken))
+/// Keeps what the banner says of a merge true as the owner types on:
+/// how many parts both changed, worked out again when the text, the
+/// caret or their revision moves, and let go when the page is no longer
+/// behind.
+// ponytail: worked out on the window's thread, a merge of the whole page each time the text changes while the banner shows. A thread of its own if a long page stutters there
+fn sync_merge(s: &mut App) {
+    let Some(rev) = stale_theirs(s).filter(|_| s.editing && s.stale).map(|t| t.rev) else {
+        (s.merge_said, s.merge_key) = (None, (0, 0, 0));
+        return;
+    };
+    let key = (s.edit.text.len(), s.edit.focus, rev);
+    if key == s.merge_key {
+        return;
+    }
+    s.merge_key = key;
+    s.merge_said = s.open.as_ref().zip(stale_theirs(s)).map(|(p, theirs)| merge::merge3(&p.kind, &p.body, &edited(s), &theirs.body).conflicts.len());
 }
 
 /// Merges what was saved somewhere else into what is typed here, by the
@@ -12692,7 +12770,8 @@ fn merge_look(s: &App) -> Option<(usize, usize)> {
 fn merge_theirs(s: &mut App) {
     let (Some(p), Some(theirs)) = (s.open.clone(), stale_theirs(s).cloned()) else { return };
     let m = merge::merge3(&p.kind, &p.body, &edited(s), &theirs.body);
-    let (was, caret) = (s.edit.text.clone(), byte_at(&s.edit.text, s.edit.focus));
+    // the caret is a place in the editor's bytes
+    let (was, caret) = (s.edit.text.clone(), s.edit.focus);
     // the editor shows the merged text in the way it was showing the page
     let rich = s.rich.then(|| md::exact(&m.text)).flatten();
     s.rich = rich.is_some();
@@ -12702,10 +12781,14 @@ fn merge_theirs(s: &mut App) {
     };
     s.edit.focused = true;
     // the caret stays on the line it was on, where that line still is
-    let at = s.edit.text[..here::across(&was, caret, &s.edit.text)].chars().count();
+    // ponytail: the editor is given the merged text as a new text, so undo does not reach back across a merge. The merge made as one edit of the old text is the fix
+    let at = here::across(&was, caret, &s.edit.text);
     s.edit.set_selection(at, at);
+    if !s.rich {
+        vim_start(s);
+    }
     s.open = Some(Page { body: theirs.body, rev: theirs.rev, ..p });
-    (s.stale, s.merge_said) = (false, None);
+    s.stale = false;
     s.note = match m.conflicts.as_slice() {
         [] => "Merged: their changes are in, and yours are kept".to_owned(),
         all => format!("Merged. Yours was kept {}, where both of you wrote. Theirs is in the page\u{2019}s history", all.iter().map(|c| here::place_said(&c.place)).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(" and ")),
@@ -12722,6 +12805,15 @@ struct Scrub {
     /// Stepping forward by itself, and the clock of its next step.
     playing: bool,
     next: f64,
+    /// What the thread reading the revisions has so far. The thread stops when nothing else holds this: the scrubber was closed.
+    load: std::sync::Arc<std::sync::Mutex<ScrubLoad>>,
+}
+
+impl Scrub {
+    /// The last frame's place, or 0 with no film yet.
+    fn last(&self) -> usize {
+        self.film.as_ref().map_or(0, |f| f.frames.len().saturating_sub(1))
+    }
 }
 
 /// What the thread reading a history has: how far it is, and the film when it is whole.
@@ -12733,6 +12825,7 @@ struct ScrubLoad {
 }
 
 /// The most revisions read for one film: the newest of a longer history.
+// ponytail: the newest 150 revisions, each held whole in memory, and read again each time the scrubber is opened. Older ones are not shown. Frames read as they are reached, and kept for the page, if histories are long
 const SCRUB_MOST: usize = 150;
 /// How long a frame stands while the film plays, in seconds.
 const SCRUB_STEP: f64 = 0.9;
@@ -12764,7 +12857,7 @@ fn scrub_src(kind: &str, body: &str, ghost: &dyn Fn(&str) -> bool) -> String {
 
 /// Whether the open page's history can be dragged through: a page of this ship's, of any kind, being read. Not a memory.
 fn can_scrub(s: &App) -> bool {
-    // the browser build has one thread, and a history is many requests waited for
+    // ponytail: not in the browser build, which has one thread, and a history is many requests waited for. A request for each revision as the page runs is the step up
     !cfg!(target_arch = "wasm32") && s.conn.is_some() && !s.memory && s.remote.is_none() && !s.editing && s.open.is_some()
 }
 
@@ -12776,10 +12869,8 @@ fn start_scrub(s: &mut App) {
     }
     let (Some(c), Some((name, kind))) = (s.conn.clone(), s.open.as_ref().map(|p| (p.name.clone(), p.kind.clone()))) else { return };
     s.old = None;
-    s.scrub = Some(Scrub { name: name.clone(), film: None, at: 0, playing: false, next: 0.0 });
-    // a load of its own: one begun before, for another page, writes where nothing reads
     let load = std::sync::Arc::new(std::sync::Mutex::new(ScrubLoad::default()));
-    s.scrub_load = load.clone();
+    s.scrub = Some(Scrub { name: name.clone(), film: None, at: 0, playing: false, next: 0.0, load: load.clone() });
     let (names, other, waker) = (s.names.clone(), s.other.1.clone(), s.waker.clone());
     spawn(move || {
         let wake = || {
@@ -12792,10 +12883,22 @@ fn start_scrub(s: &mut App) {
             revs.sort_by_key(|r| r.rev);
             let skip = revs.len().saturating_sub(SCRUB_MOST);
             let revs = &revs[skip..];
-            let mut film = scrub::Film::default();
+            let (mut film, mut failed) = (scrub::Film::default(), None);
+            // ponytail: one request for each revision, one after another. Slow for a long history. A route that sends several at once is the fix, in the ship's code
             for (i, r) in revs.iter().enumerate() {
-                let p = c.page_at(&name, r.rev)?;
-                // a revision is read as the kind the page is now: the ship keeps one kind for a page
+                // the scrubber was closed: nothing is waiting for the rest
+                if std::sync::Arc::strong_count(&load) == 1 {
+                    return Err("closed".into());
+                }
+                // a revision that cannot be read is left out, and the rest are still shown
+                let p = match c.page_at(&name, r.rev) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        failed = Some(e);
+                        continue;
+                    }
+                };
+                // ponytail: every revision is read as the kind the page is now. A page whose kind was changed shows its older revisions wrongly. The kind kept with each revision is the fix
                 let src = scrub_src(&kind, &p.body, &|n| !names.iter().any(|x| x == n) && !other.iter().any(|x| x == n));
                 film.push(r.rev, r.when(), src);
                 if let Ok(mut l) = load.lock() {
@@ -12803,7 +12906,10 @@ fn start_scrub(s: &mut App) {
                 }
                 wake();
             }
-            Ok(film)
+            match failed.filter(|_| film.frames.is_empty()) {
+                Some(e) => Err(e),
+                None => Ok(film),
+            }
         };
         let done = read();
         if let Ok(mut l) = load.lock() {
@@ -12823,7 +12929,7 @@ fn sync_scrub(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let Some(sc) = &mut s.scrub else { return false };
     let mut changed = false;
     if sc.film.is_none() {
-        match s.scrub_load.lock().ok().and_then(|mut l| l.done.take()) {
+        match sc.load.lock().ok().and_then(|mut l| l.done.take()) {
             Some(Ok(film)) if film.frames.is_empty() => {
                 s.note = "This page has no history kept".to_owned();
                 s.scrub = None;
@@ -12842,7 +12948,7 @@ fn sync_scrub(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             None => {}
         }
     }
-    let last = sc.film.as_ref().map_or(0, |f| f.frames.len().saturating_sub(1));
+    let last = sc.last();
     if sc.playing {
         if clock >= sc.next {
             if sc.at >= last {
@@ -12860,10 +12966,16 @@ fn sync_scrub(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     changed
 }
 
+/// Does what a key does to the scrubber, and says the key was taken.
+fn scrub_key(s: &mut App, act: impl FnOnce(&mut App)) -> bool {
+    act(s);
+    true
+}
+
 /// Moves the scrubber to a frame, by hand: playing stops.
 fn scrub_to(s: &mut App, at: usize) {
     if let Some(sc) = &mut s.scrub {
-        let last = sc.film.as_ref().map_or(0, |f| f.frames.len().saturating_sub(1));
+        let last = sc.last();
         (sc.at, sc.playing) = (at.min(last), false);
     }
 }
@@ -12871,7 +12983,7 @@ fn scrub_to(s: &mut App, at: usize) {
 /// Plays the film from the frame showing, or from the first when it is at its end, or stops it.
 fn scrub_play(s: &mut App, tx: &mut Tx) {
     let Some(sc) = &mut s.scrub else { return };
-    let last = sc.film.as_ref().map_or(0, |f| f.frames.len().saturating_sub(1));
+    let last = sc.last();
     sc.playing = !sc.playing && last > 0;
     if sc.playing {
         if sc.at >= last {
@@ -12884,12 +12996,12 @@ fn scrub_play(s: &mut App, tx: &mut Tx) {
 }
 
 /// The scrubber over a page: its track, what the frame showing is, and the ways out.
-fn scrub_bar(s: &App, sc: &Scrub, k: &Kit) -> El {
+fn scrub_bar(sc: &Scrub, k: &Kit) -> El {
     let c = &k.c;
     let bar = row().key("scrub-bar").w_full().px(16.0).py(8.0).gap(12.0).center_y().fill(c.layer_01);
     let done = Button::new("Done").control_size(ControlSize::Small).on_press(|s: &mut App| s.scrub = None).build(k).key("scrub-done");
     let Some(film) = &sc.film else {
-        let (got, of) = s.scrub_load.lock().map(|l| (l.got, l.of)).unwrap_or_default();
+        let (got, of) = sc.load.lock().map(|l| (l.got, l.of)).unwrap_or_default();
         let say = if of == 0 { "Reading the history".to_owned() } else { format!("Reading the history: {got} of {of} revisions") };
         return bar.child(text(say).key("scrub-said").font(k.ty.small).color(c.text_base).grow(1.0)).child(done);
     };
@@ -12969,7 +13081,11 @@ fn history_view(s: &App, k: &Kit) -> El {
                     .radius(k.radius.sm)
                     .on_press(move |s: &mut App| match s.scrub.as_ref().and_then(|sc| sc.film.as_ref()?.frames.iter().position(|f| f.rev == rev)) {
                         Some(at) => scrub_to(s, at),
-                        None => view_rev(s, rev),
+                        // a revision the film does not hold, older than it reaches: the scrubber is left for it
+                        None => {
+                            s.scrub = None;
+                            view_rev(s, rev);
+                        }
                     })
                     .child(text(r.when()).font(k.ty.small).color(c.text_base).grow(1.0))
                     .child(text(format!("rev {rev}")).font(k.ty.small).color(c.text_faint));
@@ -13013,7 +13129,7 @@ fn banner(key: &str, say: String, verb: &str, act: fn(&mut App), k: &Kit) -> El 
 fn body(s: &App, k: &Kit) -> El {
     // a history being dragged through stands in the page's place
     if let Some(sc) = s.scrub.as_ref().filter(|sc| !s.editing && s.open.as_ref().is_some_and(|p| p.name == sc.name)) {
-        return col().w_full().h_full().min_h(0.0).child(scrub_bar(s, sc, k)).child(col().w_full().grow(1.0).min_h(0.0).child(scrub_page(s, sc, k)));
+        return col().w_full().h_full().min_h(0.0).child(scrub_bar(sc, k)).child(col().w_full().grow(1.0).min_h(0.0).child(scrub_page(s, sc, k)));
     }
     let inner = page_body(s, k);
     let top = if let Some(o) = s.old.as_ref().filter(|_| !s.editing) {
@@ -13034,9 +13150,9 @@ fn body(s: &App, k: &Kit) -> El {
     } else if s.editing && s.stale {
         // their text can be merged into what is typed here, by the page's blocks, or written over
         let say = match s.merge_said {
-            Some((0, _)) => "This page was changed somewhere else while you were editing. Their changes are in other parts of it than yours.".to_owned(),
-            Some((1, _)) => "This page was changed somewhere else while you were editing. One part was changed both here and there.".to_owned(),
-            Some((n, _)) => format!("This page was changed somewhere else while you were editing. {n} parts were changed both here and there."),
+            Some(0) => "This page was changed somewhere else while you were editing. Their changes are in other parts of it than yours.".to_owned(),
+            Some(1) => "This page was changed somewhere else while you were editing. One part was changed both here and there.".to_owned(),
+            Some(n) => format!("This page was changed somewhere else while you were editing. {n} parts were changed both here and there."),
             None => "This page was changed somewhere else while you were editing. Saving now would be refused.".to_owned(),
         };
         let over = Button::new("Save over theirs").control_size(ControlSize::Small).help("Save what is typed here as it is. Their changes go, and stay in the history").on_press(|s: &mut App| {
@@ -13045,11 +13161,11 @@ fn body(s: &App, k: &Kit) -> El {
                 if let Some(p) = &mut s.open {
                     p.rev = newest;
                 }
-                (s.stale, s.merge_said) = (false, None);
+                s.stale = false;
                 save(s);
             }
         }).build(k).key("stale-act");
-        let merge = s.merge_said.map(|(both, _)| {
+        let merge = s.merge_said.map(|both| {
             Button::new(if both == 0 { "Merge theirs in" } else { "Merge, keeping mine there" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).help("Take what they changed into what is typed here. Nothing is saved until you save").on_press(merge_theirs).build(k).key("stale-merge")
         });
         Some(row().key("stale").w_full().px(16.0).py(8.0).gap(8.0).center_y().fill(k.c.layer_01).child(text(say).font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0)).children(merge).child(over))
@@ -13683,6 +13799,7 @@ fn edit_style(k: &Kit, size: f32) -> rune::TextStyle {
 const FIELD_SCROLL: &str = "page-field-scroll";
 
 /// How wide a line may run when lines are not broken: wider than any written.
+// ponytail: a line longer than 60,000 points is cut off at the edge. The widest line measured if one is ever met
 const UNWRAPPED: f32 = 60_000.0;
 
 thread_local! {
@@ -13744,6 +13861,7 @@ fn fill_editor(s: &App, label: &str, spans: Vec<Span>, k: &Kit) -> El {
 /// text before that line, set as the editor sets it (its style, its spans, a line with no place to
 /// break broken where the room ends) at the editor's width. With no width, lines are not broken,
 /// and each line of the text is one line of the room.
+// ponytail: all the text before the caret is measured on each reveal. Slow in a very long page. Rune saying where a line is would be the fix
 fn caret_down(text: &str, at: usize, style: rune::TextStyle, spans: &[Span], wide: Option<f32>) -> f32 {
     let at = at.min(text.len());
     let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
@@ -14062,6 +14180,7 @@ fn kit_of(prefs: &api::Prefs, system_dark: bool) -> Kit {
 thread_local! {
     /// The selection colours themes brought, each by the ground and accent of the kit made
     /// from its theme. Rune's kit has no place for one: `Kit::selection` works it out.
+    // ponytail: eight selection colours held, found by a kit's ground and accent. Two themes alike in both share one, the last made. A place for it in Rune's kit is the fix
     static SELECTIONS: std::cell::RefCell<Vec<((rune::Color, rune::Color), rune::Color)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -14347,7 +14466,8 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // a theme's ground goes behind the ribbon and the status bar too. The built-in look leaves the window's own there
     let ground = if s.prefs.worn.look().bg.is_some() { k.c.page } else { rune::Color::TRANSPARENT };
     let shell = row().w_full().h_full().min_h(0.0).fill(ground).child(ribbon_view(s, &k, if inset > 0.0 { 32.0 } else { 0.0 })).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(el().w_full().grow(1.0).min_h(0.0).child(shell)).child(status_bar(s, &k, busy)));
-    let shell = link_menu_view(s, &k, shell, &mut layer);
+    let hung = link_menu_view(s, &k, &mut layer);
+    layer.push(hung);
     rune_kit::root(shell, layer)
         .on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec()))
         .on_drop_hover(|s: &mut App, over, _| s.dropping = over)
@@ -14355,8 +14475,8 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         .on_window_focus(|s: &mut App, front, _| (s.in_front, s.touched) = (front, true))
         .on_pointer_move_local(|s: &mut App, _, tx| {
             s.touched = true;
-            // a pointer moving over a window in use changes nothing drawn: one coming back to a quiet window does
-            if !s.here_quiet {
+            // a pointer moving over a window in use changes nothing drawn: one coming back to a window that was left does
+            if !s.away {
                 tx.live_only();
             }
         })
@@ -14490,14 +14610,16 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     // a history being dragged through: the arrows step it, and Escape leaves it
-    if let Some(at) = s.scrub.as_ref().filter(|sc| sc.film.is_some() && s.palette.is_none() && s.jump.is_none() && s.prompt.is_none()).map(|sc| sc.at) {
+    // Only those three keys, with nothing held, and not while something is open over the page: every other key goes on to what it does
+    let over = s.palette.is_some() || s.jump.is_some() || s.prompt.is_some() || s.find.is_some() || s.settings.is_some() || s.ships_open || s.tree_menu.is_some() || s.link_menu.is_some();
+    let plain = !(ev.mods.cmd || ev.mods.ctrl || ev.mods.alt || ev.mods.shift);
+    if let Some(at) = s.scrub.as_ref().filter(|sc| sc.film.is_some() && !over && plain).map(|sc| sc.at) {
         match ev.key {
-            Key::Left => scrub_to(s, at.saturating_sub(1)),
-            Key::Right => scrub_to(s, at + 1),
-            Key::Escape => s.scrub = None,
-            _ => return false,
+            Key::Left => return scrub_key(s, |s| scrub_to(s, at.saturating_sub(1))),
+            Key::Right => return scrub_key(s, |s| scrub_to(s, at + 1)),
+            Key::Escape => return scrub_key(s, |s| s.scrub = None),
+            _ => {}
         }
-        return true;
     }
     if ev.is_command('n') && !s.editing {
         ask_new(s);

@@ -55,6 +55,7 @@ pub fn blocks(src: &str) -> Vec<std::ops::Range<usize>> {
 
 /// How alike two blocks are, from 0 to 1: the words they share over the
 /// words of the longer.
+// ponytail: likeness is shared words over the longer block, and half alike counts as the same block. A proper diff if blocks are matched wrongly or a revision that rewrites a long page is slow
 fn alike(a: &str, b: &str) -> f32 {
     let words = |s: &str| -> Vec<String> { s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect() };
     let (wa, mut wb) = (words(a), words(b));
@@ -72,8 +73,22 @@ fn alike(a: &str, b: &str) -> f32 {
     shared as f32 / most as f32
 }
 
-/// The blocks that are the same text in both, in order: pairs of their places.
-fn same(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
+/// The blocks that are the same text in both, in order: pairs of their
+/// places. What the two begin and end with alike is paired first, so the
+/// table is only as large as the part that differs: an edit to a long
+/// page costs a few blocks, not the page squared.
+// ponytail: a table of every differing block against every other. Fine for hundreds. A linear diff if two revisions of a page differ in thousands of blocks
+pub(crate) fn same(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
+    let head = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let tail = a[head..].iter().rev().zip(b[head..].iter().rev()).take_while(|(x, y)| x == y).count();
+    let (a_mid, b_mid) = (&a[head..a.len() - tail], &b[head..b.len() - tail]);
+    let mut out: Vec<(usize, usize)> = (0..head).map(|i| (i, i)).collect();
+    out.extend(same_in(a_mid, b_mid).into_iter().map(|(i, j)| (i + head, j + head)));
+    out.extend((0..tail).map(|k| (a.len() - tail + k, b.len() - tail + k)));
+    out
+}
+
+fn same_in(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
     let (n, m) = (a.len(), b.len());
     let mut len = vec![vec![0u32; m + 1]; n + 1];
     for i in (0..n).rev() {
@@ -98,6 +113,7 @@ fn same(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
 /// What to mark of a block that was changed: the lines it did not have
 /// before, and of a table's row only the cells that differ, each as
 /// where it lies in the whole text (`base` is where the block starts).
+// ponytail: a changed line is one whose text the old block had nowhere. A line moved is not marked, nor one written twice. A line diff if that shows
 fn marks_in(old: &str, new: &str, base: usize) -> Vec<std::ops::Range<usize>> {
     let was: Vec<&str> = old.lines().map(str::trim_end).collect();
     let cells = |line: &str| -> Vec<(usize, usize)> {
@@ -111,7 +127,13 @@ fn marks_in(old: &str, new: &str, base: usize) -> Vec<std::ops::Range<usize>> {
             }
         }
         out.push((from, line.len()));
-        out.into_iter().map(|(a, b)| (a + (line[a..b].len() - line[a..b].trim_start().len()), a + line[a..b].trim_end().len())).collect()
+        // an empty cell is an empty range, where its text would start
+        out.into_iter()
+            .map(|(a, b)| {
+                let from = a + (line[a..b].len() - line[a..b].trim_start().len());
+                (from, (a + line[a..b].trim_end().len()).max(from))
+            })
+            .collect()
     };
     let (mut out, mut at) = (Vec::new(), 0);
     for (i, raw) in new.split_inclusive('\n').enumerate() {
@@ -144,14 +166,18 @@ fn plain(text: &str) -> String {
     }
     let t = out.trim();
     // a line that would start a list, a quote or a numbered item is said to be text
-    let first = t.chars().next();
-    let numbered = t.split_once(['.', ')']).is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-    if matches!(first, Some('-' | '+' | '>' | '=')) || numbered { format!("\\{t}") } else { t.to_owned() }
+    // a figure and a point would start a numbered item, and Markdown takes a backslash before the point and not before a figure
+    let figures = t.bytes().take_while(u8::is_ascii_digit).count();
+    if figures > 0 && t[figures..].starts_with(['.', ')']) {
+        return format!("{}\\{}", &t[..figures], &t[figures..]);
+    }
+    if t.starts_with(['-', '+', '>', '=']) { format!("\\{t}") } else { t.to_owned() }
 }
 
 /// A spreadsheet's sheets as Markdown: a table for each, under its name
 /// when there is more than one, with the columns' letters over it and
 /// the rows' numbers beside it. The first 200 rows and 26 columns.
+// ponytail: the first 26 columns and 200 rows of a sheet. A change beyond them shows as nothing changed. Only the rows that differ if large sheets are scrubbed
 pub fn sheets_md(sheets: &[crate::sheet::Sheet]) -> String {
     let mut out = String::new();
     for sh in sheets {
@@ -205,6 +231,7 @@ pub fn source_md(lang: &str, body: &str) -> String {
 /// A map's features as Markdown: a table with a row for each, saying
 /// its name, its kind, its shape and where it is, and its note. A
 /// feature moved or redrawn is a row whose shape changed.
+// ponytail: the first 500 features of a map, and a line or area only as its middle and its count of corners. A redraw that keeps both is not seen
 pub fn map_md(features: &[crate::map::Feature]) -> String {
     if features.is_empty() {
         return "*A map with nothing drawn on it*\n".to_owned();
@@ -237,10 +264,10 @@ pub fn map_md(features: &[crate::map::Feature]) -> String {
 /// A document (flat ODT) as Markdown: its headings, paragraphs and list
 /// items, in order, as plain text. What a document has beyond that
 /// (type, tables' shape, pictures) is not shown.
+// ponytail: a document read as plain text by a scan for its tags. Type, tables and pictures are lost. A real XML read if documents are scrubbed often
 pub fn doc_md(body: &str) -> String {
     let mut rest = body.split_once("<office:body>").map_or("", |(_, b)| b);
     let (mut out, mut text, mut lead, mut lists) = (String::new(), String::new(), String::new(), 0usize);
-    let unescape = |s: &str| s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&");
     while let Some(lt) = rest.find('<') {
         text.push_str(&rest[..lt]);
         let Some(gt) = rest[lt..].find('>') else { break };
@@ -262,7 +289,7 @@ pub fn doc_md(body: &str) -> String {
                 };
             }
             "text:h" | "text:p" => {
-                let said = plain(&unescape(&text));
+                let said = plain(&crate::html::decode(&text));
                 if !said.is_empty() {
                     // the items of one list stand together, and anything else stands apart
                     let together = lead.trim_start().starts_with("- ") && out.lines().last().is_some_and(|l| l.trim_start().starts_with("- "));
@@ -422,6 +449,17 @@ mod tests {
         // the cell that changed, and the row that was written
         assert_eq!(f.changed.iter().map(|r| &f.src[r.clone()]).collect::<Vec<_>>(), ["260", "| 4 | Paint | 18 |"]);
         assert_eq!(film.said(1), "1 block written or changed");
+        // an empty cell filled, which once stopped the reading of a history: found by a review on 2026-11-20
+        let mut film = Film::default();
+        film.push(1, String::new(), sheets_md(&sheet(&[&["a", "", "c"]])));
+        film.push(2, String::new(), sheets_md(&sheet(&[&["a", "b", "c"]])));
+        let f = &film.frames[1];
+        assert_eq!(f.changed.iter().map(|r| &f.src[r.clone()]).collect::<Vec<_>>(), ["b"]);
+        // and one emptied marks nothing, having nothing to mark
+        film.push(3, String::new(), sheets_md(&sheet(&[&["a", "", "c"]])));
+        assert!(film.frames[2].changed.is_empty());
+        // a number, a date and a decimal are drawn as they are
+        assert!(sheets_md(&sheet(&[&["3.14", "2024.11.19", "7"]])).contains("| 1 | 3\\.14 | 2024\\.11.19 | 7 |"));
         // a cell with a bar or a star in it stays one cell of text
         assert!(sheets_md(&sheet(&[&["a|b", "*c*"]])).contains("| 1 | a\\|b | \\*c\\* |"));
         assert_eq!(sheets_md(&[crate::sheet::Sheet { name: "S".into(), rows: Vec::new() }]), "*An empty sheet*\n\n");
@@ -466,7 +504,7 @@ mod tests {
             <text:list><text:list-item><text:p>Timber</text:p></text:list-item><text:list-item><text:p>Screws<text:s/>*</text:p></text:list-item></text:list>
             <text:p>1. Not a list</text:p>
         </office:text></office:body></office:document>"#;
-        assert_eq!(doc_md(doc), "## The shed\n\nA plan, to be done by June & no later.\n\n- Timber\n- Screws \\*\n\n\\1. Not a list\n");
+        assert_eq!(doc_md(doc), "## The shed\n\nA plan, to be done by June & no later.\n\n- Timber\n- Screws \\*\n\n1\\. Not a list\n");
         assert_eq!(blocks(&doc_md(doc)).len(), 4);
         assert_eq!(doc_md("not a document"), "");
     }
