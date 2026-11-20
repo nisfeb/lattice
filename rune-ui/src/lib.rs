@@ -363,6 +363,8 @@ enum Prompt {
     Ask(Shared, TextEdit),
     /// A tag to put on the memory in front.
     Tag(TextEdit),
+    /// The kind of the page in front, to change: Markdown, gemtext, HTML and the rest.
+    Kind(TextEdit),
     /// The tags of the forum thread showing, to set.
     ForumTags(TextEdit),
     /// A forum thread to delete, or one comment of the thread showing.
@@ -1596,6 +1598,24 @@ fn confirm(s: &mut App) {
                 c.comment_delete(&page, &id)?;
                 Ok(Op::Commented(format!("removed a comment from {page}")))
             });
+        }
+        return;
+    }
+    if let Prompt::Kind(t) = &p {
+        let kind = kind_typed(&t.text);
+        let Some(open) = s.open.clone() else { return };
+        match kind {
+            None => {
+                s.note = format!("a page is one of: {}", PAGE_KINDS.join(", "));
+                s.prompt = Some(p);
+            }
+            Some(k) if k == open.kind => s.note = format!("{} is {} already", open.name, kind_said(k)),
+            Some(k) => {
+                // the same text, kept as another kind: the ship takes the kind a save names
+                s.note = format!("{} is now {}", open.name, kind_said(k));
+                let body = open.body.clone();
+                save_body(s, Page { kind: k.to_owned(), ..open }, body);
+            }
         }
         return;
     }
@@ -3837,7 +3857,7 @@ fn take_pics(s: &mut App) -> bool {
 /// the pictures had so far.
 fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
     let pics = s.pics.clone();
-    let src = md::wikilinks(body, &|n| ghost(s, n));
+    let src = md::wikilinks(&md::html_shown(body), &|n| ghost(s, n));
     // what find matches is marked, the current one apart from the rest
     let mut marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = match s.find.as_ref().filter(|_| found) {
         Some(q) => find_in(&src, &q.text).into_iter().enumerate().map(|(i, m)| (m, if i == s.find_at { rune_kit::Highlight::current() } else { rune_kit::Highlight::new() })).collect(),
@@ -3847,7 +3867,17 @@ fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
     if let Some(h) = s.outline_at.and_then(|i| outline::outline(&src, "md").into_iter().nth(i)).filter(|h| !h.words.is_empty()) {
         marks.push((vec![h.words], rune_kit::Highlight::new().key("md-outline")));
     }
-    Markdown::new(src).selectable(true).on_link_tx(follow).images(move |src| pics.get(src).cloned()).highlights(marks).build(k)
+    Markdown::new(src).selectable(true).on_link_tx(follow).images(move |src| pics.get(src).cloned()).highlights(marks).style(page_style(k)).build(k)
+}
+
+/// How a page's Markdown is set to be read. rune-kit's own style is a chat message's, with
+/// headings of 17, 15 and 13 points beside text of 14, so a third-level heading is the text's
+/// size and a page looks hardly marked up at all. A page is a document: its headings step down
+/// from well above the text, as they do in the editor and on the web.
+fn page_style(k: &Kit) -> rune_kit::MarkdownStyle {
+    let body = rune::TextStyle { line_height: 22.4, ..k.ty.body };
+    let heading = |size: f32, line: f32| rune::TextStyle { size, weight: 650.0, line_height: line, ..body };
+    rune_kit::MarkdownStyle::from_kit(k).heading_font(1, heading(26.0, 34.0)).heading_font(2, heading(21.0, 28.0)).heading_font(3, heading(17.0, 24.0)).heading_font(4, heading(15.0, 22.0))
 }
 
 /// The colours of a page's source, by its kind: Rune's own lexers for
@@ -9296,6 +9326,8 @@ fn usable(s: &App, id: &str) -> bool {
         "download" | "copy-name" => page,
         "duplicate" | "copy-link" | "pdf" => own && !s.memory && !s.editing,
         "tex" => own && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "tex"),
+        // a sheet, a document and a map are files of their own shape: their kind is not one to type over
+        "kind" => own && !s.memory && !s.editing && s.open.as_ref().is_some_and(|p| PAGE_KINDS.contains(&p.kind.as_str()) && s.links.get(&p.name).is_none()),
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "find" => page && find_where(s) != FindIn::Nothing,
         "reload" | "map-token" => s.conn.is_some(),
@@ -9332,6 +9364,14 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
     save_prefs(s);
     match id {
         "new" => ask_new(s),
+        "kind" => {
+            if let Some(p) = &s.open {
+                let mut t = TextEdit::new(p.kind.clone());
+                t.focused = true;
+                t.set_selection(0, p.kind.len());
+                s.prompt = Some(Prompt::Kind(t));
+            }
+        }
         "template" => ask_template(s),
         "upload" => ask_upload(s, false, tx),
         "upload-folder" => ask_upload(s, true, tx),
@@ -9520,7 +9560,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
+                Prompt::Kind(t) | Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
                 Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
                 #[cfg(unix)]
                 Prompt::IdOut(..) | Prompt::IdIn(..) | Prompt::IdUse(..) => unreachable!("it has fields of its own"),
@@ -9588,6 +9628,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::ForumRowDelete(..) => ("Delete this thread?", text("The thread and its comments are gone for everyone who reads the board.").font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::CommentRemove(page, _) => ("Remove this comment?", text(format!("It is gone from {page} for everyone who reads it, and cannot be brought back.")).key("comment-remove-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
+        Prompt::Kind(t) => ("This page's kind", field(t, "md, gmi, html, text, js, css, tex, geojson or scad"), "Change", ButtonVariant::Contrast),
         Prompt::MarkMove(_, t) => ("Move this bookmark to a folder", field(t, "A folder, or nothing for none"), "Move", ButtonVariant::Contrast),
         Prompt::LinkIn(_, t) => ("Move into my pages as", field(t, "a name, as notes/plan"), "Move", ButtonVariant::Contrast),
         Prompt::Forget(sh) => ("Remove from shared with me?", text(format!("{} from {}. Nothing is deleted: it is {}'s, and their grant to you stays. It comes back here if they share it again.", swm::name(&sh.path), sh.host, sh.host)).key("swm-forget-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
@@ -11192,6 +11233,44 @@ fn tree_menu_view(s: &App, k: &Kit, side: El, layer: &mut Vec<El>) -> El {
     menu.build(k, layer)
 }
 
+/// The kinds a page of text can be changed between by typing one. Sheets, documents and maps are
+/// not among them: each is a file of its own shape.
+const PAGE_KINDS: [&str; 9] = ["md", "gmi", "html", "text", "js", "css", "tex", "geojson", "scad"];
+
+/// The kind typed, as the ship names it: its own name, or a word people use for it.
+fn kind_typed(typed: &str) -> Option<&'static str> {
+    let t = typed.trim().trim_start_matches('.').to_lowercase();
+    let k = match t.as_str() {
+        "markdown" => "md",
+        "gemtext" | "gemini" => "gmi",
+        "htm" => "html",
+        "txt" | "plain" => "text",
+        "javascript" => "js",
+        "latex" => "tex",
+        "openscad" => "scad",
+        other => other,
+    };
+    PAGE_KINDS.iter().copied().find(|p| *p == k)
+}
+
+/// A kind in words.
+fn kind_said(kind: &str) -> &str {
+    match kind {
+        "md" => "Markdown",
+        "gmi" => "gemtext",
+        "html" => "HTML",
+        "text" => "plain text",
+        "js" => "JavaScript",
+        "css" => "CSS",
+        "tex" => "LaTeX",
+        "geojson" => "a map",
+        "scad" => "OpenSCAD",
+        "fods" => "a sheet",
+        "fodt" => "a document",
+        other => other,
+    }
+}
+
 fn ask_rename(s: &mut App) {
     if let Some(p) = &s.open {
         let mut t = TextEdit::new(p.name.clone());
@@ -12601,7 +12680,7 @@ fn page_body(s: &App, k: &Kit) -> El {
         let source = fill_editor(s, source, &editor_kit(k, &s.prefs.font));
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
-            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(s.edit.text.clone()).build(k));
+            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(md::html_shown(&s.edit.text)).style(page_style(k)).build(k));
             panes = panes.child(col().key("preview").grow(1.0).min_w(0.0).h_full().min_h(0.0).child(shown).scroll(ScrollSpec { stick_bottom: false }));
         }
         return panes;
@@ -12884,6 +12963,11 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // the Edit and Read switch: a page shows it, a screen that is no page (the forum, the inbox, a folder) does not
     let (editing, can_edit) = (page && s.editing, remote.is_none_or(Shared::editable));
     let mut trailing = row().gap(6.0).center_y();
+    // a page that is not Markdown says what it is, since it is read and edited by that kind's rules. Pressed, it asks for another
+    if let Some(p) = s.open.as_ref().filter(|p| page && remote.is_none() && !s.memory && p.kind != "md" && s.old.is_none()) {
+        let can = usable(s, "kind");
+        trailing = trailing.child(Button::new(kind_said(&p.kind).to_owned()).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(if can { "This page's kind. Press to change it" } else { "This page's kind" }).disabled(!can).on_press_tx(|s: &mut App, tx| run_command(s, "kind", tx)).build(&k).key("page-kind"));
+    }
     // an HTML page is shown as a web page, or read as a document: one press goes between them
     #[cfg(not(target_arch = "wasm32"))]
     if page && !s.editing && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "html") {
@@ -12897,12 +12981,15 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         if s.prefs.vim && !s.rich {
             trailing = trailing.child(text(s.vim.indicator()).key("vim-mode").font(k.ty.small_medium).color(k.c.text_muted));
         }
-        trailing = trailing
-            .child(Button::new(if s.rich { "Source" } else { "Rich text" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press_tx(|s: &mut App, tx| {
+        // rich text and the preview are Markdown's: a page of another kind is its source and nothing else
+        let is_md = s.open.as_ref().is_some_and(|p| p.kind == "md");
+        if is_md {
+            trailing = trailing.child(Button::new(if s.rich { "Source" } else { "Rich text" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press_tx(|s: &mut App, tx| {
                 flip_mode(s);
                 tx.focus_when_shown(FIELD, false);
             }).build(&k).key("mode"));
-        if !s.rich {
+        }
+        if !s.rich && is_md {
             trailing = trailing.child(Button::new(if s.preview { "Hide preview" } else { "Preview" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| s.preview ^= true).build(&k).key("preview-toggle"));
         }
         trailing = trailing
@@ -13313,6 +13400,148 @@ mod tests {
         let post = |id: u64| api::ForumPost { id, ..Default::default() };
         let joined = forum_joined(&[post(9), post(8)], vec![post(8), post(7), post(6)]);
         assert_eq!(joined.iter().map(|p| p.id).collect::<Vec<_>>(), [9, 8, 7, 6]);
+    }
+
+    /// What the reader draws for a Markdown text: every piece of text in order, and how many of each
+    /// kind of block (heading, listitem, blockquote, image).
+    fn drawn(src: &str) -> (String, std::collections::BTreeMap<&'static str, usize>) {
+        struct Doc(String);
+        fn view(d: &Doc, _: &mut Cx<Doc>) -> El {
+            let k = Kit::neutral(true);
+            col().w_full().child(Markdown::new(md::wikilinks(&md::html_shown(&d.0), &|_| false)).selectable(true).style(page_style(&k)).build(&k))
+        }
+        let mut rt = rune::Runtime::new(Doc(src.to_owned()), view, (800.0, 20000.0), rune::Env::new(true, 1.0));
+        rt.frame(0.0);
+        rt.frame(0.1);
+        let mut text = String::new();
+        let mut kinds = std::collections::BTreeMap::new();
+        for e in rt.elements() {
+            if let Some(t) = &e.text {
+                text.push_str(t);
+                text.push(' ');
+            }
+            if matches!(e.role, "heading" | "listitem" | "blockquote" | "image") {
+                *kinds.entry(e.role).or_insert(0) += 1;
+            }
+        }
+        (text, kinds)
+    }
+
+    /// The text of the HTML the CommonMark spec gives for an example, as a reader of the page would
+    /// see it: tags gone, entities read.
+    fn html_text(html: &str) -> String {
+        let mut out = String::new();
+        let mut rest = html;
+        while let Some(a) = rest.find('<') {
+            out.push_str(&rest[..a]);
+            match rest[a..].find('>') {
+                Some(z) => {
+                    // an image is its alt words
+                    let tag = &rest[a..a + z];
+                    if let Some(alt) = tag.strip_prefix("<img").and_then(|t| t.split("alt=\"").nth(1)).and_then(|t| t.split('"').next()) {
+                        out.push_str(alt);
+                    }
+                    rest = &rest[a + z + 1..];
+                }
+                None => {
+                    rest = "";
+                }
+            }
+        }
+        out.push_str(rest);
+        out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&amp;", "&")
+    }
+
+    /// Letters and figures only, so spacing, bullets, list numbers and the pads round code do not count.
+    fn letters(s: &str) -> String {
+        s.chars().filter(|c| c.is_alphanumeric()).collect()
+    }
+
+    /// Runs every example of the CommonMark spec through the reader and says, by section, which
+    /// lose text the spec's HTML shows, which show text it does not, and which have another
+    /// number of headings, list items, quotes or images. `LATTICE_CM_SPEC` names the spec's
+    /// `spec.json` (spec.commonmark.org). The parser is pulldown-cmark, which passes the spec:
+    /// this holds what is drawn to what it parsed.
+    #[test]
+    #[ignore = "LATTICE_CM_SPEC names spec.json"]
+    fn the_reader_against_the_commonmark_spec() {
+        let Ok(path) = std::env::var("LATTICE_CM_SPEC") else { return };
+        let spec: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let mut by: std::collections::BTreeMap<String, (usize, Vec<String>)> = std::collections::BTreeMap::new();
+        for e in &spec {
+            let (md, html, n, section) = (e["markdown"].as_str().unwrap(), e["html"].as_str().unwrap(), e["example"].as_u64().unwrap(), e["section"].as_str().unwrap());
+            let (text, kinds) = drawn(md);
+            let (want, got) = (letters(&html_text(html)), letters(&text));
+            let count = |tag: &str| html.matches(tag).count();
+            let mut wrong = Vec::new();
+            // a numbered list draws its numbers, which the HTML leaves to the browser: figures more than
+            // the HTML has are not a fault there
+            let numbers_only = html.contains("<ol") && {
+                let mut w = want.chars().peekable();
+                got.chars().all(|c| if w.peek() == Some(&c) { w.next(); true } else { c.is_ascii_digit() }) && w.peek().is_none()
+            };
+            if want != got && !numbers_only {
+                wrong.push(if got.len() < want.len() { "text lost" } else if got.len() > want.len() { "text added" } else { "text differs" });
+                if std::env::var("LATTICE_CM_SHOW").is_ok() {
+                    eprintln!("-- {n} {section}\n   md   {md:?}\n   want {want:?}\n   got  {got:?}");
+                }
+            }
+            let heads = (1..=6).map(|l| count(&format!("<h{l}>")) + count(&format!("<h{l} "))).sum::<usize>();
+            for (role, n) in [("heading", heads), ("listitem", count("<li>")), ("blockquote", count("<blockquote>")), ("image", count("<img "))] {
+                if kinds.get(role).copied().unwrap_or(0) != n && std::env::var("LATTICE_CM_SHOW").is_ok() {
+                    eprintln!("-- {n} {section}: {role} {} drawn, {n2} in the HTML\n   md   {md:?}", kinds.get(role).copied().unwrap_or(0), n2 = n);
+                }
+                if kinds.get(role).copied().unwrap_or(0) != n {
+                    wrong.push(match role {
+                        "heading" => "headings",
+                        "listitem" => "list items",
+                        "blockquote" => "quotes",
+                        _ => "images",
+                    });
+                }
+            }
+            let entry = by.entry(section.to_owned()).or_default();
+            entry.0 += 1;
+            if !wrong.is_empty() {
+                entry.1.push(format!("{n} ({})", wrong.join(", ")));
+            }
+        }
+        let (mut all, mut bad) = (0, 0);
+        for (section, (n, wrong)) in &by {
+            all += n;
+            bad += wrong.len();
+            eprintln!("{section}: {} of {n} as the spec has them{}", n - wrong.len(), if wrong.is_empty() { String::new() } else { format!(". Not: {}", wrong.join("; ")) });
+        }
+        eprintln!("ALL: {} of {all}", all - bad);
+    }
+
+    #[test]
+    fn a_page_kind_is_typed_by_its_name_or_a_word_for_it() {
+        assert_eq!(kind_typed(" Markdown "), Some("md"));
+        assert_eq!(kind_typed(".md"), Some("md"));
+        assert_eq!(kind_typed("gemtext"), Some("gmi"));
+        assert_eq!(kind_typed("txt"), Some("text"));
+        assert_eq!(kind_typed("fods"), None, "a sheet is not typed into being");
+        assert_eq!(kind_typed("nonsense"), None);
+        assert_eq!((kind_said("gmi"), kind_said("md")), ("gemtext", "Markdown"));
+    }
+
+    #[test]
+    fn a_page_changes_kind_and_keeps_its_text() {
+        let mut s = sample("welcome");
+        let before = s.open.clone().unwrap();
+        assert_eq!(before.kind, "md");
+        s.prompt = Some(Prompt::Kind(TextEdit::new("nonsense")));
+        confirm(&mut s);
+        assert!(matches!(s.prompt, Some(Prompt::Kind(_))) && s.note.contains("one of"), "a kind that is none is asked for again");
+        s.prompt = Some(Prompt::Kind(TextEdit::new("gemtext")));
+        confirm(&mut s);
+        let after = s.open.clone().unwrap();
+        assert_eq!((after.kind.as_str(), &after.body, after.rev), ("gmi", &before.body, before.rev + 1));
+        assert!(s.prompt.is_none());
+        s.prompt = Some(Prompt::Kind(TextEdit::new("md")));
+        confirm(&mut s);
+        assert_eq!(s.open.as_ref().unwrap().kind, "md");
     }
 
     #[test]
