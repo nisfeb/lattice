@@ -360,6 +360,15 @@
   =/  d  (mole |.(;;([%& %| p=path] r)))
   ?^  d  `[%| p.u.d]
   ~
+::  +code-page: the page a path to its code grub names, ~ for any other
+::  path. `rel` is under /page: /a/b/code names the page /a/b.
+++  code-page
+  |=  rel=path
+  ^-  (unit path)
+  ?~  rel  ~
+  ?.  =(%code (rear rel))  ~
+  =/  pg=path  (snip `path`rel)
+  ?~(pg ~ `pg)
 ::  +road-text: an absolute road as an app's groups.json names it,
 ::  relative to `sb`, the app's root: a directory ends in /, a file does
 ::  not (the shell's +app-parse-road). ~ for a road outside `sb`, or a
