@@ -14002,9 +14002,10 @@
 ::  the ban is written, so a write before that read is caught by the
 ::  strip, and one after it by the read here.
 ++  ug-put
-  |=  [gdir=path who=(set @p) =weir:nexus]
+  |=  [gdir=path who=(set @p) weir=weir:nexus]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
+  ;<  =weir:nexus  bind:m  (mend-weir weir)
   ;<  b0=banned:ls  bind:m  read-banned
   =/  ok-who=(set @p)  (ban-drop:ls b0 who)
   ;<  ok=?  bind:m  (ug-over [%& %& gdir %'who.ships'] [[/ %ships] ok-who])
@@ -14015,6 +14016,42 @@
   =/  late=(set @p)  (ban-drop:ls b1 ok-who)
   ?:  =(late ok-who)  (pure:m &)
   (ug-over [%& %& gdir %'who.ships'] [[/ %ships] late])
+::  +mend-weir: a group's weir as it can reach things. A dir road on our
+::  tree whose path is a FILE reaches nothing (a dir road covers what is
+::  under a dir, and a file has nothing under it), so it becomes the file
+::  road it meant. Every group write passes here (+ug-put), so no client
+::  shape can store a grant that grants nothing: the Rune client named a
+::  page as <page>/code, and that was such a road. Roads off our tree,
+::  and roads to nothing yet (a page about to be made), are kept.
+++  mend-weir
+  |=  w=weir:nexus
+  =/  m  (fiber:fiber:nexus ,weir:nexus)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  ;<  mk=(set road:tarball)  bind:m  (mend-roads sb make.w)
+  ;<  pk=(set road:tarball)  bind:m  (mend-roads sb peek.w)
+  (pure:m [mk poke.w pk])
+++  mend-roads
+  |=  [sb=path rs=(set road:tarball)]
+  =/  m  (fiber:fiber:nexus ,(set road:tarball))
+  ^-  form:m
+  =/  l=(list road:tarball)  ~(tap in rs)
+  =|  out=(set road:tarball)
+  |-  ^-  form:m
+  ?~  l  (pure:m out)
+  =/  r=road:tarball  i.l
+  ?.  ?&  ?=([%& %| *] r)
+          ?=(^ p.p.r)
+          (gth (lent p.p.r) (lent sb))
+          =(sb (scag (lent sb) p.p.r))
+      ==
+    $(l t.l, out (~(put in out) r))
+  =/  fr=road:tarball  [%& %& (snip `path`p.p.r) (rear p.p.r)]
+  ;<  isd=?  bind:m  (peek-exists:fio r)
+  ;<  isf=?  bind:m  ?:(isd (pure:(fiber:fiber:nexus ,?) |) (peek-exists:fio fr))
+  ?.  isf  $(l t.l, out (~(put in out) r))
+  %-  (say 2 ~[leaf+"lattice: a grant on {(spud p.p.r)} named a file as a folder; granted as the file"])
+  $(l t.l, out (~(put in out) fr))
 ::  +move-grants: grants follow a page. A group road names a path, so a
 ::  move would leave the ship it was shared with holding the old one, and
 ::  a delete would hand that ship whatever page is made there next. Every
