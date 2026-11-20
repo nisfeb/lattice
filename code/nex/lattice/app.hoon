@@ -15191,6 +15191,19 @@
   :+  rest
     ?:(=(~ rows) (~(del by tab) page.u.s) (~(put by tab) page.u.s rows))
   `page.u.s
+::  +presence-forget: when a page has no window and no stream left, the
+::  time its table was last sent is let go, so what the process holds is
+::  for the pages someone is on now and not for every page there ever was
+++  presence-forget
+  |=  $:  page=@t
+          tab=(map @t (map @t presence-row))
+          subs=(map @ta [page=@t who=@t])
+          last=(map @t @da)
+      ==
+  ^-  (map @t @da)
+  ?:  (~(has by tab) page)  last
+  ?:  (lien ~(val by subs) |=([p=@t w=@t] =(p page)))  last
+  (~(del by last) page)
 ::  +presence-loop: /presence.sig. `tab` is each page's rows by window,
 ::  `subs` the page and window of each open stream, `last` when a page's
 ::  table was last sent, `dirty` the pages that changed since, to be
@@ -15218,7 +15231,7 @@
     ?~  page.d  $
     ;<  t=[last=(map @t @da) dirty=(set @t) seq=@ud]  bind:m
       (presence-tell root now u.page.d tab subs last dirty seq)
-    $(last last.t, dirty dirty.t, seq seq.t)
+    $(last (presence-forget u.page.d tab subs last.t), dirty dirty.t, seq seq.t)
   =/  =sage:tarball  p.u.got
   ?:  =([/ %timer-wake] p.sage)
     =/  wak=path  !<(path q.sage)
@@ -15236,7 +15249,7 @@
     ?~  due  ^$
     =.  seq  +(seq)
     ;<  ~  bind:m  (presence-cast root i.due seq (~(gut by tab) i.due ~) subs)
-    $(due t.due, last (~(put by last) i.due now))
+    $(due t.due, last (presence-forget i.due tab subs (~(put by last) i.due now)))
   ?.  =([/ %json] p.sage)  $
   =/  j=json  !<(json q.sage)
   ?.  ?=([%o *] j)  $
@@ -15284,7 +15297,7 @@
     =.  tab  ?:(=(~ next) (~(del by tab) page) (~(put by tab) page next))
     ;<  t=[last=(map @t @da) dirty=(set @t) seq=@ud]  bind:m
       (presence-tell root now page tab subs last dirty seq)
-    $(last last.t, dirty dirty.t, seq seq.t)
+    $(last (presence-forget page tab subs last.t), dirty dirty.t, seq seq.t)
   ::  where a window is: only a window with a stream open has a row to change
   =/  old=(unit presence-row)  (~(get by rows) who)
   ?~  old  $
