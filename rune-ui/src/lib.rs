@@ -778,6 +778,8 @@ struct App {
     group_drag: [rune_kit::shell::TabDragState; splits::MOST],
     /// How tall the room the page's editor stands in is, as last laid out.
     edit_room: f32,
+    /// The width of the editor's scrolling room, as it was last laid out: where its lines are broken.
+    edit_wide: f32,
     /// The shares as they stood when a line between groups was pressed, while it is dragged.
     share_base: Option<Vec<f32>>,
     /// The groups are one above the other, not side by side.
@@ -1233,6 +1235,7 @@ fn init() -> App {
         group_drag: std::array::from_fn(|_| rune_kit::shell::TabDragState::new()),
         share_base: None,
         edit_room: 0.0,
+        edit_wide: 0.0,
         split_down: false,
         groups_room: (0.0, 0.0),
         resync: false,
@@ -4219,6 +4222,7 @@ fn find_step(s: &mut App, by: isize, tx: &mut Tx) {
         FindIn::Editor => {
             if let Some(r) = edit_matches(s).get(s.find_at).cloned() {
                 s.edit.set_selection(r.start, r.end);
+                editor_reveal(s, tx);
             }
         }
         FindIn::Reader => tx.scroll_into_view(Markdown::highlight_key(s.find_at)),
@@ -4391,6 +4395,7 @@ fn go_heading(s: &mut App, i: usize, tx: &mut Tx) {
         s.edit.set_selection(h.at, h.at);
         s.edit.focused = true;
         tx.focus_when_shown(FIELD, false);
+        editor_reveal(s, tx);
     } else {
         s.outline_at = Some(i);
         tx.scroll_into_view("md-outline");
@@ -9314,6 +9319,22 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
         .child(text("Editor").font(k.ty.body_medium).color(c.text_base))
         .child(text("The font a page's source is written in. Kept on this computer.").font(k.ty.small).color(c.text_muted).wrap())
         .child(fonts)
+        .child({
+            // the size of the text in both editors, and whether a long line is broken at the room's edge
+            let now = edit_size(&s.prefs);
+            let mut sizes = row().key("edit-sizes").role("group").label("Text size").gap(4.0).center_y().flex_wrap().child(text("Size").font(k.ty.small).color(c.text_muted));
+            for size in EDIT_SIZES {
+                sizes = sizes.child(Button::new(format!("{size}")).control_size(ControlSize::Small).variant(if now == size { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help(format!("Set the editor's text at {size} points")).on_press(move |s: &mut App| {
+                    s.prefs.edit_size = size;
+                    save_prefs(s);
+                }).build(k).key(format!("edit-size-{size}")));
+            }
+            sizes
+        })
+        .child(Switch::new(!s.prefs.no_wrap).label("Wrap long lines").on_toggle(|s: &mut App| {
+            s.prefs.no_wrap ^= true;
+            save_prefs(s);
+        }).build(k).key("edit-wrap"))
         .child(Switch::new(vim_on).label("Vim mode in the source editor").on_toggle(|s: &mut App| {
             s.prefs.vim = !s.prefs.vim;
             save_prefs(s);
@@ -12965,13 +12986,106 @@ fn web_view(p: &Page, s: &App, k: &Kit) -> El {
 /// that scrolls inside the field, with the caret kept in view. rune-kit's
 /// text area grows with its text unless it is told a height in points,
 /// so the room it stands in is noted as it is laid out.
-fn fill_editor(s: &App, area: TextArea, k: &Kit) -> El {
+/// The sizes the editor's text can be set in, in points. The second is the usual one.
+const EDIT_SIZES: [f32; 7] = [12.0, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0];
+
+/// The size the editor's text is set in: the one chosen, or the usual.
+fn edit_size(prefs: &Prefs) -> f32 {
+    if EDIT_SIZES.contains(&prefs.edit_size) { prefs.edit_size } else { EDIT_SIZES[1] }
+}
+
+/// The style of the editor's text at a size: the kit's own font, and a line that grows with the size.
+fn edit_style(k: &Kit, size: f32) -> rune::TextStyle {
+    rune::TextStyle { size, line_height: (size * 1.35 * 2.0).round() / 2.0, ..k.ty.ui }
+}
+
+/// The key of the editor's own scrolling room, to send it to a place in the text.
+const FIELD_SCROLL: &str = "page-field-scroll";
+
+/// How wide a line may run when lines are not broken: wider than any written.
+const UNWRAPPED: f32 = 60_000.0;
+
+thread_local! {
+    /// The style and the spans the editor's text was last drawn with, for working out how far down a
+    /// place in it is: a heading set larger is taller, and is measured so.
+    static EDIT_DRAWN: std::cell::RefCell<Option<(rune::TextStyle, Vec<Span>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The editor's field, filling the room it is given. It is built here from Rune's own text field
+/// and not from the kit's text area, which sets its text at one size with no way to say another,
+/// always breaks long lines, and keeps its scrolling room to itself. Here the size is the one
+/// chosen in the settings, long lines run on when that is asked for, and the room can be sent
+/// to where the caret is (`editor_reveal`). The look is the kit's: its fill, its ring when the
+/// field has the keys, its shadow when it does not.
+fn fill_editor(s: &App, label: &str, spans: Vec<Span>, k: &Kit) -> El {
+    let c = &k.c;
     // not laid out yet: a height to start from, put right in the next frame
     let room = if s.edit_room > 0.0 { s.edit_room } else { 400.0 };
-    // more rows than fit, so the field is as tall as its room even when the page is short
-    // a line with no place to break, as a long address, is broken where the room ends: it never runs out of sight
-    let field = area.width(None).wrap_anywhere().rows(10_000).max_height(room).build(k).key(FIELD).w_full().min_w(0.0);
-    col().key("edit-room").w_full().min_w(0.0).grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.edit_room = r[3]).child(field)
+    let style = edit_style(k, edit_size(&s.prefs));
+    EDIT_DRAWN.set(Some((style, spans.clone())));
+    let inner = (room - 16.0).max(style.line_px());
+    let field = rune::text_input(&s.edit, style)
+        .key("input")
+        .label(label.to_owned())
+        .color(c.text_base)
+        .rich_style(rune::RichStyle { link: c.text_accent, code_fg: None, code_bg: c.layer_03, code_block_bg: c.layer_02, quote_bar: c.border_strong, marker: Some(c.text_muted) })
+        .caret(c.text_base, k.selection())
+        .spans(spans)
+        .on_edit(|s: &mut App| &mut s.edit)
+        .on_input_key(editor_key)
+        .animate_edit_layout();
+    // as tall as its room even when the page is short, and scrolled inside when it is longer
+    let view = col().key(FIELD_SCROLL).w_full().shrink().min_h(inner).max_h(inner);
+    let view = if s.prefs.no_wrap {
+        // lines run on, and the room scrolls sideways to follow them
+        view.scroll_xy().child(field.w(UNWRAPPED))
+    } else {
+        // a line with no place to break, as a long address, is broken where the room ends: it never runs out of sight
+        view.scroll(ScrollSpec { stick_bottom: false }).child(field.w_full().wrap_anywhere())
+    };
+    let view = view.on_layout_tx(|s: &mut App, r: [f32; 4], tx: &mut Tx| {
+        if s.edit_wide == r[2] {
+            tx.live_only();
+        }
+        s.edit_wide = r[2];
+    });
+    let mut boxed = col().role("textbox").padding(8.0).min_h(inner + 16.0).w_full().min_w(0.0).radius(k.radius.md).fill(c.bg_base).child(view);
+    if s.edit.focused {
+        boxed = boxed.outline(1.0, -1.0, c.border_focus);
+    } else {
+        for shadow in k.shadow_layers(k.elevation.input()) {
+            boxed = boxed.box_shadow(shadow);
+        }
+    }
+    col().key("edit-room").w_full().min_w(0.0).grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.edit_room = r[3]).child(boxed.key(FIELD))
+}
+
+/// How far down the editor's text the line that holds `at` begins, in points: the height of all the
+/// text before that line, set as the editor sets it (its style, its spans, a line with no place to
+/// break broken where the room ends) at the editor's width. With no width, lines are not broken,
+/// and each line of the text is one line of the room.
+fn caret_down(text: &str, at: usize, style: rune::TextStyle, spans: &[Span], wide: Option<f32>) -> f32 {
+    let at = at.min(text.len());
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    if line_start == 0 {
+        return 0.0;
+    }
+    let before = &text[..line_start - 1];
+    // the spans that lie in what is measured, cut off at its end
+    let within: Vec<Span> = spans.iter().filter(|x| (x.start as usize) < before.len()).map(|x| Span { end: x.end.min(before.len() as u32), ..x.clone() }).collect();
+    match wide {
+        Some(w) if w > 0.0 => rune::text::measure_with(before, &within, style, Some(w), rune::text::RichLayoutOptions::new().wrap_anywhere()).1,
+        _ => rune::text::measure(before, &within, style, None).1,
+    }
+}
+
+/// Brings the caret's line into the editor's view, a third of the way down it. Rune keeps a caret
+/// in view as it is typed at, and not one put somewhere by the app, as the outline and find put it.
+fn editor_reveal(s: &App, tx: &mut Tx) {
+    let Some((style, spans)) = EDIT_DRAWN.with_borrow(|d| d.clone()) else { return };
+    let wide = (!s.prefs.no_wrap && s.edit_wide > 0.0).then_some(s.edit_wide);
+    let down = caret_down(&s.edit.text, s.edit.range().0, style, &spans, wide);
+    tx.scroll_to_y(FIELD_SCROLL, (down - s.edit_room.max(120.0) * 0.3).max(0.0));
 }
 
 fn page_body(s: &App, k: &Kit) -> El {
@@ -13005,17 +13119,9 @@ fn page_body(s: &App, k: &Kit) -> El {
         return col().w_full().h_full().center().child(text("Pick a page").font(k.ty.ui).color(c.text_muted));
     };
     if s.editing && s.rich {
-        let field = TextArea::new(&s.edit)
-            .label("Page")
-            .width(None)
-            .decorations({
-                let mut spans = rich_spans(&s.edit, k);
-                spans.extend(find_spans(s, k));
-                spans
-            })
-            .on_edit(|s: &mut App| &mut s.edit)
-            .on_key(editor_key);
-        let field = fill_editor(s, field, k);
+        let mut spans = rich_spans(&s.edit, k);
+        spans.extend(find_spans(s, k));
+        let field = fill_editor(s, "Page", spans, k);
         return col()
             .key("editor")
             .w_full()
@@ -13037,8 +13143,7 @@ fn page_body(s: &App, k: &Kit) -> El {
             }
         }
         // the font is the one chosen in settings: the text area takes its style from the kit it is built with
-        let source = TextArea::new(&s.edit).label("Page source").decorations(marks).on_edit(|s: &mut App| &mut s.edit).on_key(editor_key);
-        let source = fill_editor(s, source, &editor_kit(k, &s.prefs.font));
+        let source = fill_editor(s, "Page source", marks, &editor_kit(k, &s.prefs.font));
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
             let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(md::html_shown(&s.edit.text)).style(page_style(k)).build(k));
@@ -13978,6 +14083,38 @@ mod tests {
         s.mounts.remove(0);
         sign_out_asked(&mut s, true);
         assert!(matches!(s.prompt, Some(Prompt::ShipOut(true))), "another ship's folder is asked about when every ship is signed out of");
+    }
+
+    #[test]
+    fn the_editors_text_has_a_size_and_its_line_grows_with_it() {
+        let k = Kit::neutral(true);
+        assert_eq!(edit_size(&Prefs::default()), 13.0, "the usual size when none was chosen");
+        assert_eq!(edit_size(&Prefs { edit_size: 18.0, ..Prefs::default() }), 18.0);
+        assert_eq!(edit_size(&Prefs { edit_size: 200.0, ..Prefs::default() }), 13.0, "a size that is none of them is the usual one");
+        let (usual, large) = (edit_style(&k, 13.0), edit_style(&k, 20.0));
+        assert_eq!((usual.size, usual.line_height), (13.0, 17.5), "the usual size is set as the kit's own field sets it");
+        assert!(large.line_height >= 20.0 * 1.3, "a larger text has a taller line, so its lines do not run into each other");
+    }
+
+    #[test]
+    fn how_far_down_a_place_is_counts_the_lines_before_its_own() {
+        let style = edit_style(&Kit::neutral(true), 13.0);
+        let text = "one\ntwo\nthree\nfour";
+        // with no width, a line of the text is a line of the room
+        assert_eq!(caret_down(text, 0, style, &[], None), 0.0);
+        assert_eq!(caret_down(text, 2, style, &[], None), 0.0, "anywhere on the first line is at the top");
+        assert_eq!(caret_down(text, 4, style, &[], None), 17.5);
+        assert_eq!(caret_down(text, text.len(), style, &[], None), 3.0 * 17.5);
+        assert_eq!(caret_down(text, 999, style, &[], None), 3.0 * 17.5, "a place past the end is the end");
+        // a line too long for the room takes more than one of its lines, and is counted so
+        let long = format!("{}\nlast", "word ".repeat(60));
+        assert!(caret_down(&long, long.len(), style, &[], Some(200.0)) > 3.0 * 17.5);
+        // and one with no place to break is broken where the room ends, as the editor breaks it
+        let unbroken = format!("{}\nlast", "x".repeat(400));
+        assert!(caret_down(&unbroken, unbroken.len(), style, &[], Some(200.0)) > 3.0 * 17.5);
+        // a heading set larger is taller
+        let big = [Span::new(0, 3).size(26.0)];
+        assert!(caret_down(text, 4, style, &big, None) > 17.5);
     }
 
     #[test]

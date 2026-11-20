@@ -1672,6 +1672,12 @@ pub struct Prefs {
     /// The pin chosen here for a feature of a map that is not written to, as orrery's: by the body it names.
     #[serde(default)]
     pub pins: std::collections::BTreeMap<String, String>,
+    /// The size of the text in the editor, in points. Nothing, or a size out of range, is the usual size.
+    #[serde(default)]
+    pub edit_size: f32,
+    /// Long lines in the editor run on, to be scrolled sideways, where they would be broken at the room's edge.
+    #[serde(default)]
+    pub no_wrap: bool,
     /// The address of the ship these are kept for. Empty with no ship: the computer's own alone.
     #[serde(skip)]
     pub of: String,
@@ -1693,6 +1699,7 @@ impl Prefs {
     pub fn take_device(&mut self, from: &Prefs) {
         (self.theme, self.font, self.vim, self.no_autosave) = (from.theme.clone(), from.font.clone(), from.vim, from.no_autosave);
         (self.html_plain, self.sort_desc, self.split_down) = (from.html_plain, from.sort_desc, from.split_down);
+        (self.edit_size, self.no_wrap) = (from.edit_size, from.no_wrap);
     }
 
     /// The kept preferences with no ship in front.
@@ -3548,7 +3555,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new() }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new(), edit_size: 0.0, no_wrap: false }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert!(back.sort_desc);
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
