@@ -1,0 +1,10 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "places"},
+  {"t": 3.5, "type": "tap", "key": "history-toggle"},
+  {"t": 4.5, "type": "tap", "key": "scrub"},
+  {"t": 6.5, "type": "mark", "name": "newest"},
+  {"t": 6.6, "type": "key", "name": "Left"},
+  {"t": 7.6, "type": "key", "name": "Left"},
+  {"t": 8.6, "type": "key", "name": "Left"},
+  {"t": 9.6, "type": "mark", "name": "three back"}
+]}

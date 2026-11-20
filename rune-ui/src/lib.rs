@@ -29,6 +29,7 @@ mod outline;
 mod pdf;
 mod pins;
 mod ribbon;
+mod scrub;
 mod rpane;
 mod scad;
 mod scadrun;
@@ -841,6 +842,10 @@ struct App {
     tree_menu: Option<(String, rune::PointerPress)>,
     /// The link in a page a right-click was on, and where: its menu is open.
     link_menu: Option<(String, rune::PointerPress)>,
+    /// A page's history being dragged through, when it is.
+    scrub: Option<Scrub>,
+    /// What the thread reading that history has so far.
+    scrub_load: std::sync::Arc<std::sync::Mutex<ScrubLoad>>,
     /// The top bar's tabs while one is pressed or dragged.
     tab_drag: rune_kit::shell::TabDragState,
     /// The bookmarks the reader keeps, once read.
@@ -1276,6 +1281,8 @@ fn init() -> App {
         page_menu: false,
         tree_menu: None,
         link_menu: None,
+        scrub: None,
+        scrub_load: Default::default(),
         tab_drag: rune_kit::shell::TabDragState::new(),
         marks: None,
         marks_req: Latest::default(),
@@ -5474,6 +5481,7 @@ const SYNC_LIVE: f64 = 300.0;
 
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
+    changed |= sync_scrub(s, clock, tx);
     changed |= sync_draft(s);
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -12363,6 +12371,216 @@ fn sidebar(s: &App, k: &Kit) -> El {
 }
 
 /// The history pane: the open page's revisions, newest first.
+/// A page's history being dragged through: every revision, read once,
+/// and the one showing.
+struct Scrub {
+    name: String,
+    /// None while the revisions are read.
+    film: Option<scrub::Film>,
+    at: usize,
+    /// Stepping forward by itself, and the clock of its next step.
+    playing: bool,
+    next: f64,
+}
+
+/// What the thread reading a history has: how far it is, and the film when it is whole.
+#[derive(Default)]
+struct ScrubLoad {
+    got: usize,
+    of: usize,
+    done: Option<Result<scrub::Film, String>>,
+}
+
+/// The most revisions read for one film: the newest of a longer history.
+const SCRUB_MOST: usize = 150;
+/// How long a frame stands while the film plays, in seconds.
+const SCRUB_STEP: f64 = 0.9;
+
+/// Whether the open page's history can be dragged through: a Markdown page of this ship's, being read.
+fn can_scrub(s: &App) -> bool {
+    // the browser build has one thread, and a history is many requests waited for
+    !cfg!(target_arch = "wasm32") && s.conn.is_some() && !s.memory && s.remote.is_none() && !s.editing && s.open.as_ref().is_some_and(|p| p.kind == "md")
+}
+
+/// Starts reading every revision of the open page, on a thread of its
+/// own: a long history is many requests, one after another.
+fn start_scrub(s: &mut App) {
+    if !can_scrub(s) {
+        return;
+    }
+    let (Some(c), Some(name)) = (s.conn.clone(), s.open.as_ref().map(|p| p.name.clone())) else { return };
+    s.old = None;
+    s.scrub = Some(Scrub { name: name.clone(), film: None, at: 0, playing: false, next: 0.0 });
+    // a load of its own: one begun before, for another page, writes where nothing reads
+    let load = std::sync::Arc::new(std::sync::Mutex::new(ScrubLoad::default()));
+    s.scrub_load = load.clone();
+    let (names, other, waker) = (s.names.clone(), s.other.1.clone(), s.waker.clone());
+    spawn(move || {
+        let wake = || {
+            if let Some(w) = &waker {
+                w();
+            }
+        };
+        let read = || -> Result<scrub::Film, String> {
+            let mut revs = c.history(&name)?;
+            revs.sort_by_key(|r| r.rev);
+            let skip = revs.len().saturating_sub(SCRUB_MOST);
+            let revs = &revs[skip..];
+            let mut film = scrub::Film::default();
+            for (i, r) in revs.iter().enumerate() {
+                let p = c.page_at(&name, r.rev)?;
+                // as the reader draws it: its HTML made Markdown, its wiki links made links
+                let src = md::wikilinks(&md::html_made(&p.body), &|n| !names.iter().any(|x| x == n) && !other.iter().any(|x| x == n));
+                film.push(r.rev, r.when(), src);
+                if let Ok(mut l) = load.lock() {
+                    (l.got, l.of) = (i + 1, revs.len());
+                }
+                wake();
+            }
+            Ok(film)
+        };
+        let done = read();
+        if let Ok(mut l) = load.lock() {
+            l.done = Some(done);
+        }
+        wake();
+    });
+}
+
+/// Takes the film when it is whole, and steps it while it plays. Whether anything changed.
+fn sync_scrub(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
+    // the page was left: its history goes with it
+    if s.scrub.as_ref().is_some_and(|sc| s.editing || s.open.as_ref().is_none_or(|p| p.name != sc.name)) {
+        s.scrub = None;
+        return true;
+    }
+    let Some(sc) = &mut s.scrub else { return false };
+    let mut changed = false;
+    if sc.film.is_none() {
+        match s.scrub_load.lock().ok().and_then(|mut l| l.done.take()) {
+            Some(Ok(film)) if film.frames.is_empty() => {
+                s.note = "This page has no history kept".to_owned();
+                s.scrub = None;
+                return true;
+            }
+            Some(Ok(film)) => {
+                sc.at = film.frames.len() - 1;
+                sc.film = Some(film);
+                changed = true;
+            }
+            Some(Err(e)) => {
+                s.note = format!("history: {e}");
+                s.scrub = None;
+                return true;
+            }
+            None => {}
+        }
+    }
+    let last = sc.film.as_ref().map_or(0, |f| f.frames.len().saturating_sub(1));
+    if sc.playing {
+        if clock >= sc.next {
+            if sc.at >= last {
+                sc.playing = false;
+            } else {
+                sc.at += 1;
+                sc.next = clock + SCRUB_STEP;
+            }
+            changed = true;
+        }
+        if sc.playing {
+            tx.wake_after(std::time::Duration::from_secs_f64((sc.next - clock).max(0.05)));
+        }
+    }
+    changed
+}
+
+/// Moves the scrubber to a frame, by hand: playing stops.
+fn scrub_to(s: &mut App, at: usize) {
+    if let Some(sc) = &mut s.scrub {
+        let last = sc.film.as_ref().map_or(0, |f| f.frames.len().saturating_sub(1));
+        (sc.at, sc.playing) = (at.min(last), false);
+    }
+}
+
+/// Plays the film from the frame showing, or from the first when it is at its end, or stops it.
+fn scrub_play(s: &mut App, tx: &mut Tx) {
+    let Some(sc) = &mut s.scrub else { return };
+    let last = sc.film.as_ref().map_or(0, |f| f.frames.len().saturating_sub(1));
+    sc.playing = !sc.playing && last > 0;
+    if sc.playing {
+        if sc.at >= last {
+            sc.at = 0;
+        }
+        // the next look at the clock steps it
+        sc.next = 0.0;
+        tx.wake_after(std::time::Duration::from_millis(50));
+    }
+}
+
+/// The scrubber over a page: its track, what the frame showing is, and the ways out.
+fn scrub_bar(s: &App, sc: &Scrub, k: &Kit) -> El {
+    let c = &k.c;
+    let bar = row().key("scrub-bar").w_full().px(16.0).py(8.0).gap(12.0).center_y().fill(c.layer_01);
+    let done = Button::new("Done").control_size(ControlSize::Small).on_press(|s: &mut App| s.scrub = None).build(k).key("scrub-done");
+    let Some(film) = &sc.film else {
+        let (got, of) = s.scrub_load.lock().map(|l| (l.got, l.of)).unwrap_or_default();
+        let say = if of == 0 { "Reading the history".to_owned() } else { format!("Reading the history: {got} of {of} revisions") };
+        return bar.child(text(say).key("scrub-said").font(k.ty.small).color(c.text_base).grow(1.0)).child(done);
+    };
+    let n = film.frames.len();
+    let f = &film.frames[sc.at.min(n - 1)];
+    // a mark for each revision, those gone by in the accent, and the one showing larger
+    let mut marks = row().w_full().h_full().justify_between().center_y();
+    for i in 0..n {
+        let (size, fill) = if i == sc.at { (12.0, c.text_accent) } else if i < sc.at { (4.0, c.text_accent) } else { (4.0, c.text_faint) };
+        marks = marks.child(el().w(12.0).h(12.0).center().child(el().w(size).h(size).radius(size / 2.0).fill(fill).transition(rune::Transition::default())));
+    }
+    let track = el()
+        .key("scrub-track")
+        .role("slider")
+        .label(format!("History: revision {} of {n}", sc.at + 1))
+        .grow(1.0)
+        .min_w(80.0)
+        .h(28.0)
+        .child(el().pin(Some(13.0), Some(6.0), None, Some(6.0)).h(2.0).radius(1.0).fill(c.border_muted))
+        .child(marks)
+        .on_drag(move |s: &mut App, d, _| {
+            // the marks stand from six points in to six points short of the end
+            scrub_to(s, scrub::frame_at(d.x - 6.0, d.w - 12.0, n));
+        });
+    let play = Button::new(if sc.playing { "Pause" } else { "Play" }).control_size(ControlSize::Small).on_press_tx(scrub_play).build(k).key("scrub-play");
+    let rev = f.rev;
+    let open = Button::new("Open this revision").control_size(ControlSize::Small).help("Read this revision by itself, to restore it").on_press(move |s: &mut App| {
+        s.scrub = None;
+        view_rev(s, rev);
+    }).build(k).key("scrub-open");
+    let said = format!("{} \u{b7} rev {} \u{b7} {} of {n} \u{b7} {}", f.when, f.rev, sc.at + 1, film.said(sc.at));
+    col()
+        .key("scrub-bar")
+        .w_full()
+        .px(16.0)
+        .py(8.0)
+        .gap(4.0)
+        .fill(c.layer_01)
+        .child(row().w_full().gap(12.0).center_y().child(play).child(track).child(open).child(done))
+        .child(text(said).key("scrub-said").font(k.ty.small).color(c.text_muted))
+}
+
+/// The page as it was at the frame showing. Each block has the name
+/// the film gave it, so Rune moves the blocks that stayed, brings in
+/// the ones written and lets go of the ones cut. What the revision
+/// wrote or changed is marked.
+fn scrub_page(s: &App, sc: &Scrub, k: &Kit) -> El {
+    let Some(f) = sc.film.as_ref().and_then(|film| film.frames.get(sc.at)) else {
+        return col().w_full().h_full();
+    };
+    let pics = s.pics.clone();
+    let mark = rune_kit::Highlight::new().bg(k.c.text_accent.alpha(0.16));
+    let marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = f.changed.iter().map(|r| (vec![r.clone()], mark.clone())).collect();
+    let page = Markdown::new(f.src.clone()).block_keys(f.keys.clone()).highlights(marks).images(move |src| pics.get(src).cloned()).style(page_style(k)).build(k);
+    col().key("scrub-page").w_full().h_full().min_h(0.0).items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(12.0).child(page)).scroll(ScrollSpec { stick_bottom: false })
+}
+
 fn history_view(s: &App, k: &Kit) -> El {
     let c = &k.c;
     let mut list = col().key("revs").w_full().gap(2.0);
@@ -12370,7 +12588,9 @@ fn history_view(s: &App, k: &Kit) -> El {
     match s.revs.as_ref().filter(|(n, _)| Some(n.as_str()) == name) {
         Some((_, revs)) => {
             let newest = if s.memory { revs.iter().map(|r| r.rev).max().unwrap_or(0) } else { s.open.as_ref().map_or(0, |p| p.rev) };
-            let shown = s.old.as_ref().map_or(newest, |o| o.rev);
+            // the revision a scrubber shows is the one marked, and a press here moves it
+            let scrubbed = s.scrub.as_ref().and_then(|sc| sc.film.as_ref()?.frames.get(sc.at)).map(|f| f.rev);
+            let shown = scrubbed.unwrap_or(s.old.as_ref().map_or(newest, |o| o.rev));
             for r in revs {
                 let rev = r.rev;
                 let mut line = row()
@@ -12381,7 +12601,10 @@ fn history_view(s: &App, k: &Kit) -> El {
                     .gap(8.0)
                     .center_y()
                     .radius(k.radius.sm)
-                    .on_press(move |s: &mut App| view_rev(s, rev))
+                    .on_press(move |s: &mut App| match s.scrub.as_ref().and_then(|sc| sc.film.as_ref()?.frames.iter().position(|f| f.rev == rev)) {
+                        Some(at) => scrub_to(s, at),
+                        None => view_rev(s, rev),
+                    })
                     .child(text(r.when()).font(k.ty.small).color(c.text_base).grow(1.0))
                     .child(text(format!("rev {rev}")).font(k.ty.small).color(c.text_faint));
                 if rev == shown {
@@ -12399,7 +12622,11 @@ fn history_view(s: &App, k: &Kit) -> El {
         .min_h(0.0)
         .padding(12.0)
         .gap(8.0)
-        .child(text("History").font(k.ty.ui_medium).color(c.text_base))
+        .child(
+            row().w_full().center_y().child(text("History").font(k.ty.ui_medium).color(c.text_base).grow(1.0)).children(
+                can_scrub(s).then(|| Button::new("Scrub through").control_size(ControlSize::Small).help("Drag through every revision of this page").on_press(start_scrub).build(k).key("scrub")),
+            ),
+        )
         .child(col().w_full().grow(1.0).min_h(0.0).child(list).scroll(ScrollSpec { stick_bottom: false }))
 }
 
@@ -12418,6 +12645,10 @@ fn banner(key: &str, say: String, verb: &str, act: fn(&mut App), k: &Kit) -> El 
 }
 
 fn body(s: &App, k: &Kit) -> El {
+    // a history being dragged through stands in the page's place
+    if let Some(sc) = s.scrub.as_ref().filter(|sc| !s.editing && s.open.as_ref().is_some_and(|p| p.name == sc.name)) {
+        return col().w_full().h_full().min_h(0.0).child(scrub_bar(s, sc, k)).child(col().w_full().grow(1.0).min_h(0.0).child(scrub_page(s, sc, k)));
+    }
     let inner = page_body(s, k);
     let top = if let Some(o) = s.old.as_ref().filter(|_| !s.editing) {
         // an old revision can be read, restored, or left
@@ -13864,6 +14095,16 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if ev.mods.alt && matches!(ev.key, Key::Left | Key::Right) {
         step(s, if ev.key == Key::Left { -1 } else { 1 });
+        return true;
+    }
+    // a history being dragged through: the arrows step it, and Escape leaves it
+    if let Some(at) = s.scrub.as_ref().filter(|sc| sc.film.is_some() && s.palette.is_none() && s.jump.is_none() && s.prompt.is_none()).map(|sc| sc.at) {
+        match ev.key {
+            Key::Left => scrub_to(s, at.saturating_sub(1)),
+            Key::Right => scrub_to(s, at + 1),
+            Key::Escape => s.scrub = None,
+            _ => return false,
+        }
         return true;
     }
     if ev.is_command('n') && !s.editing {

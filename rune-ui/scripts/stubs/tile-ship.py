@@ -68,6 +68,12 @@ class H(BaseHTTPRequestHandler):
             # a link is in the tree with no text, as the ship sends one
             nodes += [{"path":n,"page":True,"kind":"md","rev":l["rev"],"readonly":l["mode"]=="read","link":{"host":l["host"],"path":l["path"],"mode":l["mode"],"kind":"md"}} for n, l in LINKS.items()]
             return self.send(200, json.dumps({"nodes":nodes,"since":"s1"}))
+        if p == 'page-history' and HISTORY:
+            return self.send(200, json.dumps({"revisions": [{"rev": i + 1, "updated": "~2026.11.%d..10.%d.00..0000" % (1 + i // 3, 10 + i)} for i in reversed(range(len(HISTORY)))]}))
+        if p == 'page-source-at' and HISTORY:
+            n = int(q.get('rev', ['0'])[0])
+            if not 1 <= n <= len(HISTORY): return self.send(404, 'not found', 'text/plain')
+            return self.send(200, json.dumps({"body": HISTORY[n - 1], "kind": "md", "rev": n, "mtime": "~2026.11.17"}))
         if p == 'page-source':
             l = LINKS.get(q.get('name', [''])[0])
             if l: return self.send(200, json.dumps({"body":l["body"],"kind":"md","rev":l["rev"],"mtime":"~2026.11.17"}))
@@ -159,6 +165,12 @@ NOTICES = [
     {"id":"0v1.n","kind":"remote","when":1795000000000,"who":"~bus","host":"~sampel-palnet","where":"tech","post":7,"title":"Rune","body":"I think so too.","read":False},
     {"id":"0v2.n","kind":"reply","when":1794990000000,"who":"~bus","host":"~zod","where":"chat","post":3,"title":"Hello","body":"Welcome.","read":False},
     {"id":"0v3.n","kind":"folder","when":1794980000000,"who":"~sampel-palnet","host":"~sampel-palnet","where":"/notes","post":0,"title":"2 new pages in notes from ~sampel-palnet","body":"","read":False}]
+# LR_HISTORY names a folder of files, one for each revision of the page in the order of their names: the page's history, the last being the page as it is
+HISTORY = []
+if os.environ.get('LR_HISTORY'):
+    _d = os.environ['LR_HISTORY']
+    HISTORY = [open(os.path.join(_d, f)).read() for f in sorted(os.listdir(_d))]
+    PAGES[os.environ.get('LR_NAME', 'places')] = [HISTORY[-1], 'md', len(HISTORY)]
 COMMENTS = [{"page": os.environ.get('LR_NAME', 'places'), "id": "0v1.a", "author": "~sampel-palnet", "when": "~2026.11.17..9.30.0", "body": "A first comment."}]
 COMMENTS_ON = {}
 PENDING = [{"id": "0v9.held", "author": "~doznec-salfun-naptul-habrys--todlux-mosmep-linsub-binzod", "when": 1795000000000, "body": "A comet's comment, held."}]
