@@ -15275,6 +15275,11 @@
       ;<  ~  bind:m
         (presence-send root ~(tap in ~(key by subs)) (pairs:enjs:format ~[['ping' b+&]]))
       ;<  ~  bind:m  (set-timer:io /tick (add now ~s30))
+      ::  a page still waiting to be sent has its wake set again: one that
+      ::  was lost would otherwise hold every later table of that page
+      ;<  ~  bind:m
+        ?:  =(~ dirty)  (pure:m ~)
+        (set-timer:io /cast (add now ~s1))
       $(tick (add now ~s30))
     ?.  ?=([%cast *] wak)  $
     ::  the pages whose second is up are sent, and the wake is set again
