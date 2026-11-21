@@ -283,19 +283,23 @@
   =/  app=path  (weld app-base:lu /page/temp/notes/code)
   ;:  weld
     ::  nothing sent and no answer, under any layout
-    (expect-eq !>(&) !>((save-moved:lu 504 | old)))
-    (expect-eq !>(&) !>((save-moved:lu 504 | new)))
-    (expect-eq !>(&) !>((save-moved:lu 504 | app)))
+    (expect-eq !>(&) !>((save-moved:lu 504 | ~s1 ~s10 old)))
+    (expect-eq !>(&) !>((save-moved:lu 504 | ~s1 ~s10 new)))
+    (expect-eq !>(&) !>((save-moved:lu 504 | ~s1 ~s10 app)))
     ::  sent and not acked: it may still land where it went
-    (expect-eq !>(|) !>((save-moved:lu 504 & old)))
+    (expect-eq !>(|) !>((save-moved:lu 504 & ~s1 ~s10 old)))
     ::  any answer from the host is final
-    (expect-eq !>(|) !>((save-moved:lu 409 | old)))
-    (expect-eq !>(|) !>((save-moved:lu 502 | old)))
-    (expect-eq !>(|) !>((save-moved:lu 403 | old)))
-    (expect-eq !>(|) !>((save-moved:lu 404 | old)))
-    (expect-eq !>(|) !>((save-moved:lu 202 | old)))
-    (expect-eq !>(|) !>((save-moved:lu 415 | old)))
+    (expect-eq !>(|) !>((save-moved:lu 409 | ~s1 ~s10 old)))
+    (expect-eq !>(|) !>((save-moved:lu 502 | ~s1 ~s10 old)))
+    (expect-eq !>(|) !>((save-moved:lu 403 | ~s1 ~s10 old)))
+    (expect-eq !>(|) !>((save-moved:lu 404 | ~s1 ~s10 old)))
+    (expect-eq !>(|) !>((save-moved:lu 202 | ~s1 ~s10 old)))
+    (expect-eq !>(|) !>((save-moved:lu 415 | ~s1 ~s10 old)))
     ::  not lattice's: nowhere else to try
-    (expect-eq !>(|) !>((save-moved:lu 504 | /apps/other/thing)))
+    (expect-eq !>(|) !>((save-moved:lu 504 | ~s1 ~s10 /apps/other/thing)))
+    ::  the read ran its whole deadline: the peer is offline, and one
+    ::  timeout is all it costs
+    (expect-eq !>(|) !>((save-moved:lu 504 | ~s10 ~s10 old)))
+    (expect-eq !>(|) !>((save-moved:lu 504 | ~s11 ~s10 new)))
   ==
 --

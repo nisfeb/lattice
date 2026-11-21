@@ -76,8 +76,8 @@
     pageCache.delete(newName);
     pageRevs.delete(oldName);
     pageRevs.delete(newName);
-    if (j && j.rev) knowRev(newName, j.rev);
-    if (j && j.rev && mode !== 'know' && !grubPath && current === newName) curRev = j.rev;
+    if (j && isRev(j.rev)) knowRev(newName, j.rev);
+    if (j && isRev(j.rev) && mode !== 'know' && !grubPath && current === newName) curRev = j.rev;
     snapTree();
     renderTree();
     //  the response, not a bare true: the caller's message must say when the

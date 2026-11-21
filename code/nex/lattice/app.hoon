@@ -210,6 +210,10 @@
             ::  moves.json: where moved pages went (+record-move). Declared,
             ::  so it outlives a reload.
             [%fall %& [/ %'moves.json'] [[/ %json] `json`[%o ~]]]
+            ::  hist-floors: where each grub's own history starts in its
+            ::  path's (+note-floor). Dropped, a page or memory made at a
+            ::  name used before would show the earlier one's versions.
+            [%fall %& [/ %'hist-floors'] [[/ %noun] ~]]
             ::  groups.json: the /public roads +send-public-how names for the
             ::  shell. %stay: a load that dropped it would close /public
             ::  until the writer next starts.
@@ -1131,7 +1135,8 @@
   ::  bookkeeping. The write itself is unchanged either way: one %make-many
   ::  transaction.
   =/  report=?  =('1' (~(gut by args) 'report' '0'))
-  =/  pr=(each (list [nam=@t typ=@t bod=@t bas=@ud]) tang)
+  ::  base null claims nothing; any number, 0 included, is a claim
+  =/  pr=(each (list [nam=@t typ=@t bod=@t bas=(unit @ud)]) tang)
     %-  mule  |.
     %.  u.jon
     %-  ar:dejs:format
@@ -1140,10 +1145,10 @@
       :~  name+so:dejs:format
           type+so:dejs:format
           body+so:dejs:format
-          base+ni:dejs:format
+          base+(mu:dejs:format ni:dejs:format)
       ==
     |=  j=json
-    ^-  [@t @t @t @ud]
+    ^-  [@t @t @t (unit @ud)]
     =/  [nam=@t typ=@t bod=@t]
       %.  j
       %-  ot:dejs:format
@@ -1151,11 +1156,11 @@
           type+so:dejs:format
           body+so:dejs:format
       ==
-    [nam typ bod 0]
+    [nam typ bod ~]
   ?:  ?=(%| -.pr)
     %+  send-err  eyre-id
     [400 ?:(report 'expected [{name, type, body, base}]' 'expected [{name, type, body}]')]
-  =/  items=(list [nam=@t typ=@t bod=@t bas=@ud])  p.pr
+  =/  items=(list [nam=@t typ=@t bod=@t bas=(unit @ud)])  p.pr
   ?:  =(0 (lent items))  (send-err eyre-id 400 'empty batch')
   ::  bounded: one transaction the writer cannot be talked into running
   ::  forever. The client chunks above this.
@@ -1187,7 +1192,7 @@
   ;<  onto-fodt=(unit rich)  bind:m
     =/  n  (fiber:fiber:nexus ,(unit rich))
     ?~  key  (pure:n ~)
-    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=(unit @ud)])  items
     |-  ^-  form:n
     ?~  todo  (pure:n ~)
     ;<  wf=(unit rich)  bind:n  (fodt-at (pax-of nam.i.todo))
@@ -1204,7 +1209,7 @@
     =/  tnt=?  (tainted:ky u.key rnow)
     ::  a cleared, untainted key needs no per-item grub walk
     ?:  &(clr !tnt)  (pure:n [~ ~])
-    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=(unit @ud)])  items
     =|  mark=(list path)
     |-  ^-  form:n
     ?~  todo  (pure:n [~ (flop mark)])
@@ -1231,7 +1236,7 @@
   ::  land as a %code grub at the link's path.
   ;<  onto=(unit @t)  bind:m
     =/  n  (fiber:fiber:nexus ,(unit @t))
-    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=(unit @ud)])  items
     |-  ^-  form:n
     ?~  todo  (pure:n ~)
     ;<  lk=(unit [l=link:ll at=@da])  bind:n  (link-at (pax-of nam.i.todo))
@@ -1245,7 +1250,7 @@
   ::  upload only waits out a move under way.
   ;<  mg=(unit @t)  bind:m
     =/  n  (fiber:fiber:nexus ,(unit @t))
-    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=(unit @ud)])  items
     |-  ^-  form:n
     ?~  todo  (pure:n ~)
     =/  pax=path  (pax-of nam.i.todo)
@@ -1268,7 +1273,7 @@
     $(todo t.todo)
   =/  pages=(list [pax=path src=@t])
     %+  turn  items
-    |=  [nam=@t typ=@t bod=@t bas=@ud]
+    |=  [nam=@t typ=@t bod=@t bas=(unit @ud)]
     =/  ptype=@tas  `@tas`typ
     :-  (pax-of nam)
     ?:  =(%index ptype)  (make-folder-index (pax-of nam))
@@ -1282,13 +1287,12 @@
   ;<  codes=(list [rev=@ud src=(unit @t)])  bind:m
     =/  n  (fiber:fiber:nexus ,(list [rev=@ud src=(unit @t)]))
     ?.  report  (pure:n ~)
-    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=(unit @ud)])  items
     =|  acc=(list [rev=@ud src=(unit @t)])
     |-  ^-  form:n
     ?~  todo  (pure:n (flop acc))
     ;<  r=[rev=@ud src=(unit @t)]  bind:n  (page-head (pax-of nam.i.todo))
     $(todo t.todo, acc [r acc])
-  =/  prevs=(list @ud)  (turn codes |=([rev=@ud *] rev))
   ::  conflicted items get their losing body preserved FIRST, in the same
   ::  %make-many transaction. See +conflict-name for why history is not
   ::  enough. Peeks happen here (fiber), the writes land atomically below.
@@ -1299,7 +1303,7 @@
   ;<  kd=[keeps=(list [pax=path src=@t pw=?]) dups=(list ?)]  bind:m
     =/  n  (fiber:fiber:nexus ,[keeps=(list [pax=path src=@t pw=?]) dups=(list ?)])
     ?.  report  (pure:n [~ ~])
-    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=(unit @ud)])  items
     =/  ps=(list [rev=@ud src=(unit @t)])  codes
     =/  pg=(list [pax=path src=@t])  pages
     =|  keeps=(list [pax=path src=@t pw=?])
@@ -1311,9 +1315,9 @@
     =/  more  ?~(ps ~ t.ps)
     =/  wsrc=@t  ?~(pg '' src.i.pg)
     =/  pgm  ?~(pg ~ t.pg)
-    ::  base 0 = NO base claim (a save rebased by an offline move cannot
+    ::  no base = no claim (a save rebased by an offline move cannot
     ::  know the destination's rev): apply without a conflict check.
-    ?.  &(!=(0 bas.i.todo) !=(bas.i.todo pv))
+    ?.  &(?=(^ bas.i.todo) !=(u.bas.i.todo pv))
       $(todo t.todo, ps more, pg pgm, dups [| dups])
     ::  missing page or identical body: stale base, but nothing to preserve
     ::  and nothing to disagree with. Not a conflict
@@ -1347,17 +1351,19 @@
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['ok' b+&] ['saved' (numb:enjs:format (lent items))]])
   ::  new rev per item = prev+1, computed for the same reason page-save
-  ::  computes it. A same-fiber peek cannot observe the write it follows
+  ::  computes it. A same-fiber peek cannot observe the write it follows.
+  ::  A page that was missing has no prev to count from (its first rev is
+  ::  0, or above its old ones), so its rev is null, as page-save answers
   =/  out=(list json)
     =/  todo  items
-    =/  ps  prevs
+    =/  ps  codes
     =/  ds  dups.kd
     =|  acc=(list json)
     |-  ^-  (list json)
     ?~  todo  (flop acc)
-    =/  pv=@ud  ?~(ps 0 i.ps)
-    =/  nw=@ud  +(pv)
-    =/  cf=?  &(!=(0 bas.i.todo) !=(bas.i.todo pv) ?~(ds & !i.ds))
+    =/  pv=@ud  ?~(ps 0 rev.i.ps)
+    =/  nw=json  ?~(ps ~ ?~(src.i.ps ~ (numb:enjs:format +(pv))))
+    =/  cf=?  &(?=(^ bas.i.todo) !=(u.bas.i.todo pv) ?~(ds & !i.ds))
     %=  $
       todo  t.todo
       ps    ?~(ps ~ t.ps)
@@ -1366,7 +1372,7 @@
     :_  acc
     %-  pairs:enjs:format
     :~  ['name' s+nam.i.todo]
-        ['rev' (numb:enjs:format nw)]
+        ['rev' nw]
         ['prev-rev' (numb:enjs:format pv)]
         ['conflicted' b+cf]
         ['kept' s+?.(cf '' (conflict-name nam.i.todo pv))]
@@ -1468,7 +1474,9 @@
     (link-above (pax-of u.name))
   ?^  la  (send-err eyre-id 409 (link-above-msg u.la))
   =/  prev=@ud  rev.pc
-  =/  stale=?  &(?=(^ base) !=(u.base 0) !=(u.base prev))
+  ::  any base is a claim, 0 included: a page's first version is rev 0.
+  ::  A save that claims nothing sends no ?base= at all.
+  =/  stale=?  &(?=(^ base) !=(u.base prev))
   =/  old=(unit @t)  ?.(stale ~ src.pc)
   ::  identical content cannot conflict. The client's 10s deadline can fire
   ::  on a request the pier nevertheless applies (abort stops the WAIT, not
@@ -1499,10 +1507,10 @@
     ;<  ~  bind:n  ?.(ps (pure:n ~) (poke-eval [%page-sensitive (pax-of kept) &]))
     (poke-eval ?:(pw [%make-marked (pax-of kept) u.old] [%make (pax-of kept) u.old]))
   ;<  ~  bind:m
-    ::  base 0: the writer does not check again. A refusal there could not
-    ::  be told from a write still on its way, and a save
+    ::  no base: the writer does not check again. A refusal there could
+    ::  not be told from a write still on its way, and a save
     ::  answered ok but not written is the one outcome never allowed.
-    (poke-eval [%make-by (pax-of u.name) src wid 0])
+    (poke-eval [%make-by (pax-of u.name) src wid ~])
   ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
   ::  client only when the typed name was not a valid path and the path is
   ::  its slug. Absent on every ordinary save, so autosave never touches them.
@@ -1515,19 +1523,24 @@
   ::  the answer as before. One read, no waiting: the write shows only
   ::  once the writer's event ends, and polling for it cost every save
   ::  about two seconds under load. A page that was missing has no prev
-  ::  to count from: a new page's first rev can be 0 or 1, and a page
-  ::  made again after a delete goes on from its old revisions. Its rev
-  ::  unseen is answered 0, which claims nothing (a save's base 0 is no
-  ::  claim), so the editor's next save is not refused as stale.
+  ::  to count from: a new page's first rev is 0, and a page made again
+  ::  after a delete goes on from its old revisions. So a create waits a
+  ::  little for its write to show (+page-head-landed), at most 2 s, and
+  ::  only a create: an overwrite answers from prev at once. A rev still
+  ::  unseen is answered null, and the editor's next save then claims no
+  ::  base, so it is not refused as stale. 0 would be a claim of rev 0.
   ;<  ph=[rev=@ud src=(unit @t)]  bind:m
     ?:  =(src.pc `src)  (pure:(fiber:fiber:nexus ,[rev=@ud src=(unit @t)]) pc)
-    (page-head (pax-of u.name))
+    ?^  src.pc  (page-head (pax-of u.name))
+    (page-head-landed (pax-of u.name) src 10)
   =/  mine=?  =(src.ph `src)
   ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
   %+  send-json  eyre-id
   %-  pairs:enjs:format
   :~  ['ok' b+&]
-      ['rev' (numb:enjs:format ?:(mine rev.ph ?~(src.pc 0 +(prev))))]
+      :-  'rev'
+      ?:  mine  (numb:enjs:format rev.ph)
+      ?~(src.pc ~ (numb:enjs:format +(prev)))
       ['prev-rev' (numb:enjs:format prev)]
       ['conflicted' b+conflicted]
       ['kept' s+kept]
@@ -1547,8 +1560,8 @@
   ?.(ok 'owner' (cat 3 'win-' w))
 ++  key-wid  |=(k=key-row:ky ^-(@t (cat 3 'key-' id.k)))
 ::  +link-save-respond: POST /page-save onto a link (+link-write), with
-::  page-save's answer. ?base= is the owner's rev the writer read (absent
-::  or 0: the cached rev, +link-write), and a write against a page that
+::  page-save's answer. ?base= is the owner's rev the writer read (absent:
+::  the cached rev, +link-write), and a write against a page that
 ::  moved past it is a 409: the owner's newer text is never overwritten,
 ::  and there is no local copy to keep it in.
 ::
@@ -1942,11 +1955,12 @@
   ::  backstop, as /remote-save refuses its own ship.
   ;<  our=@p  bind:m  bowl-our
   ?:  =(our host.l)  (pure:m |+[400 'that is you: a link names another ship'])
-  ::  no base (or 0) claims the cached rev, the owner's text this ship
-  ::  last read, as the lick port does. A link has no local copy to keep
-  ::  an overwritten page in, so a write never goes unchecked: a writer
-  ::  that skipped the read gets a 409 once the owner has moved on.
-  =?  base  |(?=(~ base) =(`0 base))  `rev.l
+  ::  no base claims the cached rev, the owner's text this ship last
+  ::  read, as the lick port does. A base of 0 is a claim of rev 0. A
+  ::  link has no local copy to keep an overwritten page in, so a write
+  ::  never goes unchecked: a writer that skipped the read gets a 409
+  ::  once the owner has moved on.
+  =?  base  ?=(~ base)  `rev.l
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
     (remote-write host.l pax.l body base wait)
   ::  sent but unconfirmed (acked and the check did not answer, or the ack
@@ -2105,10 +2119,15 @@
     (send-err eyre-id 403 'outside this key\'s scope')
   ::  ?base= is the rev the editor read; a host page past it is a 409
   =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
+  ;<  t0=@da  bind:m  bowl-now
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
     (remote-write u.shp p.pp (req-body req) base ~s10)
+  ;<  t1=@da  bind:m  bowl-now
+  ::  a read that ran out its deadline found the host offline: one
+  ::  timeout is the whole cost, with no probe of each layout after it
+  =/  took=@dr  ?:((gth t1 t0) (sub t1 t0) ~s0)
   ?.  ?&  ?=(%| -.r)
-          (save-moved:lu code.p.r =((unacked-msg u.shp) msg.p.r) p.pp)
+          (save-moved:lu code.p.r =((unacked-msg u.shp) msg.p.r) took ~s10 p.pp)
       ==
     (remote-save-respond eyre-id r)
   ::  nothing reached the host. The editor may hold the host's path as a
@@ -3042,6 +3061,13 @@
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io (rf up pdir %code) [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    ::  only this page's own revisions: none once it is gone, and none an
+    ::  earlier page at the name left (+hist-floor)
+    ;<  lv=?  bind:m  (peek-exists:fio (rf up pdir %code))
+    ;<  fl=(unit @ud)  bind:m  (hist-floor (rf up pdir %code))
+    =/  own=(list [c=cass:clay s=sage:tarball])
+      ?.  lv  ~
+      (skim p.pe |=([c=cass:clay *] (in-life:lk fl ud.c)))
     ::  a revision a move carried is dated when it was saved (+rev-at:lk)
     ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m
       (born:fio (rf up pdir %code))
@@ -3049,7 +3075,7 @@
       ?:  ?=(%| -.bo)  ~
       (malt (turn p.bo |=([c=cass:clay tags=(set @t) *] [ud.c (rev-at:lk da.c tags)])))
     =/  revs=(list [ud=@ud da=@da])
-      %+  sort  (turn p.pe |=([c=cass:clay *] [ud.c (~(gut by at) ud.c da.c)]))
+      %+  sort  (turn own |=([c=cass:clay *] [ud.c (~(gut by at) ud.c da.c)]))
       |=([a=[ud=@ud da=@da] b=[ud=@ud da=@da]] (gth ud.a ud.b))
     %+  send-json  eyre-id
     %-  pairs:enjs:format
@@ -3078,7 +3104,10 @@
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io (rf up pdir %code) [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
-    ?.  (lien p.pe |=([c=cass:clay *] =(ud.c u.rv)))
+    ::  as page-history: this page's own revisions only
+    ;<  lv=?  bind:m  (peek-exists:fio (rf up pdir %code))
+    ;<  fl=(unit @ud)  bind:m  (hist-floor (rf up pdir %code))
+    ?.  &(lv (in-life:lk fl u.rv) (lien p.pe |=([c=cass:clay *] =(ud.c u.rv))))
       (send-err eyre-id 404 'no such revision')
     ;<  sn=view:nexus  bind:m  (peek-at:io (rf up pdir %code) ~ [%ud u.rv])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
@@ -4931,8 +4960,12 @@
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io road.u.hr [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    ::  only this memory's own revisions, never an earlier one's at the key
+    ;<  fl=(unit @ud)  bind:m  (hist-floor road.u.hr)
     =/  revs=(list [ud=@ud da=@da])
-      %+  sort  (turn p.pe |=([c=cass:clay *] [ud.c da.c]))
+      %+  sort
+        %+  murn  p.pe
+        |=([c=cass:clay *] ?.((in-life:lk fl ud.c) ~ `[ud.c da.c]))
       |=  [a=[ud=@ud da=@da] b=[ud=@ud da=@da]]
       (lth ud.a ud.b)
     %+  send-json  eyre-id
@@ -4962,7 +4995,8 @@
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io road.u.hr [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
-    ?.  (lien p.pe |=([c=cass:clay *] =(ud.c u.rev)))
+    ;<  fl=(unit @ud)  bind:m  (hist-floor road.u.hr)
+    ?.  &((in-life:lk fl u.rev) (lien p.pe |=([c=cass:clay *] =(ud.c u.rev))))
       (send-err eyre-id 404 'no such revision')
     ;<  sn=view:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
@@ -4989,7 +5023,8 @@
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io road.u.hr [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
-    ?.  (lien p.pe |=([c=cass:clay *] =(ud.c u.rev)))
+    ;<  fl=(unit @ud)  bind:m  (hist-floor road.u.hr)
+    ?.  &((in-life:lk fl u.rev) (lien p.pe |=([c=cass:clay *] =(ud.c u.rev))))
       (send-err eyre-id 404 'no such revision')
     ;<  sn=view:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
@@ -5024,8 +5059,12 @@
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io road [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 500 'peep failed')
+    ::  this memory's own revisions: an earlier one's at the key are not
+    ::  its to count or drop
+    ;<  fl=(unit @ud)  bind:m  (hist-floor road)
     =/  revs=(list cass:clay)
-      %+  sort  (turn p.pe |=([c=cass:clay *] c))
+      %+  sort
+        (murn p.pe |=([c=cass:clay *] ?.((in-life:lk fl ud.c) ~ `c)))
       |=([a=cass:clay b=cass:clay] (lth ud.a ud.b))
     =/  ntot=@ud  (lent revs)
     ?:  (lte ntot u.keep)
@@ -5607,8 +5646,11 @@
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io road.u.hr [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    ;<  fl=(unit @ud)  bind:m  (hist-floor road.u.hr)
     =/  revs=(list [ud=@ud da=@da])
-      %+  sort  (turn p.pe |=([c=cass:clay *] [ud.c da.c]))
+      %+  sort
+        %+  murn  p.pe
+        |=([c=cass:clay *] ?.((in-life:lk fl ud.c) ~ `[ud.c da.c]))
       |=  [a=[ud=@ud da=@da] b=[ud=@ud da=@da]]
       (lth ud.a ud.b)
     %+  send-json  eyre-id
@@ -5632,7 +5674,8 @@
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io road.u.hr [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
-    ?.  (lien p.pe |=([c=cass:clay *] =(ud.c u.rev)))
+    ;<  fl=(unit @ud)  bind:m  (hist-floor road.u.hr)
+    ?.  &((in-life:lk fl u.rev) (lien p.pe |=([c=cass:clay *] =(ud.c u.rev))))
       (send-err eyre-id 404 'no such revision')
     ;<  sn=view:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
@@ -7695,6 +7738,8 @@
     =/  r  (put-file:lsk old path.act body.act when.act)
     ?:  ?=(%| -.r)  (refuse "a skill save: {(trip p.r)}")
     ;<  ~  bind:m  ?^(old (pure:m ~) (ensure-dirs up /skills/vault /[`@ta`nm]))
+    ::  a new skill at a name used before reads only its own history
+    ;<  ~  bind:m  ?^(old (pure:m ~) (note-floor road))
     ;<  ~  bind:m  (put-file road [/lattice %skill] p.r)
     ;<  ~  bind:m  (gain:fio road %.y)
     (prune-hist road know-keep history-window)
@@ -8819,14 +8864,18 @@
     (grant-new root pax.act)
       %make-by
     ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head pax.act)
-    ?:  ?&(!=(0 base.act) !=(base.act rev.pc) !=(`src.act src.pc))
+    ?:  ?&(?=(^ base.act) !=(u.base.act rev.pc) !=(`src.act src.pc))
       %-  (say 1 ~[leaf+"lattice: a stale save of {(spud pax.act)} was not written"])
       (pure:m ~)
     ;<  old=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
     ;<  ~  bind:m  (write-page root pax.act src.act &)
     ;<  ~  bind:m
       ?:  =('' who.act)  (pure:m ~)
-      (note-writer up pax.act +(rev.pc) who.act)
+      ?^  src.pc  (note-writer up pax.act +(rev.pc) who.act)
+      ::  a new page has no rev to count from: its first is 0, or above
+      ::  the old ones at a name used before. Read the one it got.
+      ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head pax.act)
+      (note-writer up pax.act rev.ph who.act)
     ;<  pen=(unit [pub-pending:lp pub-trying:lp])  bind:m
       (pub-mark root now pax.act src.act)
     ;<  ~  bind:m  (yield-event root now pen pax.act /writer/yield)
@@ -10209,6 +10258,60 @@
   =?  new  (gth (lent ks) 64)
     (malt (turn (scag 64 ks) |=(k=@ud [k (~(got by new) k)])))
   (put-file (writers-road up pax) [/ %noun] new)
+::  +floor-key / +read-floors / +hist-floor / +note-floor: grubbery keeps
+::  one history per PATH, and a firm version outlives a delete (09653ae9:
+::  %lose never drops the top, a cull keeps firm history). So a page or
+::  memory made at a name used before would serve the old one's versions
+::  as its own. The floor of a path is the top rev an earlier grub left
+::  there, noted when a new grub starts at it (+note-floor), and only revs
+::  above it are read as the current grub's (+in-life:lk). Nothing is
+::  dropped: the old versions stay in the path's history, unread.
+++  floor-key
+  |=  road=road:tarball
+  ^-  (unit path)
+  ?.  ?=(%| -.road)  ~
+  ?.  ?=(%& -.q.p.road)  ~
+  `(snoc path.p.q.p.road name.p.q.p.road)
+++  read-floors
+  =/  m  (fiber:fiber:nexus ,(map path @ud))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up / %'hist-floors') ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  (pure:m (fall (mole |.(;;((map path @ud) (sang-noun:tarball sang.v)))) ~))
+++  hist-floor
+  |=  road=road:tarball
+  =/  m  (fiber:fiber:nexus ,(unit @ud))
+  ^-  form:m
+  =/  key=(unit path)  (floor-key road)
+  ?~  key  (pure:m ~)
+  ;<  fl=(map path @ud)  bind:m  read-floors
+  (pure:m (~(get by fl) u.key))
+::  +note-floor: no grub is at `road` now, and one is about to be made (or
+::  this one is going), so whatever history the path still holds is an
+::  earlier grub's. Its top becomes the floor. Writer only: one fiber
+::  writes the map.
+++  note-floor
+  |=  road=road:tarball
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  key=(unit path)  (floor-key road)
+  ?~  key  (pure:m ~)
+  ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:fio road)
+  ?:  ?=(%| -.bo)  (pure:m ~)
+  ?~  p.bo  (pure:m ~)
+  ::  cast before roll: roll on a lest mull-grows (+apply-bookmark)
+  =/  all=(list [=cass:clay tags=(set @t) tomb=?])  p.bo
+  (note-floor-at u.key (roll all |=([[c=cass:clay *] a=@ud] (max a ud.c))))
+++  note-floor-at
+  |=  [key=path top=@ud]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  fl=(map path @ud)  bind:m  read-floors
+  =/  nu=(map path @ud)  (floor-put:lk fl key top)
+  ?:  =(nu fl)  (pure:m ~)
+  (put-file (rf up / %'hist-floors') [/ %noun] nu)
 ::  +prune-hist-by: +prune-hist, with each revision's writer (`wr`, rev to
 ::  writer id) for the coalesce: one writer's run only
 ++  prune-hist-by
@@ -10217,6 +10320,20 @@
   ^-  form:m
   ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:fio road)
   ?:  ?=(%| -.bo)  (pure:m ~)
+  ::  keep=0 is a grub going, or one made where another was: what its
+  ::  path holds now is an earlier life's (+note-floor). The lose below
+  ::  leaves the top, which grubbery never drops, so the floor is what
+  ::  keeps it from the next grub at this name.
+  ;<  ~  bind:m
+    ?.  =(0 keep)  (pure:m ~)
+    =/  key=(unit path)  (floor-key road)
+    ?~  key  (pure:m ~)
+    ?~  p.bo  (pure:m ~)
+    =/  all=(list [=cass:clay tags=(set @t) tomb=?])  p.bo
+    (note-floor-at u.key (roll all |=([[c=cass:clay *] a=@ud] (max a ud.c))))
+  ::  only this grub's own revisions are pruned. An earlier one's left
+  ::  under the floor are not counted, and never dropped from here
+  ;<  fl=(unit @ud)  bind:m  ?:(=(0 keep) (pure:(fiber:fiber:nexus ,(unit @ud)) ~) (hist-floor road))
   ::  live revisions, NEWEST FIRST. Both passes below want that order, and one
   ::  +born read feeds both so a save costs no extra dart than it used to.
   =/  live=(list cass:clay)
@@ -10224,7 +10341,7 @@
       %+  murn  p.bo
       |=  [c=cass:clay tags=(set @t) tomb=?]
       ^-  (unit cass:clay)
-      ?:(tomb ~ `c)
+      ?:(|(tomb !(in-life:lk fl ud.c)) ~ `c)
     |=([a=cass:clay b=cass:clay] (gth ud.a ud.b))
   ::  each revision's time by +rev-at:lk: one a move carried keeps its own
   =/  at=(map @ud @da)
@@ -10264,9 +10381,9 @@
     ?~  victim  live
     (skip live |=(c=cass:clay =(ud.c ud.u.victim)))
   ?:  (lte (lent kept) keep)  (pure:m ~)
-  =/  cut=@ud  ud:(snag (dec keep) kept)
-  ?:  =(0 cut)  (pure:m ~)
-  (lose:fio road [%numb ~ `(dec cut)])
+  ::  by cass, not by number range: a range would sweep an earlier
+  ::  grub's revisions under the floor too
+  (lose:fio road [%pick (silt (slag keep kept))])
 ++  make-page
   |=  [root=@ud pax=path src=@t]
   =/  m  (fiber:fiber:nexus ,~)
@@ -10305,6 +10422,8 @@
     (pure:m ~)
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
+    ::  a page made at a name used before reads only its own history
+    ;<  ~  bind:m  (note-floor (rf up pdir %code))
     ;<  ~  bind:m  (ensure-dirs up /page pax)
     ;<  ~  bind:m  (put-file (rf up pdir %cmd) [/lattice %eval-cmd] `eval-cmd:le`[0 '' 0])
     ;<  ~  bind:m  (put-file (rf up pdir %deps) [/lattice %eval-deps] `(list path)`~)
@@ -10630,7 +10749,12 @@
   ?:  ?=(%| -.sb)  (pure:m ~)
   ;<  db=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:fio dst)
   ?:  ?=(%| -.db)  (pure:m ~)
-  =/  dlive  (skip p.db |=([* * tomb=?] tomb))
+  ::  each side's own revisions only (+hist-floor): what an earlier page
+  ::  at either name left is neither carried nor taken for a carry
+  ;<  sf=(unit @ud)  bind:m  (hist-floor src)
+  ;<  df=(unit @ud)  bind:m  (hist-floor dst)
+  =/  dlive
+    (skip p.db |=([c=cass:clay * tomb=?] |(tomb !(in-life:lk df ud.c))))
   ?:  (lien dlive |=([c=cass:clay t=(set @t) *] !=(da.c (rev-at:lk da.c t))))
     (pure:m ~)
   ?~  dlive  (pure:m ~)
@@ -10638,7 +10762,9 @@
   ::  move copied; the older ones are what the destination lacks.
   =/  slive=(list [c=cass:clay t=(set @t)])
     %+  sort
-      (murn p.sb |=([c=cass:clay t=(set @t) tomb=?] ?:(tomb ~ `[c t])))
+      %+  murn  p.sb
+      |=  [c=cass:clay t=(set @t) tomb=?]
+      ?:(|(tomb !(in-life:lk sf ud.c)) ~ `[c t])
     |=([a=[c=cass:clay *] b=[c=cass:clay *]] (lth ud.c.a ud.c.b))
   ?.  ?=([* * *] slive)  (pure:m ~)
   ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
@@ -11760,6 +11886,19 @@
   ;<  cv=view:nexus  bind:m  (peek:fio (rf up (weld /page rel) %code) ~)
   ?.  ?=([%file *] cv)  (pure:m [0 ~])
   (pure:m [ud.cass.cv (mole |.(;;(@t (sang-noun:tarball sang.cv))))])
+::  +page-head-landed: +page-head, read again every 200 ms up to `tries`
+::  times until the page holds `src`: a create's write shows only once
+::  the writer's event ends, and its rev cannot be counted from a prev
+::  (a page made again at a name used before goes on above the old ones).
+::  The last read is answered either way.
+++  page-head-landed
+  |=  [rel=path src=@t tries=@ud]
+  =/  m  (fiber:fiber:nexus ,[rev=@ud src=(unit @t)])
+  ^-  form:m
+  ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head rel)
+  ?:  |(=(src.ph `src) =(0 tries))  (pure:m ph)
+  ;<  ~  bind:m  (sleep:io (div ~s1 5))
+  (page-head-landed rel src (dec tries))
 ::  +fodt-at: is the page at rel a Writer (fodt) page, a spreadsheet
 ::  (fods) or a map (geojson), and which? A key may not save the first
 ::  two (+page-type-ok:ky), so any keyed save onto one would change its
@@ -14055,9 +14194,10 @@
 ::  the ban is written, so a write before that read is caught by the
 ::  strip, and one after it by the read here.
 ++  ug-put
-  |=  [gdir=path who=(set @p) =weir:nexus]
+  |=  [gdir=path who=(set @p) weir=weir:nexus]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
+  ;<  =weir:nexus  bind:m  (mend-weir weir)
   ;<  b0=banned:ls  bind:m  read-banned
   =/  ok-who=(set @p)  (ban-drop:ls b0 who)
   ;<  ok=?  bind:m  (ug-over [%& %& gdir %'who.ships'] [[/ %ships] ok-who])
@@ -14068,6 +14208,42 @@
   =/  late=(set @p)  (ban-drop:ls b1 ok-who)
   ?:  =(late ok-who)  (pure:m &)
   (ug-over [%& %& gdir %'who.ships'] [[/ %ships] late])
+::  +mend-weir: a group's weir as it can reach things. A dir road on our
+::  tree whose path is a FILE reaches nothing (a dir road covers what is
+::  under a dir, and a file has nothing under it), so it becomes the file
+::  road it meant. Every group write passes here (+ug-put), so no client
+::  shape can store a grant that grants nothing: the Rune client named a
+::  page as <page>/code, and that was such a road. Roads off our tree,
+::  and roads to nothing yet (a page about to be made), are kept.
+++  mend-weir
+  |=  w=weir:nexus
+  =/  m  (fiber:fiber:nexus ,weir:nexus)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  ;<  mk=(set road:tarball)  bind:m  (mend-roads sb make.w)
+  ;<  pk=(set road:tarball)  bind:m  (mend-roads sb peek.w)
+  (pure:m [mk poke.w pk])
+++  mend-roads
+  |=  [sb=path rs=(set road:tarball)]
+  =/  m  (fiber:fiber:nexus ,(set road:tarball))
+  ^-  form:m
+  =/  l=(list road:tarball)  ~(tap in rs)
+  =|  out=(set road:tarball)
+  |-  ^-  form:m
+  ?~  l  (pure:m out)
+  =/  r=road:tarball  i.l
+  ::  the dir path of a dir road on our tree, below its root
+  =/  dp=path
+    ?.  ?=([%& %| *] r)  ~
+    ?.  &((gth (lent p.p.r) (lent sb)) =(sb (scag (lent sb) p.p.r)))  ~
+    p.p.r
+  ?~  dp  $(l t.l, out (~(put in out) r))
+  =/  fr=road:tarball  [%& %& (snip `path`dp) (rear dp)]
+  ;<  isd=?  bind:m  (peek-exists:fio r)
+  ;<  isf=?  bind:m  ?:(isd (pure:(fiber:fiber:nexus ,?) |) (peek-exists:fio fr))
+  ?.  isf  $(l t.l, out (~(put in out) r))
+  %-  (say 2 ~[leaf+"lattice: a grant on {(spud dp)} named a file as a folder; granted as the file"])
+  $(l t.l, out (~(put in out) fr))
 ::  +move-grants: grants follow a page. A group road names a path, so a
 ::  move would leave the ship it was shared with holding the old one, and
 ::  a delete would hand that ship whatever page is made there next. Every
