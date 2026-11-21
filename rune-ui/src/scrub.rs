@@ -32,8 +32,8 @@ pub struct Film {
 
 /// Where each top-level block of a Markdown text lies, from the start
 /// of its first line to its end. The blocks are in order and no two
-/// share a byte: one that the parser starts on the line another ends
-/// on, or inside it, starts where that one ends.
+/// share a byte. Each starts at the start of its line, indent and all,
+/// unless the block before it starts on that same line.
 ///
 /// Text that draws nothing is a block too: a link's definition
 /// (`[ref]: http://x`) is no block of Markdown's, but changing it sends
@@ -53,8 +53,17 @@ pub fn blocks(src: &str) -> Vec<std::ops::Range<usize>> {
         }
     };
     let push = |out: &mut Vec<std::ops::Range<usize>>, at: std::ops::Range<usize>| {
+        // A block starts where its line does, so that a block and what follows it, put end to end,
+        // are the page's own bytes: the indent of a paragraph under a list is the paragraph's. The
+        // parser may end the block before on this same line, in that indent: that block then ends
+        // where this line starts. Only a block that starts on the line the one before it started on
+        // begins where that one ends
+        let from = line_start(at.start).min(src.len());
+        if let Some(last) = out.last_mut().filter(|last| last.start < from && last.end > from) {
+            last.end = from;
+        }
         let end = out.last().map_or(0, |r| r.end);
-        let start = line_start(at.start).max(end).min(src.len());
+        let start = from.max(end);
         between(out, end, start);
         if at.end > start {
             out.push(start..at.end.min(src.len()));
@@ -610,6 +619,38 @@ mod tests {
             let f = &film.frames[1];
             assert_eq!((f.touched, f.changed.len()), (1, 800));
             assert!(f.changed.iter().all(|r| f.src[r.clone()].contains("new")));
+        }
+    }
+
+    #[test]
+    fn a_block_starts_where_its_line_does_indent_and_all() {
+        // a paragraph under a list, set in: its two spaces are its own, not the list's and not nobody's
+        let src = "1. a\n\n  para\n";
+        let got = blocks(src);
+        assert_eq!(got.iter().map(|r| &src[r.clone()]).collect::<Vec<_>>(), ["1. a\n\n", "  para\n"]);
+        // made of lines of every kind, set in and not: every block starts at the start of a line, or where the
+        // block before it ends on the line they share, and the blocks with what lies between them are the page
+        let lines = ["1. a", "- b", "  para", "   more", "> q", "", "", "# h", "    code", "| a |", "|---|", "---", "text", " text", "\ttab", "[r]: http://x", "```", "<div>", "* * *", "  - deep", "é"];
+        let mut seed = 21u64;
+        let mut below = |n: usize| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as usize % n
+        };
+        for round in 0..400 {
+            let src: String = (0..1 + below(9)).map(|_| format!("{}{}", lines[below(lines.len())], ["\n", "\n", "\n\n", "\r\n", ""][below(5)])).collect();
+            let got = blocks(&src);
+            let (mut at, mut whole) = (0, String::new());
+            for (n, r) in got.iter().enumerate() {
+                assert!(r.start >= at && r.end > r.start && r.end <= src.len(), "{round}: {src:?} gave {got:?}");
+                let line = src[..r.start].rfind('\n').map_or(0, |i| i + 1);
+                let shares = n > 0 && got[n - 1].end == r.start && got[n - 1].start >= line;
+                assert!(r.start == line || shares, "{round}: {src:?} gave {got:?}: a block starts inside its line");
+                assert!(src[at..r.start].trim().is_empty(), "{round}: {src:?} gave {got:?}");
+                whole.push_str(&src[at..r.end]);
+                at = r.end;
+            }
+            whole.push_str(&src[at..]);
+            assert_eq!(whole, src);
         }
     }
 }
