@@ -156,11 +156,33 @@ const drawer = async (p, side) => {
     await p.tap(side === 'l' ? '#treet' : '#ctlt');
   await still();
 };
-//  a tap on a row of the drawer's tree, scrolled into view first
+//  a tap on a row of the drawer's tree, once it is in reach. The tree
+//  is drawn again as a link's state changes (B going down or coming back
+//  redraws its row), and the drawer slides, so a handle taken at once can
+//  be a row just replaced or one with no box yet ("Node is either not
+//  clickable or not an Element"). So: wait until the row's centre is on
+//  screen and hits the row, then tap that point, whichever node is there
 const tapRow = async (p, sel) => {
   await p.evaluate((s) => document.querySelector(s)?.scrollIntoView({ block: 'center' }), sel);
-  await sleep(200);
-  await p.tap(sel);
+  const at = async () => (await p.waitForFunction((s) => {
+    const el = document.querySelector(s);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return null;
+    const hit = document.elementFromPoint(x, y);
+    return hit && (hit === el || el.contains(hit)) ? { x, y } : null;
+  }, { timeout: 30000, polling: 100 }, sel)).jsonValue();
+  //  the slide is over when the row stays put between two frames
+  let a = await at(), b = null;
+  for (let i = 0; i < 300; i++) {
+    await p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    b = await at();
+    if (Math.abs(a.x - b.x) < 1 && Math.abs(a.y - b.y) < 1) break;
+    a = b;
+  }
+  await p.touchscreen.tap(b.x, b.y);
 };
 const status = (p) => p.evaluate(() => document.getElementById('status').textContent);
 const badgeCopy = BSHIP + ' unreachable or no longer sharing';
