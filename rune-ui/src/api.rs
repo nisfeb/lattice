@@ -2409,7 +2409,8 @@ impl Conn {
 
     /// Listens to who is on a page until the stream ends, giving each
     /// table to `on`. Holding the stream open is what puts this window,
-    /// `client`, on the page: nothing is sent to say it is still there.
+    /// `client`, on the page. The ship drops one that does not say where
+    /// it is (`here_say`) for two and a half minutes.
     /// `on` is given None when the ship wrote and there was no table, so
     /// it can stop the listening without waiting for one. An error that
     /// starts with 404 is a ship with no such stream.

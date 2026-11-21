@@ -871,6 +871,8 @@ struct App {
     here_key: (usize, usize, u64),
     /// How many times what the table shows has changed.
     here_heard: u64,
+    /// When the ship last heard from this window.
+    here_beat: f64,
     /// Whether anyone is at the window (`sync_away`): a key or the pointer moved since the last look, when one last did, since when the window has not been in front, and when it is looked at again.
     touched: bool,
     touched_at: f64,
@@ -1337,6 +1339,7 @@ fn init() -> App {
         here_tints: Vec::new(),
         here_key: (0, 0, 0),
         here_heard: 0,
+        here_beat: 0.0,
         // a window is in front and in use when it opens
         touched: true,
         touched_at: 0.0,
@@ -12655,9 +12658,12 @@ fn here_listen(s: &mut App, page: String) {
     });
 }
 
+/// How often a window says it is still on a page, in seconds. The ship drops one it has not heard from in 150.
+const BEAT: f64 = 60.0;
+
 /// Says where this window is, when the ship's table has it otherwise.
 /// The ship puts a window on the page as reading when its stream opens,
-/// so a reader says nothing at all. A caret on its way through blocks is
+/// so a reader says only that it is still there, once a minute. A caret on its way through blocks is
 /// said where it comes to rest, and a ship that does not take what it
 /// is told is told three times and then left alone until the place
 /// changes.
@@ -12672,6 +12678,13 @@ fn here_tell(s: &mut App, clock: f64, tx: &mut Tx) {
     if row.block == now.1 && row.mode == now.2 {
         // it took: a ship that loses the row later is told again from the start
         s.here_tries = 0;
+        // said again once a minute all the same, since the ship drops a window it has not heard from in two and a half (`BEAT`). This is only reached with someone at the window
+        if clock >= s.here_beat + BEAT {
+            let id = s.client_id.clone();
+            s.here_req.request((c, now, id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
+            s.here_beat = clock;
+            tx.wake_after(std::time::Duration::from_secs_f64(BEAT + 0.5));
+        }
         return;
     }
     if s.here_tries >= 3 {
@@ -12685,14 +12698,14 @@ fn here_tell(s: &mut App, clock: f64, tx: &mut Tx) {
     }
     let id = s.client_id.clone();
     s.here_req.request((c, now, id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
-    (s.here_at, s.here_tries) = (clock, s.here_tries + 1);
+    (s.here_at, s.here_beat, s.here_tries) = (clock, clock, s.here_tries + 1);
     tx.wake_after(std::time::Duration::from_secs(3));
 }
 
 /// Keeps this window on the table of the page it shows. Holding that
-/// page's stream open is what puts it there: nothing is sent to say it
-/// is still there. A window nobody is at (`sync_away`) is on no table
-/// and asks the ship nothing for this. Whether anything on screen
+/// page's stream open is what puts it there, and saying where it is
+/// once a minute (`BEAT`) is what keeps it there. A window nobody is at
+/// (`sync_away`) is on no table and asks the ship nothing for this. Whether anything on screen
 /// changed.
 fn sync_here(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
@@ -12719,6 +12732,11 @@ fn sync_here(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
         // a table for a page since left is not this page's
         if let Some(t) = h.table.take().filter(|t| Some(&t.page) == s.here_for.as_ref()) {
+            // the first table of a stream: the ship heard from this window when the stream opened
+            if s.here_shown.is_none() {
+                s.here_beat = clock;
+                tx.wake_after(std::time::Duration::from_secs_f64(BEAT + 0.5));
+            }
             (s.here_shown, s.here_heard, changed) = (Some(t), s.here_heard + 1, true);
         }
     }
