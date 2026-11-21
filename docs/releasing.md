@@ -255,6 +255,16 @@ behaves differently there than on a real ship. The v31 signing work compiled
 and passed 13/13 unit tests on wex and still had to be re-verified on ricsul,
 where `%j /vein` returns a real ring.
 
+###  A release that touches sharing needs a second ship
+
+A release that touches sharing, groups, grants or permissions is not verified until a second ship has really read what the first shared, and for edit written it, on the kernel users run, through every request shape a client sends. Run the release gate with ship B (TESTING.md, "Release gate"):
+
+```sh
+node scripts/gate.mjs --two-ship lattice-gate-peer
+```
+
+It must be green. Its fleet sets are built on hoon-development's platform pin, the kernel users run. `two-ship-share-paths.sh` shares a page each way a client can (the web share box, the access pane's dir path, the Rune client's code path, a folder) and has the other ship read it, write it for edit, and lose it on unshare. A check that only looks at groups or roads on one ship proves nothing: release 141 passed every such check and a page shared from Rune still could not be read (nisfeb/lattice#495).
+
 ##  8. Lattice only: a protected main and a pinned plugin
 
 This section is lattice's own and is not mirrored in calendar or auspex.

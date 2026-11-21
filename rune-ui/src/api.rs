@@ -206,17 +206,29 @@ pub enum Level {
 }
 
 impl Group {
-    /// The whole path of a page's text under the lattice at `base`.
+    /// The path that names the page `name` in a grant, as the ship's
+    /// access list gives it and takes it: the page's own path. The ship
+    /// grants that as a read of the page's text.
     fn road(base: &str, name: &str) -> String {
+        format!("{base}/page/{name}")
+    }
+
+    /// The page's text path, which this client used to send. The ship takes
+    /// it as the page too, so it is matched and taken out with the page.
+    fn code_road(base: &str, name: &str) -> String {
         format!("{base}/page/{name}/code")
+    }
+
+    /// Whether `path` names the page `name` under the lattice at `base`.
+    fn names_page(path: &str, base: &str, name: &str) -> bool {
+        *path == Group::road(base, name) || *path == Group::code_road(base, name)
     }
 
     /// What this group may do with the page `name` by the page's own grant.
     pub fn level(&self, base: &str, name: &str) -> Level {
-        let road = Group::road(base, name);
-        if self.make.contains(&road) {
+        if self.make.iter().any(|p| Group::names_page(p, base, name)) {
             Level::Edit
-        } else if self.peek.contains(&road) {
+        } else if self.peek.iter().any(|p| Group::names_page(p, base, name)) {
             Level::Read
         } else {
             Level::None
@@ -236,8 +248,8 @@ impl Group {
     pub fn with_level(&self, base: &str, name: &str, level: Level) -> Group {
         let road = Group::road(base, name);
         let mut g = self.clone();
-        g.peek.retain(|p| *p != road);
-        g.make.retain(|p| *p != road);
+        g.peek.retain(|p| !Group::names_page(p, base, name));
+        g.make.retain(|p| !Group::names_page(p, base, name));
         if level != Level::None {
             g.peek.push(road.clone());
         }
@@ -287,7 +299,8 @@ pub fn readers(groups: &[Group], name: &str) -> Vec<Reader> {
     // what a path grants on this page: its own text, or a folder above it
     let on = |path: &str| -> Option<Option<String>> {
         let rel = path.split_once("/page/")?.1.trim_end_matches('/');
-        if rel.strip_suffix("/code") == Some(name) {
+        // the page's own grant: its path, as the ship lists it, or its text path
+        if rel == name || rel.strip_suffix("/code") == Some(name) {
             return Some(None);
         }
         let dir = rel.strip_suffix("/code").unwrap_or(rel);
@@ -3720,6 +3733,23 @@ mod tests {
         assert_eq!((ship_name(" nec "), ship_name("~sampel-palnet"), ship_name("Not A Ship"), ship_name("~")), (Some("~nec".into()), Some("~sampel-palnet".into()), None, None));
         let parsed: Vec<Group> = serde_json::from_str(r#"[{"name":"nec","ships":["~nec"],"peek":["/x/page/a/code"],"poke":[],"opaque":0,"make":[]}]"#).unwrap();
         assert_eq!(readers(&parsed, "a"), vec![Reader { ship: "~nec".into(), edit: false, via: None }]);
+    }
+
+    #[test]
+    fn a_page_grant_as_the_ship_lists_it_is_found_and_taken_back() {
+        // the ship's access list names a page's own grant by the page's path,
+        // not its text path; unsharing must take that out, and an old
+        // text-path grant too
+        let base = "/apps/x/lattice";
+        let page = format!("{base}/page/a/b");
+        let g = Group { name: "nec".into(), ships: vec!["~nec".into()], peek: vec![page.clone()], make: vec![page.clone()] };
+        assert_eq!(g.level(base, "a/b"), Level::Edit);
+        let gone = g.with_level(base, "a/b", Level::None);
+        assert!(gone.peek.is_empty() && gone.make.is_empty(), "unsharing takes the ship's own form out");
+        let old = Group { peek: vec![format!("{page}/code")], make: vec![], ..g.clone() };
+        assert!(old.with_level(base, "a/b", Level::None).peek.is_empty(), "and the old text-path form");
+        assert_eq!(g.with_level(base, "a/b", Level::Read).peek, vec![page.clone()], "a grant is sent as the page's path");
+        assert_eq!(readers(&[g.clone()], "a/b"), vec![Reader { ship: "~nec".into(), edit: true, via: None }]);
     }
 
     #[test]

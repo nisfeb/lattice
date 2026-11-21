@@ -401,6 +401,11 @@
             [%stay %& [/know %'terms-stem']]
             [%stay %& [/ %'peers.json']]
             [%stay %& [/ %'peer-revs.json']]
+        ::  /code-named.json: the pages each group's last save named by
+        ::  their code path, so the access list gives them back that way
+        ::  (+code-named). Not a cache: dropped, an old client could not
+        ::  unshare what it shared.
+            [%stay %& [/ %'code-named.json']]
             [%stay %& [/ %'old-beacon.json']]
             [%stay %& [/ %'fodt-peers']]
             [%fall %| /comments-cache empty-dir:loader]
@@ -1655,6 +1660,10 @@
   ;<  h0=holds:ls  bind:m  holds-now
   ;<  ok=?  bind:m  (ug-put gdir who weir)
   ?.  ok  (ug-refused eyre-id)
+  ::  the pages this save named by their code path, so the list gives
+  ::  them back that way and the client's own unshare finds them
+  ::  (+code-named)
+  ;<  ~  bind:m  (put-code-named u.gname (code-named (weld u.pkp u.mkp) weir))
   ::  a page this save grants, regrants or takes out has that as its own
   ::  grant in the group, so a folder's unshare leaves it (+ungrant:ls)
   ;<  ~  bind:m
@@ -14006,15 +14015,81 @@
 ::  count of the ones it can't. The count matters. The editor must SAY it is
 ::  preserving rules it doesn't show, or a user auditing their ACL is misled.
 ++  ug-dirfold-paths
-  |=  rs=(set road:tarball)
+  |=  [cn=(set path) rs=(set road:tarball)]
   ^-  [ps=(list @t) opaque=@ud]
   %+  roll  ~(tap in rs)
   |=  [r=road:tarball acc=[ps=(list @t) opaque=@ud]]
   ?:  ?=([%& %| *] r)  [[(spat p.p.r) ps.acc] opaque.acc]
   ::  a page grant is a file road on the page's code grub (+page-roads),
-  ::  and the editor speaks of it as the page
-  ?:  &(?=([%& %& *] r) =(%code name.p.p.r))  [[(spat path.p.p.r) ps.acc] opaque.acc]
-  [ps.acc +(opaque.acc)]
+  ::  and the editor speaks of it as the page, or by its code path when
+  ::  that is how the group's last save named it (+code-named)
+  ?.  &(?=([%& %& *] r) =(%code name.p.p.r))  [ps.acc +(opaque.acc)]
+  =/  p=path
+    ?.  (~(has in cn) path.p.p.r)  path.p.p.r
+    (snoc path.p.p.r %code)
+  [[(spat p) ps.acc] opaque.acc]
+::  +code-named: the pages a group save named only by their code path
+::  (<page>/code, the Rune client's shape before 143) that the saved
+::  weir grants. A save takes a page's grant out by leaving its path
+::  out, and a client leaves out the path it knows. The list gave every
+::  page grant as <page>, so a client that shared by <page>/code took
+::  out a path the list did not hold, sent <page> back, and the grant
+::  stayed. So the list gives each page back in the shape its grant was
+::  named in, and either way the client's unshare takes it out. This is
+::  only what the list shows: what is granted is the weir's alone.
+++  code-named
+  |=  [ps=(list path) w=weir:nexus]
+  ^-  (set path)
+  =/  named=(set path)  (~(gas in *(set path)) ps)
+  %-  ~(gas in *(set path))
+  %+  murn  ~(tap in (~(uni in peek.w) make.w))
+  |=  r=road:tarball
+  ^-  (unit path)
+  ?.  ?=([%& %& *] r)  ~
+  ?.  =(%code name.p.p.r)  ~
+  =/  p=path  path.p.p.r
+  ?.  (~(has in named) (snoc p %code))  ~
+  ?:  (~(has in named) p)  ~
+  `p
+::  +code-named-road: each group's +code-named pages, by group name
+++  code-named-road  (rf up / %'code-named.json')
+++  read-code-named
+  =/  m  (fiber:fiber:nexus ,(map @t (set path)))
+  ^-  form:m
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io code-named-road ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  =/  j=(unit json)  (mole |.(!<(json (need-vase:tarball sang.u.vw))))
+  ?.  ?=([~ %o *] j)  (pure:m ~)
+  =/  kv=(list [g=@t v=json])  ~(tap by p.u.j)
+  =|  out=(map @t (set path))
+  |-  ^-  form:m
+  ?~  kv  (pure:m out)
+  =/  ps=(list path)
+    ?.  ?=([%a *] v.i.kv)  ~
+    %+  murn  p.v.i.kv
+    |=  e=json
+    ^-  (unit path)
+    ?.  ?=([%s *] e)  ~
+    (mole |.((stab p.e)))
+  $(kv t.kv, out (~(put by out) g.i.kv (~(gas in *(set path)) ps)))
+::  +put-code-named: a group's +code-named pages, written soft (the list
+::  gives <page> for a page it has no note of)
+++  put-code-named
+  |=  [g=@t cn=(set path)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  all=(map @t (set path))  bind:m  read-code-named
+  =/  new=(map @t (set path))
+    ?~(cn (~(del by all) g) (~(put by all) g cn))
+  ?:  =(new all)  (pure:m ~)
+  =/  j=json
+    :-  %o
+    %-  ~(run by new)
+    |=  s=(set path)
+    ^-  json
+    a+(turn ~(tap in s) |=(p=path `json`s+(spat p)))
+  ;<  *  bind:m  (over-as-soft:io code-named-road [[/ %json] j] [/ %json])
+  (pure:m ~)
 ::  +ug-keep: the roads the UI does NOT manage, carried through a save
 ::  verbatim. Silently dropping an ACL rule the editor couldn't render would
 ::  be this feature's worst possible bug.
@@ -14055,9 +14130,10 @@
 ::  the ban is written, so a write before that read is caught by the
 ::  strip, and one after it by the read here.
 ++  ug-put
-  |=  [gdir=path who=(set @p) =weir:nexus]
+  |=  [gdir=path who=(set @p) weir=weir:nexus]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
+  ;<  =weir:nexus  bind:m  (mend-weir weir)
   ;<  b0=banned:ls  bind:m  read-banned
   =/  ok-who=(set @p)  (ban-drop:ls b0 who)
   ;<  ok=?  bind:m  (ug-over [%& %& gdir %'who.ships'] [[/ %ships] ok-who])
@@ -14068,6 +14144,42 @@
   =/  late=(set @p)  (ban-drop:ls b1 ok-who)
   ?:  =(late ok-who)  (pure:m &)
   (ug-over [%& %& gdir %'who.ships'] [[/ %ships] late])
+::  +mend-weir: a group's weir as it can reach things. A dir road on our
+::  tree whose path is a FILE reaches nothing (a dir road covers what is
+::  under a dir, and a file has nothing under it), so it becomes the file
+::  road it meant. Every group write passes here (+ug-put), so no client
+::  shape can store a grant that grants nothing: the Rune client named a
+::  page as <page>/code, and that was such a road. Roads off our tree,
+::  and roads to nothing yet (a page about to be made), are kept.
+++  mend-weir
+  |=  w=weir:nexus
+  =/  m  (fiber:fiber:nexus ,weir:nexus)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  ;<  mk=(set road:tarball)  bind:m  (mend-roads sb make.w)
+  ;<  pk=(set road:tarball)  bind:m  (mend-roads sb peek.w)
+  (pure:m [mk poke.w pk])
+++  mend-roads
+  |=  [sb=path rs=(set road:tarball)]
+  =/  m  (fiber:fiber:nexus ,(set road:tarball))
+  ^-  form:m
+  =/  l=(list road:tarball)  ~(tap in rs)
+  =|  out=(set road:tarball)
+  |-  ^-  form:m
+  ?~  l  (pure:m out)
+  =/  r=road:tarball  i.l
+  ::  the dir path of a dir road on our tree, below its root
+  =/  dp=path
+    ?.  ?=([%& %| *] r)  ~
+    ?.  &((gth (lent p.p.r) (lent sb)) =(sb (scag (lent sb) p.p.r)))  ~
+    p.p.r
+  ?~  dp  $(l t.l, out (~(put in out) r))
+  =/  fr=road:tarball  [%& %& (snip `path`dp) (rear dp)]
+  ;<  isd=?  bind:m  (peek-exists:fio r)
+  ;<  isf=?  bind:m  ?:(isd (pure:(fiber:fiber:nexus ,?) |) (peek-exists:fio fr))
+  ?.  isf  $(l t.l, out (~(put in out) r))
+  %-  (say 2 ~[leaf+"lattice: a grant on {(spud dp)} named a file as a folder; granted as the file"])
+  $(l t.l, out (~(put in out) fr))
 ::  +move-grants: grants follow a page. A group road names a path, so a
 ::  move would leave the ship it was shared with holding the old one, and
 ::  a delete would hand that ship whatever page is made there next. Every
@@ -14154,6 +14266,7 @@
   ::  sees every grant. The editor saves and deletes by a plain name only,
   ::  so it refuses to change a nested one, which is the safe failure.
   =/  names=(list path)  (sort (turn (all-groups / ball.dn) head) aor)
+  ;<  cns=(map @t (set path))  bind:m  read-code-named
   =|  out=(list json)
   |-  ^-  form:m
   ?~  names  (pure:m a+(flop out))
@@ -14167,9 +14280,10 @@
       (mole |.((sort ~(tap in ;;((set @p) (sang-noun:tarball sang.wv))) lth)))
     ~
   ;<  w=weir:nexus  bind:m  (ug-read-weir gdir)
-  =/  pk  (ug-dirfold-paths peek.w)
-  =/  mk  (ug-dirfold-paths make.w)
-  =/  po  (ug-dirfold-paths poke.w)
+  =/  cn=(set path)  (~(gut by cns) base ~)
+  =/  pk  (ug-dirfold-paths cn peek.w)
+  =/  mk  (ug-dirfold-paths cn make.w)
+  =/  po  (ug-dirfold-paths ~ poke.w)
   =/  gj=json
     %-  pairs:enjs:format
     :~  ['name' s+base]
@@ -16394,6 +16508,9 @@
   ::  body yields [~ ~] (clean 404) instead of a crash.
   =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.u.ms))))
   ?:  ?=(%| -.res)  (pure:m `~)
+  ::  an empty vault copy is an unpublished page's last revision, which
+  ::  the kernel still hands a peer (+apply-pub-in's %del-page): nothing
+  ?:  =('' p.res)  (pure:m `~)
   (pure:m ``[ud.cass.u.ms p.res])
 ::  +explore: GET /x/<ship>/<path...>, the server-rendered tree explorer
 ::  (docs/platform.md, build step 1). Directories render as listings with
@@ -22712,6 +22829,7 @@
       ::  child is a plain page delete. A truly missing page (no children
       ::  either) stays a no-op.
       ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
+      ?:  (~(has by ix) key)  (pub-drop-dead root key ix)
       =/  pre=path  (snip key)
       =/  kids=(list path)
         %+  skim  ~(tap in ~(key by ix))
@@ -22738,6 +22856,16 @@
     ::  index row so it's no longer live. No trash row. Pages have no restore.
     ::  The history goes first: the /public peek grant covers this path, and
     ::  a peek at an old case read the last published body after the cull.
+    ::  The kernel keeps a path's newest revision through every lose
+    ::  (grubbery 09653ae9), and answers a peer's uncased peek of a culled
+    ::  path with that revision (+process-peek reads born's top and not
+    ::  the peak, the mistake 15c5dc75 fixed for local peeks only). So a
+    ::  page moved out of a shared folder, or unshared, stayed readable to
+    ::  any peer at its vault path. An empty body is written first, so the
+    ::  revision that survives holds no text, and the lose drops the rest.
+    ::  It also keeps a publish again of the same text from being taken as
+    ::  a no-op remake of the dead top (+pub-drop-dead).
+    ;<  ~  bind:m  (over-gained:fio (rf up pax.u.or nom.u.or) [/lattice %page] '')
     ;<  ~  bind:m  (prune-hist road 0 ~s0)
     ;<  ~  bind:m  (cull:fio road)
     ::  No tombstone binding: a subscriber learns of the delete from the
@@ -22789,6 +22917,46 @@
     ;<  *  bind:m  (grow-pub-index root nix)
     (pure:m ~)
   ==
+::  +pub-drop-dead: an unpublish of a page the index lists whose vault
+::  grub is gone. A publish can list a page and leave no grub: the
+::  kernel takes a make at a deleted path with the text it last held
+::  as a no-op, so a page unpublished and published again unchanged
+::  was listed and bound with no vault copy. The unpublish then found
+::  no grub and refused, as for a page never published, and the page
+::  stayed in the folder index and in the namespace for good. So its
+::  row goes, and its binding too when the revision list names one (a
+::  listed rev is bound and not yet culled, +apply-pub-in's order), so
+::  the cull never hits a spur twice.
+++  pub-drop-dead
+  |=  [root=@ud key=path ix=pub-index:lp]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %-  (say 2 ~[leaf+"lattice: unpublish {(spud key)}: listed with no vault copy, row dropped"])
+  ::  the dead path's last revision may still hold the text, which the
+  ::  kernel hands a peer's uncased peek (+apply-pub-in's %del-page), so
+  ::  it is written empty and culled again
+  ;<  ~  bind:m
+    =/  or=(unit vrail:lp)  (key-to-rail:lp /pub/vault key)
+    ?~  or  (pure:m ~)
+    ;<  up=@ud  bind:m  nexus-up
+    =/  road=road:tarball  (rf up pax.u.or nom.u.or)
+    ;<  ~  bind:m  (over-gained:fio (rf up pax.u.or nom.u.or) [/lattice %page] '')
+    ;<  ~  bind:m  (prune-hist road 0 ~s0)
+    ;<  *  bind:m  (cull-soft:io road)
+    (pure:m ~)
+  =/  nix=pub-index:lp  (~(del by ix) key)
+  ;<  ~  bind:m  (put-file (rf root /pub %index) [/lattice %pub-index] nix)
+  ;<  revs=(map @t json)  bind:m  (read-pub-revs root)
+  =/  was=(unit @ud)
+    =/  r=(unit json)  (~(get by revs) (page-name:lp key))
+    ?~(r ~ (bind (json-rev:lp u.r) head))
+  ;<  salt=@  bind:m  pub-salt
+  ;<  ~  bind:m  (put-pub-revs root salt key ~ revs)
+  ;<  ~  bind:m
+    ?~  was  (pure:m ~)
+    (cull-farm:io (page-spur salt (snip (strip-pub:lp key)) u.was))
+  ;<  *  bind:m  (grow-pub-index root nix)
+  (pure:m ~)
 ::  +pub-save-page: +apply-pub-in's %save-page. `vm` is the page's
 ::  view-mode when the caller read it already (+pub-flush-one), else ~
 ::  and it is read here (+published-mode).

@@ -8977,17 +8977,18 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         b.onclick = fn;
         row.appendChild(b);
       };
-      const canRead = g.peek.includes(path);
-      const canEdit = g.make.includes(path);
+      const names = (x) => x === path || x === path + '/code';
+      const canRead = g.peek.some(names);
+      const canEdit = g.make.some(names);
       mk('read', canRead, () => {
         if (canRead) {
-          g.peek = g.peek.filter((x) => x !== path);
-          g.make = g.make.filter((x) => x !== path);
+          g.peek = g.peek.filter((x) => !names(x));
+          g.make = g.make.filter((x) => !names(x));
         } else g.peek.push(path);
         permSave(g);
       });
       mk('edit', canEdit, () => {
-        if (canEdit) g.make = g.make.filter((x) => x !== path);
+        if (canEdit) g.make = g.make.filter((x) => !names(x));
         else {
           if (!g.peek.includes(path)) g.peek.push(path);   // edit implies read
           g.make.push(path);

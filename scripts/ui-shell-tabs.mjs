@@ -670,7 +670,16 @@ try {
       const fresh = 'keepfresh' + Date.now();
       const sv = await fetch(env.base + '/apps/lattice/page-save?type=md&name=' + encodeURIComponent(KEEP[0]),
         { method: 'POST', headers: { Cookie: env.cookie }, body: '# keep 0\n\n' + keepMark(0) + '\n\n' + fresh + '\n' });
-      await sleep(1500);
+      //  the ship serves the new text at page 0's address before Back, so
+      //  the catch-up has something to catch. A fixed wait here raced the
+      //  publish: a catch-up that ran before the ship served the save saw
+      //  no change, and the check failed with the page never marked stale
+      const servesFresh = await waitFor(async () => {
+        const r = await fetch(env.base + R(0) + '&u=pc' + Date.now(), { headers: { Cookie: env.cookie }, cache: 'no-store' })
+          .catch(() => null);
+        return !!r && r.ok && (await r.text()).includes(fresh);
+      }, 30000, 250);
+      check('(setup) the ship serves the save made while page 0 is kept', !!servesFresh);
       await step(key, 'back');
       const stale = await shows(key, keepMark(0), 5000);
       await sleep(380);

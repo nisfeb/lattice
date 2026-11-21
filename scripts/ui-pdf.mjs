@@ -19,7 +19,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { shipEnv, shipName, launchBrowser, openPage, makeCheck } from './lib/harness.mjs';
+import { shipEnv, shipName, launchBrowser, openPage, makeCheck, waitFor } from './lib/harness.mjs';
 
 const env = shipEnv();
 const check = makeCheck();
@@ -198,6 +198,22 @@ try {
   //  the reader: its menu's export pdf, on a page and on an html page
   const ship = await shipName(env);
   for (const k of ['md', 'html']) await api('page-share?mode=urbit&name=' + encodeURIComponent(RUN + '/' + k), { method: 'POST' });
+  //  A share is published a moment later (the publish queue), and a reader
+  //  page open then hears it and swaps itself for the published view by
+  //  location.replace. Opened before that, the md page swapped while the
+  //  suite was leaving it, and its replace cancelled the goto to the html
+  //  page (net::ERR_ABORTED, the html page answering 200). So both are
+  //  published, as A's revision list says, before the reader opens either
+  const revs = async () => {
+    const r = await fetch(env.base + '/grubbery/api/peek/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/pub/revs',
+      { headers: { Cookie: env.cookie } }).catch(() => null);
+    return r && r.ok ? r.json().catch(() => ({})) : {};
+  };
+  const published = await waitFor(async () => {
+    const j = await revs();
+    return ['md', 'html'].every((k) => j['/' + RUN + '/' + k]) ? j : null;
+  }, 60000, 500);
+  check('(setup) the reader pages are published before they are opened', !!published);
   for (const k of ['md', 'html']) {
     await page.goto(env.base + '/apps/lattice?url=' + encodeURIComponent('urb://' + ship + '/' + RUN + '/' + k),
       { waitUntil: 'load', timeout: 120000 });
