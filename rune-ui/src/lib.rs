@@ -5707,7 +5707,9 @@ const SYNC_LAPSED: f64 = 900.0;
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     changed |= sync_scrub(s, clock, tx);
+    let was_away = s.away;
     changed |= sync_away(s, clock, tx);
+    sync_idle(s, was_away, clock, tx);
     changed |= sync_here(s, clock, tx);
     changed |= sync_draft(s);
     #[cfg(not(target_arch = "wasm32"))]
@@ -5780,7 +5782,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             tx.wake_after(std::time::Duration::from_secs_f64(SYNC_EVERY));
         }
     }
-    if s.conn.is_some() && clock >= s.next_sync {
+    // a window nobody is at asks the ship nothing by the clock (`sync_idle`)
+    // unless something waits to be sent: that is work asked for, and the read is what sends it
+    if s.conn.is_some() && clock >= s.next_sync && (!s.away || !s.queue.is_empty() || !s.ops.is_empty()) {
         if s.next_sync > 0.0 {
             load_tree(s);
         }
@@ -12767,6 +12771,31 @@ fn sync_away(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(std::time::Duration::from_secs_f64(again - clock));
     }
     was != s.away
+}
+
+/// Stops what this window asks the ship by the clock while nobody is at
+/// it, and starts it again when someone is: the read of the tree, the
+/// change stream, and the look at the other ships signed in. Each
+/// request is kept by the ship for good, and a window left open made a
+/// few thousand a day. The cost is that a window nobody is at does not
+/// learn of a change or a share until someone is back, when it reads
+/// the tree at once. What was asked for stays asked: a save, a backup
+/// that is due, an update of the app.
+fn sync_idle(s: &mut App, was_away: bool, clock: f64, tx: &mut Tx) {
+    use std::sync::atomic::Ordering;
+    if was_away == s.away || s.conn.is_none() {
+        return;
+    }
+    if s.away {
+        s.beacon_stop.store(true, Ordering::Relaxed);
+        s.watch_stop.store(true, Ordering::Relaxed);
+    } else {
+        // back: what changed meanwhile is read now, and listened for again
+        s.next_sync = clock;
+        listen(s);
+        watch_ships(s);
+        tx.wake_after(std::time::Duration::from_millis(50));
+    }
 }
 
 /// The page whose table this window is on: the open page, when it is
