@@ -614,55 +614,97 @@ fn leaves(path: &str) -> bool {
 
 /// A source made safe to hand to the real `openscad` program, which
 /// opens whatever path it is given on this machine: the rule is that a
-/// page pulls in other lattice pages and nothing else. Every `include`
-/// and `use` that `resolve_ref` refuses is blanked, and so is the
-/// opening of one whose path does not end on its line or has a tab in
-/// it, since OpenSCAD reads such a path in pieces and opens the last.
-/// Every string that names a file to `import`, `surface` and their kin
-/// is emptied when it could lead out of the page's folder (`leaves`).
-/// What is blanked becomes spaces, so every line keeps its number.
-/// `dir` is the folder of the page the source is. Each note is the
-/// line of a string that was emptied, and what to say of it.
+/// page pulls in other lattice pages and nothing else.
 ///
-/// An include is looked for everywhere, in comments and strings too:
-/// a path this code took to be in a comment and OpenSCAD did not would
-/// else be opened. A file's name that is worked out when the model runs
-/// (`import(str(a, b))` with `a` set elsewhere) cannot be seen here.
+/// Every `include` and `use` that `resolve_ref` refuses is taken out:
+/// its keyword becomes a `;`, an empty statement, and the rest of it
+/// spaces. Spaces alone would not do: a bare `use` before it would then
+/// reach over them to a `<` after, and be a use of whatever stands
+/// there. One whose path does not end on its line, or has a tab or a
+/// `<` in it, has only its opening taken out, since OpenSCAD reads such
+/// a path in pieces and opens the last. Lines keep their numbers.
+///
+/// An include is looked for everywhere, in comments and strings too,
+/// in case this code and OpenSCAD disagree on where one ends. Inside a
+/// comment or a string nothing past its own end is touched.
+///
+/// A string that names the file to `import`, `surface` and their kin
+/// (`READS`) is emptied when it could lead out of the page's folder
+/// (`leaves`): the first argument, or the one named `file`. Any other
+/// argument is left as it is. `dir` is the folder of the page the
+/// source is. Each note is the line of a string that was emptied, and
+/// what to say of it.
+///
+/// What comes back is tame already: taming it again changes nothing.
+///
+/// THIS DOES NOT CATCH a file's name that is put together as the
+/// program runs: `import(str(chr(47), "etc/x.stl"))`, or a name passed
+/// through a variable or a module's argument. No reading of the source
+/// can. Only a sandbox round the `openscad` program closes that.
 // ponytail: a name built at run time is not caught. Running openscad in a sandbox of its own is the whole answer
 pub fn tame(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
-    let mut out = src.as_bytes().to_vec();
-    let blank = |out: &mut Vec<u8>, from: usize, to: usize| out[from..to].iter_mut().filter(|c| !matches!(**c, b'\n' | b'\r')).for_each(|c| *c = b' ');
     let b = src.as_bytes();
-    let mut ends = Seek::default();
-    let mut i = 0;
-    while i < b.len() {
-        let Some((_, from)) = (matches!(b[i], b'i' | b'u') && !joined(b, i)).then(|| opener(src, i)).flatten() else {
-            i += 1;
-            continue;
-        };
-        match ends.at(src, from, |t| t.find(['>', '\n', '\r', '\t'])).filter(|e| b[*e] == b'>') {
-            Some(end) if resolve_ref(dir, &src[from..end]).is_err() => blank(&mut out, i, end + 1),
-            Some(_) => {}
-            None => blank(&mut out, i, from),
-        }
-        i = from;
-    }
-    // only whole characters were made spaces, so this is still text
-    let text = String::from_utf8(out).unwrap_or_default();
-    let b = text.as_bytes();
     let mut out = b.to_vec();
     let mut notes = Vec::new();
-    // the brackets open, each with whether a reader of files opened it, and how many of those there are
-    let (mut open, mut reading, mut named, mut line) = (Vec::new(), 0usize, false, 1usize);
+    // an empty statement, then spaces: line ends are kept
+    let stop = |out: &mut Vec<u8>, from: usize, to: usize| {
+        for (n, c) in out[from..to].iter_mut().enumerate() {
+            match *c {
+                _ if n == 0 => *c = b';',
+                b'\n' | b'\r' => {}
+                _ => *c = b' ',
+            }
+        }
+    };
+    // whether an include or a use opens at `p`, as OpenSCAD's lexer or any reading of the text could take it
+    let opens = |p: usize| if matches!(b[p], b'i' | b'u') && !joined(b, p) { opener(src, p).map(|o| o.1) } else { None };
+    let mut ends = Seek::default();
+    // The include that opens at `p` with its path from `from`, in a stretch that ends at `bound`: taken
+    // out when it is refused, and where the reading goes on. It goes on past the path of one let stand.
+    let mut include = |out: &mut Vec<u8>, p: usize, from: usize, bound: usize| -> usize {
+        let end = ends.at(src, from, |t| t.find(['>', '\n', '\r', '\t', '<'])).filter(|e| b[*e] == b'>');
+        match end {
+            Some(e) if resolve_ref(dir, &src[from..e]).is_ok() => e + 1,
+            Some(e) if e < bound => {
+                stop(out, p, e + 1);
+                e + 1
+            }
+            _ => {
+                stop(out, p, from.min(bound));
+                from
+            }
+        }
+    };
+    // every include inside a comment or a string, none of it touched past `to`
+    let inside = |out: &mut Vec<u8>, include: &mut dyn FnMut(&mut Vec<u8>, usize, usize, usize) -> usize, from: usize, to: usize| {
+        let mut p = from;
+        while p < to {
+            p = match opens(p) {
+                Some(path) => include(out, p, path, to).max(p + 1),
+                None => p + 1,
+            };
+        }
+    };
+    let word = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'$');
+    // the brackets open: whether a reader of files opened each, and whether the argument being read in it is the file's name
+    let mut open: Vec<(bool, bool)> = Vec::new();
+    // how many of them are at the file's name, whether the last word was a reader's name, and the line
+    let (mut paths, mut named, mut line) = (0usize, false, 1usize);
     let mut i = 0;
     while i < b.len() {
         match b[i] {
             b'\n' => (i, line) = (i + 1, line + 1),
             c if c.is_ascii_whitespace() => i += 1,
-            b'/' if b.get(i + 1) == Some(&b'/') => i = text[i..].find('\n').map_or(b.len(), |e| i + e),
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                let end = src[i..].find('\n').map_or(b.len(), |e| i + e);
+                inside(&mut out, &mut include, i + 2, end);
+                i = end;
+            }
             b'/' if b.get(i + 1) == Some(&b'*') => {
-                let end = text[i + 2..].find("*/").map_or(b.len(), |e| i + 2 + e + 2);
-                line += text[i..end].matches('\n').count();
+                let close = src[i + 2..].find("*/").map_or(b.len(), |e| i + 2 + e);
+                inside(&mut out, &mut include, i + 2, close);
+                let end = (close + 2).min(b.len());
+                line += src[i..end].matches('\n').count();
                 i = end;
             }
             b'"' => {
@@ -672,24 +714,29 @@ pub fn tame(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
                     j += if b[j] == b'\\' { 2 } else { 1 };
                 }
                 let j = j.min(b.len());
-                if reading > 0 && leaves(&text[i + 1..j]) {
-                    notes.push((line, format!("{}: only files in your pages can be read, by a path that stays in the page's folder", text[i + 1..j].trim().chars().take(80).collect::<String>())));
-                    blank(&mut out, i + 1, j);
+                inside(&mut out, &mut include, i + 1, j);
+                if paths > 0 && leaves(&src[i + 1..j]) {
+                    notes.push((line, format!("{}: only files in your pages can be read, by a path that stays in the page's folder", src[i + 1..j].trim().chars().take(80).collect::<String>())));
+                    out[i + 1..j].iter_mut().filter(|c| !matches!(**c, b'\n' | b'\r')).for_each(|c| *c = b' ');
                 }
-                line += text[i..j].matches('\n').count();
+                line += src[i..j].matches('\n').count();
                 (i, named) = ((j + 1).min(b.len()), false);
             }
-            c if c.is_ascii_alphanumeric() || matches!(c, b'_' | b'$') || (c == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit)) => {
-                let word = i + b[i..].iter().take_while(|c| c.is_ascii_alphanumeric() || matches!(**c, b'_' | b'$')).count();
-                let figures = i + b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
-                if let Some((_, from)) = opener(&text, i).filter(|_| c != b'.') {
-                    // an include that was let stand: its path is no code
-                    let end = text[from..].find('>').map_or(b.len(), |e| from + e + 1);
-                    line += text[i..end].matches('\n').count();
-                    (i, named) = (end, false);
-                } else if figures == word && b.get(word) == Some(&b'.') {
+            _ if opens(i).is_some() => {
+                let end = include(&mut out, i, opens(i).unwrap_or(i + 1), b.len());
+                line += src[i..end].matches('\n').count();
+                (i, named) = (end, false);
+            }
+            c if word(c) || (c == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit)) => {
+                // a word runs as far as its letters and figures do, or to an include that opens after a figure
+                let mut end = i + usize::from(c != b'.');
+                while end < b.len() && word(b[end]) && opens(end).is_none() {
+                    end += 1;
+                }
+                let figures = i + b[i..end].iter().take_while(|c| c.is_ascii_digit()).count();
+                if figures == end && b.get(end) == Some(&b'.') {
                     // a number with a point: what follows its figures is a word of its own
-                    let mut j = word + 1 + b[word + 1..].iter().take_while(|c| c.is_ascii_digit()).count();
+                    let mut j = end + 1 + b[end + 1..].iter().take_while(|c| c.is_ascii_digit()).count();
                     let sign = usize::from(matches!(b.get(j), Some(b'e' | b'E'))) + usize::from(matches!(b.get(j), Some(b'e' | b'E')) && matches!(b.get(j + 1), Some(b'+' | b'-')));
                     let power = b.get(j + sign..).map_or(0, |r| r.iter().take_while(|c| c.is_ascii_digit()).count());
                     if sign > 0 && power > 0 {
@@ -697,22 +744,40 @@ pub fn tame(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
                     }
                     (i, named) = (j, false);
                 } else {
-                    named = READS.contains(&&text[i..word]);
-                    i = word.max(i + 1);
+                    let name = &src[i..end];
+                    // a name with `=` after it, right in a reader's brackets, says which argument this is
+                    let after = end + b[end..].iter().take_while(|c| c.is_ascii_whitespace()).count();
+                    let names = b.get(after) == Some(&b'=') && b.get(after + 1) != Some(&b'=');
+                    if let Some(top) = open.last_mut().filter(|top| top.0 && names) {
+                        paths = paths + usize::from(name == "file") - usize::from(top.1);
+                        top.1 = name == "file";
+                    }
+                    named = READS.contains(&name);
+                    i = end.max(i + 1);
                 }
             }
-            b'(' => {
-                open.push(named);
-                reading += usize::from(named);
+            b'(' | b'[' => {
+                let reader = named && b[i] == b'(';
+                open.push((reader, reader));
+                paths += usize::from(reader);
                 (i, named) = (i + 1, false);
             }
-            b')' => {
-                reading -= usize::from(open.pop().unwrap_or(false));
+            b')' | b']' => {
+                paths -= usize::from(open.pop().is_some_and(|top| top.0 && top.1));
+                (i, named) = (i + 1, false);
+            }
+            b',' => {
+                // the file's name is the first argument: after it, only one named `file` is
+                if let Some(top) = open.last_mut().filter(|top| top.0 && top.1) {
+                    top.1 = false;
+                    paths -= 1;
+                }
                 (i, named) = (i + 1, false);
             }
             _ => (i, named) = (i + 1, false),
         }
     }
+    // only whole characters were made spaces, so this is still text
     (String::from_utf8(out).unwrap_or_default(), notes)
 }
 
@@ -954,7 +1019,7 @@ mod tests {
             "x = dxf_dim(file=\"C:/home/u/x.dxf\", name=\"w\");",
             "linear_extrude(file = \"/home/u/x.dxf\") square(1);",
             "import(/* \" */ \"/home/u/x.stl\");",
-            "import(\"a.stl\", \"~/home/u/x.stl\");",
+            "import(\"~/home/u/x.stl\", \"a.stl\");",
         ] {
             let (_, files, _) = run(src);
             let safe = &files[0].1;
@@ -981,12 +1046,83 @@ mod tests {
         // that does not end on its line. The code after it is left, and a file named in a comment is no file
         let comment = "// use </etc/x> and use <no end, and we use <= here, and import(\"/etc/y\")\nif (a > b) cube(1);\n";
         let (_, files, notes) = run(comment);
-        assert_eq!((files[0].1.as_str(), notes.len()), (comment.replace("use </etc/x>", &" ".repeat(12)).replace("use <", "     ").as_str(), 0));
+        assert_eq!((files[0].1.as_str(), notes.len()), (comment.replace("use </etc/x>", &format!(";{}", " ".repeat(11))).replace("use <", ";    ").as_str(), 0));
         // an included page is tamed as the page is
         let (_, files, _) = collect("a", "include <b>", |_| Some("include </home/u/x.scad>\ncube(1);".to_owned()));
-        assert_eq!(files[1].1, format!("{}\ncube(1);", " ".repeat(24)));
+        assert_eq!(files[1].1, format!(";{}\ncube(1);", " ".repeat(23)));
         for bad in ["", "import(", "import(\"", "import(\"\\", ")", "import(é\"é", "1.", ".5e", "include <", "use <\n>", "$", "import((((", "\"\\"] {
             let _ = tame("", bad);
+        }
+    }
+
+    /// Whether a text holds an include or a use, read as loosely as any reader could, whose path would be refused.
+    fn opens_outside(dir: &str, text: &str) -> bool {
+        let b = text.as_bytes();
+        (0..b.len()).any(|p| {
+            let Some((_, from)) = (matches!(b[p], b'i' | b'u') && !joined(b, p)).then(|| opener(text, p)).flatten() else { return false };
+            match text[from..].find(['>', '\n', '\r', '\t', '<']).map(|e| from + e).filter(|e| b[*e] == b'>') {
+                Some(e) => resolve_ref(dir, &text[from..e]).is_err(),
+                None => true,
+            }
+        })
+    }
+
+    #[test]
+    fn what_is_tamed_is_tame_and_no_refused_include_is_left_or_made() {
+        // a bare keyword before a refused include once reached over the spaces left of it to the path after
+        for (src, want) in [
+            ("use use </a> </outside/x.scad>", format!("use ;{} </outside/x.scad>", " ".repeat(7))),
+            ("include include </a> </outside/x.scad>", format!("include ;{} </outside/x.scad>", " ".repeat(11))),
+            ("use\ninclude </a>\n</outside/x.scad>", format!("use\n;{}\n</outside/x.scad>", " ".repeat(11))),
+        ] {
+            let (safe, _) = tame("", src);
+            assert_eq!(safe, want);
+            assert!(!opens_outside("", &safe));
+        }
+        // sequences of the pieces an include is made of, and of what could hide or split one
+        let pieces = ["use", "include", "<", ">", "a.scad", "/bad", "../up", " ", " ", "\n", "\t", "// c", "/* c */", "/*", "*/", "\"", "\\", "x", "1.5", "7", ";", "(", ")", ",", "import", "file=", "é"];
+        let mut seed = 3u64;
+        let mut below = |n: usize| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as usize % n
+        };
+        for round in 0..60_000 {
+            let src: String = (0..1 + below(12)).map(|_| pieces[below(pieces.len())]).collect();
+            let (once, _) = tame("d", &src);
+            assert_eq!((once.len(), once.matches('\n').count()), (src.len(), src.matches('\n').count()), "{round} {src:?}");
+            assert!(!opens_outside("d", &once), "{round}: {src:?} is handed on as {once:?}");
+            assert_eq!(tame("d", &once).0, once, "{round}: {src:?} tamed twice");
+        }
+    }
+
+    #[test]
+    fn taming_touches_nothing_past_a_strings_end_and_only_the_files_name() {
+        let tamed = |src: &str| tame("parts", src);
+        // an include opened in a string, with its end far off in the code after: the code is left
+        assert_eq!(tamed("t = \"use </\"; if (a > b) cube(1);").0, "t = \";    /\"; if (a > b) cube(1);");
+        assert_eq!(tamed("// include </x\nif (a > b) cube(1);").0, "// ;        /x\nif (a > b) cube(1);");
+        assert_eq!(tamed("/* use </x */ if (a > b) cube(1);").0, "/* ;    /x */ if (a > b) cube(1);");
+        assert_eq!(tamed("t = \"see use </x> here\"; cube(1);").0, format!("t = \"see ;{} here\"; cube(1);", " ".repeat(7)));
+        // only the file's name is a path: the first argument, or the one named file
+        for kept in [
+            "import(\"drawing.svg\", id=\"layer:top\");",
+            "import(\"drawing.svg\", layer = \"/top\", convexity = 3);",
+            "import(file = \"a.stl\", id = \"../b\");",
+            "surface(center = true, invert = \"/x\", file = \"h.dat\");",
+            "x = dxf_dim(file=\"d.dxf\", name=\"/w\", layer=\"..\");",
+            "import(\"a.stl\"); echo(\"/b\");",
+            "import(\"a.stl\") cube([1, \"/x\" == \"/x\" ? 1 : 2, 3]);",
+        ] {
+            assert_eq!(tamed(kept), (kept.to_owned(), Vec::new()), "{kept}");
+        }
+        for (src, want) in [
+            ("import(\"/a.stl\", id=\"/top\");", "import(\"      \", id=\"/top\");"),
+            ("import(id=\"/top\", file=\"/a.stl\");", "import(id=\"/top\", file=\"      \");"),
+            ("import(convexity = 3, file = str(\"/a\", \"b\"), id = \"/c\");", "import(convexity = 3, file = str(\"  \", \"b\"), id = \"/c\");"),
+            ("surface(\"../h.dat\", center = \"/x\");", "surface(\"        \", center = \"/x\");"),
+        ] {
+            let (safe, notes) = tamed(src);
+            assert_eq!((safe.as_str(), notes.len()), (want, 1), "{src}");
         }
     }
 }
