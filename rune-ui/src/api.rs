@@ -160,6 +160,43 @@ pub struct Group {
     pub make: Vec<String>,
 }
 
+/// A sharing group from before lattice kept its own (`/legacy-groups`,
+/// since lattice 141). The ship keeps it in its own settings, where
+/// lattice may not change it: the owner removes it on the Peers page.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct OldGroup {
+    pub name: String,
+    #[serde(default)]
+    pub ships: Vec<String>,
+    /// What its ships can read, as paths on the ship.
+    #[serde(default)]
+    pub roads: Vec<String>,
+    /// Where it is removed: a path on the ship, to its Peers page.
+    #[serde(default)]
+    pub peers: String,
+}
+
+impl OldGroup {
+    /// Where on the ship it is removed, when what the ship said is a
+    /// path of its own: it is put after the ship's address and opened,
+    /// so anything else is not followed.
+    pub fn peers_path(&self) -> Option<&str> {
+        let p = self.peers.as_str();
+        (p.starts_with("/apps/") && !p.contains(['@', '\\', '\n', '\r', ' '])).then_some(p)
+    }
+
+    /// The group in a line, as the web client says it.
+    pub fn said(&self) -> String {
+        let ships = if self.ships.is_empty() { "no ships".to_owned() } else { self.ships.join(" ") };
+        format!("{}: {ships} can read {} item{}", self.name, self.roads.len(), if self.roads.len() == 1 { "" } else { "s" })
+    }
+}
+
+/// The old groups in what `/legacy-groups` answers. None for what is not a list of them.
+pub fn old_groups(raw: &str) -> Option<Vec<OldGroup>> {
+    serde_json::from_str(raw).ok()
+}
+
 /// What a group may do with one page.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Level {
@@ -938,10 +975,16 @@ pub fn ships_forget() {
 /// Where a signed-in session is kept between runs: the app's own file,
 /// readable by its owner alone.
 fn session_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
-    Some(base.join("lattice-rune").join("session.json"))
+    Some(config_dir()?.join("session.json"))
+}
+
+/// The app's own folder for what it keeps between runs.
+// ponytail: XDG_CONFIG_HOME, then HOME. Windows sets neither, so nothing is kept there. The system's own folder for it is the fix
+pub(crate) fn config_dir() -> Option<std::path::PathBuf> {
+    // one set and empty is not set: it would name the folder the app was started in
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+    let base = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|h| h.join(".config")))?;
+    Some(base.join("lattice-rune"))
 }
 
 /// Where a ship's tree and pages are kept between runs, to read when it
@@ -1075,6 +1118,9 @@ pub enum Beacon {
     /// The stream ended, as it does every minute or so, or broke.
     Down,
 }
+
+/// The most of one unfinished event that is kept, in bytes. A table of 256 windows is about 50,000.
+const SSE_MOST: usize = 1 << 20;
 
 /// The whole events in what has come of a stream so far, each its name
 /// and its data. What follows the last blank line stays, to be added to.
@@ -1717,6 +1763,12 @@ pub struct Prefs {
     /// The pin chosen here for a feature of a map that is not written to, as orrery's: by the body it names.
     #[serde(default)]
     pub pins: std::collections::BTreeMap<String, String>,
+    /// The size of the text in the editor, in points. Nothing, or a size out of range, is the usual size.
+    #[serde(default)]
+    pub edit_size: f32,
+    /// Long lines in the editor run on, to be scrolled sideways, where they would be broken at the room's edge.
+    #[serde(default)]
+    pub no_wrap: bool,
     /// The address of the ship these are kept for. Empty with no ship: the computer's own alone.
     #[serde(skip)]
     pub of: String,
@@ -1738,6 +1790,7 @@ impl Prefs {
     pub fn take_device(&mut self, from: &Prefs) {
         (self.theme, self.font, self.vim, self.no_autosave) = (from.theme.clone(), from.font.clone(), from.vim, from.no_autosave);
         (self.html_plain, self.sort_desc, self.split_down) = (from.html_plain, from.sort_desc, from.split_down);
+        (self.edit_size, self.no_wrap) = (from.edit_size, from.no_wrap);
     }
 
     /// The kept preferences with no ship in front.
@@ -2351,6 +2404,76 @@ impl Conn {
         v["base"].as_str().filter(|b| !b.is_empty()).map(str::to_owned).ok_or_else(|| "the ship named no base".into())
     }
 
+    /// Says where this window is on a page: reading, or editing in a
+    /// block, or gone (`mode`). Sent when that changes, never on a timer. `client` tells this window from another
+    /// of the ship's. Nothing is written on the ship for it.
+    pub fn here_say(&self, page: &str, client: &str, block: &str, mode: &str) -> Result<(), String> {
+        self.call_in(15, "POST", &format!("presence?page={}&client={}&block={}&mode={}", enc(page), enc(client), enc(block), enc(mode)), Some("")).map(drop)
+    }
+
+    /// Holds an SSE stream of the ship's open and gives each event's
+    /// name and data to `on`, until the stream ends or `on` answers
+    /// false. `on` is also given an event with no name after every read
+    /// that brought none, so a listener that has been told to stop need
+    /// not wait for news to hear it. A read that hears nothing for
+    /// `quiet` seconds is a dead stream. An error starts with the status
+    /// the ship refused with.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sse(&self, url: &str, quiet: u64, mut on: impl FnMut(&str, &str) -> bool) -> Result<(), String> {
+        use std::io::Read;
+        // no limit on the whole request: the stream is held open
+        let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(quiet)).build();
+        let resp = match agent.get(url).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: no stream")),
+            Err(e) => return Err(e.to_string()),
+        };
+        let (mut rd, mut buf, mut chunk) = (resp.into_reader(), String::new(), [0u8; 4096]);
+        loop {
+            let n = match rd.read(&mut chunk) {
+                Ok(0) | Err(_) => return Ok(()),
+                Ok(n) => n,
+            };
+            // ponytail: a character cut in two by the end of a read is spoiled. Bytes kept over to the next read if a stream ever carries much that is not ASCII
+            buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+            let events = sse_events(&mut buf);
+            // an event that never ends is not kept for ever
+            if buf.len() > SSE_MOST {
+                return Err("the stream sent an event too long to keep".into());
+            }
+            if events.is_empty() && !on("", "") {
+                return Ok(());
+            }
+            for (name, data) in events {
+                if !on(&name, &data) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    /// Listens to who is on a page until the stream ends, giving each
+    /// table to `on`. Holding the stream open is what puts this window,
+    /// `client`, on the page. The ship drops one that does not say where
+    /// it is (`here_say`) for two and a half minutes.
+    /// `on` is given None when the ship wrote and there was no table, so
+    /// it can stop the listening without waiting for one. An error that
+    /// starts with 404 is a ship with no such stream.
+    // ponytail: no presence in the browser build, as with the change stream. A stream read as the page runs is the step up
+    pub fn here_stream(&self, page: &str, client: &str, mut on: impl FnMut(Option<crate::here::Table>) -> bool) -> Result<(), String> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (page, client, &mut on);
+            Err("no stream in the browser build".into())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // the ship writes a comment every 30 seconds: a minute with nothing is a dead stream
+            let url = format!("{}/apps/lattice/presence-stream?page={}&client={}", self.url, enc(page), enc(client));
+            self.sse(&url, 60, |name, data| on(if name == "here" { crate::here::table(data) } else { None }))
+        }
+    }
+
     /// Listens to the ship's change stream until it ends, giving each event to `on`. Answers whether the stream was registered, and whether a change came after that. `on` answering false stops the listening.
     pub fn beacon_stream(&self, base: &str, mut on: impl FnMut(Beacon) -> bool) -> Result<(bool, bool), String> {
         #[cfg(target_arch = "wasm32")]
@@ -2361,34 +2484,17 @@ impl Conn {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            use std::io::Read;
-            // no limit on the whole request: the stream is held open. A read that hears nothing for two minutes is a dead one, since the ship ends each stream itself after about eighty seconds
-            let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(120)).build();
-            let resp = match agent.get(&format!("{}/grubbery/api/keep{base}/beacon/rev", self.url)).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
-                Ok(r) => r,
-                Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: no stream")),
-                Err(e) => return Err(e.to_string()),
-            };
-            let (mut rd, mut buf, mut chunk) = (resp.into_reader(), String::new(), [0u8; 4096]);
+            // a read that hears nothing for two minutes is a dead one, since the ship ends each stream itself after about eighty seconds
             let (mut registered, mut bumped) = (false, false);
-            loop {
-                let n = match rd.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => n,
-                };
-                buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
-                for (name, data) in sse_events(&mut buf) {
-                    let Some(ev) = beacon_of(&name, &data) else { continue };
-                    match &ev {
-                        Beacon::Rev { old: true, .. } => registered = true,
-                        Beacon::Rev { old: false, .. } => bumped = true,
-                        _ => {}
-                    }
-                    if !on(ev) {
-                        return Ok((registered, bumped));
-                    }
+            self.sse(&format!("{}/grubbery/api/keep{base}/beacon/rev", self.url), 120, |name, data| {
+                let Some(ev) = beacon_of(name, data) else { return true };
+                match &ev {
+                    Beacon::Rev { old: true, .. } => registered = true,
+                    Beacon::Rev { old: false, .. } => bumped = true,
+                    _ => {}
                 }
-            }
+                on(ev)
+            })?;
             Ok((registered, bumped))
         }
     }
@@ -2654,6 +2760,30 @@ impl Conn {
     /// own from its %settings bucket, Talon's when it is followed, and the
     /// profile's colour when an accent asks for it. Talon's bucket or the
     /// profile not answering leaves what was had.
+    /// Fetches the faces of the font Talon installed that this computer
+    /// has neither installed nor kept, from grubbery's store on the ship
+    /// (`talon/fonts/<id>.font`), and keeps each that is the file its
+    /// name says. How many were kept. Run off the window's thread: it
+    /// asks fontconfig and the ship.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn fetch_fonts(&self, family: &str, ids: &[String]) -> Result<usize, String> {
+        let dir = crate::fonts::kept_dir().ok_or("nowhere to keep a font")?;
+        let missing = crate::fonts::missing_at(&dir, ids);
+        if missing.is_empty() || !crate::fonts::of_family(family).is_empty() {
+            return Ok(0);
+        }
+        let mut kept = 0;
+        // ponytail: faces are fetched one after another, and one over 8 MB, the most a fetch takes, is left out. Side by side and a larger limit if a family is slow or large
+        for id in missing {
+            // a face that cannot be had does not cost the others
+            let Ok(bytes) = fetch_bytes(&format!("{}/grubbery/api/file/talon/fonts/{id}.font", self.url), Some(self.cookie())) else { continue };
+            if crate::fonts::keep_at(&dir, &id, &bytes).is_ok() {
+                kept += 1;
+            }
+        }
+        Ok(kept)
+    }
+
     pub fn worn(&self, mut w: crate::theme::Worn) -> Result<crate::theme::Worn, String> {
         w.lattice(self.scry("settings/bucket/lattice/ui-prefs")?.as_ref());
         if w.reads_talon() {
@@ -3148,6 +3278,13 @@ impl Conn {
     }
 
     /// The ship's access list: every group with its ships and paths.
+    /// The sharing groups from before lattice kept its own. None from a
+    /// ship older than 141, or one that refused lattice the read: the
+    /// list is an extra, and its absence is not said.
+    pub fn legacy_groups(&self) -> Vec<OldGroup> {
+        self.call("GET", "legacy-groups", None).ok().and_then(|raw| old_groups(&raw)).unwrap_or_default()
+    }
+
     pub fn groups(&self) -> Result<Vec<Group>, String> {
         serde_json::from_str(&self.call("GET", "share-groups", None)?).map_err(|e| e.to_string())
     }
@@ -3604,7 +3741,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new() }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new(), edit_size: 0.0, no_wrap: false }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert!(back.sort_desc);
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
@@ -5029,6 +5166,18 @@ mod tests {
     }
 
     /// `LATTICE_URL=.. LATTICE_CODE=.. cargo test -- --ignored login`
+    #[test]
+    fn old_sharing_groups_are_read_and_said_as_the_web_says_them() {
+        let got = old_groups(r#"[{"name":"sarlev","ships":["~sarlev"],"roads":["/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/x/code"],"peers":"/apps/grubbery/peers/usergroups/sarlev"},{"name":"empty","ships":[],"roads":["/a","/b"],"peers":"/apps/grubbery/peers/usergroups/empty"}]"#).unwrap();
+        assert_eq!(got[0].said(), "sarlev: ~sarlev can read 1 item");
+        assert_eq!(got[1].said(), "empty: no ships can read 2 items");
+        assert_eq!(got[0].peers_path(), Some("/apps/grubbery/peers/usergroups/sarlev"));
+        for bad in ["@evil.example/x", "//evil.example", "https://evil.example", "/apps/x@evil.example", ""] {
+            assert_eq!(OldGroup { peers: bad.into(), ..Default::default() }.peers_path(), None, "{bad}");
+        }
+        assert_eq!((old_groups("[]"), old_groups("not found")), (Some(Vec::new()), None));
+    }
+
     #[test]
     #[ignore]
     fn live_login() {

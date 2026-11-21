@@ -7,6 +7,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod accounts;
 mod api;
+mod away;
 mod backups;
 mod browse;
 mod calc;
@@ -16,18 +17,22 @@ mod formula;
 mod html;
 mod local;
 mod mounts;
+mod notify;
 mod funcs;
 mod head;
+mod here;
 mod linkedit;
 mod map;
 mod marks;
 mod mapio;
 mod md;
+mod merge;
 mod odf;
 mod outline;
 mod pdf;
 mod pins;
 mod ribbon;
+mod scrub;
 mod rpane;
 mod scad;
 mod scadrun;
@@ -662,6 +667,10 @@ struct App {
     /// ship being typed there.
     groups: Vec<Group>,
     groups_req: Latest<Result<Vec<Group>, String>>,
+    /// The sharing groups from before lattice kept its own, for the access screen.
+    old_groups: Vec<api::OldGroup>,
+    old_groups_req: Latest<Vec<api::OldGroup>>,
+    old_groups_asked: bool,
     grant_to: TextEdit,
     /// Where the lattice lives on the ship (the start of grant paths), the
     /// access screen in place of a page, and the new group being typed.
@@ -778,6 +787,8 @@ struct App {
     group_drag: [rune_kit::shell::TabDragState; splits::MOST],
     /// How tall the room the page's editor stands in is, as last laid out.
     edit_room: f32,
+    /// The width of the editor's scrolling room, as it was last laid out: where its lines are broken.
+    edit_wide: f32,
     /// The shares as they stood when a line between groups was pressed, while it is dragged.
     share_base: Option<Vec<f32>>,
     /// The groups are one above the other, not side by side.
@@ -836,6 +847,44 @@ struct App {
     page_menu: bool,
     /// The tree row a right-click landed on, and where: its menu shows there.
     tree_menu: Option<(String, rune::PointerPress)>,
+    /// The link in a page a right-click was on, and where: its menu is open.
+    link_menu: Option<(String, rune::PointerPress)>,
+    /// This run's id among the ship's windows, and who it is in a page's table.
+    client_id: String,
+    /// What the thread listening to who is on a page heard, the page it listens on, and how it is told to stop.
+    here: std::sync::Arc<std::sync::Mutex<HereHeard>>,
+    here_for: Option<String>,
+    here_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The table showing.
+    here_shown: Option<here::Table>,
+    /// Where this window is now (page, place, mode), since when, when the ship was last told, and how many times it was told this without taking it.
+    here_now: Option<(String, String, String)>,
+    here_moved: f64,
+    here_at: f64,
+    here_tries: u8,
+    here_req: Latest<Result<(), String>>,
+    /// The ship had no presence when asked: it is not asked again before this, by the clock.
+    here_off_until: f64,
+    /// Where this window's caret is, as a place, and what of the editor's text others are editing: worked out when the text, the caret or the table changes.
+    here_mine: String,
+    here_tints: Vec<std::ops::Range<usize>>,
+    here_key: (usize, usize, u64),
+    /// How many times what the table shows has changed.
+    here_heard: u64,
+    /// When the ship last heard from this window.
+    here_beat: f64,
+    /// Whether anyone is at the window (`sync_away`): a key or the pointer moved since the last look, when one last did, since when the window has not been in front, and when it is looked at again.
+    touched: bool,
+    touched_at: f64,
+    behind: Option<f64>,
+    in_front: bool,
+    away: bool,
+    away_look: f64,
+    /// How many parts a merge of the other's text would find changed by both, said in the banner, and what it was worked out for.
+    merge_said: Option<usize>,
+    merge_key: (usize, usize, u64),
+    /// A page's history being dragged through, when it is.
+    scrub: Option<Scrub>,
     /// The top bar's tabs while one is pressed or dragged.
     tab_drag: rune_kit::shell::TabDragState,
     /// The bookmarks the reader keeps, once read.
@@ -866,6 +915,11 @@ struct App {
     accent_hex: TextEdit,
     /// The families the window's text was last set in, to set them again only when the theme's font changes.
     font_set: String,
+    /// The shares a notification was raised for, so that one told twice is said once.
+    noted: Vec<String>,
+    noted_at: f64,
+    /// The faces of Talon's font fetched from the ship, and how many were newly kept.
+    font_req: Latest<Result<usize, String>>,
     /// The last read of them failed.
     marks_bad: bool,
     /// What is typed into their filter.
@@ -1160,6 +1214,9 @@ fn init() -> App {
         sens_req: Latest::default(),
         groups: Vec::new(),
         groups_req: Latest::default(),
+        old_groups: Vec::new(),
+        old_groups_req: Latest::default(),
+        old_groups_asked: false,
         grant_to: TextEdit::new(""),
         base: String::new(),
         base_req: Latest::default(),
@@ -1233,6 +1290,7 @@ fn init() -> App {
         group_drag: std::array::from_fn(|_| rune_kit::shell::TabDragState::new()),
         share_base: None,
         edit_room: 0.0,
+        edit_wide: 0.0,
         split_down: false,
         groups_room: (0.0, 0.0),
         resync: false,
@@ -1265,6 +1323,33 @@ fn init() -> App {
         search_at: None,
         page_menu: false,
         tree_menu: None,
+        link_menu: None,
+        client_id: here::client_id(),
+        here: Default::default(),
+        here_for: None,
+        here_stop: Default::default(),
+        here_shown: None,
+        here_now: None,
+        here_moved: 0.0,
+        here_at: 0.0,
+        here_tries: 0,
+        here_req: Latest::default(),
+        here_off_until: 0.0,
+        here_mine: String::new(),
+        here_tints: Vec::new(),
+        here_key: (0, 0, 0),
+        here_heard: 0,
+        here_beat: 0.0,
+        // a window is in front and in use when it opens
+        touched: true,
+        touched_at: 0.0,
+        behind: None,
+        in_front: true,
+        away: false,
+        away_look: 0.0,
+        merge_said: None,
+        merge_key: (0, 0, 0),
+        scrub: None,
         tab_drag: rune_kit::shell::TabDragState::new(),
         marks: None,
         marks_req: Latest::default(),
@@ -1274,6 +1359,9 @@ fn init() -> App {
         theme_req: Latest::default(),
         next_theme: 0.0,
         font_set: APP_FONT.to_owned(),
+        noted: Vec::new(),
+        noted_at: -5.0,
+        font_req: Latest::default(),
         theme_put: Latest::default(),
         accent_hex: TextEdit::new(""),
         theme_draft: None,
@@ -1621,6 +1709,8 @@ fn switch_ship(s: &mut App, url: &str) {
 /// Builds the window's state again from what is kept: for the ship now in front when `signed`,
 /// or for no ship. Everything the window held of the ship before is let go.
 fn reset(s: &mut App, signed: bool) {
+    // this window leaves the table it was on, on the ship that was in front
+    here_leave(s);
     let mut fresh = init();
     if !signed {
         fresh.conn = None;
@@ -2314,6 +2404,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.hist_req.set_waker(waker.clone());
     s.know_req.set_waker(waker.clone());
     s.groups_req.set_waker(waker.clone());
+    s.old_groups_req.set_waker(waker.clone());
     s.base_req.set_waker(waker.clone());
     s.bans_req.set_waker(waker.clone());
     s.sens_req.set_waker(waker.clone());
@@ -2351,6 +2442,8 @@ fn setup(s: &mut App, waker: Waker) {
     s.shared_req.set_waker(waker.clone());
     s.marks_req.set_waker(waker.clone());
     s.theme_req.set_waker(waker.clone());
+    s.font_req.set_waker(waker.clone());
+    s.here_req.set_waker(waker.clone());
     s.folds_req.set_waker(waker.clone());
     s.sugg_req.set_waker(waker.clone());
     s.visits_req.set_waker(waker.clone());
@@ -2434,10 +2527,7 @@ fn listen(s: &mut App) {
             let (registered, bumped) = got.unwrap_or((false, false));
             fail = api::beacon_fail(fail, registered, began.elapsed().as_millis(), bumped);
             let jitter = f64::from(crate::api::since_epoch().map_or(0, |d| d.subsec_nanos())) / 1e9;
-            let until = std::time::Instant::now() + std::time::Duration::from_millis(api::beacon_wait(fail, jitter));
-            while std::time::Instant::now() < until && !stop.load(Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-            }
+            wait_or_stop(api::beacon_wait(fail, jitter), &stop);
         }
     });
 }
@@ -2488,6 +2578,13 @@ fn step(s: &mut App, by: isize) {
 /// Follows a link in a page: to a page of this ship, to a prompt that makes
 /// the page when there is none yet, or to the web.
 fn follow(s: &mut App, url: &str, tx: &mut Tx) {
+    // with Ctrl (Cmd on a Mac) the link opens in a new tab
+    let aside = tx.mods().cmd;
+    follow_in(s, url, aside, tx);
+}
+
+/// Follows a link, a page of this ship's into a new tab when `aside`.
+fn follow_in(s: &mut App, url: &str, aside: bool, tx: &mut Tx) {
     // an address on the network is read here, in the browser, not handed to the system
     let there = s.remote.as_ref().filter(|r| r.mode == "published").and_then(|sh| remote_link(&sh.host, sh.name(), url));
     let to = there.or_else(|| url.starts_with("urb://").then(|| url.to_owned()));
@@ -2497,8 +2594,7 @@ fn follow(s: &mut App, url: &str, tx: &mut Tx) {
     match md::page_of(url) {
         Some(name) if s.names.contains(&name) => {
             s.files.reveal(&name, tx);
-            // with Ctrl (Cmd on a Mac) the link opens in a new tab
-            if tx.mods().cmd { tab_for(s, &name) } else { open_page(s, &name) }
+            if aside { tab_for(s, &name) } else { open_page(s, &name) }
         }
         // a link to a page not written yet starts it, named, ready to type in
         Some(name) if api::valid_name(&name) => {
@@ -4062,7 +4158,7 @@ fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
     if let Some(h) = s.outline_at.and_then(|i| outline::outline(&src, "md").into_iter().nth(i)).filter(|h| !h.words.is_empty()) {
         marks.push((vec![h.words], rune_kit::Highlight::new().key("md-outline")));
     }
-    Markdown::new(src).selectable(true).on_link_tx(follow).images(move |src| pics.get(src).cloned()).highlights(marks).style(page_style(k)).build(k)
+    Markdown::new(src).selectable(true).on_link_tx(follow).on_link_secondary(|s: &mut App, url, p, _| s.link_menu = Some((url.to_owned(), p))).images(move |src| pics.get(src).cloned()).highlights(marks).style(page_style(k)).build(k)
 }
 
 /// How a page's Markdown is set to be read. rune-kit's own style is a chat message's, with
@@ -4072,7 +4168,7 @@ fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
 fn page_style(k: &Kit) -> rune_kit::MarkdownStyle {
     let body = rune::TextStyle { line_height: 22.4, ..k.ty.body };
     let heading = |size: f32, line: f32| rune::TextStyle { size, weight: 650.0, line_height: line, ..body };
-    rune_kit::MarkdownStyle::from_kit(k).heading_font(1, heading(26.0, 34.0)).heading_font(2, heading(21.0, 28.0)).heading_font(3, heading(17.0, 24.0)).heading_font(4, heading(15.0, 22.0))
+    rune_kit::MarkdownStyle::from_kit(k).heading_font(1, heading(26.0, 34.0)).heading_font(2, heading(21.0, 28.0)).heading_font(3, heading(17.0, 24.0)).heading_font(4, heading(15.0, 22.0)).selection(selection_of(k))
 }
 
 /// The colours of a page's source, by its kind: Rune's own lexers for
@@ -4219,6 +4315,7 @@ fn find_step(s: &mut App, by: isize, tx: &mut Tx) {
         FindIn::Editor => {
             if let Some(r) = edit_matches(s).get(s.find_at).cloned() {
                 s.edit.set_selection(r.start, r.end);
+                editor_reveal(s, tx);
             }
         }
         FindIn::Reader => tx.scroll_into_view(Markdown::highlight_key(s.find_at)),
@@ -4391,6 +4488,7 @@ fn go_heading(s: &mut App, i: usize, tx: &mut Tx) {
         s.edit.set_selection(h.at, h.at);
         s.edit.focused = true;
         tx.focus_when_shown(FIELD, false);
+        editor_reveal(s, tx);
     } else {
         s.outline_at = Some(i);
         tx.scroll_into_view("md-outline");
@@ -5452,6 +5550,9 @@ const SYNC_LIVE: f64 = 300.0;
 
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
+    changed |= sync_scrub(s, clock, tx);
+    changed |= sync_away(s, clock, tx);
+    changed |= sync_here(s, clock, tx);
     changed |= sync_draft(s);
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -5490,6 +5591,18 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let heard = std::mem::take(&mut *s.beacon.lock().unwrap());
     for ev in heard {
         let down = ev == api::Beacon::Down;
+        // a page or folder newly shared with this ship: said here and by the system, once
+        if let api::Beacon::Shares { old: false, stamp } = &ev {
+            if let Some(n) = notify::share(stamp).filter(|n| notify::once(&mut s.noted, &n.key)) {
+                s.note = n.title.clone();
+                // the system is told of one in five seconds at most: a ship that shares in a loop fills the app's own line, not the desktop
+                if clock >= s.noted_at + 5.0 {
+                    s.noted_at = clock;
+                    notify::show(&n.title, &n.body);
+                }
+                changed = true;
+            }
+        }
         let w = s.beacon_state.take(ev);
         if w.tree {
             // a moment later, so changes that come together are read once
@@ -5541,6 +5654,19 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.set_font_families(font.clone(), APP_FONT);
         s.font_set = font;
         changed = true;
+        // a family Talon installed that this computer has not: its files are on the ship
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(c), Some(theme::Font::Named(family)), ids) = (s.conn.clone(), s.prefs.worn.font(), s.prefs.worn.font_ids()) {
+            if !ids.is_empty() {
+                s.font_req.request((c, family, ids), |(c, family, ids)| c.fetch_fonts(&family, &ids));
+            }
+        }
+    }
+    // Rune takes font files at launch alone, so one fetched now is worn from the next
+    if s.font_req.take().is_some_and(|r| r.is_ok_and(|n| n > 0)) {
+        changed = true;
+        // ponytail: a fetched font is worn only from the next launch. Rune taking fonts while it runs is the fix
+        s.note = "Talon\u{2019}s font was fetched from your ship. It is worn the next time lattice starts.".to_owned();
     }
     // a ship that could not be asked leaves the look it had
     if let Some(Ok(worn)) = s.theme_req.take().filter(|r| r.as_ref().is_ok_and(|w| *w != s.prefs.worn)) {
@@ -5725,6 +5851,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Ok(b) => s.base = b,
             Err(e) => s.note = format!("access: {e}"),
         }
+    }
+    if let Some(g) = s.old_groups_req.take() {
+        changed |= g != s.old_groups;
+        s.old_groups = g;
     }
     if let Some(r) = s.groups_req.take() {
         changed = true;
@@ -6274,6 +6404,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
         }
     }
+    // after the tree is read, which is where a page is found to be behind
+    sync_merge(s);
     changed |= take_pics(s);
     if changed {
         sync_map(s);
@@ -9314,6 +9446,22 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
         .child(text("Editor").font(k.ty.body_medium).color(c.text_base))
         .child(text("The font a page's source is written in. Kept on this computer.").font(k.ty.small).color(c.text_muted).wrap())
         .child(fonts)
+        .child({
+            // the size of the text in both editors, and whether a long line is broken at the room's edge
+            let now = edit_size(&s.prefs);
+            let mut sizes = row().key("edit-sizes").role("group").label("Text size").gap(4.0).center_y().flex_wrap().child(text("Size").font(k.ty.small).color(c.text_muted));
+            for size in EDIT_SIZES {
+                sizes = sizes.child(Button::new(format!("{size}")).control_size(ControlSize::Small).variant(if now == size { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help(format!("Set the editor's text at {size} points")).on_press(move |s: &mut App| {
+                    s.prefs.edit_size = size;
+                    save_prefs(s);
+                }).build(k).key(format!("edit-size-{size}")));
+            }
+            sizes
+        })
+        .child(Switch::new(!s.prefs.no_wrap).label("Wrap long lines").on_toggle(|s: &mut App| {
+            s.prefs.no_wrap ^= true;
+            save_prefs(s);
+        }).build(k).key("edit-wrap"))
         .child(Switch::new(vim_on).label("Vim mode in the source editor").on_toggle(|s: &mut App| {
             s.prefs.vim = !s.prefs.vim;
             save_prefs(s);
@@ -11059,6 +11207,10 @@ fn flip_sens(s: &mut App) {
 fn load_groups(s: &mut App) {
     if let Some(c) = s.conn.clone() {
         s.groups_req.request(c.clone(), |c| c.groups());
+        // lattice cannot change that list, so it is asked for once for a ship and not after each change to a group
+        if !std::mem::replace(&mut s.old_groups_asked, true) {
+            s.old_groups_req.request(c.clone(), |c| c.legacy_groups());
+        }
         // a ban takes ships out of groups, so the two are read together
         s.bans_req.request(c.clone(), |c| c.bans());
         s.asks_req.request(c.clone(), |c| c.asks());
@@ -11192,6 +11344,38 @@ fn access_view(s: &App, k: &Kit) -> El {
     }
     if s.groups.iter().all(|g| g.name == "public") {
         list = list.child(text(if s.conn.is_some() { "No groups yet." } else { "Sample pages have no groups." }).font(k.ty.small).color(c.text_muted));
+    }
+    // the groups from before lattice kept its own: listed so the owner can remove them where the ship keeps them
+    if !s.old_groups.is_empty() {
+        let mut old = col().key("old-groups").w_full().gap(6.0).child(text("Old sharing groups").font(k.ty.small_medium).color(c.text_muted)).child(
+            text("These groups were made before lattice kept its own, and your ship now keeps them in its own settings, which lattice cannot change. They still let their ships read what is listed, even after you unshare it here. Your shares themselves are already carried into the groups above. Remove each one on the Peers page once you no longer need it.")
+                .font(k.ty.small)
+                .color(c.text_muted)
+                .wrap(),
+        );
+        for (i, g) in s.old_groups.iter().enumerate() {
+            // the ship says where: followed only when it is a path of the ship's own
+            let peers = g.peers_path().map(str::to_owned);
+            old = old.child(
+                row().key(format!("old-group-{i}")).w_full().gap(8.0).center_y().child(text(g.said()).font(k.ty.small).color(c.text_base).help(g.roads.join("\n")).grow(1.0).min_w(0.0)).child(
+                    Button::new("Remove on Peers page")
+                        .control_size(ControlSize::Small)
+                        .help("Opens your ship's Peers page in the browser")
+                        .on_press_tx(move |s: &mut App, tx| {
+                            let (Some(c), Some(peers)) = (&s.conn, &peers) else {
+                                s.note = "Your ship did not say where its Peers page is".into();
+                                return;
+                            };
+                            if let Err(e) = tx.open_url(&format!("{}{peers}", c.url)) {
+                                s.note = format!("could not open the Peers page: {e:?}");
+                            }
+                        })
+                        .build(k)
+                        .key(format!("old-group-remove-{i}")),
+                ),
+            );
+        }
+        list = list.child(old);
     }
     let form = col()
         .key("group-form")
@@ -11574,6 +11758,47 @@ fn tree_menu_view(s: &App, k: &Kit, side: El, layer: &mut Vec<El>) -> El {
         menu = menu.item(MenuItem::new(label).danger(id == "delete").on_select_tx(move |s: &mut App, tx| {
             if let Some((path, _)) = s.tree_menu.clone() {
                 tree_menu_run(s, &path, id, tx);
+            }
+        }));
+    }
+    menu.build(k, layer)
+}
+
+/// What the menu of a link in a page offers: to open it, to open it in
+/// a new tab when it leads to a page of this ship's, and its address.
+fn link_menu_items(page_here: bool) -> Vec<(&'static str, &'static str)> {
+    let mut items = vec![("open", "Open")];
+    if page_here {
+        items.push(("tab", "Open in new tab"));
+    }
+    items.push(("copy", "Copy link"));
+    items
+}
+
+/// Whether a link leads to a page this ship has: one a tab can hold.
+fn link_is_page(s: &App, url: &str) -> bool {
+    !s.memory && s.remote.is_none() && !url.starts_with("urb://") && md::page_of(url).is_some_and(|n| s.names.contains(&n))
+}
+
+/// The menu a right-click on a link in a page opens, at the pointer.
+/// Rune's Markdown tells of a secondary press on a link, and of no
+/// middle one, so this is where a link is opened in a new tab by the
+/// pointer alone.
+fn link_menu_view(s: &App, k: &Kit, layer: &mut Vec<El>) -> El {
+    let page_here = s.link_menu.as_ref().is_some_and(|(url, _)| link_is_page(s, url));
+    // the menu opens at the pointer, and what it is hung on is a point of its own with nothing in it: a menu gives
+    // focus back to the first control inside what it hangs on, which hung on the whole window was the ribbon's
+    let mut menu = rune_kit::context_menu("link-menu", el().w(0.0).h(0.0), s.link_menu.as_ref().map(|m| m.1)).on_close(|s: &mut App| s.link_menu = None);
+    for (id, label) in link_menu_items(page_here) {
+        menu = menu.item(MenuItem::new(label).on_select_tx(move |s: &mut App, tx| {
+            let Some((url, _)) = s.link_menu.take() else { return };
+            match id {
+                "copy" => {
+                    // a link from another ship's page may hold a new line or a mark that turns the text: neither is put where it may be pasted
+                    tx.copy(notify::text(&url, 4096));
+                    s.note = "Link copied".to_owned();
+                }
+                _ => follow_in(s, &url, id == "tab", tx),
             }
         }));
     }
@@ -12267,6 +12492,627 @@ fn sidebar(s: &App, k: &Kit) -> El {
 }
 
 /// The history pane: the open page's revisions, newest first.
+/// What the thread listening to a page's table has for the window: the
+/// newest table, and whether the ship turned out to have no such stream.
+#[derive(Default)]
+struct HereHeard {
+    table: Option<here::Table>,
+    off: bool,
+    /// The stream ended: what it last said is no longer known to be so.
+    down: bool,
+}
+
+/// This ship's name, or nothing with no ship.
+fn our(s: &App) -> &str {
+    s.conn.as_ref().map_or("", |c| c.ship())
+}
+
+/// Whether an answer says the ship will not give this window a table: a
+/// ship before lattice 143 knows neither route (404, 405), and any other
+/// refusal (400, 401, 403) would only be given again at once.
+fn no_presence(e: &str) -> bool {
+    e.len() >= 3 && e.starts_with('4') && e.as_bytes()[..3].iter().all(u8::is_ascii_digit)
+}
+
+/// Waits `ms`, or until told to stop, whichever is first.
+fn wait_or_stop(ms: u64, stop: &std::sync::atomic::AtomicBool) {
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    while std::time::Instant::now() < until && !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+/// Notes whether anyone is at the window (`away::left`): a key or the
+/// pointer moved, and whether it is the window in front. Whether that
+/// changed. While the window is in use it is looked at again when it
+/// would count as left, which costs the ship nothing.
+fn sync_away(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
+    if std::mem::take(&mut s.touched) || s.touched_at == 0.0 {
+        s.touched_at = clock;
+    }
+    s.behind = if s.in_front { None } else { s.behind.or(Some(clock)) };
+    let was = std::mem::replace(&mut s.away, away::left(clock, s.touched_at, s.behind));
+    let again = clock + away::left_in(clock, s.touched_at, s.behind) + 0.5;
+    // asked for once for each time it moves, not at every look
+    // a look that has come and gone is asked for again, however near the new one is to it
+    if !s.away && ((again - s.away_look).abs() > 1.0 || s.away_look <= clock) {
+        s.away_look = again;
+        tx.wake_after(std::time::Duration::from_secs_f64(again - clock));
+    }
+    was != s.away
+}
+
+/// The page whose table this window is on: the open page, when it is
+/// one of this ship's that is shared and someone is at the window. Not
+/// a memory, not another ship's page, not a private page: nothing is
+/// said of where one is in those.
+// ponytail: only this ship's published pages, and not in the browser build. A page granted to named ships, or one another ship shared with this one, has no table here. The ship saying which pages have readers is the fix
+fn here_page(s: &App) -> Option<String> {
+    if s.away || s.memory || s.anon || s.sample || s.remote.is_some() || s.conn.is_none() || cfg!(target_arch = "wasm32") {
+        return None;
+    }
+    let p = s.open.as_ref()?;
+    // a page made private again keeps its name here, as private
+    s.shares.get(&p.name).is_some_and(|mode| mode != "private").then(|| p.name.clone())
+}
+
+/// Who this window is in a page's table.
+fn here_me(s: &App) -> String {
+    format!("{}/{}", our(s), s.client_id)
+}
+
+/// The other windows on the page showing.
+fn here_others(s: &App) -> Vec<here::Row> {
+    s.here_shown.as_ref().map(|t| here::others(t, &here_me(s))).unwrap_or_default()
+}
+
+/// Works out where this window's caret is, as a place, and where in
+/// the editor's text the others are editing. A place is named in the
+/// page's source, and the rich editor's text is not the source, so a
+/// caret and a range are carried across by the line they are on.
+/// Done only on a page with a table, and only when the text, the caret
+/// or the table changed.
+// ponytail: the text is taken as unchanged when its length and the caret's place are. The rich text is also made source again each time the caret moves. A count of edits and a kept source if a large shared page is slow to type in
+fn here_work(s: &mut App) {
+    if s.here_for.is_none() || !s.editing {
+        if !s.here_mine.is_empty() || !s.here_tints.is_empty() {
+            (s.here_mine, s.here_tints, s.here_key) = (String::new(), Vec::new(), (0, 0, 0));
+        }
+        return;
+    }
+    // the tables are counted here: the ship's own count starts again when its presence does
+    let key = (s.edit.text.len(), s.edit.focus, s.here_heard);
+    if key == s.here_key {
+        return;
+    }
+    s.here_key = key;
+    let Some(kind) = s.open.as_ref().map(|p| p.kind.clone()) else { return };
+    let made = s.rich.then(|| edited(s));
+    let source = made.as_deref().unwrap_or(&s.edit.text);
+    let all = here::places(&kind, source);
+    // the caret is a place in the editor's bytes
+    let at = if s.rich { here::across(&s.edit.text, s.edit.focus, source) } else { s.edit.focus };
+    let mine = here::place_in(&all, at);
+    let tints = here_others(s)
+        .iter()
+        .filter(|r| r.editing())
+        .filter_map(|r| here::range_in(&all, source, &r.block))
+        .map(|r| if s.rich { here::across_range(source, r, &s.edit.text) } else { r })
+        .collect();
+    (s.here_mine, s.here_tints) = (mine, tints);
+}
+
+/// Takes this window off the table it is on: the listener is told to
+/// stop, and the ship that the window has gone, which ends the stream
+/// from its side too. Said once and not waited for.
+fn here_leave(s: &mut App) {
+    s.here_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let (Some(c), Some(old)) = (s.conn.clone(), s.here_for.take()) {
+        let id = s.client_id.clone();
+        spawn(move || drop(c.here_say(&old, &id, "", "gone")));
+    }
+    (s.here_shown, s.here_now, s.here_tries) = (None, None, 0);
+}
+
+/// Listens on a page's table, on a thread of its own, until told to
+/// stop. A stream that ends is opened again after a wait, as the change
+/// stream is. A ship with no such stream is not asked again by this
+/// thread: it says so and ends.
+fn here_listen(s: &mut App, page: String) {
+    use std::sync::atomic::Ordering;
+    let (Some(c), Some(waker)) = (s.conn.clone(), s.waker.clone()) else { return };
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(HereHeard::default()));
+    (s.here_stop, s.here) = (stop.clone(), heard.clone());
+    let id = s.client_id.clone();
+    std::thread::spawn(move || {
+        let (mut fail, mut barren) = (0u32, 0u32);
+        while !stop.load(Ordering::Relaxed) {
+            let mut any = false;
+            let got = c.here_stream(&page, &id, |t| {
+                if let Some(t) = t {
+                    any = true;
+                    if let Ok(mut h) = heard.lock() {
+                        h.table = Some(t);
+                    }
+                    waker();
+                }
+                // asked at every word from the ship, a table or not, so a stop is heard within its 30 seconds
+                !stop.load(Ordering::Relaxed)
+            });
+            // a ship that ends each stream at once, as one at its cap of streams does, or fails each time, is let be after five
+            let ended = !any && got.as_ref().map_or_else(|e| e.starts_with('5'), |()| true);
+            barren = if ended { barren + 1 } else { 0 };
+            let off = got.as_ref().is_err_and(|e| no_presence(e)) || barren >= 5;
+            if let Ok(mut h) = heard.lock() {
+                (h.table, h.down, h.off) = (None, true, off);
+            }
+            waker();
+            if off {
+                return;
+            }
+            fail = if any { 1 } else { (fail + 1).min(5) };
+            let jitter = f64::from(api::since_epoch().map_or(0, |d| d.subsec_nanos())) / 1e9;
+            wait_or_stop(api::beacon_wait(fail, jitter), &stop);
+        }
+    });
+}
+
+/// How often a window says it is still on a page, in seconds. The ship drops one it has not heard from in 150.
+const BEAT: f64 = 60.0;
+
+/// Says where this window is, when the ship's table has it otherwise.
+/// The ship puts a window on the page as reading when its stream opens,
+/// so a reader says only that it is still there, once a minute. A caret on its way through blocks is
+/// said where it comes to rest, and a ship that does not take what it
+/// is told is told three times and then left alone until the place
+/// changes.
+fn here_tell(s: &mut App, clock: f64, tx: &mut Tx) {
+    let (Some(c), Some(page)) = (s.conn.clone(), s.here_for.clone()) else { return };
+    let now = (page, s.here_mine.clone(), if s.editing { "edit" } else { "read" }.to_owned());
+    if s.here_now.as_ref() != Some(&now) {
+        (s.here_now, s.here_moved, s.here_tries) = (Some(now.clone()), clock, 0);
+    }
+    let me = here_me(s);
+    let Some(row) = s.here_shown.as_ref().and_then(|t| t.here.iter().find(|r| r.who == me)) else { return };
+    if row.block == now.1 && row.mode == now.2 {
+        // it took: a ship that loses the row later is told again from the start
+        s.here_tries = 0;
+    }
+    // said again once a minute, moved or not, since the ship drops a window it has not heard from in two and a half (`BEAT`). Also when the ship has not taken the place after three tellings: the window is still there. This is only reached with someone at the window
+    if row.block == now.1 && row.mode == now.2 || s.here_tries >= 3 {
+        if clock >= s.here_beat + BEAT {
+            let id = s.client_id.clone();
+            s.here_req.request((c, now, id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
+            s.here_beat = clock;
+            tx.wake_after(std::time::Duration::from_secs_f64(BEAT + 0.5));
+        }
+        return;
+    }
+    // a place the caret has rested in for a second is said. Said again only after three more
+    let due = (s.here_moved + 1.0).max(s.here_at + if s.here_tries > 0 { 3.0 } else { 1.0 });
+    if clock < due {
+        tx.wake_after(std::time::Duration::from_secs_f64((due - clock).max(0.05)));
+        return;
+    }
+    let id = s.client_id.clone();
+    s.here_req.request((c, now, id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
+    (s.here_at, s.here_beat, s.here_tries) = (clock, clock, s.here_tries + 1);
+    tx.wake_after(std::time::Duration::from_secs(3));
+    // and a look for the next minute's word, counted from this one
+    tx.wake_after(std::time::Duration::from_secs_f64(BEAT + 0.5));
+}
+
+/// Keeps this window on the table of the page it shows. Holding that
+/// page's stream open is what puts it there, and saying where it is
+/// once a minute (`BEAT`) is what keeps it there. A window nobody is at
+/// (`sync_away`) is on no table and asks the ship nothing for this. Whether anything on screen
+/// changed.
+fn sync_here(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
+    let mut changed = false;
+    // a ship that had no presence is asked again after ten minutes: it may have been between two versions
+    let want = here_page(s).filter(|_| clock >= s.here_off_until);
+    if want != s.here_for {
+        here_leave(s);
+        if let Some(page) = want.clone() {
+            here_listen(s, page);
+        }
+        (s.here_for, changed) = (want, true);
+    }
+    if let Ok(mut h) = s.here.lock() {
+        if std::mem::take(&mut h.off) {
+            // the page is left without a word: a ship that refused the stream has no row to take away
+            (s.here_off_until, s.here_for, s.here_now) = (clock + 600.0, None, None);
+        }
+        // nobody is shown from a stream that has ended: they may have gone since. The ship has lost this window's place with it, so it is told again
+        if std::mem::take(&mut h.down) {
+            s.here_tries = 0;
+            if s.here_shown.take().is_some() {
+                (s.here_heard, changed) = (s.here_heard + 1, true);
+            }
+        }
+        // a table for a page since left is not this page's
+        if let Some(t) = h.table.take().filter(|t| Some(&t.page) == s.here_for.as_ref()) {
+            // the first table of a stream: the ship heard from this window when the stream opened
+            if s.here_shown.is_none() {
+                s.here_beat = clock;
+                tx.wake_after(std::time::Duration::from_secs_f64(BEAT + 0.5));
+            }
+            (s.here_shown, s.here_heard, changed) = (Some(t), s.here_heard + 1, true);
+        }
+    }
+    // an answer to what was said is not waited on: the table says whether it took
+    let _ = s.here_req.take();
+    here_work(s);
+    here_tell(s, clock, tx);
+    changed
+}
+
+/// The others on the page, in the page's bar: up to three named, and a count of the rest.
+fn here_chips(s: &App, k: &Kit) -> Option<El> {
+    let others = here_others(s);
+    if others.is_empty() {
+        return None;
+    }
+    let mut chips = row().key("here").role("group").label(format!("{} more on this page", others.len())).gap(4.0).center_y();
+    for (i, r) in others.iter().take(3).enumerate() {
+        let tint = if r.editing() { k.c.text_accent } else { k.c.text_muted };
+        let help = if r.editing() { format!("Editing {}", here::place_said(&r.block)) } else { "Reading this page".to_owned() };
+        chips = chips.child(
+            row().key(format!("here-{i}")).h(22.0).px(8.0).gap(6.0).center_y().radius(11.0).fill(tint.alpha(0.14)).help(help)
+                .child(el().w(6.0).h(6.0).radius(3.0).fill(tint))
+                .child(text(here::said(r, our(s))).font(k.ty.small).color(k.c.text_base)),
+        );
+    }
+    if others.len() > 3 {
+        chips = chips.child(text(format!("+{}", others.len() - 3)).key("here-more").font(k.ty.small).color(k.c.text_muted));
+    }
+    Some(chips)
+}
+
+/// The blocks others are editing, in the text being edited: tinted, so it is seen before it is typed into.
+fn here_spans(s: &App, k: &Kit) -> Vec<Span> {
+    if !s.editing {
+        return Vec::new();
+    }
+    s.here_tints.iter().filter(|r| r.end <= s.edit.text.len() && s.edit.text.is_char_boundary(r.start) && s.edit.text.is_char_boundary(r.end)).map(|r| Span::new(r.start, r.end).bg(k.c.text_accent.alpha(0.2), 1.0)).collect()
+}
+
+/// Who else is editing the block this window's caret is in, when anyone is.
+fn here_collides(s: &App) -> Option<String> {
+    if s.here_mine.is_empty() || !s.editing {
+        return None;
+    }
+    let who: Vec<String> = here_others(s).iter().filter(|r| r.editing() && r.block == s.here_mine).map(|r| if r.ship == our(s) { "Another window of yours".to_owned() } else { r.ship.clone() }).collect();
+    (!who.is_empty()).then(|| who.join(", "))
+}
+
+/// The page as it was saved somewhere else since this window began to edit it.
+fn stale_theirs(s: &App) -> Option<&Page> {
+    let p = s.open.as_ref()?;
+    s.cache.get(&p.name).filter(|c| c.rev > p.rev)
+}
+
+/// Keeps what the banner says of a merge true as the owner types on:
+/// how many parts both changed, worked out again when the text, the
+/// caret or their revision moves, and let go when the page is no longer
+/// behind.
+// ponytail: worked out on the window's thread, a merge of the whole page each time the text changes while the banner shows. A thread of its own if a long page stutters there
+fn sync_merge(s: &mut App) {
+    let Some(rev) = stale_theirs(s).filter(|_| s.editing && s.stale).map(|t| t.rev) else {
+        (s.merge_said, s.merge_key) = (None, (0, 0, 0));
+        return;
+    };
+    let key = (s.edit.text.len(), s.edit.focus, rev);
+    if key == s.merge_key {
+        return;
+    }
+    s.merge_key = key;
+    s.merge_said = s.open.as_ref().zip(stale_theirs(s)).map(|(p, theirs)| merge::safe(&p.kind, &p.body, &edited(s), &theirs.body).map_or(NO_MERGE, |m| m.conflicts.len()));
+}
+
+/// What the banner's count is when the two texts cannot be merged safely (`merge::safe`).
+const NO_MERGE: usize = usize::MAX;
+
+/// Merges what was saved somewhere else into what is typed here, by the
+/// page's blocks. What only they changed is taken, what only this
+/// window changed stays, and where both did this window's stays and is
+/// said. Their text becomes what this window's edits are counted from,
+/// so the next save lands. Nothing is saved by this.
+fn merge_theirs(s: &mut App) {
+    let (Some(p), Some(theirs)) = (s.open.clone(), stale_theirs(s).cloned()) else { return };
+    let Some(m) = merge::safe(&p.kind, &p.body, &edited(s), &theirs.body) else { return };
+    // the caret is a place in the editor's bytes
+    let (was, caret) = (s.edit.text.clone(), s.edit.focus);
+    // the editor shows the merged text in the way it was showing the page
+    let rich = s.rich.then(|| md::exact(&m.text)).flatten();
+    s.rich = rich.is_some();
+    s.edit = match rich {
+        Some(d) => rich_edit(d, &mut s.seps),
+        None => TextEdit::new(m.text.clone()),
+    };
+    s.edit.focused = true;
+    // the caret stays on the line it was on, where that line still is
+    // ponytail: the editor is given the merged text as a new text, so undo does not reach back across a merge. The merge made as one edit of the old text is the fix
+    let at = here::across(&was, caret, &s.edit.text);
+    s.edit.set_selection(at, at);
+    // vim starts again in the new text, with the caret where it was put
+    s.vim = vim::Vim::default();
+    if !s.rich && s.prefs.vim {
+        vim_settle(s);
+    }
+    s.open = Some(Page { body: theirs.body, rev: theirs.rev, ..p });
+    s.stale = false;
+    s.note = match m.conflicts.as_slice() {
+        [] => "Merged: their changes are in, and yours are kept".to_owned(),
+        all => format!("Merged. Yours was kept {}, where both of you wrote. Theirs is in the page\u{2019}s history", all.iter().map(|c| here::place_said(&c.place)).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(" and ")),
+    };
+}
+
+/// A page's history being dragged through: every revision, read once,
+/// and the one showing.
+struct Scrub {
+    name: String,
+    /// None while the revisions are read.
+    film: Option<scrub::Film>,
+    at: usize,
+    /// Stepping forward by itself, and the clock of its next step.
+    playing: bool,
+    next: f64,
+    /// What the thread reading the revisions has so far. The thread stops when nothing else holds this: the scrubber was closed.
+    load: std::sync::Arc<std::sync::Mutex<ScrubLoad>>,
+}
+
+impl Scrub {
+    /// The last frame's place, or 0 with no film yet.
+    fn last(&self) -> usize {
+        self.film.as_ref().map_or(0, |f| f.frames.len().saturating_sub(1))
+    }
+}
+
+/// What the thread reading a history has: how far it is, and the film when it is whole.
+#[derive(Default)]
+struct ScrubLoad {
+    got: usize,
+    of: usize,
+    done: Option<Result<scrub::Film, String>>,
+}
+
+/// The most revisions read for one film: the newest of a longer history.
+// ponytail: the newest 150 revisions, each held whole in memory, and read again each time the scrubber is opened. Older ones are not shown. Frames read as they are reached, and kept for the page, if histories are long
+const SCRUB_MOST: usize = 150;
+/// How long a frame stands while the film plays, in seconds.
+const SCRUB_STEP: f64 = 0.9;
+
+/// A revision as the scrubber's reader is given it, by its kind. What
+/// has a way to be read is read that way: a sheet as its tables, a
+/// document as its text, a map as a table of its features, LaTeX as
+/// pandoc reads it. Anything else is its source, a block of code for
+/// each part of it.
+fn scrub_src(kind: &str, body: &str, ghost: &dyn Fn(&str) -> bool) -> String {
+    let source = |lang: &str| scrub::source_md(lang, body);
+    match kind {
+        // as the reader draws it: its HTML made Markdown, its wiki links made links
+        "md" => md::wikilinks(&md::html_made(body), ghost),
+        "fods" => scrub::sheets_md(&sheet::parse(body)),
+        "csv" => scrub::sheets_md(&[sheet::Sheet { name: String::new(), rows: sheet::parse_csv(body) }]),
+        "fodt" => scrub::doc_md(body),
+        "html" => html::to_markdown(body),
+        "gmi" => html::gemtext(body),
+        "geojson" => map::parse(body).map_or_else(|| source("json"), |f| scrub::map_md(&f)),
+        // with no pandoc here, or a revision it cannot read, the source
+        #[cfg(not(target_arch = "wasm32"))]
+        "tex" => tex::read(body).unwrap_or_else(|_| source("latex")),
+        "svg" => source("html"),
+        "text" | "txt" => source(""),
+        other => source(other),
+    }
+}
+
+/// Whether the open page's history can be dragged through: a page of this ship's, of any kind, being read. Not a memory.
+fn can_scrub(s: &App) -> bool {
+    // ponytail: not in the browser build, which has one thread, and a history is many requests waited for. A request for each revision as the page runs is the step up
+    !cfg!(target_arch = "wasm32") && s.conn.is_some() && !s.memory && s.remote.is_none() && !s.editing && s.open.is_some()
+}
+
+/// Starts reading every revision of the open page, on a thread of its
+/// own: a long history is many requests, one after another.
+fn start_scrub(s: &mut App) {
+    if !can_scrub(s) {
+        return;
+    }
+    let (Some(c), Some((name, kind))) = (s.conn.clone(), s.open.as_ref().map(|p| (p.name.clone(), p.kind.clone()))) else { return };
+    s.old = None;
+    let load = std::sync::Arc::new(std::sync::Mutex::new(ScrubLoad::default()));
+    s.scrub = Some(Scrub { name: name.clone(), film: None, at: 0, playing: false, next: 0.0, load: load.clone() });
+    let (names, other, waker) = (s.names.clone(), s.other.1.clone(), s.waker.clone());
+    spawn(move || {
+        let wake = || {
+            if let Some(w) = &waker {
+                w();
+            }
+        };
+        let read = || -> Result<scrub::Film, String> {
+            let mut revs = c.history(&name)?;
+            revs.sort_by_key(|r| r.rev);
+            let skip = revs.len().saturating_sub(SCRUB_MOST);
+            let revs = &revs[skip..];
+            let (mut film, mut failed) = (scrub::Film::default(), None);
+            // ponytail: one request for each revision, one after another. Slow for a long history. A route that sends several at once is the fix, in the ship's code
+            for (i, r) in revs.iter().enumerate() {
+                // the scrubber was closed: nothing is waiting for the rest
+                if std::sync::Arc::strong_count(&load) == 1 {
+                    return Err("closed".into());
+                }
+                // a revision that cannot be read is left out, and the rest are still shown
+                let p = match c.page_at(&name, r.rev) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        failed = Some(e);
+                        continue;
+                    }
+                };
+                // ponytail: every revision is read as the kind the page is now. A page whose kind was changed shows its older revisions wrongly. The kind kept with each revision is the fix
+                let src = scrub_src(&kind, &p.body, &|n| !names.iter().any(|x| x == n) && !other.iter().any(|x| x == n));
+                film.push(r.rev, r.when(), src);
+                if let Ok(mut l) = load.lock() {
+                    (l.got, l.of) = (i + 1, revs.len());
+                }
+                wake();
+            }
+            match failed.filter(|_| film.frames.is_empty()) {
+                Some(e) => Err(e),
+                None => Ok(film),
+            }
+        };
+        let done = read();
+        if let Ok(mut l) = load.lock() {
+            l.done = Some(done);
+        }
+        wake();
+    });
+}
+
+/// Takes the film when it is whole, and steps it while it plays. Whether anything changed.
+fn sync_scrub(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
+    // the page was left: its history goes with it
+    if s.scrub.as_ref().is_some_and(|sc| s.editing || s.memory || s.remote.is_some() || s.open.as_ref().is_none_or(|p| p.name != sc.name)) {
+        s.scrub = None;
+        return true;
+    }
+    let Some(sc) = &mut s.scrub else { return false };
+    let mut changed = false;
+    if sc.film.is_none() {
+        match sc.load.lock().ok().and_then(|mut l| l.done.take()) {
+            Some(Ok(film)) if film.frames.is_empty() => {
+                s.note = "This page has no history kept".to_owned();
+                s.scrub = None;
+                return true;
+            }
+            Some(Ok(film)) => {
+                sc.at = film.frames.len() - 1;
+                sc.film = Some(film);
+                changed = true;
+            }
+            Some(Err(e)) => {
+                s.note = format!("history: {e}");
+                s.scrub = None;
+                return true;
+            }
+            None => {}
+        }
+    }
+    let last = sc.last();
+    if sc.playing {
+        if clock >= sc.next {
+            if sc.at >= last {
+                sc.playing = false;
+            } else {
+                sc.at += 1;
+                sc.next = clock + SCRUB_STEP;
+            }
+            changed = true;
+        }
+        if sc.playing {
+            tx.wake_after(std::time::Duration::from_secs_f64((sc.next - clock).max(0.05)));
+        }
+    }
+    changed
+}
+
+/// Does what a key does to the scrubber, and says the key was taken.
+fn scrub_key(s: &mut App, act: impl FnOnce(&mut App)) -> bool {
+    act(s);
+    true
+}
+
+/// Moves the scrubber to a frame, by hand: playing stops.
+fn scrub_to(s: &mut App, at: usize) {
+    if let Some(sc) = &mut s.scrub {
+        let last = sc.last();
+        (sc.at, sc.playing) = (at.min(last), false);
+    }
+}
+
+/// Plays the film from the frame showing, or from the first when it is at its end, or stops it.
+fn scrub_play(s: &mut App, tx: &mut Tx) {
+    let Some(sc) = &mut s.scrub else { return };
+    let last = sc.last();
+    sc.playing = !sc.playing && last > 0;
+    if sc.playing {
+        if sc.at >= last {
+            sc.at = 0;
+        }
+        // the next look at the clock steps it
+        sc.next = 0.0;
+        tx.wake_after(std::time::Duration::from_millis(50));
+    }
+}
+
+/// The scrubber over a page: its track, what the frame showing is, and the ways out.
+fn scrub_bar(sc: &Scrub, k: &Kit) -> El {
+    let c = &k.c;
+    let bar = row().key("scrub-bar").w_full().px(16.0).py(8.0).gap(12.0).center_y().fill(c.layer_01);
+    let done = Button::new("Done").control_size(ControlSize::Small).on_press(|s: &mut App| s.scrub = None).build(k).key("scrub-done");
+    let Some(film) = &sc.film else {
+        let (got, of) = sc.load.lock().map(|l| (l.got, l.of)).unwrap_or_default();
+        let say = if of == 0 { "Reading the history".to_owned() } else { format!("Reading the history: {got} of {of} revisions") };
+        return bar.child(text(say).key("scrub-said").font(k.ty.small).color(c.text_base).grow(1.0)).child(done);
+    };
+    let n = film.frames.len();
+    let f = &film.frames[sc.at.min(n - 1)];
+    // a mark for each revision, those gone by in the accent, and the one showing larger
+    let mut marks = row().w_full().h_full().justify_between().center_y();
+    for i in 0..n {
+        let (size, fill) = if i == sc.at { (12.0, c.text_accent) } else if i < sc.at { (4.0, c.text_accent) } else { (4.0, c.text_faint) };
+        marks = marks.child(el().w(12.0).h(12.0).center().child(el().w(size).h(size).radius(size / 2.0).fill(fill).transition(rune::Transition::default())));
+    }
+    let track = el()
+        .key("scrub-track")
+        .role("slider")
+        .label(format!("History: revision {} of {n}", sc.at + 1))
+        .grow(1.0)
+        .min_w(80.0)
+        .h(28.0)
+        .child(el().pin(Some(13.0), Some(6.0), None, Some(6.0)).h(2.0).radius(1.0).fill(c.border_muted))
+        .child(marks)
+        .on_drag(move |s: &mut App, d, _| {
+            // the marks stand from six points in to six points short of the end
+            scrub_to(s, scrub::frame_at(d.x - 6.0, d.w - 12.0, n));
+        });
+    let play = Button::new(if sc.playing { "Pause" } else { "Play" }).control_size(ControlSize::Small).on_press_tx(scrub_play).build(k).key("scrub-play");
+    let rev = f.rev;
+    let open = Button::new("Open this revision").control_size(ControlSize::Small).help("Read this revision by itself, to restore it").on_press(move |s: &mut App| {
+        s.scrub = None;
+        view_rev(s, rev);
+    }).build(k).key("scrub-open");
+    let said = format!("{} \u{b7} rev {} \u{b7} {} of {n} \u{b7} {}", f.when, f.rev, sc.at + 1, film.said(sc.at));
+    col()
+        .key("scrub-bar")
+        .w_full()
+        .px(16.0)
+        .py(8.0)
+        .gap(4.0)
+        .fill(c.layer_01)
+        .child(row().w_full().gap(12.0).center_y().child(play).child(track).child(open).child(done))
+        .child(text(said).key("scrub-said").font(k.ty.small).color(c.text_muted))
+}
+
+/// The page as it was at the frame showing. Each block has the name
+/// the film gave it, so Rune moves the blocks that stayed, brings in
+/// the ones written and lets go of the ones cut. What the revision
+/// wrote or changed is marked.
+fn scrub_page(s: &App, sc: &Scrub, k: &Kit) -> El {
+    let Some(f) = sc.film.as_ref().and_then(|film| film.frames.get(sc.at)) else {
+        return col().w_full().h_full();
+    };
+    let pics = s.pics.clone();
+    let mark = rune_kit::Highlight::new().bg(k.c.text_accent.alpha(0.16));
+    let marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = f.changed.iter().map(|r| (vec![r.clone()], mark.clone())).collect();
+    let page = Markdown::new(f.src.clone()).block_keys(f.keys.clone()).highlights(marks).images(move |src| pics.get(src).cloned()).style(page_style(k)).build(k);
+    col().key("scrub-page").w_full().h_full().min_h(0.0).items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(12.0).child(page)).scroll(ScrollSpec { stick_bottom: false })
+}
+
 fn history_view(s: &App, k: &Kit) -> El {
     let c = &k.c;
     let mut list = col().key("revs").w_full().gap(2.0);
@@ -12274,7 +13120,9 @@ fn history_view(s: &App, k: &Kit) -> El {
     match s.revs.as_ref().filter(|(n, _)| Some(n.as_str()) == name) {
         Some((_, revs)) => {
             let newest = if s.memory { revs.iter().map(|r| r.rev).max().unwrap_or(0) } else { s.open.as_ref().map_or(0, |p| p.rev) };
-            let shown = s.old.as_ref().map_or(newest, |o| o.rev);
+            // the revision a scrubber shows is the one marked, and a press here moves it
+            let scrubbed = s.scrub.as_ref().and_then(|sc| sc.film.as_ref()?.frames.get(sc.at)).map(|f| f.rev);
+            let shown = scrubbed.unwrap_or(s.old.as_ref().map_or(newest, |o| o.rev));
             for r in revs {
                 let rev = r.rev;
                 let mut line = row()
@@ -12285,7 +13133,16 @@ fn history_view(s: &App, k: &Kit) -> El {
                     .gap(8.0)
                     .center_y()
                     .radius(k.radius.sm)
-                    .on_press(move |s: &mut App| view_rev(s, rev))
+                    .on_press(move |s: &mut App| match s.scrub.as_ref().and_then(|sc| sc.film.as_ref()?.frames.iter().position(|f| f.rev == rev)) {
+                        Some(at) => scrub_to(s, at),
+                        // a film still being read may yet hold it: the press does nothing until it is read
+                        None if s.scrub.as_ref().is_some_and(|sc| sc.film.is_none()) => {}
+                        // a revision the film does not hold, older than it reaches: the scrubber is left for it
+                        None => {
+                            s.scrub = None;
+                            view_rev(s, rev);
+                        }
+                    })
                     .child(text(r.when()).font(k.ty.small).color(c.text_base).grow(1.0))
                     .child(text(format!("rev {rev}")).font(k.ty.small).color(c.text_faint));
                 if rev == shown {
@@ -12303,7 +13160,11 @@ fn history_view(s: &App, k: &Kit) -> El {
         .min_h(0.0)
         .padding(12.0)
         .gap(8.0)
-        .child(text("History").font(k.ty.ui_medium).color(c.text_base))
+        .child(
+            row().w_full().center_y().child(text("History").font(k.ty.ui_medium).color(c.text_base).grow(1.0)).children(
+                can_scrub(s).then(|| Button::new("Scrub through").control_size(ControlSize::Small).help("Drag through every revision of this page").on_press(start_scrub).build(k).key("scrub")),
+            ),
+        )
         .child(col().w_full().grow(1.0).min_h(0.0).child(list).scroll(ScrollSpec { stick_bottom: false }))
 }
 
@@ -12322,6 +13183,10 @@ fn banner(key: &str, say: String, verb: &str, act: fn(&mut App), k: &Kit) -> El 
 }
 
 fn body(s: &App, k: &Kit) -> El {
+    // a history being dragged through stands in the page's place
+    if let Some(sc) = s.scrub.as_ref().filter(|sc| !s.editing && s.open.as_ref().is_some_and(|p| p.name == sc.name)) {
+        return col().w_full().h_full().min_h(0.0).child(scrub_bar(sc, k)).child(col().w_full().grow(1.0).min_h(0.0).child(scrub_page(s, sc, k)));
+    }
     let inner = page_body(s, k);
     let top = if let Some(o) = s.old.as_ref().filter(|_| !s.editing) {
         // an old revision can be read, restored, or left
@@ -12339,22 +13204,31 @@ fn body(s: &App, k: &Kit) -> El {
                 .child(Button::new("Back to now").control_size(ControlSize::Small).on_press(|s: &mut App| s.old = None).build(k).key("leave-old")),
         )
     } else if s.editing && s.stale {
-        Some(banner(
-            "stale",
-            "This page was changed somewhere else while you were editing. Saving now would be refused.".into(),
-            "Save over theirs",
-            |s| {
-                // the owner's choice: take the newest rev as the base, so the save lands
-                if let Some(newest) = s.open.as_ref().and_then(|p| s.cache.get(&p.name)).map(|c| c.rev) {
-                    if let Some(p) = &mut s.open {
-                        p.rev = newest;
-                    }
-                    s.stale = false;
-                    save(s);
+        // their text can be merged into what is typed here, by the page's blocks, or written over
+        let say = match s.merge_said {
+            Some(NO_MERGE) => "This page was changed somewhere else while you were editing. Parts were moved or stand twice, so the two cannot be merged safely. Copy what you need, or save over theirs: their text stays in the history.".to_owned(),
+            Some(0) => "This page was changed somewhere else while you were editing. Their changes are in other parts of it than yours.".to_owned(),
+            Some(1) => "This page was changed somewhere else while you were editing. One part was changed both here and there.".to_owned(),
+            Some(n) => format!("This page was changed somewhere else while you were editing. {n} parts were changed both here and there."),
+            None => "This page was changed somewhere else while you were editing. Saving now would be refused.".to_owned(),
+        };
+        let over = Button::new("Save over theirs").control_size(ControlSize::Small).help("Save what is typed here as it is. Their changes go, and stay in the history").on_press(|s: &mut App| {
+            // the owner's choice: take the newest rev as the base, so the save lands
+            if let Some(newest) = s.open.as_ref().and_then(|p| s.cache.get(&p.name)).map(|c| c.rev) {
+                if let Some(p) = &mut s.open {
+                    p.rev = newest;
                 }
-            },
-            k,
-        ))
+                s.stale = false;
+                save(s);
+            }
+        }).build(k).key("stale-act");
+        let merge = s.merge_said.filter(|both| *both != NO_MERGE).map(|both| {
+            Button::new(if both == 0 { "Merge theirs in" } else { "Merge, keeping mine there" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).help("Take what they changed into what is typed here. Nothing is saved until you save").on_press(merge_theirs).build(k).key("stale-merge")
+        });
+        Some(row().key("stale").w_full().px(16.0).py(8.0).gap(8.0).center_y().fill(k.c.layer_01).child(text(say).font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0)).children(merge).child(over))
+    } else if let Some(who) = here_collides(s) {
+        // a warning and not a lock: the typing is not stopped
+        Some(row().key("here-warn").w_full().px(16.0).py(8.0).gap(12.0).center_y().fill(k.c.layer_01).child(text(format!("{who} is editing this section too. What you both type here may not both be kept.")).font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0)))
     } else if let Some(q) = s.find.as_ref().filter(|_| !s.access && !s.shared_open && !s.inbox && s.folder.is_none() && find_where(s) != FindIn::Nothing) {
         Some(find_bar(q, s, k))
     } else if held_back(s) > 0 && !s.access && !s.shared_open && !s.inbox && s.folder.is_none() {
@@ -12965,13 +13839,108 @@ fn web_view(p: &Page, s: &App, k: &Kit) -> El {
 /// that scrolls inside the field, with the caret kept in view. rune-kit's
 /// text area grows with its text unless it is told a height in points,
 /// so the room it stands in is noted as it is laid out.
-fn fill_editor(s: &App, area: TextArea, k: &Kit) -> El {
+/// The sizes the editor's text can be set in, in points. The second is the usual one.
+const EDIT_SIZES: [f32; 7] = [12.0, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0];
+
+/// The size the editor's text is set in: the one chosen, or the usual.
+fn edit_size(prefs: &Prefs) -> f32 {
+    if EDIT_SIZES.contains(&prefs.edit_size) { prefs.edit_size } else { EDIT_SIZES[1] }
+}
+
+/// The style of the editor's text at a size: the kit's own font, and a line that grows with the size.
+fn edit_style(k: &Kit, size: f32) -> rune::TextStyle {
+    rune::TextStyle { size, line_height: (size * 1.35 * 2.0).round() / 2.0, ..k.ty.ui }
+}
+
+/// The key of the editor's own scrolling room, to send it to a place in the text.
+const FIELD_SCROLL: &str = "page-field-scroll";
+
+/// How wide a line may run when lines are not broken: wider than any written.
+// ponytail: a line longer than 60,000 points is cut off at the edge. The widest line measured if one is ever met
+const UNWRAPPED: f32 = 60_000.0;
+
+thread_local! {
+    /// The style and the spans the editor's text was last drawn with, for working out how far down a
+    /// place in it is: a heading set larger is taller, and is measured so.
+    static EDIT_DRAWN: std::cell::RefCell<Option<(rune::TextStyle, Vec<Span>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The editor's field, filling the room it is given. It is built here from Rune's own text field
+/// and not from the kit's text area, which sets its text at one size with no way to say another,
+/// always breaks long lines, and keeps its scrolling room to itself. Here the size is the one
+/// chosen in the settings, long lines run on when that is asked for, and the room can be sent
+/// to where the caret is (`editor_reveal`). The look is the kit's: its fill, its ring when the
+/// field has the keys, its shadow when it does not.
+fn fill_editor(s: &App, label: &str, spans: Vec<Span>, k: &Kit) -> El {
+    let c = &k.c;
     // not laid out yet: a height to start from, put right in the next frame
     let room = if s.edit_room > 0.0 { s.edit_room } else { 400.0 };
-    // more rows than fit, so the field is as tall as its room even when the page is short
-    // a line with no place to break, as a long address, is broken where the room ends: it never runs out of sight
-    let field = area.width(None).wrap_anywhere().rows(10_000).max_height(room).build(k).key(FIELD).w_full().min_w(0.0);
-    col().key("edit-room").w_full().min_w(0.0).grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.edit_room = r[3]).child(field)
+    let style = edit_style(k, edit_size(&s.prefs));
+    EDIT_DRAWN.set(Some((style, spans.clone())));
+    let inner = (room - 16.0).max(style.line_px());
+    let field = rune::text_input(&s.edit, style)
+        .key("input")
+        .label(label.to_owned())
+        .color(c.text_base)
+        .rich_style(rune::RichStyle { link: c.text_accent, code_fg: None, code_bg: c.layer_03, code_block_bg: c.layer_02, quote_bar: c.border_strong, marker: Some(c.text_muted) })
+        .caret(c.text_base, selection_of(k))
+        .spans(spans)
+        .on_edit(|s: &mut App| &mut s.edit)
+        .on_input_key(editor_key)
+        .animate_edit_layout();
+    // as tall as its room even when the page is short, and scrolled inside when it is longer
+    let view = col().key(FIELD_SCROLL).w_full().shrink().min_h(inner).max_h(inner);
+    let view = if s.prefs.no_wrap {
+        // lines run on, and the room scrolls sideways to follow them
+        view.scroll_xy().child(field.w(UNWRAPPED))
+    } else {
+        // a line with no place to break, as a long address, is broken where the room ends: it never runs out of sight
+        view.scroll(ScrollSpec { stick_bottom: false }).child(field.w_full().wrap_anywhere())
+    };
+    let view = view.on_layout_tx(|s: &mut App, r: [f32; 4], tx: &mut Tx| {
+        if s.edit_wide == r[2] {
+            tx.live_only();
+        }
+        s.edit_wide = r[2];
+    });
+    let mut boxed = col().role("textbox").padding(8.0).min_h(inner + 16.0).w_full().min_w(0.0).radius(k.radius.md).fill(c.bg_base).child(view);
+    if s.edit.focused {
+        boxed = boxed.outline(1.0, -1.0, c.border_focus);
+    } else {
+        for shadow in k.shadow_layers(k.elevation.input()) {
+            boxed = boxed.box_shadow(shadow);
+        }
+    }
+    col().key("edit-room").w_full().min_w(0.0).grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.edit_room = r[3]).child(boxed.key(FIELD))
+}
+
+/// How far down the editor's text the line that holds `at` begins, in points: the height of all the
+/// text before that line, set as the editor sets it (its style, its spans, a line with no place to
+/// break broken where the room ends) at the editor's width. With no width, lines are not broken,
+/// and each line of the text is one line of the room.
+// ponytail: all the text before the caret is measured on each reveal. Slow in a very long page. Rune saying where a line is would be the fix
+fn caret_down(text: &str, at: usize, style: rune::TextStyle, spans: &[Span], wide: Option<f32>) -> f32 {
+    let at = at.min(text.len());
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    if line_start == 0 {
+        return 0.0;
+    }
+    let before = &text[..line_start - 1];
+    // the spans that lie in what is measured, cut off at its end
+    let within: Vec<Span> = spans.iter().filter(|x| (x.start as usize) < before.len()).map(|x| Span { end: x.end.min(before.len() as u32), ..x.clone() }).collect();
+    match wide {
+        Some(w) if w > 0.0 => rune::text::measure_with(before, &within, style, Some(w), rune::text::RichLayoutOptions::new().wrap_anywhere()).1,
+        _ => rune::text::measure(before, &within, style, None).1,
+    }
+}
+
+/// Brings the caret's line into the editor's view, a third of the way down it. Rune keeps a caret
+/// in view as it is typed at, and not one put somewhere by the app, as the outline and find put it.
+fn editor_reveal(s: &App, tx: &mut Tx) {
+    let Some((style, spans)) = EDIT_DRAWN.with_borrow(|d| d.clone()) else { return };
+    let wide = (!s.prefs.no_wrap && s.edit_wide > 0.0).then_some(s.edit_wide);
+    let down = caret_down(&s.edit.text, s.edit.range().0, style, &spans, wide);
+    tx.scroll_to_y(FIELD_SCROLL, (down - s.edit_room.max(120.0) * 0.3).max(0.0));
 }
 
 fn page_body(s: &App, k: &Kit) -> El {
@@ -13005,17 +13974,10 @@ fn page_body(s: &App, k: &Kit) -> El {
         return col().w_full().h_full().center().child(text("Pick a page").font(k.ty.ui).color(c.text_muted));
     };
     if s.editing && s.rich {
-        let field = TextArea::new(&s.edit)
-            .label("Page")
-            .width(None)
-            .decorations({
-                let mut spans = rich_spans(&s.edit, k);
-                spans.extend(find_spans(s, k));
-                spans
-            })
-            .on_edit(|s: &mut App| &mut s.edit)
-            .on_key(editor_key);
-        let field = fill_editor(s, field, k);
+        let mut spans = rich_spans(&s.edit, k);
+        spans.extend(find_spans(s, k));
+        spans.extend(here_spans(s, k));
+        let field = fill_editor(s, "Page", spans, k);
         return col()
             .key("editor")
             .w_full()
@@ -13028,6 +13990,7 @@ fn page_body(s: &App, k: &Kit) -> El {
         // the source, coloured as Markdown: colour only, so nothing moves as it is typed
         let mut marks = code_spans(&p.kind, &s.edit.text, k);
         marks.extend(find_spans(s, k));
+        marks.extend(here_spans(s, k));
         // vim's block: the character under the cursor, or underlined while r waits for its character
         if let Some((at, under)) = s.prefs.vim.then(|| s.vim.block(&vim_buf(&s.edit))).flatten() {
             let from = byte_at(&s.edit.text, at);
@@ -13037,8 +14000,7 @@ fn page_body(s: &App, k: &Kit) -> El {
             }
         }
         // the font is the one chosen in settings: the text area takes its style from the kit it is built with
-        let source = TextArea::new(&s.edit).label("Page source").decorations(marks).on_edit(|s: &mut App| &mut s.edit).on_key(editor_key);
-        let source = fill_editor(s, source, &editor_kit(k, &s.prefs.font));
+        let source = fill_editor(s, "Page source", marks, &editor_kit(k, &s.prefs.font));
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
             let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(md::html_shown(&s.edit.text)).style(page_style(k)).build(k));
@@ -13272,8 +14234,45 @@ fn kit_of(prefs: &api::Prefs, system_dark: bool) -> Kit {
     kit_from(prefs.worn.look(), prefs.dark(system_dark))
 }
 
+thread_local! {
+    /// The selection colours themes brought, each by the ground and accent of the kit made
+    /// from its theme. Rune's kit has no place for one: `Kit::selection` works it out.
+    // ponytail: eight selection colours held, found by a kit's ground and accent. Two themes alike in both share one, the last made. A place for it in Rune's kit is the fix
+    static SELECTIONS: std::cell::RefCell<Vec<((rune::Color, rune::Color), rune::Color)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What tells one theme's kit from another's: its ground and its accent.
+fn kit_mark(k: &Kit) -> (rune::Color, rune::Color) {
+    (k.c.bg_base, k.c.text_accent)
+}
+
+/// The colour selected text is marked with: the theme's own when it
+/// names one, and the kit's otherwise. The kit's own fields (a
+/// one-line input, a dialog's field) still draw the kit's colour.
+fn selection_of(k: &Kit) -> rune::Color {
+    let mark = kit_mark(k);
+    SELECTIONS.with_borrow(|all| all.iter().find(|(m, _)| *m == mark).map(|(_, c)| *c)).unwrap_or_else(|| k.selection())
+}
+
 /// A kit for a look. One that brings no ground of its own is the built-in look, dark or light as told.
 fn kit_from(look: theme::Look, dark: bool) -> Kit {
+    let selection = look.selection;
+    let k = kit_made(look, dark);
+    let mark = kit_mark(&k);
+    SELECTIONS.with_borrow_mut(|all| {
+        all.retain(|(m, _)| *m != mark);
+        if let Some(c) = selection {
+            // the window's theme and a board's: a few at most are worn at once
+            if all.len() >= 8 {
+                all.remove(0);
+            }
+            all.push((mark, c));
+        }
+    });
+    k
+}
+
+fn kit_made(look: theme::Look, dark: bool) -> Kit {
     let mut k = match (look.bg, look.text) {
         // a theme brings its own light or dark: the mode picked is for the built-in look
         (Some(bg), Some(fg)) => Kit::from_palette(rune_kit::PaletteSeed { bg, fg, accent: look.accent.unwrap_or(fg) }),
@@ -13324,6 +14323,10 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // the Edit and Read switch: a page shows it, a screen that is no page (the forum, the inbox, a folder) does not
     let (editing, can_edit) = (page && s.editing, remote.is_none_or(Shared::editable));
     let mut trailing = row().gap(6.0).center_y();
+    // who else is on the page comes first, where it is seen without looking for it
+    if let Some(chips) = here_chips(s, &k).filter(|_| page) {
+        trailing = trailing.child(chips);
+    }
     // a page that is not Markdown says what it is, since it is read and edited by that kind's rules. Pressed, it asks for another
     if let Some(p) = s.open.as_ref().filter(|p| page && remote.is_none() && !s.memory && p.kind != "md" && s.old.is_none()) {
         let can = usable(s, "kind");
@@ -13520,7 +14523,20 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // a theme's ground goes behind the ribbon and the status bar too. The built-in look leaves the window's own there
     let ground = if s.prefs.worn.look().bg.is_some() { k.c.page } else { rune::Color::TRANSPARENT };
     let shell = row().w_full().h_full().min_h(0.0).fill(ground).child(ribbon_view(s, &k, if inset > 0.0 { 32.0 } else { 0.0 })).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(el().w_full().grow(1.0).min_h(0.0).child(shell)).child(status_bar(s, &k, busy)));
-    rune_kit::root(shell, layer).on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec())).on_drop_hover(|s: &mut App, over, _| s.dropping = over)
+    let hung = link_menu_view(s, &k, &mut layer);
+    layer.push(hung);
+    rune_kit::root(shell, layer)
+        .on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec()))
+        .on_drop_hover(|s: &mut App, over, _| s.dropping = over)
+        // whether anyone is at the window, for what is only worth the ship's while when someone is
+        .on_window_focus(|s: &mut App, front, _| (s.in_front, s.touched) = (front, true))
+        .on_pointer_move_local(|s: &mut App, _, tx| {
+            s.touched = true;
+            // a pointer moving over a window in use changes nothing drawn: one coming back to a window that was left does
+            if !s.away {
+                tx.live_only();
+            }
+        })
 }
 
 /// A chord the web client binds (`ui-src/lattice`: 21-tabs, 23-tabhead,
@@ -13604,6 +14620,7 @@ fn chord(s: &App, ev: &KeyEvent) -> Option<Chord> {
 }
 
 fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    s.touched = true;
     if s.conn.is_none() && !s.sample {
         return false;
     }
@@ -13648,6 +14665,18 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if ev.mods.alt && matches!(ev.key, Key::Left | Key::Right) {
         step(s, if ev.key == Key::Left { -1 } else { 1 });
         return true;
+    }
+    // a history being dragged through: the arrows step it, and Escape leaves it
+    // Only those three keys, with nothing held, and not while something is open over the page: every other key goes on to what it does
+    let over = s.palette.is_some() || s.jump.is_some() || s.prompt.is_some() || s.find.is_some() || s.settings.is_some() || s.ships_open || s.tree_menu.is_some() || s.link_menu.is_some();
+    let plain = !(ev.mods.cmd || ev.mods.ctrl || ev.mods.alt || ev.mods.shift);
+    if let Some(at) = s.scrub.as_ref().filter(|sc| sc.film.is_some() && !over && plain).map(|sc| sc.at) {
+        match ev.key {
+            Key::Left => return scrub_key(s, |s| scrub_to(s, at.saturating_sub(1))),
+            Key::Right => return scrub_key(s, |s| scrub_to(s, at + 1)),
+            Key::Escape => return scrub_key(s, |s| s.scrub = None),
+            _ => {}
+        }
     }
     if ev.is_command('n') && !s.editing {
         ask_new(s);
@@ -13699,8 +14728,17 @@ pub fn run() {
     // where its tables are wrong, before Rune looks for the family itself. A font first worn in this
     // run is found by Rune, and is read this way from the next launch
     #[cfg(not(target_arch = "wasm32"))]
-    let fonts: &'static [&'static [u8]] = match api::Prefs::load_for(Conn::load().as_ref().map_or("", |c| c.url.as_str())).worn.font() {
-        Some(theme::Font::Named(f)) => Box::leak(fonts::of_family(&f).into_iter().map(|b| &*Box::leak(b.into_boxed_slice())).collect::<Vec<&'static [u8]>>().into_boxed_slice()),
+    let worn = api::Prefs::load_for(Conn::load().as_ref().map_or("", |c| c.url.as_str())).worn;
+    #[cfg(not(target_arch = "wasm32"))]
+    let fonts: &'static [&'static [u8]] = match (worn.font(), worn.font_ids()) {
+        (Some(theme::Font::Named(f)), ids) => {
+            // this computer's own files first, then the ones fetched from the ship in an earlier run
+            let mut files = fonts::of_family(&f);
+            if files.is_empty() {
+                files = fonts::kept_dir().map(|d| fonts::kept_at(&d, &ids)).unwrap_or_default();
+            }
+            Box::leak(files.into_iter().map(|b| &*Box::leak(b.into_boxed_slice())).collect::<Vec<&'static [u8]>>().into_boxed_slice())
+        }
         _ => &[],
     };
     #[cfg(target_arch = "wasm32")]
@@ -13762,6 +14800,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_links_menu_offers_a_new_tab_for_a_page_of_this_ships_alone() {
+        assert_eq!(link_menu_items(true).iter().map(|i| i.0).collect::<Vec<_>>(), ["open", "tab", "copy"]);
+        assert_eq!(link_menu_items(false).iter().map(|i| i.0).collect::<Vec<_>>(), ["open", "copy"]);
+    }
 
     #[test]
     fn a_tree_row_menu_fits_the_row_and_marks_the_part_to_change() {
@@ -13833,6 +14877,23 @@ mod tests {
     /// Letters and figures only, so spacing, bullets, list numbers and the pads round code do not count.
     fn letters(s: &str) -> String {
         s.chars().filter(|c| c.is_alphanumeric()).collect()
+    }
+
+    /// A theme's own selection colour is worn by the kit made from it,
+    /// and a theme without one leaves the kit's own.
+    #[test]
+    fn a_themes_selection_colour_is_worn() {
+        let hex = |h: &str| rune::color::hex(h).expect("a colour");
+        let look = |sel: Option<&str>| theme::Look { bg: Some(hex("#101418")), text: Some(hex("#e6e6e6")), accent: Some(hex("#8ab4f8")), selection: sel.map(hex), ..Default::default() };
+        let k = kit_from(look(Some("#335577")), true);
+        assert_eq!(selection_of(&k), hex("#335577"));
+        // another theme's kit, worn beside it, keeps its own
+        let other = kit_from(theme::Look { bg: Some(hex("#fafafa")), text: Some(hex("#222222")), ..Default::default() }, false);
+        assert_eq!(selection_of(&other), other.selection());
+        assert_eq!(selection_of(&k), hex("#335577"));
+        // the same theme with the colour taken out goes back to the kit's
+        let k = kit_from(look(None), true);
+        assert_eq!(selection_of(&k), k.selection());
     }
 
     /// Runs every example of the CommonMark spec through the reader and says, by section, which
@@ -13978,6 +15039,38 @@ mod tests {
         s.mounts.remove(0);
         sign_out_asked(&mut s, true);
         assert!(matches!(s.prompt, Some(Prompt::ShipOut(true))), "another ship's folder is asked about when every ship is signed out of");
+    }
+
+    #[test]
+    fn the_editors_text_has_a_size_and_its_line_grows_with_it() {
+        let k = Kit::neutral(true);
+        assert_eq!(edit_size(&Prefs::default()), 13.0, "the usual size when none was chosen");
+        assert_eq!(edit_size(&Prefs { edit_size: 18.0, ..Prefs::default() }), 18.0);
+        assert_eq!(edit_size(&Prefs { edit_size: 200.0, ..Prefs::default() }), 13.0, "a size that is none of them is the usual one");
+        let (usual, large) = (edit_style(&k, 13.0), edit_style(&k, 20.0));
+        assert_eq!((usual.size, usual.line_height), (13.0, 17.5), "the usual size is set as the kit's own field sets it");
+        assert!(large.line_height >= 20.0 * 1.3, "a larger text has a taller line, so its lines do not run into each other");
+    }
+
+    #[test]
+    fn how_far_down_a_place_is_counts_the_lines_before_its_own() {
+        let style = edit_style(&Kit::neutral(true), 13.0);
+        let text = "one\ntwo\nthree\nfour";
+        // with no width, a line of the text is a line of the room
+        assert_eq!(caret_down(text, 0, style, &[], None), 0.0);
+        assert_eq!(caret_down(text, 2, style, &[], None), 0.0, "anywhere on the first line is at the top");
+        assert_eq!(caret_down(text, 4, style, &[], None), 17.5);
+        assert_eq!(caret_down(text, text.len(), style, &[], None), 3.0 * 17.5);
+        assert_eq!(caret_down(text, 999, style, &[], None), 3.0 * 17.5, "a place past the end is the end");
+        // a line too long for the room takes more than one of its lines, and is counted so
+        let long = format!("{}\nlast", "word ".repeat(60));
+        assert!(caret_down(&long, long.len(), style, &[], Some(200.0)) > 3.0 * 17.5);
+        // and one with no place to break is broken where the room ends, as the editor breaks it
+        let unbroken = format!("{}\nlast", "x".repeat(400));
+        assert!(caret_down(&unbroken, unbroken.len(), style, &[], Some(200.0)) > 3.0 * 17.5);
+        // a heading set larger is taller
+        let big = [Span::new(0, 3).size(26.0)];
+        assert!(caret_down(text, 4, style, &big, None) > 17.5);
     }
 
     #[test]
