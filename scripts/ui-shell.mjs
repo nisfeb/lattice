@@ -691,7 +691,8 @@ try {
       && [...d.querySelectorAll('.st-panel')].filter((p) => !p.hidden).length === 1;
   });
   check('latOpenSettings(tab) shows that tab alone', atKeys);
-  //  In the desktop the This computer tabs sit in this same tab: the
+  //  In the desktop the This computer tabs (Connection, Files, Scheduled
+  //  backups, and Map tiles since b935fb6d) sit in this same tab: the
   //  frame calls the shell's commands through the top window's bridge
   //  (stubbed here), with no trip to the manager page and no reload of
   //  the editor.
@@ -717,9 +718,10 @@ try {
     return out;
   });
   check('desktop: This computer renders inside the Settings tab',
-    JSON.stringify(deskIn.tabs) === '["#connection","#files","#backups"]'
+    JSON.stringify(deskIn.tabs) === '["#connection","#files","#backups","#tiles"]'
       && JSON.stringify(deskIn.shown) === '["backups"]' && deskIn.go === 0
-      && deskIn.calls.includes('backup_schedules') && !deskIn.calls.includes('open_manager')
+      && deskIn.calls.includes('backup_schedules') && deskIn.calls.includes('map_token_status')
+      && !deskIn.calls.includes('open_manager')
       && deskIn.top === '/apps/lattice/app',
     JSON.stringify(deskIn));
   check('latOpenSettings scrolls to its section, also when Settings is open',
