@@ -498,6 +498,8 @@ impl Notice {
         match self.kind.as_str() {
             "comment" => Opens::Page(self.place.clone()),
             "ask" => Opens::Access,
+            // a folder shared whole is read at its address, as the web does: its index is no page
+            "share" | "reshare" | "asked" if crate::swm::address(&self.host, &self.place).is_some() => Opens::Address(crate::swm::address(&self.host, &self.place).unwrap_or_default()),
             "share" | "reshare" | "asked" if !self.place.ends_with('/') => Opens::Shared(Shared { host: self.host.clone(), path: self.place.clone(), mode: "read".into(), when: String::new() }),
             // a reply on a board of this ship's, or on another's: as the web goes to `/forum/<where>/<post>` and `/forum-remote/<host>/...`
             "reply" | "remote" if board_name(&self.place) => {
@@ -3932,6 +3934,8 @@ mod tests {
         assert_eq!(n.items[0].opens(), Opens::Page("notes/today".into()));
         assert!(matches!(n.items[1].opens(), Opens::Shared(s) if s.host == "~bus" && s.name() == "plans/trip"));
         assert_eq!(n.items[2].opens(), Opens::Access);
+        let folder = Notice { kind: "share".into(), host: "~bus".into(), place: "/apps/x/data/lattice.lattice_app/page/plans/dir-index".into(), ..n.items[1].clone() };
+        assert_eq!(folder.opens(), Opens::Address("urb://~bus/plans/".into()), "a shared folder is read at its address");
         assert_eq!(n.items[3].opens(), Opens::Thread("~bus/tech".into(), Some(7)), "a reply on another ship's board");
         assert_eq!(n.items[4].opens(), Opens::Nothing, "what is no longer shared has nothing to open");
         assert_eq!(n.items[5].opens(), Opens::Address("urb://~bus/notes/".into()));
