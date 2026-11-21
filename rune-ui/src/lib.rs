@@ -876,6 +876,10 @@ struct App {
     here_heard: u64,
     /// The field's selection as vim last left it.
     vim_seen: (usize, usize),
+    /// The editor's text and caret as last looked at, to tell typing by.
+    typed_seen: (usize, usize, usize),
+    /// A page moved while it was being edited, until the tree says what revision it now has.
+    moved_wait: Option<String>,
     /// When the ship last heard from this window.
     here_beat: f64,
     /// Whether anyone is at the window (`sync_away`): a key or the pointer moved since the last look, when one last did, since when the window has not been in front, and when it is looked at again.
@@ -1347,6 +1351,8 @@ fn init() -> App {
         here_key: (0, 0, 0),
         here_heard: 0,
         vim_seen: (0, 0),
+        typed_seen: (0, 0, 0),
+        moved_wait: None,
         here_beat: 0.0,
         // a window is in front and in use when it opens
         touched: true,
@@ -2176,6 +2182,10 @@ fn applied(s: &mut App, op: Op) {
                 let new = format!("{b}{}", &old[a.len()..]);
                 if let Some(mut p) = s.cache.remove(&old) {
                     p.name = new.clone();
+                    // the ship makes the moved page anew from the revisions it keeps, so its revision there is not the one it had: held as none until it is read, or a newer answer would be let go as an older one
+                    if s.offline.is_none() && s.conn.is_some() {
+                        p.rev = 0;
+                    }
                     s.cache.insert(new.clone(), p);
                 }
                 // a memory's tags and date go with it
@@ -2199,7 +2209,11 @@ fn applied(s: &mut App, op: Op) {
             match s.open.as_ref().and_then(|p| moved(&p.name)) {
                 Some(new) if s.editing => {
                     if let Some(p) = &mut s.open {
-                        p.name = new;
+                        p.name = new.clone();
+                    }
+                    // its revision on the ship is no longer the one this edit began from: saves wait for the next read of the tree to say what it is
+                    if s.offline.is_none() && s.conn.is_some() {
+                        s.moved_wait = Some(new);
                     }
                 }
                 Some(new) => {
@@ -4841,7 +4855,7 @@ fn edited(s: &App) -> String {
     }
     let mut out = md::emit_with(&s.edit.text, s.edit.marks(), s.edit.blocks(), s.edit.soft_breaks(), &s.seps);
     // a page that ended with no new line is given none: `md::exact` lets such a page into the rich editor, and it is not to be rewritten by being opened
-    if out.ends_with('\n') && s.open.as_ref().is_some_and(|p| !p.body.ends_with('\n')) {
+    if out.ends_with('\n') && s.open.as_ref().is_some_and(|p| !p.body.is_empty() && !p.body.ends_with('\n')) {
         out.pop();
     }
     out
@@ -5239,6 +5253,7 @@ fn open_today(s: &mut App) {
 /// Leaves the editor without saving. A capture never saved is dropped.
 fn cancel_edit(s: &mut App) {
     s.editing = false;
+    s.moved_wait = None;
     // that the page changed elsewhere was said of this edit: the next one starts from the page as it then is
     s.stale = false;
     if s.capture {
@@ -5389,7 +5404,21 @@ fn write(s: &mut App) {
     }
     // a save of this page already on its way is followed, on its rev: sent beside it, the second would be refused as a change made elsewhere
     if own && s.save_req.is_pending() {
-        s.save_again = true;
+        if s.save_sent.as_ref().is_some_and(|(sent, ..)| sent.name == p.name) {
+            s.save_again = true;
+        } else {
+            // another page's save is on its way, as a sheet's or a map's may be: this one is kept and sent behind it, not dropped with that one's answer
+            queue_save(s, p, base, memory);
+            if s.offline.is_none() {
+                drain(s);
+            }
+        }
+        return;
+    }
+    // a page just moved does not know its revision yet (`moved_wait`): the save waits a moment for it
+    if own && s.moved_wait.as_deref() == Some(p.name.as_str()) {
+        s.note = "the page was just moved: saving in a moment".into();
+        s.resync = true;
         return;
     }
     // a page this window has never seen on the ship is saved only if the ship has none of that name
@@ -6221,6 +6250,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 for n in nodes.iter().filter(|n| n.page) {
                     if let Some(body) = &n.body {
                         s.cache.insert(n.path.clone(), Page { name: n.path.clone(), body: body.clone(), kind: n.kind.clone(), rev: n.rev });
+                    }
+                }
+                // a page moved while it was being edited takes the revision the ship now has it at, and is not said to have changed elsewhere. A read that does not bring it leaves it with none, which the ship takes as no check
+                if let Some(moved) = s.moved_wait.take() {
+                    if let Some(p) = s.open.as_mut().filter(|p| p.name == moved) {
+                        p.rev = s.cache.get(&moved).map_or(0, |c| c.rev);
                     }
                 }
                 // a page being edited that was written elsewhere: say so, since its save would be refused
@@ -8287,13 +8322,16 @@ fn forum_submit(s: &mut App) {
         }
     };
     let Some(c) = s.conn.clone() else { return };
-    f.sending = true;
     // the ship's forms cap these, and say nothing when they cut one off
     if body.len() > 40_000 || title.len() > 300 || link.len() > 2048 {
         s.note = "that is too long for the board to take: a title may be 300 bytes, a link 2,048 and a thread's text 40,000".into();
         return;
     }
     let (board, had): (String, Vec<u64>) = (b.board.clone(), b.posts.iter().map(|p| p.id).collect());
+    // said to be on its way only now that it is: a post refused here for its length sends nothing
+    if let Some(f) = &mut s.forum {
+        f.sending = true;
+    }
     s.forum_req.request((c, board), move |(c, board)| {
         c.forum_submit(&board, &title, &link, &body, &tags)?;
         let now = c.forum_board(&board)?;
@@ -8314,12 +8352,15 @@ fn forum_comment(s: &mut App) {
         return;
     }
     let Some(c) = s.conn.clone() else { return };
-    f.sending = true;
     if body.len() > FORUM_MOST {
         s.note = "that is too long for the board to take: a comment may be 10,000 bytes".into();
         return;
     }
     let (board, post, parent, had): (String, u64, Option<u64>, Vec<u64>) = (th.board.clone(), th.post.id, f.reply, th.comments.iter().map(|c| c.id).collect());
+    // said to be on its way only now that it is: a post refused here for its length sends nothing
+    if let Some(f) = &mut s.forum {
+        f.sending = true;
+    }
     s.forum_req.request((c, board), move |(c, board)| {
         c.forum_comment(&board, post, parent, &body)?;
         let now = c.forum_thread(&board, post)?;
@@ -12777,6 +12818,11 @@ fn wait_or_stop(ms: u64, stop: &std::sync::atomic::AtomicBool) {
 /// changed. While the window is in use it is looked at again when it
 /// would count as left, which costs the ship nothing.
 fn sync_away(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
+    // typing in a field is being at the window, and the app's own key handler is only given the keys a field did not take: the text and the caret are looked at too
+    let typed = (s.edit.text.len(), s.edit.focus, s.edit.anchor);
+    if std::mem::replace(&mut s.typed_seen, typed) != typed {
+        s.touched = true;
+    }
     if std::mem::take(&mut s.touched) || s.touched_at == 0.0 {
         s.touched_at = clock;
     }

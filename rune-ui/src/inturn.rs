@@ -49,13 +49,17 @@ impl<T: Send + 'static> InTurn<T> {
 
     /// The oldest request's answer, once. Taking it starts the next request.
     pub fn take(&self) -> Option<T> {
-        let got = self.req.take()?;
+        let got = self.req.take();
         let mut turn = self.turn.lock().unwrap_or_else(|e| e.into_inner());
-        match turn.wait.pop_front() {
-            Some(job) => self.req.request((), move |()| job()),
-            None => turn.busy = false,
+        // a request that ended with no answer is one that panicked: it is passed over, or it would hold every request after it for the rest of the session
+        let ended = got.is_some() || (turn.busy && !self.req.is_pending());
+        if ended {
+            match turn.wait.pop_front() {
+                Some(job) => self.req.request((), move |()| job()),
+                None => turn.busy = false,
+            }
         }
-        Some(got)
+        got
     }
 
     /// Whether any request is running or waiting, or an answer is not yet taken.
@@ -105,6 +109,15 @@ mod tests {
         assert_eq!(got, [10, 20, 30, 40, 50]);
         assert_eq!(*ran.lock().unwrap(), [1, 2, 3, 4, 5]);
         assert!(!q.is_pending() && q.take().is_none());
+    }
+
+    #[test]
+    fn a_request_that_panics_does_not_hold_the_ones_after_it() {
+        let q: InTurn<u32> = InTurn::default();
+        q.request(1u32, |_| panic!("a fault in the work"));
+        q.request(2u32, |n| n);
+        assert_eq!(wait_for(&q), 2);
+        assert!(!q.is_pending());
     }
 
     #[test]

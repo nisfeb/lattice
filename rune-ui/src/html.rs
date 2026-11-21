@@ -551,6 +551,11 @@ pub fn fetched_ok(b: &[u8]) -> bool {
         // the frame header, among the segments before the picture's data
         let mut at = 2;
         while let (Some(0xff), Some(kind)) = (b.get(at).copied(), b.get(at + 1).copied()) {
+            // a marker may be led by any number of fill bytes
+            if kind == 0xff {
+                at += 1;
+                continue;
+            }
             if matches!(kind, 0xc0..=0xcf) && !matches!(kind, 0xc4 | 0xc8 | 0xcc) {
                 return fits(be(at + 7, 2), be(at + 5, 2));
             }
@@ -564,7 +569,7 @@ pub fn fetched_ok(b: &[u8]) -> bool {
     let text = String::from_utf8_lossy(head);
     if find_ci(&text, "<svg").is_some() {
         let all = String::from_utf8_lossy(b);
-        return find_ci(&all, "<image").is_none() && find_ci(&all, "<feimage").is_none();
+        return !draws_a_file(&all);
     }
     true
 }
@@ -578,20 +583,70 @@ pub fn tamed(html: &str) -> std::borrow::Cow<'_, str> {
     if deeper_than(html, DEEPEST) {
         return std::borrow::Cow::Borrowed("<html><body><p>This page is nested too deeply to draw.</p></body></html>");
     }
-    if find_ci(html, "<image").is_none() && find_ci(html, "<feimage").is_none() {
+    if !draws_a_file(html) {
         return std::borrow::Cow::Borrowed(html);
     }
     let mut out = String::with_capacity(html.len() + 16);
     let mut rest = html;
-    loop {
-        let next = [find_ci(rest, "<image"), find_ci(rest, "<feimage")].into_iter().flatten().min();
-        let Some(at) = next else { break };
-        out.push_str(&rest[..at + 1]);
-        out.push_str("x-");
-        rest = &rest[at + 1..];
+    while let Some((at, len)) = next_image(rest) {
+        // only one that would read a file is unmade: a picture held in the drawing itself is kept
+        if reads_a_file(&rest[at..at + len]) {
+            out.push_str(&rest[..at + 1]);
+            out.push_str("x-");
+            rest = &rest[at + 1..];
+        } else {
+            out.push_str(&rest[..at + len]);
+            rest = &rest[at + len..];
+        }
     }
     out.push_str(rest);
     std::borrow::Cow::Owned(out)
+}
+
+/// The next element that draws a picture in, `image` or `feImage` and no other name that begins so: where its tag starts, and how long the tag is.
+fn next_image(s: &str) -> Option<(usize, usize)> {
+    let mut from = 0;
+    loop {
+        let at = from + [find_ci(&s[from..], "<image"), find_ci(&s[from..], "<feimage")].into_iter().flatten().min()?;
+        let name_end = at + if s[at..].len() >= 8 && s[at..at + 8].eq_ignore_ascii_case("<feimage") { 8 } else { 6 };
+        let whole = s[name_end..].chars().next().is_none_or(|c| c.is_whitespace() || c == '/' || c == '>');
+        if whole {
+            let len = s[at..].find('>').map_or(s.len() - at, |e| e + 1);
+            return Some((at, len));
+        }
+        from = name_end;
+    }
+}
+
+/// Whether a picture element's tag names anything but a picture written out in the tag itself. One with no address draws nothing and is let be.
+fn reads_a_file(tag: &str) -> bool {
+    let mut rest = tag;
+    while let Some(at) = find_ci(rest, "href") {
+        let after = rest[at + 4..].trim_start();
+        let Some(value) = after.strip_prefix('=') else {
+            rest = &rest[at + 4..];
+            continue;
+        };
+        let value = value.trim_start().trim_start_matches(['"', '\'']).trim_start();
+        let held = ["data:image/png", "data:image/jpeg", "data:image/jpg", "data:image/gif", "data:image/webp"].iter().any(|p| value.len() >= p.len() && value[..p.len()].eq_ignore_ascii_case(p));
+        if !held && !value.starts_with('#') {
+            return true;
+        }
+        rest = &rest[at + 4..];
+    }
+    false
+}
+
+/// Whether a drawing, or a page with drawings in it, has a picture element that would read a file.
+fn draws_a_file(s: &str) -> bool {
+    let mut rest = s;
+    while let Some((at, len)) = next_image(rest) {
+        if reads_a_file(&rest[at..at + len]) {
+            return true;
+        }
+        rest = &rest[at + len..];
+    }
+    false
 }
 
 /// The deepest a page's elements may stand one inside another and be drawn.
@@ -601,7 +656,8 @@ pub const DEEPEST: usize = 4096;
 /// Counted from its tags alone, so an element left open counts as one
 /// that holds all that follows: the count errs towards deep.
 pub fn deeper_than(src: &str, most: usize) -> bool {
-    const VOID: [&str; 14] = ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"];
+    // elements with no inside, and those a browser closes by itself when the next of their kind opens: a list of five thousand items written with no closing tags is not five thousand deep
+    const VOID: [&str; 28] = ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr", "li", "p", "td", "th", "tr", "option", "dt", "dd", "thead", "tbody", "tfoot", "colgroup", "optgroup", "rp"];
     let (b, mut i, mut depth) = (src.as_bytes(), 0, 0usize);
     while let Some(lt) = b[i..].iter().position(|c| *c == b'<').map(|p| p + i) {
         i = lt + 1;
@@ -612,9 +668,18 @@ pub fn deeper_than(src: &str, most: usize) -> bool {
             continue;
         }
         let name = &src[from..from + len];
+        // a script's or a style's inside is not markup: `i<n` there opens nothing
+        if !closing && (name.eq_ignore_ascii_case("script") || name.eq_ignore_ascii_case("style")) {
+            let end = format!("</{}", name.to_ascii_lowercase());
+            i = find_ci(&src[i..], &end).map_or(src.len(), |e| i + e);
+            continue;
+        }
+        if VOID.iter().any(|v| v.eq_ignore_ascii_case(name)) {
+            continue;
+        }
         if closing {
             depth = depth.saturating_sub(1);
-        } else if !VOID.iter().any(|v| v.eq_ignore_ascii_case(name)) {
+        } else {
             depth += 1;
             if depth > most {
                 return true;
@@ -777,6 +842,16 @@ mod tests {
         let plain = "<html><body><p>hi <img src='a.png'></p></body></html>";
         assert!(matches!(tamed(plain), std::borrow::Cow::Borrowed(p) if p == plain));
         assert_eq!(tamed("<svg><image href='/dev/zero'/><FEIMAGE href='x'/></svg>"), "<svg><x-image href='/dev/zero'/><x-FEIMAGE href='x'/></svg>");
+        // a picture held in the drawing itself is kept, and so is an element whose name only begins the same
+        let kept = "<svg><image href=\"data:image/png;base64,AAAA\"/><image-gallery>x</image-gallery></svg>";
+        assert!(matches!(tamed(kept), std::borrow::Cow::Borrowed(_)));
+        assert!(fetched_ok(kept.as_bytes()));
+        assert_eq!(tamed("<svg><image xlink:href = '/etc/passwd'/></svg>"), "<svg><x-image xlink:href = '/etc/passwd'/></svg>");
+        assert!(!fetched_ok(b"<svg><image href='data:image/svg+xml,%3Csvg%3E'/></svg>"), "a drawing inside a drawing may read a file in its turn");
+        // a long list written with no closing tags is not deep, nor is a script that compares
+        let list = format!("<html><body><ul>{}</ul></body></html>", "<li>item\n".repeat(30_000));
+        assert!(!deeper_than(&list, DEEPEST));
+        assert!(!deeper_than(&format!("<script>{}</script><p>x", "if(i<n){}".repeat(30_000)), DEEPEST));
         let deep = format!("<html><body>{}x</body></html>", "<span>".repeat(100_000));
         assert!(tamed(&deep).contains("too deeply"));
         assert!(!deeper_than(&format!("{}x{}", "<div>".repeat(100), "</div>".repeat(100)), 200));

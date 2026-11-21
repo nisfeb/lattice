@@ -976,6 +976,11 @@ fn end_session(url: String, cookie: String) {
     }
     // asked once and not waited for: a ship that is away keeps the session until it lapses
     let _ = std::thread::Builder::new().name("sign-out".to_owned()).spawn(move || {
+        // what still waits is sent first, while the session is good: the edit being typed when Sign out was pressed is kept there a moment before, and would else reach the ship with a cookie it had just ended
+        let c = Conn { url: url.clone(), cookie: cookie.clone() };
+        if !c.queue().is_empty() || !c.ops().is_empty() {
+            let _ = c.send_waiting(&std::sync::atomic::AtomicBool::new(false));
+        }
         let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(10)).build();
         let _ = agent.post(&format!("{url}/~/logout")).set("cookie", &cookie).set("origin", &url).send_string("");
     });
@@ -1087,14 +1092,19 @@ pub fn write_private(p: &std::path::Path, body: &[u8]) -> Result<(), String> {
     let turn = TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = p.with_extension(format!("{}-{turn}.part", std::process::id()));
     #[cfg(unix)]
-    {
+    let wrote = {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(body).and_then(|()| f.sync_all())).map_err(|e| e.to_string())?;
-    }
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(body).and_then(|()| f.sync_all())).map_err(|e| e.to_string())
+    };
     #[cfg(not(unix))]
-    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, p).map_err(|e| e.to_string())
+    let wrote = std::fs::write(&tmp, body).map_err(|e| e.to_string());
+    // a write that failed leaves nothing beside the file: each has a name of its own, so a full disk would else gather a part for every try
+    let done = wrote.and_then(|()| std::fs::rename(&tmp, p).map_err(|e| e.to_string()));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done
 }
 
 fn kept_at(p: &std::path::Path) -> Option<(Dump, u64)> {

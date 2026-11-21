@@ -13,6 +13,8 @@ pub struct Open {
     pub tail: usize,
     /// What its Markdown read as when it was opened, as a sum of it: whether it has been typed in since.
     opened: u64,
+    /// How many steps the history held once it was opened: whether the opening is still the last of them.
+    steps: usize,
 }
 
 /// A sum of a text, to tell it from another.
@@ -72,7 +74,7 @@ pub fn open(e: &mut TextEdit) -> Option<Open> {
     });
     let tail = e.text.len() - (b + 1 + url.len() + 3);
     let end = e.text.len() - tail;
-    Some(Open { start: a, tail, opened: e.text.get(a..end).map_or(0, sum) })
+    Some(Open { start: a, tail, opened: e.text.get(a..end).map_or(0, sum), steps: e.history_len().0 })
 }
 
 /// Whether the caret, or either end of a selection, has left an opened link.
@@ -92,7 +94,8 @@ pub fn close(e: &mut TextEdit, o: Open) {
     // a caret past the link moved back by what was taken out
     let gone = end - o.start - label;
     let moved = |c: usize| if c >= end { c - gone } else { c.min(o.start) };
-    if sum(&e.text[o.start..end]) == o.opened {
+    // only when the opening is still the history's last step. Text typed in the link and taken out again reads the same and is not: an undo would then bring the typing back
+    if sum(&e.text[o.start..end]) == o.opened && e.history_len().0 == o.steps {
         // nothing was typed in it: the opening is taken back, and the history is as it was before the caret came. Opened and closed as two edits, each pass of the caret left two steps to undo, and the first undo of them took the link's address away
         e.undo();
     } else {
@@ -214,9 +217,25 @@ mod tests {
         close(&mut e, o);
         assert_eq!((e.text.as_str(), links(&e)), ("go [there](u now", vec![]));
         // and a range that no longer fits the text does nothing
-        close(&mut e, Open { start: 40, tail: 0, opened: 0 });
-        close(&mut e, Open { start: 0, tail: 400, opened: 0 });
+        close(&mut e, Open { start: 40, tail: 0, opened: 0, steps: 0 });
+        close(&mut e, Open { start: 0, tail: 400, opened: 0, steps: 0 });
         assert_eq!(e.text, "go [there](u now");
+    }
+
+    #[test]
+    fn what_was_typed_in_a_link_and_taken_out_does_not_come_back() {
+        let mut e = edit("go there now", vec![MarkRange::new(3..8, Mark::Link("https://x.y".into()))], 5);
+        let o = open(&mut e).expect("the caret is in the link");
+        let opened = e.text.clone();
+        e.insert("x");
+        let at = e.focus;
+        e.set_selection(at - 1, at);
+        e.insert("");
+        assert_eq!(e.text, opened, "the link reads as it did when it was opened");
+        e.set_caret(e.text.len());
+        close(&mut e, o);
+        assert_eq!(e.text, "go there now");
+        assert_eq!(links(&e), vec![(3, 8, "https://x.y".to_owned())]);
     }
 
     #[test]
