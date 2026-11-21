@@ -460,33 +460,29 @@ fn radial(pts: &[[f64; 2]], tol: f64) -> Vec<usize> {
     out
 }
 
-/// How many times over `dp` may look at each position it is given.
-const DP_LOOKS: usize = 48;
+/// How many positions the simplifying of one line may look at in all.
+/// A line whose farthest position is always beside an end, as a tall
+/// sawtooth's is, is looked through once for every position in it, and
+/// again for every tolerance tried: 20,000 such positions were 34
+/// seconds. A track from a real walk or drive needs a small part of
+/// this, and gets exactly what it always got: so does a zigzag of up
+/// to some 1,500 positions, the worst there is.
+const MOST_LOOKS: usize = 20_000_000;
 
 /// Douglas-Peucker over the positions named by `of`, without recursion
 /// so a long track cannot overflow the stack. The first and last are
-/// kept. A line whose farthest position is always beside an end, as a
-/// sawtooth's is, would be looked through once for every position in
-/// it: the looking is counted, and once it has gone `DP_LOOKS` times
-/// round, what is left is kept as it is and not looked through again.
-fn dp(pts: &[[f64; 2]], of: &[usize], tol: f64) -> Vec<usize> {
+/// kept. Each position looked at is taken from `looks`, and when none
+/// are left the answer is nothing: the line is not half simplified.
+fn dp(pts: &[[f64; 2]], of: &[usize], tol: f64, looks: &mut usize) -> Option<Vec<usize>> {
     let n = of.len();
     if n < 3 {
-        return of.to_vec();
+        return Some(of.to_vec());
     }
     let mut keep = vec![false; n];
     (keep[0], keep[n - 1]) = (true, true);
-    let mut looks = n.saturating_mul(DP_LOOKS);
     let mut stack = vec![(0, n - 1)];
     while let Some((a, b)) = stack.pop() {
-        if b - a < 2 {
-            continue;
-        }
-        if looks < b - a {
-            keep[a..=b].fill(true);
-            continue;
-        }
-        looks -= b - a;
+        *looks = looks.checked_sub(b - a)?;
         let ([ax, ay], [bx, by]) = (pts[of[a]], pts[of[b]]);
         let (dx, dy) = (bx - ax, by - ay);
         let len = dx * dx + dy * dy;
@@ -504,12 +500,16 @@ fn dp(pts: &[[f64; 2]], of: &[usize], tol: f64) -> Vec<usize> {
             stack.extend([(a, f), (f, b)]);
         }
     }
-    of.iter().zip(keep).filter(|(_, k)| *k).map(|(i, _)| *i).collect()
+    Some(of.iter().zip(keep).filter(|(_, k)| *k).map(|(i, _)| *i).collect())
 }
 
 /// A line of more than `SIMPLIFY_TO` positions, simplified until it
 /// fits. The tolerance starts at a ten-thousandth of the line's extent
-/// and doubles.
+/// and doubles. A line that would take more than `MOST_LOOKS` to
+/// simplify is thinned evenly to `SIMPLIFY_TO` positions and not
+/// simplified at all: it keeps its ends and its shape as far as that
+/// many positions can, and is never drawn down to a straight line
+/// because the work ran out.
 fn simplify(line: &[Value]) -> Vec<Value> {
     if line.len() <= SIMPLIFY_TO {
         return line.to_vec();
@@ -524,8 +524,20 @@ fn simplify(line: &[Value]) -> Vec<Value> {
     }
     let mut tol = ((hi[0] - lo[0]).hypot(hi[1] - lo[1]) * 1e-4).max(0.00001);
     let mut out: Vec<usize> = (0..pts.len()).collect();
+    let mut looks = MOST_LOOKS;
     while out.len() > SIMPLIFY_TO && tol < 1.0 {
-        out = dp(&pts, &radial(&pts, tol), tol);
+        let done = looks.checked_sub(pts.len()).and_then(|left| {
+            looks = left;
+            dp(&pts, &radial(&pts, tol), tol, &mut looks)
+        });
+        match done {
+            Some(kept) => out = kept,
+            None => {
+                let last = pts.len() - 1;
+                out = (0..SIMPLIFY_TO).map(|i| i * last / (SIMPLIFY_TO - 1)).collect();
+                break;
+            }
+        }
         tol *= 2.0;
     }
     out.into_iter().map(|i| line[i].clone()).collect()
@@ -847,19 +859,123 @@ mod tests {
     }
 
     #[test]
-    fn a_sawtooth_track_is_simplified_in_bounded_work() {
+    fn a_sawtooth_track_is_thinned_in_bounded_work_and_never_drawn_down_to_a_line() {
         // 20,000 positions up and down: the farthest is always the next one, which once made every pass the line squared
-        let saw: Vec<String> = (0..20_000).map(|i| format!("[{},{}]", i as f64 / 1000.0, (i % 2) as f64 * 5.0)).collect();
-        let t = std::time::Instant::now();
-        let got = import("geojson", &format!(r#"{{"type":"LineString","coordinates":[{}]}}"#, saw.join(","))).unwrap();
-        assert!(t.elapsed().as_millis() < 5000, "{:?}", t.elapsed());
-        let line = got.features[0]["geometry"]["coordinates"].as_array().unwrap();
-        assert_eq!((xy(&line[0]), xy(&line[line.len() - 1])), ([0.0, 0.0], [19.999, 5.0]), "the ends are kept");
-        // teeth lower than the last tolerance are smoothed away
-        let low: Vec<String> = (0..20_000).map(|i| format!("[{},{}]", i as f64 / 1000.0, (i % 2) as f64 * 0.01)).collect();
-        let t = std::time::Instant::now();
-        let got = import("geojson", &format!(r#"{{"type":"LineString","coordinates":[{}]}}"#, low.join(","))).unwrap();
-        assert!(t.elapsed().as_millis() < 5000, "{:?}", t.elapsed());
-        assert!(got.after <= SIMPLIFY_TO && got.before == 20_000, "{}", got.after);
+        for teeth in [5.0, 0.01] {
+            let saw: Vec<String> = (0..20_000).map(|i| format!("[{},{}]", i as f64 / 1000.0, (i % 2) as f64 * teeth)).collect();
+            let t = std::time::Instant::now();
+            let got = import("geojson", &format!(r#"{{"type":"LineString","coordinates":[{}]}}"#, saw.join(","))).unwrap();
+            assert!(t.elapsed().as_millis() < 5000, "{:?}", t.elapsed());
+            let line = got.features[0]["geometry"]["coordinates"].as_array().unwrap();
+            assert_eq!((xy(&line[0]), xy(&line[line.len() - 1])), ([0.0, 0.0], [19.999, teeth]), "the ends are kept");
+            // the work ran out: it is thinned evenly, with its teeth, and not made a line of two positions
+            assert_eq!((got.before, got.after, line.len()), (20_000, SIMPLIFY_TO, SIMPLIFY_TO));
+            assert!(line.iter().any(|p| xy(p)[1] == teeth) && line.iter().any(|p| xy(p)[1] == 0.0));
+            assert!(line.windows(2).all(|w| xy(&w[0])[0] < xy(&w[1])[0]));
+        }
+    }
+
+    /// Douglas-Peucker as it is written down: the farthest position from the line between two ends is kept, and each side of it done the same way.
+    fn plain_dp(pts: &[[f64; 2]], of: &[usize], tol: f64, keep: &mut Vec<usize>) {
+        let (a, b) = (pts[of[0]], pts[of[of.len() - 1]]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx * dx + dy * dy;
+        let (mut far, mut fd) = (None, tol * tol);
+        for (n, i) in of.iter().enumerate().take(of.len() - 1).skip(1) {
+            let p = pts[*i];
+            let u = if len == 0.0 { 0.0 } else { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len).clamp(0.0, 1.0) };
+            let d = (a[0] + u * dx - p[0]).powi(2) + (a[1] + u * dy - p[1]).powi(2);
+            if d > fd {
+                (fd, far) = (d, Some(n));
+            }
+        }
+        if let Some(f) = far {
+            plain_dp(pts, &of[..=f], tol, keep);
+            keep.push(of[f]);
+            plain_dp(pts, &of[f..], tol, keep);
+        }
+    }
+
+    /// A line simplified as it was before the work was bounded: the tolerance doubled until it fits.
+    fn plain_simplify(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for q in pts {
+            for i in 0..2 {
+                (lo[i], hi[i]) = (lo[i].min(q[i]), hi[i].max(q[i]));
+            }
+        }
+        let mut tol = ((hi[0] - lo[0]).hypot(hi[1] - lo[1]) * 1e-4).max(0.00001);
+        let mut out: Vec<usize> = (0..pts.len()).collect();
+        while out.len() > SIMPLIFY_TO && tol < 1.0 {
+            // each position nearer than the tolerance to the last one kept is dropped first
+            let (mut near, mut last) = (vec![0], pts[0]);
+            for (i, q) in pts.iter().enumerate().take(pts.len() - 1).skip(1) {
+                if (q[0] - last[0]).powi(2) + (q[1] - last[1]).powi(2) > tol * tol {
+                    near.push(i);
+                    last = *q;
+                }
+            }
+            near.push(pts.len() - 1);
+            out = vec![near[0]];
+            if near.len() > 2 {
+                plain_dp(pts, &near, tol, &mut out);
+            }
+            out.push(near[near.len() - 1]);
+            tol *= 2.0;
+        }
+        out.into_iter().map(|i| pts[i]).collect()
+    }
+
+    #[test]
+    fn a_track_is_simplified_just_as_douglas_peucker_simplifies_it() {
+        let mut seed = 9u64;
+        let mut rand = || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut tracks: Vec<Vec<[f64; 2]>> = Vec::new();
+        // the two a review found: 100 passes back and forth of 60 positions each, and a zigzag of 502
+        tracks.push((0..6000).map(|i| [if (i / 60) % 2 == 0 { (i % 60) as f64 } else { 59.0 - (i % 60) as f64 } * 0.0005, (i / 60) as f64 * 0.0001]).collect());
+        tracks.push((0..502).map(|i| [i as f64 * 0.001, (i % 2) as f64 * 0.01]).collect());
+        // and some hundreds of made ones: wandering walks, walks with long straights, loops, and teeth of every height
+        for n in 0..300 {
+            // teeth cost the most to simplify, so those lines are shorter
+            let kind = if n % 12 == 3 { 3 } else { n % 3 };
+            let len = 501 + (rand() * if kind == 3 { 500.0 } else { 2500.0 }) as usize;
+            let (mut at, mut turn, mut heading) = ([rand() * 10.0, rand() * 10.0], 0.0, rand() * 6.28);
+            let (step, wobble, teeth) = (10f64.powf(-5.0 + rand() * 3.0), rand() * rand(), 10f64.powf(-4.0 + rand() * 4.0));
+            tracks.push(
+                (0..len)
+                    .map(|i| {
+                        match kind {
+                            0 => heading += (rand() - 0.5) * wobble * 6.0,
+                            1 if i % 97 == 0 => heading += (rand() - 0.5) * 3.0,
+                            2 => {
+                                turn += (rand() - 0.5) * 0.01;
+                                heading += turn;
+                            }
+                            3 => return [i as f64 * step, if i % (2 + n % 5) == 0 { teeth } else { 0.0 } + rand() * step],
+                            _ => {}
+                        }
+                        at = [at[0] + heading.cos() * step, at[1] + heading.sin() * step];
+                        // a walk now and then stands still
+                        if rand() < 0.02 { [at[0], at[1]] } else { [at[0] + rand() * step * 0.1, at[1]] }
+                    })
+                    .collect(),
+            );
+        }
+        let (mut fewer, mut same_count) = (0, 0);
+        for (n, pts) in tracks.iter().enumerate() {
+            let line: Vec<Value> = pts.iter().map(|p| json!(p)).collect();
+            let got: Vec<[f64; 2]> = simplify(&line).iter().map(xy).collect();
+            let want = plain_simplify(pts);
+            assert_eq!(got, want, "track {n} of {} positions", pts.len());
+            fewer += usize::from(got.len() < pts.len());
+            same_count += usize::from(got.len() <= SIMPLIFY_TO);
+        }
+        assert!(fewer > 250 && same_count > 100, "{fewer} simplified, {same_count} to fit");
+        // the zigzag is left as it is but for what the first tolerance takes, and is not made a straight line
+        let zigzag: Vec<Value> = tracks[1].iter().map(|p| json!(p)).collect();
+        assert!(simplify(&zigzag).len() > 400);
     }
 }
