@@ -410,7 +410,8 @@ impl Vim {
     }
 
     fn eff(&self) -> i64 {
-        self.count.parse().unwrap_or(1)
+        // no more than a million: a count is how many times a thing is done, and past the end of the text more does nothing but hold the window, or overflow
+        self.count.parse::<i64>().unwrap_or(if self.count.is_empty() { 1 } else { 1_000_000 }).clamp(1, 1_000_000)
     }
 
     fn reset(&mut self) {

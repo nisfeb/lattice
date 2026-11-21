@@ -508,10 +508,10 @@ impl Parser {
         }
     }
 
-    /// One more operator. A row of them makes a tree as deep as it is long, and everything that reads the tree goes down it, so twenty thousand terms end the app. No real formula has two thousand.
+    /// One more operator. A row of them makes a tree as deep as it is long, and everything that reads the tree goes down it, so twenty thousand terms end the app. No real formula has a thousand, and a thousand is what the smallest stack the app runs on can walk.
     fn longer(&mut self) -> Result<(), String> {
         self.long += 1;
-        if self.long > 2000 { Err("formula too long".into()) } else { Ok(()) }
+        if self.long > 1000 { Err("formula too long".into()) } else { Ok(()) }
     }
 
     fn level(&mut self, n: usize) -> Result<Node, String> {

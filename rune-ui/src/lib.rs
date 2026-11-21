@@ -2118,6 +2118,11 @@ fn under(names: &[String], path: &str) -> Vec<String> {
     names.iter().filter(|n| n.as_str() == path || n.strip_prefix(path).is_some_and(|r| r.starts_with('/'))).cloned().collect()
 }
 
+/// Whether another screen stands where the open page would: its keys are not that page's then.
+fn page_hidden(s: &App) -> bool {
+    s.settings.is_some() || s.access || s.inbox || s.shared_open || s.forum.is_some() || s.folder.is_some()
+}
+
 /// A change to a sheet, worked out so that a fault in the working out is
 /// a refusal and not the end of the app with whatever was unsaved in it.
 /// The sheet is not touched by a change that failed: each is worked out
@@ -5193,6 +5198,8 @@ fn open_today(s: &mut App) {
 /// Leaves the editor without saving. A capture never saved is dropped.
 fn cancel_edit(s: &mut App) {
     s.editing = false;
+    // that the page changed elsewhere was said of this edit: the next one starts from the page as it then is
+    s.stale = false;
     if s.capture {
         s.capture = false;
         s.open = None;
@@ -6022,7 +6029,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
         // an answer that lands after the forum was left is dropped
         match (r, &mut s.forum) {
-            (Ok(ForumGot::Boards(b)), Some(f)) => f.boards = Some(b),
+            // a list read took the place of whatever was being sent: nothing is on its way any more
+            (Ok(ForumGot::Boards(b)), Some(f)) => (f.boards, f.sending) = (Some(b), false),
             (Ok(ForumGot::More(more)), Some(f)) => {
                 if let Some(b) = f.board.as_mut().filter(|b| b.board == more.board) {
                     b.posts = forum_joined(&b.posts, more.posts);
@@ -6059,6 +6067,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 }
             }
             (Ok(ForumGot::Thread(th)), Some(f)) => {
+                // an answer begun for one thread is not carried to another: it would be sent to a comment of that number there, or refused
+                if !f.thread.as_ref().is_some_and(|was| (was.board.as_str(), was.post.id) == (th.board.as_str(), th.post.id)) {
+                    f.reply = None;
+                }
                 f.thread = Some(th);
                 if std::mem::take(&mut f.sending) {
                     (f.comment, f.reply) = (TextEdit::new(""), None);
@@ -8274,7 +8286,8 @@ fn forum_make(s: &mut App) {
 
 /// Sends the board's title and description as changed, or flips it between public and private, then reads it again.
 fn forum_change(s: &mut App, flip: bool) {
-    let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+    // a flip is a flip of whatever the board is when it lands: a second one sent before the first is answered would put it back
+    let Some(f) = s.forum.as_mut().filter(|f| !f.sending && !(flip && f.acting)) else { return };
     let Some(b) = &f.board else { return };
     let texts = f.editing.as_ref().map(|e| (e[0].text.trim().to_owned(), e[1].text.trim().to_owned()));
     if !flip && texts.as_ref().is_none_or(|(title, _)| title.is_empty()) {
@@ -8284,6 +8297,7 @@ fn forum_change(s: &mut App, flip: bool) {
     let Some(c) = s.conn.clone() else { return };
     f.sending = !flip;
     if flip {
+        f.acting = true;
         // what the moderation showed of comets and invitations is no longer so
         f.moding = None;
     }
@@ -12017,6 +12031,10 @@ fn page_link(s: &App) -> Option<String> {
 }
 
 fn ask_delete(s: &mut App) {
+    // only of the page that is in view: one behind another screen is not asked about by a key
+    if page_hidden(s) {
+        return;
+    }
     if let Some(p) = &s.open {
         s.prompt = Some(Prompt::Delete(p.name.clone()));
     }
@@ -13124,7 +13142,9 @@ fn start_scrub(s: &mut App) {
 /// Takes the film when it is whole, and steps it while it plays. Whether anything changed.
 fn sync_scrub(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     // the page was left: its history goes with it
-    if s.scrub.as_ref().is_some_and(|sc| s.editing || s.memory || s.remote.is_some() || s.open.as_ref().is_none_or(|p| p.name != sc.name)) {
+    // or another screen was gone to: the history is drawn in the page's place, and would stand over it
+    let elsewhere = s.settings.is_some() || s.access || s.inbox || s.shared_open || s.forum.is_some() || s.folder.is_some();
+    if s.scrub.as_ref().is_some_and(|sc| elsewhere || s.editing || s.memory || s.remote.is_some() || s.open.as_ref().is_none_or(|p| p.name != sc.name)) {
         s.scrub = None;
         return true;
     }
@@ -14864,7 +14884,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         save(s);
         return true;
     }
-    if ev.is_command('e') && !s.editing && s.remote.as_ref().is_none_or(Shared::editable) {
+    if ev.is_command('e') && !s.editing && !page_hidden(s) && s.remote.as_ref().is_none_or(Shared::editable) {
         start_edit(s);
         tx.focus_when_shown(FIELD, false);
         return true;
