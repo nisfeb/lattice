@@ -90,7 +90,8 @@ fn plate(m: &Mesh) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
     let (cx, cy) = (mid(0), mid(1));
     let grey = [0.5, 0.5, 0.5, 0.3];
     let mut out = Vec::new();
-    let n = (half / step).round() as i32;
+    // a part near the largest number there is makes the plate's own size overflow: no more lines than a plate has
+    let n = if (half / step).is_finite() { ((half / step).round() as i32).clamp(0, 200) } else { 0 };
     for i in -n..=n {
         let at = i as f32 * step;
         out.push(([cx + at, cy - half, 0.0], [cx + at, cy + half, 0.0], grey));
@@ -101,26 +102,156 @@ fn plate(m: &Mesh) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
     out
 }
 
+/// How many times over the whole picture a frame may be tested, pixel by
+/// pixel. A part of thousands of triangles that each fill the view was
+/// thousands of whole pictures of work, ten seconds a frame. An ordinary
+/// part, fitted or looked at closely, is a few pictures' worth: this many
+/// faces one behind another all over the view is no ordinary part.
+const LAYERS: f64 = 32.0;
+
+/// A box narrower than this is tested whole: finding the part of a row a
+/// triangle covers costs more than testing so few pixels.
+const NARROW: usize = 8;
+
+/// The pixels of row `py` that a triangle can cover, of those from `x0`
+/// to `x1`, or nothing when it can cover none. A long thin triangle
+/// lying aslant has a box round it many times its own size, and each row
+/// of that box holds only a few of its pixels. The answer is wide by a
+/// pixel or two each way, and every pixel in it is still tested as
+/// before, so what is drawn is what was always drawn.
+fn span(s: &[[f32; 3]; 3], py: usize, x0: usize, x1: usize) -> Option<(usize, usize)> {
+    if x1 - x0 < NARROW {
+        return Some((x0, x1));
+    }
+    let cy = py as f64 + 0.5;
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+        let ([ax, ay], [bx, by]) = ([f64::from(s[a][0]), f64::from(s[a][1])], [f64::from(s[b][0]), f64::from(s[b][1])]);
+        // the piece of this side that lies within a pixel of the row, above or below
+        if ay.max(by) < cy - 1.0 || ay.min(by) > cy + 1.0 {
+            continue;
+        }
+        let ends = if ay == by { [ax, bx] } else { [cy - 1.0, cy + 1.0].map(|y| ax + ((y - ay) / (by - ay)).clamp(0.0, 1.0) * (bx - ax)) };
+        (lo, hi) = (lo.min(ends[0]).min(ends[1]), hi.max(ends[0]).max(ends[1]));
+    }
+    // no side near the row, or sides that are not numbers: the whole row is tested
+    if !(lo <= hi) {
+        return Some((x0, x1));
+    }
+    let (from, to) = ((lo - 2.0).floor().max(x0 as f64), (hi + 2.0).ceil().min(x1 as f64));
+    (from <= to).then_some((from as usize, to as usize))
+}
+
+/// How the camera sees a picture `w` by `h`: a place of the part as the
+/// camera sees it, and that as a place in the picture with its nearness.
+struct Lens {
+    eye: [f32; 3],
+    axes: [[f32; 3]; 3],
+    f: f32,
+    near: f32,
+    wf: f32,
+    hf: f32,
+}
+
+impl Lens {
+    fn new(cam: &Cam, w: usize, h: usize) -> Lens {
+        let eye = cam.eye();
+        let z = unit(sub(eye, cam.t));
+        let x = unit(cross([0.0, 0.0, 1.0], z));
+        Lens { eye, axes: [x, cross(z, x), z], f: 1.0 / (std::f32::consts::PI / 8.0).tan(), near: (cam.r / 1000.0).max(0.01), wf: w as f32, hf: h as f32 }
+    }
+
+    fn view(&self, p: [f32; 3]) -> [f32; 3] {
+        let d = sub(p, self.eye);
+        [dot(self.axes[0], d), dot(self.axes[1], d), dot(self.axes[2], d)]
+    }
+
+    fn screen(&self, v: [f32; 3]) -> [f32; 3] {
+        [(v[0] * self.f / (self.wf / self.hf) / -v[2] + 1.0) / 2.0 * self.wf, (1.0 - v[1] * self.f / -v[2]) / 2.0 * self.hf, 1.0 / -v[2]]
+    }
+
+    /// A triangle in the picture, as the camera sees it and as it lies in the picture, with the
+    /// box of pixels round it. Nothing for one that is behind the camera, flat, or out of the picture.
+    #[allow(clippy::type_complexity)]
+    fn triangle(&self, t: &[f32]) -> Option<([[f32; 3]; 3], [[f32; 3]; 3], f32, [usize; 4])> {
+        let v = [self.view([t[0], t[1], t[2]]), self.view([t[3], t[4], t[5]]), self.view([t[6], t[7], t[8]])];
+        // ponytail: a triangle that reaches behind the camera is left out whole. Cut at the near plane if looking from inside a part matters
+        if v.iter().any(|p| -p[2] < self.near) {
+            return None;
+        }
+        let s = [self.screen(v[0]), self.screen(v[1]), self.screen(v[2])];
+        let area = (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[2][0] - s[0][0]) * (s[1][1] - s[0][1]);
+        if area == 0.0 || !area.is_finite() {
+            return None;
+        }
+        let (x0, x1) = (s.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min).floor().max(0.0), s.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max).ceil().min(self.wf - 1.0));
+        let (y0, y1) = (s.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min).floor().max(0.0), s.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max).ceil().min(self.hf - 1.0));
+        if x0 > x1 || y0 > y1 {
+            return None;
+        }
+        Some((v, s, area, [x0 as usize, x1 as usize, y0 as usize, y1 as usize]))
+    }
+}
+
+/// How coarsely a part is drawn in a picture `w` by `h` so that a frame
+/// is bounded work: 1 for the picture as it is, which is every ordinary
+/// part, and `n` for one drawn in dots `n` pixels a side. The pixels a
+/// frame would test are counted first, a sum over the triangles, and a
+/// part that asks for more than `LAYERS` pictures' worth is drawn small
+/// enough to fit that and shown at full size.
+pub fn coarse(m: &Mesh, cam: &Cam, w: usize, h: usize) -> usize {
+    if w == 0 || h == 0 {
+        return 1;
+    }
+    let lens = Lens::new(cam, w, h);
+    // the box round each triangle, or for a wide one its own size and something for each of its rows (`span`)
+    let tests: f64 = m
+        .pos
+        .chunks_exact(9)
+        .filter_map(|t| lens.triangle(t))
+        .map(|(_, _, area, b)| {
+            let (wide, high) = ((b[1] - b[0] + 1) as f64, (b[3] - b[2] + 1) as f64);
+            if b[1] - b[0] < NARROW { wide * high } else { (wide * high).min(f64::from(area.abs()) / 2.0 + 8.0 * high) }
+        })
+        .sum();
+    let over = tests / (LAYERS * w as f64 * h as f64);
+    // no dot is larger than the picture, and a picture of one pixel is one dot
+    if over <= 1.0 { 1 } else { (over.sqrt().ceil() as usize).clamp(1, w.max(h)).max(1) }
+}
+
 /// The part as a picture `w` by `h`: straight RGBA, clear where nothing is.
+/// A part too heavy to draw at that size in bounded work is drawn in
+/// larger dots (`coarse` says how large, for a caller that would tell
+/// the reader): all of it is still there, with every face before or
+/// behind another as it should be.
 pub fn render(m: &Mesh, cam: &Cam, w: usize, h: usize) -> Vec<u8> {
+    let dot = coarse(m, cam, w, h);
+    if dot <= 1 {
+        return draw(m, cam, w, h);
+    }
+    let (sw, sh) = (w.div_ceil(dot), h.div_ceil(dot));
+    let small = draw(m, cam, sw, sh);
+    let mut px = vec![0u8; w * h * 4];
+    for (y, row) in px.chunks_exact_mut(w * 4).enumerate() {
+        for (x, p) in row.chunks_exact_mut(4).enumerate() {
+            let at = ((y / dot) * sw + x / dot) * 4;
+            p.copy_from_slice(&small[at..at + 4]);
+        }
+    }
+    px
+}
+
+/// The part drawn pixel by pixel into a picture `w` by `h`.
+fn draw(m: &Mesh, cam: &Cam, w: usize, h: usize) -> Vec<u8> {
     let mut px = vec![0u8; w * h * 4];
     if w == 0 || h == 0 {
         return px;
     }
     // how near each pixel's surface is: one over its distance, so more is nearer
     let mut depth = vec![0f32; w * h];
-    let eye = cam.eye();
-    let z = unit(sub(eye, cam.t));
-    let x = unit(cross([0.0, 0.0, 1.0], z));
-    let y = cross(z, x);
-    let view = |p: [f32; 3]| {
-        let d = sub(p, eye);
-        [dot(x, d), dot(y, d), dot(z, d)]
-    };
-    let f = 1.0 / (std::f32::consts::PI / 8.0).tan();
-    let near = (cam.r / 1000.0).max(0.01);
-    let (wf, hf) = (w as f32, h as f32);
-    let screen = |v: [f32; 3]| [(v[0] * f / (wf / hf) / -v[2] + 1.0) / 2.0 * wf, (1.0 - v[1] * f / -v[2]) / 2.0 * hf, 1.0 / -v[2]];
+    let lens = Lens::new(cam, w, h);
+    let (view, screen) = (|p: [f32; 3]| lens.view(p), |v: [f32; 3]| lens.screen(v));
+    let (near, wf, hf) = (lens.near, lens.wf, lens.hf);
     // the plate first, then the part over it
     for (a, b, col) in plate(m) {
         let (mut a, mut b) = (view(a), view(b));
@@ -155,21 +286,7 @@ pub fn render(m: &Mesh, cam: &Cam, w: usize, h: usize) -> Vec<u8> {
     let base = [0.93f32, 0.72, 0.2];
     let (light, fill) = (unit([0.4, 0.6, 1.0]), unit([-0.5, -0.3, 0.4]));
     for t in m.pos.chunks_exact(9) {
-        let v = [view([t[0], t[1], t[2]]), view([t[3], t[4], t[5]]), view([t[6], t[7], t[8]])];
-        // ponytail: a triangle that reaches behind the camera is left out whole. Cut at the near plane if looking from inside a part matters
-        if v.iter().any(|p| -p[2] < near) {
-            continue;
-        }
-        let s = [screen(v[0]), screen(v[1]), screen(v[2])];
-        let area = (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[2][0] - s[0][0]) * (s[1][1] - s[0][1]);
-        if area == 0.0 || !area.is_finite() {
-            continue;
-        }
-        let (x0, x1) = (s.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min).floor().max(0.0), s.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max).ceil().min(wf - 1.0));
-        let (y0, y1) = (s.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min).floor().max(0.0), s.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max).ceil().min(hf - 1.0));
-        if x0 > x1 || y0 > y1 {
-            continue;
-        }
+        let Some((v, s, area, [x0, x1, y0, y1])) = lens.triangle(t) else { continue };
         // one light for the whole face, from its own slope: both sides are lit, as the web client lights them
         let centre = [(v[0][0] + v[1][0] + v[2][0]) / 3.0, (v[0][1] + v[1][1] + v[2][1]) / 3.0, (v[0][2] + v[1][2] + v[2][2]) / 3.0];
         let mut n = unit(cross(sub(v[1], v[0]), sub(v[2], v[0])));
@@ -181,8 +298,9 @@ pub fn render(m: &Mesh, cam: &Cam, w: usize, h: usize) -> Vec<u8> {
         let shine = dot(n, unit([light[0] + toward[0], light[1] + toward[1], light[2] + toward[2]])).max(0.0).powi(40) * 0.25;
         let rim = 0.35 + 0.65 * dot(n, fill).max(0.0) * 0.3;
         let ink: Vec<u8> = base.iter().map(|c| ((c * (0.32 + 0.68 * d) + c * rim * 0.2 + shine).clamp(0.0, 1.0) * 255.0) as u8).collect();
-        for py in y0 as usize..=y1 as usize {
-            for pxl in x0 as usize..=x1 as usize {
+        for py in y0..=y1 {
+            let Some((x0, x1)) = span(&s, py, x0, x1) else { continue };
+            for pxl in x0..=x1 {
                 let (cx, cy) = (pxl as f32 + 0.5, py as f32 + 0.5);
                 let w0 = ((s[1][0] - cx) * (s[2][1] - cy) - (s[2][0] - cx) * (s[1][1] - cy)) / area;
                 let w1 = ((s[2][0] - cx) * (s[0][1] - cy) - (s[0][0] - cx) * (s[2][1] - cy)) / area;
@@ -217,6 +335,29 @@ mod tests {
             }
         }
         Mesh { tris: 12, pos, min: [0.0; 3], max: [sx, sy, sz] }
+    }
+
+    /// How many pixels of a part's triangles pass the test of being inside one, with every pixel of each
+    /// triangle's box tested, and how many of those `span` would leave out.
+    fn covered(m: &Mesh, cam: &Cam, w: usize, h: usize) -> (usize, usize) {
+        let lens = Lens::new(cam, w, h);
+        let (mut inside, mut lost) = (0, 0);
+        for t in m.pos.chunks_exact(9) {
+            let Some((_, s, area, [x0, x1, y0, y1])) = lens.triangle(t) else { continue };
+            for py in y0..=y1 {
+                let row = span(&s, py, x0, x1);
+                for pxl in x0..=x1 {
+                    let (cx, cy) = (pxl as f32 + 0.5, py as f32 + 0.5);
+                    let w0 = ((s[1][0] - cx) * (s[2][1] - cy) - (s[2][0] - cx) * (s[1][1] - cy)) / area;
+                    let w1 = ((s[2][0] - cx) * (s[0][1] - cy) - (s[0][0] - cx) * (s[2][1] - cy)) / area;
+                    if w0 >= 0.0 && w1 >= 0.0 && 1.0 - w0 - w1 >= 0.0 {
+                        inside += 1;
+                        lost += usize::from(!row.is_some_and(|(a, z)| (a..=z).contains(&pxl)));
+                    }
+                }
+            }
+        }
+        (inside, lost)
     }
 
     fn at(px: &[u8], w: usize, x: usize, y: usize) -> [u8; 4] {
@@ -289,5 +430,65 @@ mod tests {
         let flat = Mesh { tris: 1, pos: vec![0.0; 9], min: [0.0; 3], max: [0.0; 3] };
         cam.fit(&flat);
         assert!(cam.r.is_finite() && cam.r > 0.0);
+    }
+
+    #[test]
+    fn a_part_of_thousands_of_faces_that_fill_the_view_is_drawn_in_bounded_work() {
+        // 8,000 triangles, each wider than the view, one behind another: once 8,000 whole pictures of work
+        let mut pos = Vec::new();
+        for i in 0..8000 {
+            let z = i as f32 * 0.001;
+            pos.extend([-30.0, -30.0, z, 30.0, -30.0, z, 0.0, 45.0, z]);
+        }
+        let heavy = Mesh { tris: 8000, pos, min: [-30.0, -30.0, 0.0], max: [30.0, 45.0, 8.0] };
+        let cam = Cam { r: 60.0, ..Cam::default() };
+        let (w, h) = (320, 200);
+        let t = std::time::Instant::now();
+        let dot = coarse(&heavy, &cam, w, h);
+        let px = render(&heavy, &cam, w, h);
+        assert!(t.elapsed().as_millis() < 5000, "{:?}", t.elapsed());
+        assert!((4..=20).contains(&dot), "drawn in dots {dot} a side");
+        // the picture is whole and the part is in it, in dots that size
+        assert_eq!(px.len(), w * h * 4);
+        assert_eq!(at(&px, w, w / 2, h / 2)[3], 255);
+        let (x, y) = ((w / 2 / dot) * dot, (h / 2 / dot) * dot);
+        assert!((0..dot).all(|d| at(&px, w, x + d, y + d) == at(&px, w, x, y)));
+        // an ordinary part is drawn pixel by pixel, as it always was, close up too
+        let m = cube(30.0, 20.0, 10.0);
+        let mut near = Cam::default();
+        near.fit(&m);
+        assert_eq!(coarse(&m, &near, w, h), 1);
+        assert_eq!(render(&m, &near, w, h), draw(&m, &near, w, h));
+        near.zoom(-1500.0);
+        assert_eq!(coarse(&m, &near, w, h), 1);
+        // finding the part of each row a triangle covers leaves no pixel out: long thin triangles lying
+        // aslant, and a part seen from many sides, are drawn as they are when every pixel of the box is tested
+        let mut pos = Vec::new();
+        for i in 0..40 {
+            let a = i as f32 * 0.7;
+            pos.extend([a.cos() * 20.0, a.sin() * 20.0, a, -a.cos() * 20.0 + 0.3, -a.sin() * 20.0, 12.0 - a * 0.3, a.sin() * 3.0, a.cos() * 3.0, a * 0.5]);
+        }
+        let thin = Mesh { tris: 40, pos, min: [-20.0, -20.0, 0.0], max: [20.0, 20.0, 28.0] };
+        let mut all = 0;
+        let some = Mesh { tris: 20, pos: heavy.pos[..180].to_vec(), ..cube(1.0, 1.0, 1.0) };
+        for mesh in [&thin, &m, &some] {
+            let mut cam = Cam::default();
+            cam.fit(mesh);
+            for turn in 0..9 {
+                cam.orbit(37.0, 11.0 * turn as f32 - 40.0);
+                cam.zoom(-120.0);
+                let (inside, lost) = covered(mesh, &cam, 200, 130);
+                assert_eq!(lost, 0, "turn {turn}");
+                all += inside;
+            }
+        }
+        assert!(all > 100_000, "{all}");
+        // a picture of one pixel, or one pixel wide, is drawn and not refused: once the dot's size could not be worked out for it
+        for (pw, ph) in [(1, 1), (1, 2), (2, 1), (1, 300), (3, 3)] {
+            assert!((1..=pw.max(ph)).contains(&coarse(&heavy, &cam, pw, ph)), "{pw} by {ph}");
+            assert_eq!(render(&heavy, &cam, pw, ph).len(), pw * ph * 4);
+        }
+        // nothing to draw, or no picture to draw in, is no work
+        assert_eq!((coarse(&m, &near, 0, 0), coarse(&Mesh { tris: 0, pos: Vec::new(), min: [0.0; 3], max: [0.0; 3] }, &near, w, h)), (1, 1));
     }
 }

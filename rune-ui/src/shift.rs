@@ -425,9 +425,9 @@ pub fn shift(src: &str, s: usize, rows: bool, at: i64, n: i64) -> Result<String,
     let book = sheet::book(&page)?;
     for (si, sh) in book.sheets.iter().enumerate() {
         let mut edits: BTreeMap<usize, Vec<(usize, Put)>> = BTreeMap::new();
-        let mut r = 0;
+        let mut r = 0usize;
         for row in &sh.rows {
-            let mut c = 0;
+            let mut c = 0usize;
             for cell in &row.cells {
                 if let Some(new) = cell.f.as_ref().and_then(|f| formula::move_formula(f, &sh.name, &op).filter(|m| m != f)) {
                     // ponytail: a run of one formula is written out cell by cell. Kept as a run if a page ever has a long one
@@ -440,9 +440,9 @@ pub fn shift(src: &str, s: usize, rows: bool, at: i64, n: i64) -> Result<String,
                         }
                     }
                 }
-                c += cell.rep;
+                c = c.saturating_add(cell.rep);
             }
-            r += row.rep;
+            r = r.saturating_add(row.rep);
         }
         if !edits.is_empty() {
             page = sheet::put_cells(&page, si, &edits, sheet::Care::Result)?;

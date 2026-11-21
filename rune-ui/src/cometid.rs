@@ -309,17 +309,37 @@ fn install_locked(dir: &Path, id: &Identity) -> Result<Option<PathBuf>, String> 
         Some(a)
     };
     let b = base(&id.ship);
-    if !id.my_posts.is_empty() {
-        write_private(&dir.join(MY_POSTS), &id.my_posts)?;
+    let new = [MY_POSTS.to_owned(), format!("{b}.db"), format!("{b}.db-wal"), "comet.key".to_owned()];
+    let write = || -> Result<(), String> {
+        if !id.my_posts.is_empty() {
+            write_private(&dir.join(&new[0]), &id.my_posts)?;
+        }
+        // the store first and the keyfile last: a crash part way leaves no
+        // keyfile, so the next start mines a new comet rather than open this
+        // one on half a store
+        write_private(&dir.join(&new[1]), &id.db)?;
+        if !id.wal.is_empty() {
+            write_private(&dir.join(&new[2]), &id.wal)?;
+        }
+        write_private(&dir.join(&new[3]), format!("{}\n", id.keyfile).as_bytes())
+    };
+    if let Err(why) = write() {
+        // a disk that filled part way: what was written of the new one is taken away and the old one put back, so this computer is not left with no identity and a new comet mined in its place
+        for n in &new {
+            let _ = std::fs::remove_file(dir.join(n));
+        }
+        let back = aside.as_ref().is_none_or(|a| names.iter().all(|n| std::fs::rename(a.join(n), dir.join(n)).is_ok()));
+        if back {
+            if let Some(a) = &aside {
+                let _ = std::fs::remove_dir(a);
+            }
+        }
+        return Err(match (&aside, back) {
+            (Some(a), false) => format!("{why}. The identity that was here is in {}", a.display()),
+            (Some(_), true) => format!("{why}. The identity that was here is back in its place"),
+            (None, _) => why,
+        });
     }
-    // the store first and the keyfile last: a crash part way leaves no
-    // keyfile, so the next start mines a new comet rather than open this
-    // one on half a store
-    write_private(&dir.join(format!("{b}.db")), &id.db)?;
-    if !id.wal.is_empty() {
-        write_private(&dir.join(format!("{b}.db-wal")), &id.wal)?;
-    }
-    write_private(&dir.join("comet.key"), format!("{}\n", id.keyfile).as_bytes())?;
     Ok(aside)
 }
 

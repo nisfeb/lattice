@@ -4650,21 +4650,21 @@
         `[%new-post-tagged name u.title (grab 'url') (grab 'body') tags]
       ?:  =('tag' op)
         ?~  pid=(grab 'post')  ~
-        ?~  id=(slaw %ud u.pid)  ~
+        ?~  id=(ud-any:lu u.pid)  ~
         `[%set-tags name u.id tags]
       ?:  =('comment' op)
         ?~  pid=(grab 'post')  ~
-        ?~  id=(slaw %ud u.pid)  ~
+        ?~  id=(ud-any:lu u.pid)  ~
         ?~  body=(grab 'body')  ~
         =/  par=(unit comment-id:ft)
-          ?~(p=(grab 'parent') ~ (slaw %ud u.p))
+          ?~(p=(grab 'parent') ~ (ud-any:lu u.p))
         `[%new-comment name u.id par u.body]
       ?.  ?|(=('upvote' op) =('downvote' op) =('unvote' op))  ~
       =/  tgt=(unit vote-target:ft)
         ?~  pid=(grab 'post')  ~
-        ?~  pn=(slaw %ud u.pid)  ~
+        ?~  pn=(ud-any:lu u.pid)  ~
         ?~  cid=(grab 'comment')  `[%post u.pn]
-        ?~(cn=(slaw %ud u.cid) ~ `[%comment u.pn u.cn])
+        ?~(cn=(ud-any:lu u.cid) ~ `[%comment u.pn u.cn])
       ?~  tgt  ~
       ?:  =('upvote' op)    `[%upvote name u.tgt]
       ?:  =('downvote' op)  `[%downvote name u.tgt]
@@ -17957,7 +17957,7 @@
   =/  brd=board:ft  p.lod
   ?.  public.info.brd  (send-err eyre-id 404 'not found')
   =/  pid=(unit @ud)
-    ?~(t.pax ~ ((slat %ud) i.t.pax))
+    ?~(t.pax ~ (ud-any:lu i.t.pax))
   ?:  &(?=(^ t.pax) |(?=(~ pid) !(~(has by posts.brd) u.pid)))
     (send-err eyre-id 404 'not found')
   ;<  tf=(unit path)  bind:m  (find-theme /forum/[nom]/index)
@@ -18425,7 +18425,7 @@
   ?.  ((sane %tas) board)  (send-err eyre-id 404 'not found')
   ?.  ?=(?(~ [@ ~]) t.t.pax)  (send-err eyre-id 404 'not found')
   =/  sub=?  =(/submit t.t.pax)
-  =/  pid=(unit @ud)  ?:(sub ~ ?~(t.t.pax ~ ((slat %ud) i.t.t.pax)))
+  =/  pid=(unit @ud)  ?:(sub ~ ?~(t.t.pax ~ (ud-any:lu i.t.t.pax)))
   ?:  &(?=(^ t.t.pax) ?=(~ pid) !sub)  (send-err eyre-id 404 'not found')
   ;<  our=@p  bind:m  bowl-our
   ;<  now=@da  bind:m  bowl-now
@@ -18537,7 +18537,7 @@
   ?:  =('mod' i.t.pax)
     ;<  off=(set @ta)  bind:m  read-forum-comets-off
     (send-html eyre-id (forum-doc (render-mod:fre c brd !(~(has in off) nom)) "" theme-link %.y nn))
-  =/  pid=(unit @ud)  ((slat %ud) i.t.pax)
+  =/  pid=(unit @ud)  (ud-any:lu i.t.pax)
   ?:  |(?=(~ pid) !(~(has by posts.brd) u.pid))
     (send-err eyre-id 404 'not found')
   (send-html eyre-id (forum-doc (render-thread:fre c brd u.pid) "" theme-link %.y nn))
@@ -18593,14 +18593,14 @@
     `[[%new-post nom u.ti (grab 'url') (grab 'body')] base]
   ::
       [@ @ ~]
-    =/  pid=(unit @ud)  ((slat %ud) i.tl)
+    =/  pid=(unit @ud)  (ud-any:lu i.tl)
     ?~  pid  ~
     =/  thread=tape  "{base}/{(a-co:co u.pid)}"
     ?+  i.t.tl  ~
         %comment
       =/  bd=(unit @t)  (grab 'body')
       ?~  bd  ~
-      =/  par=(unit comment-id:ft)  (biff (grab 'parent') (slat %ud))
+      =/  par=(unit comment-id:ft)  (biff (grab 'parent') ud-any:lu)
       `[[%new-comment nom u.pid par u.bd] thread]
     ::
         %tags
@@ -18614,7 +18614,7 @@
       `[[%delete-post nom u.pid] base]
     ::
         %delete-comment
-      =/  cid=(unit @ud)  (biff (grab 'comment-id') (slat %ud))
+      =/  cid=(unit @ud)  (biff (grab 'comment-id') ud-any:lu)
       ?~  cid  ~
       `[[%delete-comment nom u.pid u.cid] thread]
     ==
@@ -18671,7 +18671,7 @@
     (send-see-other eyre-id "{base}/mod")
   ::  a tags form on a board without the tags marker goes back to its
   ::  thread unsent, as on a peer's board
-  =/  tid=(unit @ud)  ?.(?=([@ %tags ~] tl) ~ ((slat %ud) i.tl))
+  =/  tid=(unit @ud)  ?.(?=([@ %tags ~] tl) ~ (ud-any:lu i.tl))
   ?:  &(?=(^ tid) ?=(~ tags.brd))
     (send-see-other eyre-id "{base}/{(a-co:co u.tid)}")
   =/  res=(unit [act=action:ft to=tape])
@@ -18701,8 +18701,8 @@
         [%mod %prune ~]
       ?.  ?=(^ (grab 'prune-enabled'))
         `[[%set-prune nom ~] "{base}/mod"]
-      =/  ms=(unit @ud)  (biff (grab 'min-score') (slat %ud))
-      =/  ad=(unit @ud)  (biff (grab 'after-days') (slat %ud))
+      =/  ms=(unit @ud)  (biff (grab 'min-score') ud-any:lu)
+      =/  ad=(unit @ud)  (biff (grab 'after-days') ud-any:lu)
       ?:  |(?=(~ ms) ?=(~ ad) =(0 u.ad))  ~
       `[[%set-prune nom `[u.ms (mul u.ad ~d1)]] "{base}/mod"]
     ::
@@ -18747,7 +18747,7 @@
   ::  tags marker would drop the action. A tags form to it goes back to
   ::  its thread unsent, as on the owner's board, and a new post goes
   ::  without its tags.
-  =/  tid=(unit @ud)  ?.(?=([@ %tags ~] tl) ~ ((slat %ud) i.tl))
+  =/  tid=(unit @ud)  ?.(?=([@ %tags ~] tl) ~ (ud-any:lu i.tl))
   ;<  takes=?  bind:m
     =/  n  (fiber:fiber:nexus ,?)
     ?.  |(?=(^ tid) &(?=([%submit ~] tl) !=(~ (forum-form-tags grab))))

@@ -67,10 +67,32 @@
     %+  expect-eq
       !>  `(unit referent:lu)``[%forum zod %myboard ~]
       !>  (de-urb:lu 'urb://~zod/forum/myboard/')
+    ::  a thread numbered 1000 or more, written plain as every link
+    ::  prints it, and with hoon's dots: both are that thread
+    %+  expect-eq
+      !>  `(unit referent:lu)``[%forum zod %myboard `1.234]
+      !>  (de-urb:lu 'urb://~zod/forum/myboard/1234')
+    %+  expect-eq
+      !>  `(unit referent:lu)``[%forum zod %myboard `1.234]
+      !>  (de-urb:lu 'urb://~zod/forum/myboard/1.234')
     ::  a plain page url is still the legacy pub form
     %+  expect-eq
       !>  `(unit referent:lu)``[%pub zod /notes/todo]
       !>  (de-urb:lu 'urb://~zod/notes/todo')
+  ==
+::  +ud-any reads a number plain or dotted, and nothing else.
+::
+++  test-ud-any
+  ;:  weld
+    (expect-eq !>(`(unit @ud)``12) !>((ud-any:lu '12')))
+    (expect-eq !>(`(unit @ud)``1.000) !>((ud-any:lu '1000')))
+    (expect-eq !>(`(unit @ud)``1.000) !>((ud-any:lu '1.000')))
+    (expect-eq !>(`(unit @ud)``1.234.567) !>((ud-any:lu '1234567')))
+    (expect-eq !>(`(unit @ud)``0) !>((ud-any:lu '0')))
+    (expect-eq !>(`(unit @ud)`~) !>((ud-any:lu '')))
+    (expect-eq !>(`(unit @ud)`~) !>((ud-any:lu 'x12')))
+    (expect-eq !>(`(unit @ud)`~) !>((ud-any:lu '12x')))
+    (expect-eq !>(`(unit @ud)`~) !>((ud-any:lu '-3')))
   ==
 ::  a published page under forum/ keeps its /n/ escape, so it never aliases a board.
 ::

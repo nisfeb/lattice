@@ -186,7 +186,8 @@ fn parse(src: &str) -> Vec<Node> {
         if SKIPPED.contains(&name.as_str()) {
             if !src[lt..gt].ends_with('/') {
                 let lower_end = format!("</{name}");
-                i = src[i..].to_ascii_lowercase().find(&lower_end).map_or(src.len(), |e| tag_end(src, i + e) + 1).min(src.len());
+                // looked for as it stands, whatever its case: a copy of all the rest in small letters for each such element is the page read through once for each
+                i = find_ci(&src[i..], &lower_end).map_or(src.len(), |e| tag_end(src, i + e) + 1).min(src.len());
             }
             continue;
         }
@@ -506,6 +507,188 @@ fn blocks(nodes: &[Node], depth: usize) -> Vec<String> {
     out
 }
 
+/// Where `needle`, given in small letters, first stands in `hay` in letters of either size.
+fn find_ci(hay: &str, needle: &str) -> Option<usize> {
+    let (h, n) = (hay.as_bytes(), needle.as_bytes());
+    if n.is_empty() || h.len() < n.len() {
+        return None;
+    }
+    (0..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
+}
+
+/// The widest and tallest a picture may say it is and still be decoded.
+const PICTURE_SIDE: u64 = 8192;
+
+/// Whether bytes fetched for a page may be handed on to be decoded. A
+/// picture says how large it is in its first bytes, and a few thousand
+/// bytes can say gigabytes: one past `PICTURE_SIDE` either way is not
+/// decoded. A drawing (SVG) that draws other files in is refused too,
+/// since what draws it would read them from this computer's own disk.
+/// What is not a picture this knows (a style sheet, a font) passes.
+// ponytail: PNG, GIF, JPEG, WebP and BMP are measured. A bomb in another format the decoder knows is not caught here. A size limit in the decoder itself is the fix
+pub fn fetched_ok(b: &[u8]) -> bool {
+    let be = |at: usize, n: usize| b.get(at..at + n).map(|x| x.iter().fold(0u64, |a, c| a << 8 | u64::from(*c)));
+    let le = |at: usize, n: usize| b.get(at..at + n).map(|x| x.iter().rev().fold(0u64, |a, c| a << 8 | u64::from(*c)));
+    let fits = |w: Option<u64>, h: Option<u64>| matches!((w, h), (Some(w), Some(h)) if w <= PICTURE_SIDE && h <= PICTURE_SIDE);
+    if b.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return fits(be(16, 4), be(20, 4));
+    }
+    if b.starts_with(b"GIF8") {
+        return fits(le(6, 2), le(8, 2));
+    }
+    if b.starts_with(b"BM") {
+        return fits(le(18, 4).map(|w| w.min(u64::from(u32::MAX))), le(22, 4).map(|h| (h as u32 as i32).unsigned_abs().into()));
+    }
+    if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"WEBP") {
+        return match b.get(12..16) {
+            Some(b"VP8X") => fits(le(24, 3).map(|w| w + 1), le(27, 3).map(|h| h + 1)),
+            Some(b"VP8 ") => fits(le(26, 2).map(|w| w & 0x3fff), le(28, 2).map(|h| h & 0x3fff)),
+            Some(b"VP8L") => le(21, 4).is_some_and(|v| fits(Some((v & 0x3fff) + 1), Some(((v >> 14) & 0x3fff) + 1))),
+            _ => false,
+        };
+    }
+    if b.starts_with(&[0xff, 0xd8]) {
+        // the frame header, among the segments before the picture's data
+        let mut at = 2;
+        while let (Some(0xff), Some(kind)) = (b.get(at).copied(), b.get(at + 1).copied()) {
+            // a marker may be led by any number of fill bytes
+            if kind == 0xff {
+                at += 1;
+                continue;
+            }
+            if matches!(kind, 0xc0..=0xcf) && !matches!(kind, 0xc4 | 0xc8 | 0xcc) {
+                return fits(be(at + 7, 2), be(at + 5, 2));
+            }
+            let Some(len) = be(at + 2, 2) else { return false };
+            at += 2 + len as usize;
+        }
+        return false;
+    }
+    // a drawing: its text is looked through for what would read a file
+    let head = &b[..b.len().min(4096)];
+    let text = String::from_utf8_lossy(head);
+    if find_ci(&text, "<svg").is_some() {
+        let all = String::from_utf8_lossy(b);
+        return !draws_a_file(&all);
+    }
+    true
+}
+
+/// HTML as it is given to what draws it. A drawing set into the page
+/// may name a file to draw in, and what draws it would read that file
+/// from this computer's disk, the whole of it: such an element is made
+/// one that means nothing. A page nested past what the drawing's stack
+/// holds is put aside for a line that says so.
+pub fn tamed(html: &str) -> std::borrow::Cow<'_, str> {
+    if deeper_than(html, DEEPEST) {
+        return std::borrow::Cow::Borrowed("<html><body><p>This page is nested too deeply to draw.</p></body></html>");
+    }
+    if !draws_a_file(html) {
+        return std::borrow::Cow::Borrowed(html);
+    }
+    let mut out = String::with_capacity(html.len() + 16);
+    let mut rest = html;
+    while let Some((at, len)) = next_image(rest) {
+        // only one that would read a file is unmade: a picture held in the drawing itself is kept
+        if reads_a_file(&rest[at..at + len]) {
+            out.push_str(&rest[..at + 1]);
+            out.push_str("x-");
+            rest = &rest[at + 1..];
+        } else {
+            out.push_str(&rest[..at + len]);
+            rest = &rest[at + len..];
+        }
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
+}
+
+/// The next element that draws a picture in, `image` or `feImage` and no other name that begins so: where its tag starts, and how long the tag is.
+fn next_image(s: &str) -> Option<(usize, usize)> {
+    let mut from = 0;
+    loop {
+        let at = from + [find_ci(&s[from..], "<image"), find_ci(&s[from..], "<feimage")].into_iter().flatten().min()?;
+        let name_end = at + if s[at..].len() >= 8 && s[at..at + 8].eq_ignore_ascii_case("<feimage") { 8 } else { 6 };
+        let whole = s[name_end..].chars().next().is_none_or(|c| c.is_whitespace() || c == '/' || c == '>');
+        if whole {
+            let len = s[at..].find('>').map_or(s.len() - at, |e| e + 1);
+            return Some((at, len));
+        }
+        from = name_end;
+    }
+}
+
+/// Whether a picture element's tag names anything but a picture written out in the tag itself. One with no address draws nothing and is let be.
+fn reads_a_file(tag: &str) -> bool {
+    let mut rest = tag;
+    while let Some(at) = find_ci(rest, "href") {
+        let after = rest[at + 4..].trim_start();
+        let Some(value) = after.strip_prefix('=') else {
+            rest = &rest[at + 4..];
+            continue;
+        };
+        let value = value.trim_start().trim_start_matches(['"', '\'']).trim_start();
+        let held = ["data:image/png", "data:image/jpeg", "data:image/jpg", "data:image/gif", "data:image/webp"].iter().any(|p| value.len() >= p.len() && value[..p.len()].eq_ignore_ascii_case(p));
+        if !held && !value.starts_with('#') {
+            return true;
+        }
+        rest = &rest[at + 4..];
+    }
+    false
+}
+
+/// Whether a drawing, or a page with drawings in it, has a picture element that would read a file.
+fn draws_a_file(s: &str) -> bool {
+    let mut rest = s;
+    while let Some((at, len)) = next_image(rest) {
+        if reads_a_file(&rest[at..at + len]) {
+            return true;
+        }
+        rest = &rest[at + len..];
+    }
+    false
+}
+
+/// The deepest a page's elements may stand one inside another and be drawn.
+pub const DEEPEST: usize = 4096;
+
+/// Whether HTML has elements one inside another deeper than `most`.
+/// Counted from its tags alone, so an element left open counts as one
+/// that holds all that follows: the count errs towards deep.
+pub fn deeper_than(src: &str, most: usize) -> bool {
+    // elements with no inside, and those a browser closes by itself when the next of their kind opens: a list of five thousand items written with no closing tags is not five thousand deep
+    const VOID: [&str; 28] = ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr", "li", "p", "td", "th", "tr", "option", "dt", "dd", "thead", "tbody", "tfoot", "colgroup", "optgroup", "rp"];
+    let (b, mut i, mut depth) = (src.as_bytes(), 0, 0usize);
+    while let Some(lt) = b[i..].iter().position(|c| *c == b'<').map(|p| p + i) {
+        i = lt + 1;
+        let closing = b.get(i) == Some(&b'/');
+        let from = if closing { i + 1 } else { i };
+        let len = b[from.min(b.len())..].iter().take_while(|c| c.is_ascii_alphanumeric()).count();
+        if len == 0 {
+            continue;
+        }
+        let name = &src[from..from + len];
+        // a script's or a style's inside is not markup: `i<n` there opens nothing
+        if !closing && (name.eq_ignore_ascii_case("script") || name.eq_ignore_ascii_case("style")) {
+            let end = format!("</{}", name.to_ascii_lowercase());
+            i = find_ci(&src[i..], &end).map_or(src.len(), |e| i + e);
+            continue;
+        }
+        if VOID.iter().any(|v| v.eq_ignore_ascii_case(name)) {
+            continue;
+        }
+        if closing {
+            depth = depth.saturating_sub(1);
+        } else {
+            depth += 1;
+            if depth > most {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// An HTML page as Markdown to read. Never fails: what is not understood is read as text or left out.
 pub fn to_markdown(html: &str) -> String {
     let mut out = blocks(&parse(html), 0).join("\n");
@@ -634,6 +817,49 @@ mod tests {
         assert_eq!(md("<img src=\"javascript:x\" alt=\"pic\"><img src=\"file:///a.png\">"), "pic");
         assert_eq!(md("<p onclick=\"x()\">t</p><form><input value=secret><button>Go</button><textarea>typed</textarea></form>"), "t");
         assert_eq!(md("<a href=\"x)](javascript:y\">t</a>"), "[t](<x)](javascript:y>)");
+    }
+
+    #[test]
+    fn a_picture_that_says_it_is_vast_is_not_decoded() {
+        let png = |w: u32, h: u32| [b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".as_slice(), &w.to_be_bytes(), &h.to_be_bytes(), &[1, 0, 0, 0, 0]].concat();
+        assert!(fetched_ok(&png(800, 600)));
+        assert!(!fetched_ok(&png(22_000, 22_000)));
+        assert!(!fetched_ok(b"\x89PNG\r\n\x1a\n"));
+        let gif = |w: u16, h: u16| [b"GIF89a".as_slice(), &w.to_le_bytes(), &h.to_le_bytes()].concat();
+        assert!(fetched_ok(&gif(100, 100)) && !fetched_ok(&gif(65_535, 65_535)));
+        let jpeg = |w: u16, h: u16| [&[0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 11, 8][..], &h.to_be_bytes(), &w.to_be_bytes()].concat();
+        assert!(fetched_ok(&jpeg(640, 480)) && !fetched_ok(&jpeg(65_000, 65_000)));
+        // a style sheet and a font pass
+        assert!(fetched_ok(b"body { color: red }") && fetched_ok(b"wOF2\0\x01\0\0"));
+        // a drawing passes unless it draws a file in
+        assert!(fetched_ok(b"<svg xmlns='http://www.w3.org/2000/svg'><rect width='1' height='1'/></svg>"));
+        assert!(!fetched_ok(b"<svg xmlns='http://www.w3.org/2000/svg'><IMAGE href='/dev/zero'/></svg>"));
+        assert!(!fetched_ok(b"<?xml version='1.0'?><svg><filter><feImage href='/etc/passwd'/></filter></svg>"));
+    }
+
+    #[test]
+    fn a_page_is_tamed_before_it_is_drawn() {
+        let plain = "<html><body><p>hi <img src='a.png'></p></body></html>";
+        assert!(matches!(tamed(plain), std::borrow::Cow::Borrowed(p) if p == plain));
+        assert_eq!(tamed("<svg><image href='/dev/zero'/><FEIMAGE href='x'/></svg>"), "<svg><x-image href='/dev/zero'/><x-FEIMAGE href='x'/></svg>");
+        // a picture held in the drawing itself is kept, and so is an element whose name only begins the same
+        let kept = "<svg><image href=\"data:image/png;base64,AAAA\"/><image-gallery>x</image-gallery></svg>";
+        assert!(matches!(tamed(kept), std::borrow::Cow::Borrowed(_)));
+        assert!(fetched_ok(kept.as_bytes()));
+        assert_eq!(tamed("<svg><image xlink:href = '/etc/passwd'/></svg>"), "<svg><x-image xlink:href = '/etc/passwd'/></svg>");
+        assert!(!fetched_ok(b"<svg><image href='data:image/svg+xml,%3Csvg%3E'/></svg>"), "a drawing inside a drawing may read a file in its turn");
+        // a long list written with no closing tags is not deep, nor is a script that compares
+        let list = format!("<html><body><ul>{}</ul></body></html>", "<li>item\n".repeat(30_000));
+        assert!(!deeper_than(&list, DEEPEST));
+        assert!(!deeper_than(&format!("<script>{}</script><p>x", "if(i<n){}".repeat(30_000)), DEEPEST));
+        let deep = format!("<html><body>{}x</body></html>", "<span>".repeat(100_000));
+        assert!(tamed(&deep).contains("too deeply"));
+        assert!(!deeper_than(&format!("{}x{}", "<div>".repeat(100), "</div>".repeat(100)), 200));
+        assert!(!deeper_than(&"<br><img><p>a</p>".repeat(50_000), 10));
+        // many skipped elements are passed over in one reading
+        let t = std::time::Instant::now();
+        let _ = to_markdown(&"<svg></svg>".repeat(80_000));
+        assert!(t.elapsed().as_secs() < 8);
     }
 
     #[test]

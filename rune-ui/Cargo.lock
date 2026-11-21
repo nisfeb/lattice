@@ -1996,7 +1996,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-rune"
-version = "1.0.38"
+version = "1.0.39"
 dependencies = [
  "anyrender",
  "anyrender_vello_cpu",

@@ -215,7 +215,7 @@
   ::  BEFORE the legacy fallback; any other shape under forum/ stays legacy pub.
   ?:  &(=(%forum i.segs) ?=(^ t.segs))
     ?~  t.t.segs  `[%forum u.shp i.t.segs ~]
-    =/  pn=(unit @ud)  (slaw %ud i.t.t.segs)
+    =/  pn=(unit @ud)  (ud-any i.t.t.segs)
     ?.  &(?=(^ pn) ?=(~ t.t.t.segs))  `[%pub u.shp segs]
     `[%forum u.shp i.t.segs pn]
   ?.  =(1 (met 3 i.segs))
@@ -251,6 +251,17 @@
     ?:  |(=(1 (met 3 i.rel)) =(%forum i.rel))  (crip :(weld pre "/n" (seg rel)))
     (crip :(weld pre (seg rel)))
   (crip :(weld pre "/t" (seg pax)))
+::  +ud-any: a number as a link or a form carries it, plain (1000) or
+::    with hoon's dots (1.000). +slaw %ud takes only the dotted form, so
+::    a thread or comment numbered 1000 or more, which every link this
+::    ship prints writes plain, could not be opened or acted on.
+::
+++  ud-any
+  |=  t=@t
+  ^-  (unit @ud)
+  =/  plain=(unit @ud)  (rush t dim:ag)
+  ?^  plain  plain
+  (slaw %ud t)
 ::  +cross-site: did another site send this request?
 ::
 ::    The owner's eyre cookie carries no SameSite, so a page on another site

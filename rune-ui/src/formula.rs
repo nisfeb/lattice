@@ -15,6 +15,9 @@ const OF_NAME: [(&str, &str); 10] = [
     ("MINIFS", "COM.MICROSOFT.MINIFS"), ("STDEV.S", "COM.MICROSOFT.STDEV.S"), ("STDEV.P", "COM.MICROSOFT.STDEV.P"), ("VAR.S", "COM.MICROSOFT.VAR.S"), ("VAR.P", "COM.MICROSOFT.VAR.P"),
 ];
 
+/// A vendor's spelling read as the plain name, for a function ODF 1.2 has: it is stored plain.
+const OF_ALIAS: [(&str, &str); 1] = [("IFNA", "COM.MICROSOFT.IFNA")];
+
 const MAX_COL: u32 = 16_384;
 const MAX_ROW: u32 = 1_048_576;
 
@@ -346,7 +349,14 @@ fn tokenize_spans(text: &str, mode: Mode, spans: &mut Vec<(usize, usize)>) -> Re
             continue;
         }
         if mode == Mode::Of && ch == '[' {
-            let close = (i..s.len()).find(|k| s[*k] == ']').ok_or("a reference that is not closed")?;
+            // the bracket that closes it is the first outside a quoted sheet name, which may hold one
+            let mut quoted = false;
+            let close = (i..s.len())
+                .find(|k| {
+                    quoted ^= s[*k] == '\'';
+                    s[*k] == ']' && !quoted
+                })
+                .ok_or("a reference that is not closed")?;
             let mut r = full_ref(&s[i + 1..close], Mode::Of);
             if let Some((a, end)) = read_end(&s, i + 1, Mode::Of) {
                 if end == close {
@@ -496,6 +506,8 @@ struct Parser {
     toks: Vec<Tok>,
     p: usize,
     depth: usize,
+    /// How many operators have been read: a formula of a great many would be a tree too deep to walk.
+    long: usize,
 }
 
 impl Parser {
@@ -506,6 +518,12 @@ impl Parser {
         }
     }
 
+    /// One more operator. A row of them makes a tree as deep as it is long, and everything that reads the tree goes down it, so twenty thousand terms end the app. No real formula has a thousand, and a thousand is what the smallest stack the app runs on can walk.
+    fn longer(&mut self) -> Result<(), String> {
+        self.long += 1;
+        if self.long > 1000 { Err("formula too long".into()) } else { Ok(()) }
+    }
+
     fn level(&mut self, n: usize) -> Result<Node, String> {
         if n == LEVELS.len() {
             return self.unary();
@@ -513,6 +531,7 @@ impl Parser {
         let mut l = self.level(n + 1)?;
         while let Some(op) = self.op(LEVELS[n]) {
             self.p += 1;
+            self.longer()?;
             l = Node::Bin(op, Box::new(l), Box::new(self.level(n + 1)?));
         }
         Ok(l)
@@ -533,6 +552,7 @@ impl Parser {
         let mut x = self.primary()?;
         while self.op(&["%"]).is_some() {
             self.p += 1;
+            self.longer()?;
             x = Node::Pct(Box::new(x));
         }
         Ok(x)
@@ -590,7 +610,7 @@ impl Parser {
                     }
                     self.depth -= 1;
                     let up = name.to_uppercase();
-                    let user = OF_NAME.iter().find(|(_, of)| *of == up).map(|(u, _)| (*u).to_owned());
+                    let user = OF_NAME.iter().chain(&OF_ALIAS).find(|(_, of)| *of == up).map(|(u, _)| (*u).to_owned());
                     Node::Call(user.unwrap_or(up), args)
                 } else {
                     match name.to_uppercase().as_str() {
@@ -607,7 +627,7 @@ impl Parser {
 
 /// The tree of a formula's body.
 pub fn parse(text: &str, mode: Mode) -> Result<Node, String> {
-    let mut p = Parser { toks: tokenize(text, mode)?, p: 0, depth: 0 };
+    let mut p = Parser { toks: tokenize(text, mode)?, p: 0, depth: 0, long: 0 };
     let tree = p.level(0)?;
     match p.toks.get(p.p) {
         Some(t) => Err(format!("unexpected {}", said(t))),
@@ -618,6 +638,8 @@ pub fn parse(text: &str, mode: Mode) -> Result<Node, String> {
 /// A tree as text, in either spelling.
 pub fn print(n: &Node, mode: Mode) -> String {
     match n {
+        // more than a number can hold is written so that it reads back as the same, and never as a nought
+        Node::Num(v) if !v.is_finite() => "1E999".into(),
         Node::Num(v) => crate::sheet::num_attr(*v),
         Node::Str(v) => format!("\"{}\"", v.replace('"', "\"\"")),
         Node::Bool(v) => if *v { "TRUE()" } else { "FALSE()" }.into(),
@@ -852,5 +874,26 @@ mod tests {
         assert_eq!(to_of(&format!("={}1{}", "(".repeat(70), ")".repeat(70))).unwrap_err(), "nested too deep");
         assert!(to_of(&format!("={}1", "-".repeat(5000))).is_err());
         assert_eq!((col_name(0), col_name(25), col_name(26), col_name(16_383)), ("A".into(), "Z".into(), "AA".into(), "XFD".into()));
+    }
+
+    #[test]
+    fn a_sheet_name_with_a_closing_bracket_is_read_back() {
+        // a sheet whose name holds a closing bracket is read back from how it is stored
+        assert_eq!(to_of("=']'!A1+'a]b'.B2:C3").unwrap(), "of:=[']'.A1]+['a]b'.B2:.C3]");
+        assert_eq!(to_user("of:=[']'.A1]+[$'it''s]'.B2:.C3]"), "=']'.A1+$'it''s]'.B2:C3");
+        assert_eq!(move_formula("of:=[']'.A1]+[.B2]", "]", &Op { sheet: "]", rows: true, at: 0, n: 1 }).as_deref(), Some("of:=[']'.A2]+[.B3]"));
+    }
+
+    #[test]
+    fn ifna_is_read_under_a_vendors_name_and_stored_plain() {
+        assert_eq!(to_user("of:=COM.MICROSOFT.IFNA([.A1];0)"), "=IFNA(A1,0)");
+        assert_eq!(to_of("=IFNA(A1,0)").unwrap(), "of:=IFNA([.A1];0)");
+    }
+
+    #[test]
+    fn a_number_too_large_to_hold_is_kept_as_written() {
+        // and is not a nought
+        assert_eq!(to_of("=1e999+1").unwrap(), "of:=1E999+1");
+        assert_eq!(to_user("of:=1E999+1"), "=1E999+1");
     }
 }
