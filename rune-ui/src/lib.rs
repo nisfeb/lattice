@@ -877,7 +877,17 @@ struct App {
     /// The field's selection as vim last left it.
     vim_seen: (usize, usize),
     /// The editor's text and caret as last looked at, to tell typing by.
-    typed_seen: (usize, usize, usize),
+    typed_seen: u64,
+    /// When the wait on a moved page's revision began, by the clock: 0 until a look has set it.
+    moved_at: f64,
+    /// A save was asked for while a moved page's revision was not known.
+    moved_save: bool,
+    /// A page moved while it was edited was found to have been written by another before the move.
+    moved_changed: bool,
+    /// The page the save now on its way is of.
+    save_for: Option<String>,
+    /// What is kept on leaving an edit is not sent by this window: what comes next sends it.
+    no_drain: bool,
     /// A page moved while it was being edited, until the tree says what revision it now has.
     moved_wait: Option<String>,
     /// When the ship last heard from this window.
@@ -1352,7 +1362,12 @@ fn init() -> App {
         here_key: (0, 0, 0),
         here_heard: 0,
         vim_seen: (0, 0),
-        typed_seen: (0, 0, 0),
+        typed_seen: 0,
+        moved_at: 0.0,
+        moved_save: false,
+        moved_changed: false,
+        save_for: None,
+        no_drain: false,
         moved_wait: None,
         here_beat: 0.0,
         // a window is in front and in use when it opens
@@ -1694,8 +1709,11 @@ fn ship_mounts(s: &App, all: bool) -> Vec<mounts::MountSpec> {
 /// Sign out, asked for: at once when nothing of the ship's is mounted, and after a question when
 /// something is, since its folder goes with its session.
 fn sign_out_asked(s: &mut App, all: bool) {
-    // what is typed is kept first, or the window stays and says why
-    if !leave_edit(s) {
+    // what is typed is kept first, or the window stays and says why. It is sent by the signing out, which sends what waits before it ends the session
+    s.no_drain = true;
+    let left = leave_edit(s);
+    s.no_drain = false;
+    if !left {
         return;
     }
     s.ships_open = false;
@@ -1709,7 +1727,11 @@ fn sign_out_asked(s: &mut App, all: bool) {
 /// Signs out of the ship in front. Another ship signed in comes to the front in its place: the
 /// one used most lately. With none, the window is at its sign-in.
 fn sign_out(s: &mut App) {
-    Conn::forget();
+    // the ship this window is on, not whichever one another window last brought to the front
+    match s.conn.as_ref().map(|c| c.url.clone()) {
+        Some(url) => Conn::forget_of(&url),
+        None => Conn::forget(),
+    }
     reset(s, true);
 }
 
@@ -1725,8 +1747,11 @@ fn switch_ship(s: &mut App, url: &str) {
         s.ships_open = false;
         return;
     }
-    // what is being typed is saved or kept first, as before any other page is opened
-    if !leave_edit(s) {
+    // what is being typed is saved or kept first, as before any other page is opened. Kept, and sent by the watcher of the ships not in front: this window's own send would be let go of before its answer, and the same text sent again
+    s.no_drain = true;
+    let left = leave_edit(s);
+    s.no_drain = false;
+    if !left {
         return;
     }
     if !api::ship_bring(url) {
@@ -2184,7 +2209,7 @@ fn applied(s: &mut App, op: Op) {
                 if let Some(mut p) = s.cache.remove(&old) {
                     p.name = new.clone();
                     // the ship makes the moved page anew from the revisions it keeps, so its revision there is not the one it had: held as none until it is read, or a newer answer would be let go as an older one
-                    if s.offline.is_none() && s.conn.is_some() {
+                    if s.conn.is_some() && !s.memory {
                         p.rev = 0;
                     }
                     s.cache.insert(new.clone(), p);
@@ -2212,9 +2237,13 @@ fn applied(s: &mut App, op: Op) {
                     if let Some(p) = &mut s.open {
                         p.name = new.clone();
                     }
-                    // its revision on the ship is no longer the one this edit began from: saves wait for the next read of the tree to say what it is
-                    if s.offline.is_none() && s.conn.is_some() {
-                        s.moved_wait = Some(new);
+                    // its revision on the ship is no longer the one this edit began from: saves wait for the next read of the tree to say what it is. With the ship away there is no read to wait for, and a memory has no revision to hold to
+                    if s.conn.is_some() && !s.memory {
+                        if s.offline.is_none() {
+                            (s.moved_wait, s.moved_at) = (Some(new), 0.0);
+                        } else if let Some(p) = &mut s.open {
+                            p.rev = 0;
+                        }
                     }
                 }
                 Some(new) => {
@@ -3045,7 +3074,9 @@ fn commit_cell(s: &mut App) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(got) => {
             if let Some(v) = &mut s.sheet {
-                v.stale.retain(|k| !got.done.contains(k));
+                got.done.iter().for_each(|k| {
+                    v.stale.remove(k);
+                });
                 v.stale.extend(got.stale);
             }
             if got.body != p.body {
@@ -3080,10 +3111,11 @@ fn shift_picked(s: &mut App, rows: bool, off: usize, n: i64) {
     if v.name != p.name {
         return;
     }
-    match guarded(|| calc::shift(&p.body, v.at, rows, if rows { r } else { c } + off, n)) {
+    let stale: Vec<(usize, usize, usize)> = v.stale.iter().copied().collect();
+    match guarded(|| calc::shift_knowing(&p.body, v.at, rows, if rows { r } else { c } + off, n, &stale)) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(got) => {
-            // the formulas moved with the rows, so what could not be worked out is counted afresh
+            // what was stale before is told to the change, and comes back among the stale where it moved to
             v.stale = got.stale.into_iter().collect();
             v.repick = true;
             if got.body != p.body {
@@ -3326,6 +3358,7 @@ fn add_sheet(s: &mut App) {
 fn save_body(s: &mut App, p: Page, body: String) {
     let base = p.rev;
     let page = Page { body, ..p };
+    s.save_for = Some(page.name.clone());
     match s.conn.clone() {
         Some(c) => s.save_req.request((c, page), move |(c, mut p)| {
             p.rev = c.save(&p, base)?;
@@ -4802,6 +4835,7 @@ fn restore(s: &mut App) {
     }
     let base = cur.rev;
     let p = Page { name: old.name, body: old.body, kind: cur.kind.clone(), rev: base };
+    s.save_for = Some(p.name.clone());
     s.save_req.request((c, p), move |(c, mut p)| {
         p.rev = c.save(&p, base)?;
         Ok(p)
@@ -4817,7 +4851,7 @@ fn show_page(s: &mut App, name: &str) {
     s.settings = None;
     s.folder = None;
     s.old = None;
-    s.stale = false;
+    (s.stale, s.moved_changed) = (false, false);
     if let Some(p) = s.cache.get(name) {
         s.open = Some(p.clone());
     }
@@ -5261,9 +5295,9 @@ fn open_today(s: &mut App) {
 /// Leaves the editor without saving. A capture never saved is dropped.
 fn cancel_edit(s: &mut App) {
     s.editing = false;
-    s.moved_wait = None;
+    (s.moved_wait, s.moved_save, s.moved_changed) = (None, false, false);
     // that the page changed elsewhere was said of this edit: the next one starts from the page as it then is
-    s.stale = false;
+    (s.stale, s.moved_changed) = (false, false);
     if s.capture {
         s.capture = false;
         s.open = None;
@@ -5296,6 +5330,11 @@ fn leave_edit(s: &mut App) -> bool {
         write(s);
         return !s.editing;
     }
+    // a page just moved does not know its revision yet: kept now, it would go from the one it had and come back as a change made elsewhere
+    if s.moved_wait.as_deref() == Some(p.name.as_str()) {
+        s.note = "the page was just moved: try again in a moment".into();
+        return false;
+    }
     // another ship's page, and one that changed elsewhere, are saved on purpose only
     if s.remote.is_some() || s.stale {
         s.note = "Save or cancel this edit first: it is not saved by itself".into();
@@ -5314,7 +5353,8 @@ fn leave_edit(s: &mut App) -> bool {
         // it could not be kept on this device: the editor stays, and says so
         return false;
     }
-    if s.offline.is_none() {
+    // sent now, unless what follows will send it: a sign out or a change of ship lets go of this window's send before its answer, and what waited would then be sent again from the file
+    if s.offline.is_none() && !s.no_drain {
         drain(s);
     }
     true
@@ -5412,7 +5452,8 @@ fn write(s: &mut App) {
     }
     // a save of this page already on its way is followed, on its rev: sent beside it, the second would be refused as a change made elsewhere
     if own && s.save_req.is_pending() {
-        if s.save_sent.as_ref().is_some_and(|(sent, ..)| sent.name == p.name) {
+        // whichever way that save was sent: a change made where the page is read (a sheet's cell, a map's feature, the page's kind) is a save of this page too
+        if s.save_for.as_deref() == Some(p.name.as_str()) {
             s.save_again = true;
         } else {
             // another page's save is on its way, as a sheet's or a map's may be: this one is kept and sent behind it, not dropped with that one's answer
@@ -5425,13 +5466,15 @@ fn write(s: &mut App) {
     }
     // a page just moved does not know its revision yet (`moved_wait`): the save waits a moment for it
     if own && s.moved_wait.as_deref() == Some(p.name.as_str()) {
+        // kept in mind, and made when the tree has said what revision the page now has
         s.note = "the page was just moved: saving in a moment".into();
-        s.resync = true;
+        s.moved_save = true;
         return;
     }
     // a page this window has never seen on the ship is saved only if the ship has none of that name
     let fresh = own && !memory && base == 0 && !s.names.contains(&p.name);
     s.save_sent = own.then(|| (p.clone(), base, memory));
+    s.save_for = Some(p.name.clone());
     match s.conn.clone() {
         Some(c) => s.save_req.request((c, p), move |(c, mut p)| {
             if let Some(sh) = &remote {
@@ -5729,7 +5772,7 @@ fn landed(s: &mut App, p: Page) {
     }
     s.capture = false;
     s.open = Some(p);
-    s.stale = false;
+    (s.stale, s.moved_changed) = (false, false);
     s.note = "saved".into();
     if std::mem::take(&mut s.save_again) {
         // Save was pressed meanwhile: what was typed since goes too, and the editor closes
@@ -5763,6 +5806,21 @@ const SYNC_LAPSED: f64 = 900.0;
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     changed |= sync_scrub(s, clock, tx);
+    // a page moved while edited waits for the tree to say its revision. A ship that does not say within twenty seconds is not waited on for ever: the page is held at no revision, which the ship takes as no check
+    if s.moved_wait.is_some() {
+        if s.moved_at == 0.0 {
+            s.moved_at = clock;
+            tx.wake_after(std::time::Duration::from_secs(21));
+        } else if clock > s.moved_at + 20.0 {
+            s.moved_wait = None;
+            if let Some(p) = &mut s.open {
+                p.rev = 0;
+            }
+            if std::mem::take(&mut s.moved_save) && s.editing {
+                write(s);
+            }
+        }
+    }
     let was_away = s.away;
     changed |= sync_away(s, clock, tx);
     sync_idle(s, was_away, clock, tx);
@@ -6261,14 +6319,25 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     }
                 }
                 // a page moved while it was being edited takes the revision the ship now has it at, and is not said to have changed elsewhere. A read that does not bring it leaves it with none, which the ship takes as no check
-                if let Some(moved) = s.moved_wait.take() {
-                    if let Some(p) = s.open.as_mut().filter(|p| p.name == moved) {
-                        p.rev = s.cache.get(&moved).map_or(0, |c| c.rev);
+                // That holds only if its text there is still the text this edit began from. If it is not, someone wrote it before the move, and the move must not hide that: it is said to have changed, as it would have been. The same for any page being edited whose revision is not known, as one opened just after a move
+                let waited = s.moved_wait.take();
+                if let Some(p) = s.open.as_mut().filter(|_| s.editing && !s.memory && !away) {
+                    if waited.as_deref() == Some(p.name.as_str()) || (p.rev == 0 && s.names.contains(&p.name)) {
+                        match s.cache.get(&p.name) {
+                            Some(c) if c.body == p.body => p.rev = c.rev,
+                            // one behind theirs, so theirs can be merged in. At revision 0 there is no one behind: it is kept in mind
+                            Some(c) => (p.rev, s.moved_changed) = (c.rev.saturating_sub(1), c.rev == 0),
+                            None => p.rev = 0,
+                        }
                     }
                 }
                 // a page being edited that was written elsewhere: say so, since its save would be refused
                 if s.editing && !away {
-                    s.stale = s.open.as_ref().is_some_and(|p| s.cache.get(&p.name).is_some_and(|c| c.rev > p.rev));
+                    s.stale = s.moved_changed || s.open.as_ref().is_some_and(|p| s.cache.get(&p.name).is_some_and(|c| c.rev > p.rev));
+                }
+                // a save asked for while the page's revision was not known is made now, unless it turned out to have changed
+                if std::mem::take(&mut s.moved_save) && waited.is_some() && s.editing && !s.stale {
+                    write(s);
                 }
                 // the open page follows a write made elsewhere, unless it is being edited
                 if !s.editing && !away {
@@ -6615,6 +6684,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if let Some(r) = s.save_req.take() {
         changed = true;
         let sent = s.save_sent.take();
+        s.save_for = None;
         match r {
             Ok(p) => {
                 // the ship has this page's text now: an older save of it that waited is done with
@@ -10499,7 +10569,7 @@ fn show_remote(s: &mut App, sh: Shared, p: Page) {
     s.forum = None;
     s.folder = None;
     s.old = None;
-    s.stale = false;
+    (s.stale, s.moved_changed) = (false, false);
     s.note.clear();
     s.want = None;
     s.remote = Some(sh);
@@ -12827,7 +12897,7 @@ fn wait_or_stop(ms: u64, stop: &std::sync::atomic::AtomicBool) {
 /// would count as left, which costs the ship nothing.
 fn sync_away(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     // typing in a field is being at the window, and the app's own key handler is only given the keys a field did not take: the text and the caret are looked at too
-    let typed = (s.edit.text.len(), s.edit.focus, s.edit.anchor);
+    let typed = typed_sum(s);
     if std::mem::replace(&mut s.typed_seen, typed) != typed {
         s.touched = true;
     }
@@ -12844,6 +12914,34 @@ fn sync_away(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(std::time::Duration::from_secs_f64(again - clock));
     }
     was != s.away
+}
+
+/// A sum of the fields that are typed in: any change to it is someone
+/// at the window. The app's own key handler is given only the keys a
+/// field did not take, so typing is told by what it leaves.
+// ponytail: the fields named here. One not named (a card on a map, a setting) does not count, and five minutes typed only there would stop the window's reads until the pointer moves. A hook for every key in Rune is the fix
+fn typed_sum(s: &App) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut add = |e: &TextEdit| {
+        for n in [e.text.len(), e.focus, e.anchor] {
+            h = (h ^ n as u64).wrapping_mul(0x100_0000_01b3);
+        }
+    };
+    add(&s.edit);
+    add(&s.comment);
+    for e in [&s.find, &s.jump, &s.palette].into_iter().flatten() {
+        add(e);
+    }
+    if let Some(f) = &s.forum {
+        add(&f.comment);
+        for e in f.draft.iter().flat_map(|d| d.iter()) {
+            add(e);
+        }
+    }
+    if let Some(v) = &s.sheet {
+        add(&v.entry);
+    }
+    h
 }
 
 /// Stops what this window asks the ship by the clock while nobody is at
@@ -13171,7 +13269,7 @@ fn merge_theirs(s: &mut App) {
         vim_settle(s);
     }
     s.open = Some(Page { body: theirs.body, rev: theirs.rev, ..p });
-    s.stale = false;
+    (s.stale, s.moved_changed) = (false, false);
     s.note = match m.conflicts.as_slice() {
         [] => "Merged: their changes are in, and yours are kept".to_owned(),
         all => format!("Merged. Yours was kept {}, where both of you wrote. Theirs is in the page\u{2019}s history", all.iter().map(|c| here::place_said(&c.place)).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(" and ")),
@@ -13556,7 +13654,7 @@ fn body(s: &App, k: &Kit) -> El {
                 if let Some(p) = &mut s.open {
                     p.rev = newest;
                 }
-                s.stale = false;
+                (s.stale, s.moved_changed) = (false, false);
                 save(s);
             }
         }).build(k).key("stale-act");

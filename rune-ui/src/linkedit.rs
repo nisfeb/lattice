@@ -15,6 +15,8 @@ pub struct Open {
     opened: u64,
     /// How many steps the history held once it was opened: whether the opening is still the last of them.
     steps: usize,
+    /// The whole text as it read before the opening, as a sum of it: what taking the opening back must give.
+    before: u64,
 }
 
 /// A sum of a text, to tell it from another.
@@ -52,6 +54,7 @@ pub fn literal(lit: &str) -> Option<(usize, &str)> {
 pub fn open(e: &mut TextEdit) -> Option<Open> {
     let (a, b, url) = link_at(e)?;
     let caret = e.focus;
+    let before = sum(&e.text);
     // one step of the history, so that leaving the link untouched can take the whole of it back (`close`)
     let b = e.undo_group(|e| {
         e.set_selection(a, b);
@@ -74,7 +77,7 @@ pub fn open(e: &mut TextEdit) -> Option<Open> {
     });
     let tail = e.text.len() - (b + 1 + url.len() + 3);
     let end = e.text.len() - tail;
-    Some(Open { start: a, tail, opened: e.text.get(a..end).map_or(0, sum), steps: e.history_len().0 })
+    Some(Open { start: a, tail, opened: e.text.get(a..end).map_or(0, sum), steps: e.history_len().0, before })
 }
 
 /// Whether the caret, or either end of a selection, has left an opened link.
@@ -95,10 +98,17 @@ pub fn close(e: &mut TextEdit, o: Open) {
     let gone = end - o.start - label;
     let moved = |c: usize| if c >= end { c - gone } else { c.min(o.start) };
     // only when the opening is still the history's last step. Text typed in the link and taken out again reads the same and is not: an undo would then bring the typing back
-    if sum(&e.text[o.start..end]) == o.opened && e.history_len().0 == o.steps {
-        // nothing was typed in it: the opening is taken back, and the history is as it was before the caret came. Opened and closed as two edits, each pass of the caret left two steps to undo, and the first undo of them took the link's address away
+    // nothing was typed in it, by what it reads as and by the history's count: the opening is taken back, and the history is as it was before the caret came. Opened and closed as two edits, each pass of the caret left two steps to undo, and the first undo of them took the link's address away
+    let mut back = sum(&e.text[o.start..end]) == o.opened && e.history_len().0 == o.steps;
+    if back {
         e.undo();
-    } else {
+        // a history that is full keeps the same count whatever is done, so the count alone cannot be trusted: what the undo gave must be the text as it was before the opening, or it undid something else and is put back
+        if sum(&e.text) != o.before {
+            e.redo();
+            back = false;
+        }
+    }
+    if !back {
         // what follows the label, then the bracket before it, then the link over what is left, as one step
         e.undo_group(|e| {
             e.set_selection(o.start + 1 + label, end);
@@ -217,8 +227,8 @@ mod tests {
         close(&mut e, o);
         assert_eq!((e.text.as_str(), links(&e)), ("go [there](u now", vec![]));
         // and a range that no longer fits the text does nothing
-        close(&mut e, Open { start: 40, tail: 0, opened: 0, steps: 0 });
-        close(&mut e, Open { start: 0, tail: 400, opened: 0, steps: 0 });
+        close(&mut e, Open { start: 40, tail: 0, opened: 0, steps: 0, before: 0 });
+        close(&mut e, Open { start: 0, tail: 400, opened: 0, steps: 0, before: 0 });
         assert_eq!(e.text, "go [there](u now");
     }
 
@@ -235,6 +245,32 @@ mod tests {
         e.set_caret(e.text.len());
         close(&mut e, o);
         assert_eq!(e.text, "go there now");
+        assert_eq!(links(&e), vec![(3, 8, "https://x.y".to_owned())]);
+    }
+
+    #[test]
+    fn a_full_history_does_not_bring_back_what_was_typed_in_a_link() {
+        let mut e = edit("go there now", vec![MarkRange::new(3..8, Mark::Link("https://x.y".into()))], 0);
+        // more steps than the history keeps
+        for i in 0..300 {
+            e.set_caret(e.text.len());
+            e.insert(if i % 2 == 0 { "a" } else { " " });
+            e.break_history_group();
+        }
+        let full = e.history_len().0;
+        e.set_caret(5);
+        let o = open(&mut e).expect("the caret is in the link");
+        let opened = e.text.clone();
+        e.insert("x");
+        e.break_history_group();
+        let at = e.focus;
+        e.set_selection(at - 1, at);
+        e.insert("");
+        e.break_history_group();
+        assert_eq!((e.text.as_str(), e.history_len().0), (opened.as_str(), full), "it reads the same, and the count has not moved");
+        e.set_caret(e.text.len());
+        close(&mut e, o);
+        assert!(e.text.starts_with("go there now"), "{}", &e.text[..30]);
         assert_eq!(links(&e), vec![(3, 8, "https://x.y".to_owned())]);
     }
 

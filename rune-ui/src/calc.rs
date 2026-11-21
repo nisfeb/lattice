@@ -1170,10 +1170,19 @@ pub fn enter_knowing(src: &str, s: usize, r: usize, c: usize, typed: &str, stale
     let book = sheet::book(&body)?;
     let mut eng = Engine::new(&book, &styles);
     // the cell typed into is what was typed, whatever it was before
-    let was_stale = stale.contains(&(s, r, c));
-    let known: Vec<Key> = stale.iter().copied().filter(|k| *k != (s, r, c)).collect();
+    let (was_stale, stale_was) = (stale.contains(&(s, r, c)), stale);
+    // an array formula typed over spreads no more. The cells its results lay in are plain cells
+    // now, holding what they held: they are stale no longer, and what reads them is worked out again
+    let freed: HashSet<Key> = before
+        .at(s, r, c)
+        .filter(|cell| cell.array && cell.f.is_some() && cell.spill.0.saturating_mul(cell.spill.1) <= SPILL_MOST)
+        .map(|cell| (0..cell.spill.0).flat_map(|i| (0..cell.spill.1).map(move |j| (s, r + i, c + j))).filter(|k| *k != (s, r, c)).collect())
+        .unwrap_or_default();
+    let known: Vec<Key> = stale.iter().copied().filter(|k| *k != (s, r, c) && !freed.contains(k)).collect();
     eng.distrust(&known);
-    let mut results = eng.recalc(&[(s, r, c)], formula.then_some((s, r, c)));
+    let mut edited = vec![(s, r, c)];
+    edited.extend(freed.iter().copied());
+    let mut results = eng.recalc(&edited, formula.then_some((s, r, c)));
     let stale: Vec<Key> = {
         let mut v: Vec<Key> = eng.stale.iter().copied().collect();
         v.sort_unstable();
@@ -1184,6 +1193,7 @@ pub fn enter_knowing(src: &str, s: usize, r: usize, c: usize, typed: &str, stale
     if !formula && was_stale {
         done.push((s, r, c));
     }
+    done.extend(stale_was.iter().copied().filter(|k| freed.contains(k)));
     // a formula that makes a date or a time, in a cell with no number format of its own, gets one:
     // =DATE(2026,11,10) shows as a date and not as the day number, as it does in Calc
     if formula {
@@ -1232,6 +1242,13 @@ fn write(mut body: String, results: Vec<(Key, Put)>) -> Result<String, String> {
 /// at nothing, those that ask where a cell is (ROW, COLUMN), those with a
 /// range the new rows are in, since it grew, and whatever reads these.
 pub fn shift(src: &str, s: usize, rows: bool, at: usize, n: i64) -> Result<Entered, String> {
+    shift_knowing(src, s, rows, at, n, &[])
+}
+
+/// The same, told which formulas an earlier change left stale. Rows put in work out only
+/// what they reached, so the rest of those are stale still, where they moved to, and are
+/// among the stale that come back. Rows taken out have every formula worked out afresh.
+pub fn shift_knowing(src: &str, s: usize, rows: bool, at: usize, n: i64, stale: &[(usize, usize, usize)]) -> Result<Entered, String> {
     let body = crate::shift::shift(src, s, rows, at as i64, n)?;
     let book = sheet::book(&body)?;
     let styles = Styles::read(&body, book.null_date);
@@ -1240,10 +1257,23 @@ pub fn shift(src: &str, s: usize, rows: bool, at: usize, n: i64) -> Result<Enter
     let grew = |d: &[usize; 5]| d[0] == s && if rows { d[1] <= hi && d[3] >= lo } else { d[2] <= hi && d[4] >= lo };
     let placed = |e: &Entry| e.wild || e.deps.iter().any(grew) || e.ast.as_ref().is_some_and(|a| calls(a, &["ROW", "COLUMN"]));
     let again: Vec<Key> = eng.formulas.iter().filter(|e| n < 0 || e.f.contains("#REF!") || placed(e)).map(|e| e.at).collect();
+    let by = n.unsigned_abs() as usize;
+    let known: Vec<Key> = stale
+        .iter()
+        .filter(|_| n > 0)
+        .map(|&(ks, kr, kc)| match (ks == s, rows) {
+            (true, true) if kr >= at => (ks, kr.saturating_add(by), kc),
+            (true, false) if kc >= at => (ks, kr, kc.saturating_add(by)),
+            _ => (ks, kr, kc),
+        })
+        .collect();
+    eng.distrust(&known);
     let results = if again.is_empty() { Vec::new() } else { eng.recalc_with(&again, &again.iter().copied().collect()) };
-    let mut stale: Vec<Key> = eng.stale.iter().copied().collect();
-    stale.sort_unstable();
     let done = std::mem::take(&mut eng.done);
+    let worked: HashSet<Key> = done.iter().copied().collect();
+    let mut stale: Vec<Key> = eng.stale.iter().copied().chain(known.into_iter().filter(|k| !worked.contains(k))).collect();
+    stale.sort_unstable();
+    stale.dedup();
     Ok(Entered { body: write(body, results)?, stale, done })
 }
 
@@ -1758,6 +1788,12 @@ mod tests {
         }
         assert!(enter(FORMATTED, 0, 0, 5, "$-1,234.50").unwrap().body.contains("office:currency=\"USD\" office:value=\"-1234.5\""));
         assert_eq!(cell(&enter(FORMATTED, 0, 0, 5, "-$-5.00").unwrap().body, 5).0, "string");
+        // money that writes what is owed in brackets: the brackets are not words round a 6, so it stays what was typed
+        let owed = FORMATTED.replace("<number:currency-style style:name=\"N6\"><number:currency-symbol number:language=\"en\" number:country=\"US\">$</number:currency-symbol>", "<number:currency-style style:name=\"N6\"><number:text>(</number:text><number:currency-symbol number:language=\"en\" number:country=\"US\">$</number:currency-symbol>").replace("number:grouping=\"true\"/></number:currency-style>\n  <style:style style:name=\"ce3\"", "number:grouping=\"true\"/><number:text>)</number:text><style:map style:condition=\"value()&gt;=0\" style:apply-style-name=\"N6P0\"/></number:currency-style>\n  <style:style style:name=\"ce3\"");
+        assert!(owed.contains("style:map"));
+        for typed in ["($6.00)", "-($6.00)"] {
+            assert_eq!(cell(&enter(&owed, 0, 0, 5, typed).unwrap().body, 5), ("string".to_owned(), typed.to_owned()));
+        }
     }
 
     /// What a formula typed into A3 of a small sheet shows.
@@ -1878,6 +1914,45 @@ mod tests {
         // typed over, the stale formula is a value, and what reads it is worked out
         let got = enter_knowing(&src, 0, 0, 1, "8", &[(0, 0, 1)]).unwrap();
         assert_eq!((grid(&got.body)[0][2].as_str(), got.stale.len(), got.done), ("9", 0, vec![(0, 0, 2), (0, 0, 1)]));
+    }
+
+    #[test]
+    fn rows_put_in_do_not_forget_what_was_stale_and_an_array_typed_over_frees_its_cells() {
+        let array = |src: String, from: &str, rows: usize| {
+            let out = src.replacen(&format!("table:formula=\"of:={from}"), &format!("table:number-matrix-columns-spanned=\"1\" table:number-matrix-rows-spanned=\"{rows}\" table:formula=\"of:={from}"), 1);
+            assert_ne!(out, src);
+            out
+        };
+        // B1 is an array formula, C1 reads it and A2
+        let src = array(doc(&[&["1", "=A1*10|10", "=B1+A2|10"], &["0"]]), "[.A1]", 1);
+        let got = enter(&src, 0, 0, 0, "5").unwrap();
+        assert_eq!(got.stale, [(0, 0, 1), (0, 0, 2)]);
+        // a row far below, a column to the right: nothing moved, nothing forgotten
+        for (rows, at) in [(true, 10), (false, 7)] {
+            let put = shift_knowing(&got.body, 0, rows, at, 1, &got.stale).unwrap();
+            assert_eq!(put.stale, got.stale);
+        }
+        // a row above: the stale cells are where they moved to, and what reads one is not worked out from its old value
+        let put = shift_knowing(&got.body, 0, true, 0, 1, &got.stale).unwrap();
+        assert_eq!(put.stale, [(0, 1, 1), (0, 1, 2)]);
+        let next = enter_knowing(&put.body, 0, 2, 0, "1", &put.stale).unwrap();
+        assert_eq!((grid(&next.body)[1][2].as_str(), next.stale.contains(&(0, 1, 2)), next.done.contains(&(0, 1, 2))), ("10", true, false));
+        // a column before them
+        assert_eq!(shift_knowing(&got.body, 0, false, 1, 2, &got.stale).unwrap().stale, [(0, 0, 3), (0, 0, 4)]);
+        // rows taken out work everything out again
+        assert_eq!(shift_knowing(&got.body, 0, true, 5, -1, &got.stale).unwrap().stale, [(0, 0, 1), (0, 0, 2)]);
+
+        // A3 is an array formula over A3:A4, and B1 reads A4
+        let src = array(doc(&[&["1", "=A4+C1|6"], &["2"], &["=A1:A2*3|3"], &["6"]]), "[.A1:.A2]", 2);
+        let got = enter(&src, 0, 0, 0, "4").unwrap();
+        assert_eq!(got.stale, [(0, 0, 1), (0, 2, 0), (0, 3, 0)]);
+        // typed over, it spreads no more: A4 is the 6 it held, and B1 is worked out from it
+        let over = enter_knowing(&got.body, 0, 2, 0, "12", &got.stale).unwrap();
+        let mut left: Vec<Key> = got.stale.iter().copied().filter(|k| !over.done.contains(k)).chain(over.stale.iter().copied()).collect();
+        left.sort_unstable();
+        assert_eq!(left, []);
+        let last = enter_knowing(&over.body, 0, 0, 2, "200", &left).unwrap();
+        assert_eq!((grid(&last.body)[0][1].as_str(), last.stale.len()), ("206", 0));
     }
 
     #[test]

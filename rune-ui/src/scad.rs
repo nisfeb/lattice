@@ -494,11 +494,36 @@ impl Seek {
 }
 
 /// Whether what stands at `i` runs on from a name before it. OpenSCAD's
-/// lexer takes the longest word it can, so `xinclude` and `_use` are
-/// names, and an `include` after anything else is the keyword: after a
-/// brace, a bracket, a comma, or the figures of a number.
+/// lexer takes the longest word it can, so `xinclude`, `_use` and
+/// `q1use` are names. After figures alone it cannot be told here, since
+/// `1.5include` is a number and then the keyword, so that is not called
+/// a name: see `after_figures`.
 fn joined(b: &[u8], i: usize) -> bool {
-    i > 0 && (b[i - 1].is_ascii_alphabetic() || matches!(b[i - 1], b'_' | b'$'))
+    let name = |c: u8| c.is_ascii_alphabetic() || matches!(c, b'_' | b'$');
+    if i == 0 || !(name(b[i - 1]) || b[i - 1].is_ascii_digit()) {
+        return false;
+    }
+    // back over the figures, and no further than a name is ever long: what stands before them says which it is
+    let figures = b[..i].iter().rev().take(JOIN_MOST).take_while(|c| c.is_ascii_digit()).count();
+    if figures == JOIN_MOST || figures == i {
+        return false;
+    }
+    let at = i - figures;
+    // an exponent's letter belongs to a number: `1.5e3`
+    if figures > 0 && matches!(b[at - 1], b'e' | b'E') && at >= 2 && (b[at - 2].is_ascii_digit() || b[at - 2] == b'.') {
+        return false;
+    }
+    name(b[at - 1])
+}
+
+/// The most figures looked back over to find the name they end.
+const JOIN_MOST: usize = 64;
+
+/// Whether what stands at `i` comes straight after a figure. An include
+/// there may be the keyword or part of a name, so it is checked as the
+/// keyword and what follows it is read as code all the same.
+fn after_figures(b: &[u8], i: usize) -> bool {
+    i > 0 && b[i - 1].is_ascii_digit()
 }
 
 /// Where the path of an `include <` or `use <` that starts at `i` starts: just past its `<`.
@@ -643,6 +668,25 @@ fn leaves(path: &str) -> bool {
 /// can. Only a sandbox round the `openscad` program closes that.
 // ponytail: a name built at run time is not caught. Running openscad in a sandbox of its own is the whole answer
 pub fn tame(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
+    // taking one thing out can leave another standing that was read as part of it, so it is done until nothing changes
+    let (mut text, mut notes) = tame_once(dir, src);
+    for _ in 0..TAME_MOST {
+        let (next, more) = tame_once(dir, &text);
+        if next == text {
+            return (text, notes);
+        }
+        notes.extend(more.into_iter().filter(|n| !notes.contains(n)).collect::<Vec<_>>());
+        text = next;
+    }
+    // it did not settle: nothing of it is run
+    notes.push((1, "this model could not be checked, so it was not built".to_string()));
+    (text.bytes().map(|c| if matches!(c, b'\n' | b'\r') { c as char } else { ' ' }).collect(), notes)
+}
+
+/// The most times a model is gone over before it is given up.
+const TAME_MOST: usize = 8;
+
+fn tame_once(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
     let b = src.as_bytes();
     let mut out = b.to_vec();
     let mut notes = Vec::new();
@@ -664,7 +708,8 @@ pub fn tame(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
     let mut include = |out: &mut Vec<u8>, p: usize, from: usize, bound: usize| -> usize {
         let end = ends.at(src, from, |t| t.find(['>', '\n', '\r', '\t', '<'])).filter(|e| b[*e] == b'>');
         match end {
-            Some(e) if resolve_ref(dir, &src[from..e]).is_ok() => e + 1,
+            // one that may be a name after all is not read past: a reader of files may stand in what looked like its path
+            Some(e) if resolve_ref(dir, &src[from..e]).is_ok() => if after_figures(b, p) { from } else { e + 1 },
             Some(e) if e < bound => {
                 stop(out, p, e + 1);
                 e + 1
@@ -1053,6 +1098,25 @@ mod tests {
         for bad in ["", "import(", "import(\"", "import(\"\\", ")", "import(é\"é", "1.", ".5e", "include <", "use <\n>", "$", "import((((", "\"\\"] {
             let _ = tame("", bad);
         }
+    }
+
+    #[test]
+    fn a_name_that_ends_in_a_figure_is_a_name_and_hides_no_file() {
+        // `q1use <` is a name and a comparison: the file read on the same line is still refused
+        for src in ["q1use = 1;\nt = q1use < 2; import(\"/etc/passwd.stl\"); u = 3 > 2;", "d = v1use<echo(import(\"/home/u/secret.json\"))>0;", "t = 2use < 2; import(\"/etc/passwd.stl\"); u = 3 > 2;", "t = 1.5e3use <a> + import(\"/etc/passwd.stl\"); u = 3 > 2;"] {
+            let (safe, notes) = tame("", src);
+            assert!(!safe.contains("etc") && !safe.contains("secret") && !notes.is_empty(), "{src:?} is handed on as {safe:?}");
+        }
+        // and a name is not cut in two
+        for src in ["ok = p2use < 5 ? 1 : 2;", "if (n1include < 3) cube(1);", "a_1use < b; c > d;", "x9_include <y> z;"] {
+            assert_eq!(tame("", src), (src.to_owned(), vec![]));
+        }
+        // after a number it is still the keyword
+        assert!(!tame("", "x=1.5include </home/u/x.scad>").0.contains("home"));
+        assert!(!tame("", "x=1.5e3include </home/u/x.scad>").0.contains("home"));
+        // one pass can leave what the next takes out: it is done until it settles
+        let (once, _) = tame("", "import(str(\"use<\", \">/..\"));");
+        assert_eq!(tame("", &once).0, once);
     }
 
     /// Whether a text holds an include or a use, read as loosely as any reader could, whose path would be refused.

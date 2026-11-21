@@ -770,6 +770,8 @@ enum Piece {
 /// `marks` are the marks on this line. The work is by the marks on the line
 /// and its length, not the one times the other.
 fn emit_inline(line: &str, at: usize, marks: &[&MarkRange], out: &mut String) {
+    // whether the line is written from its start: after a list's or a quote's marker nothing opens a block of code
+    let bare = out.is_empty();
     // the kinds of mark on this line, each once, and where each lies on it
     let mut kinds: Vec<&Mark> = Vec::new();
     let mut spans: Vec<Vec<(usize, usize)>> = Vec::new();
@@ -966,13 +968,18 @@ fn emit_inline(line: &str, at: usize, marks: &[&MarkRange], out: &mut String) {
     // marks wherever anything does. Then single backticks, which is how code was always written. And
     // if neither keeps the text, the text is written with no code mark: a mark may be lost, a
     // character of the page may not
+    // where each kind stands among the kinds: a line may hold a link to each of a thousand places
+    let mut place: std::collections::HashMap<&Mark, usize> = std::collections::HashMap::new();
+    for (k, kind) in kinds.iter().enumerate() {
+        place.entry(*kind).or_insert(k);
+    }
     let reads = |written: &str| {
         let (mut text, mut got) = (String::new(), Vec::new());
         inline(written, &mut text, &mut got);
         // the marks read, each kind's stretches joined as the ones written were
         let same = text == line && {
             let mut read: Vec<Vec<(usize, usize)>> = vec![Vec::new(); kinds.len()];
-            let known = got.iter().all(|m| match kinds.iter().position(|k| **k == m.mark) {
+            let known = got.iter().all(|m| match place.get(&m.mark).copied() {
                 Some(k) => {
                     read[k].push((m.start, m.end));
                     true
@@ -993,7 +1000,7 @@ fn emit_inline(line: &str, at: usize, marks: &[&MarkRange], out: &mut String) {
                 })
         };
         // three backticks at the start of a line open a block of code, and the line is then read as it is written
-        let block = fence(written) && written != line;
+        let block = bare && fence(written) && written != line;
         (text == line && !block, same && !block)
     };
     let mut kept: Option<String> = None;
@@ -1617,6 +1624,11 @@ mod tests {
             let out = emit(text, &[m(a, z, Mark::Code)], &[P], &[]);
             assert_eq!(parse(&out).text, text, "{text:?} with code over {a}..{z} was written {out:?}");
         }
+        // three backticks after a list's or a quote's marker open no block: code in such a line keeps its mark
+        for page in ["- ```sh and `ls`\n", "> ```a``` `b`\n", "1. ```sh and `ls`\n"] {
+            assert!(exact(page).is_some(), "{page:?} opens as source");
+        }
+        assert_eq!(emit("```sh and ls", &[m(10, 12, Mark::Code)], &[Block::Bullet(0)], &[]), "- ```sh and `ls`\n");
         // every text of up to five of these characters, with code over every stretch of it
         let alphabet = ['`', '\\', ' ', '*', 'a'];
         let (mut all, mut whole, mut plain_kept) = (0, 0, 0);
