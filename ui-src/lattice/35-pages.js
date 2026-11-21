@@ -55,7 +55,7 @@
     // for this page whether or not the ship is reachable right now
     const q = await offGet(name);
     if (q) {
-      const d = { body: q.body, kind: q.kind, rev: q.baseRev || 0, share: 'private' };
+      const d = { body: q.body, kind: q.kind, rev: qBase(q), share: 'private' };
       applyPage(name, d, true);
       snapPage(name, d);
       return true;
@@ -71,9 +71,13 @@
       const local = ['md', 'gmi', 'html', 'text'].includes(hit.kind);
       applyPage(name, local ? { ...hit, html: undefined } : hit, local);
       //  this window's own cache: its rev is the one its text was read or
-      //  saved at, so saves may claim it
-      curRev = hit.rev || 0;
+      //  saved at, so saves may claim it. That read is the one a painted
+      //  open waits for, so it ends the wait: an open left behind by a
+      //  quicker one caches its read without getting there, and saves
+      //  then sat out the whole 15 s.
+      curRev = isRev(hit.rev) ? hit.rev : null;
       shipText.set(name, hit.body);
+      freshPending.delete(name);
       snapPage(name, hit);
       return true;
     }
@@ -167,7 +171,7 @@
           srcRead(name).catch(() => {});
           painted = true;
           applyPage(name, b, true);
-          curRev = b.rev || 0;           // a fresh read: its rev may be claimed
+          curRev = isRev(b.rev) ? b.rev : null;   // a fresh read: its rev may be claimed
           shipText.set(name, b.body);
           snapPage(name, b);
           bodyShown(b.kind || node.kind);
@@ -285,7 +289,7 @@
     //  a quiet paint comes from a cache or a tab's snapshot, whose rev may
     //  be older than its text: no claim is made from it. The read that
     //  follows (or the next save's answer) sets the rev saves claim.
-    curRev = quiet ? 0 : d.rev || 0;
+    curRev = quiet || !isRev(d.rev) ? null : d.rev;
     if (quiet) shipText.delete(name); else { shipText.set(name, d.body); freshPending.delete(name); }
     refreshTexButton();
     src.value = d.body;
@@ -610,7 +614,7 @@
   //  written. linkBase is that claim for a save of `name`, '' for a page
   //  (and for a link with no rev read yet: the ship then claims its cached
   //  rev, never nothing).
-  const linkBase = (name) => (linkOf(name) && curRev ? '&base=' + curRev : '');
+  const linkBase = (name) => (linkOf(name) && isRev(curRev) ? '&base=' + curRev : '');
   //  a save through a link that did not land: the host's page moved on past
   //  what this editor read, or the host did not answer (a 502 or 504 the
   //  ship itself sent, never queued: the queue is for this ship being
@@ -806,7 +810,7 @@
     };
     if (!fixed && editLocked()) { saving = false; st(LOCK_NOTE, false); return failed(); }
     if (tooBig(sent)) { saving = false; st(TOO_BIG, false); return failed(); }
-    const base = creating ? 0 : baseFor(name, curRev);
+    const base = creating ? null : baseFor(name, curRev);
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1&by=' + winId : casQ(name, base)) + dnameQ(rnc)
       + (creating ? '' : linkBase(name));
@@ -865,7 +869,7 @@
         drawnNames.delete(name);
         tabFollow();         // a new page's tab is named now (21-tabs.js)
         curKind = kind;
-        if (creating) curRev = 0;
+        if (creating) curRev = null;
         pname.readOnly = true;
         if (src.value === sent) dirty = false;
         else if (!savePending) savePending = true;
@@ -944,7 +948,8 @@
       else if (!savePending) savePending = true;   // flushPending below saves it
       //  a create's first rev can be 0, and curRev until now was the page
       //  shown before this new one: never a claim to carry over
-      if (vr && typeof vr.rev === 'number' && (vr.rev || creating)) curRev = vr.rev;
+      if (vr && isRev(vr.rev)) curRev = vr.rev;
+      else if (creating) curRev = null;
       if (linkCf.delete(name)) paintLinkCf(name);   // a retried link save landed
       if (vr && vr.conflicted) {
         st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
@@ -966,11 +971,18 @@
   //  answer is recorded (pageRevs) before the next save may start, so a save
   //  sent right behind our own never claims the rev from before it.
   const pageRevs = new Map();
-  const knowRev = (name, rev) => { if (rev && rev > (pageRevs.get(name) || 0)) pageRevs.set(name, rev); };
-  const baseFor = (name, rev) => Math.max(rev || 0, pageRevs.get(name) || 0);
+  //  a rev is a number, 0 included (a page's first); null or none is no claim
+  const knowRev = (name, rev) => {
+    if (isRev(rev) && !(pageRevs.get(name) >= rev)) pageRevs.set(name, rev);
+  };
+  const baseFor = (name, rev) => {
+    const k = pageRevs.get(name);
+    if (!isRev(rev)) return isRev(k) ? k : null;
+    return isRev(k) ? Math.max(rev, k) : rev;
+  };
   const casQ = (name, rev) => {
     const b = baseFor(name, rev);
-    return linkOf(name) ? '' : '&by=' + winId + (b ? '&base=' + b + '&cas=1' : '');
+    return linkOf(name) ? '' : '&by=' + winId + (isRev(b) ? '&base=' + b + '&cas=1' : '');
   };
   //  a page-save's answer, read while the save still holds the writer slot
   const takeRev = async (name, w) => {
@@ -1025,7 +1037,7 @@
     freshPending.delete(name);
     if (!d || typeof d.body !== 'string' || typeof painted !== 'string') return;
     if (current !== name || mode === 'know' || grubPath) return;
-    curRev = d.rev || 0;
+    curRev = isRev(d.rev) ? d.rev : null;
     shipText.set(name, d.body);
     if (d.body === (painted || '\n')) return;   // an empty paint is the ship's one newline
     if (src.value === painted) {
@@ -1041,7 +1053,7 @@
       return;
     }
     const kind = curKind || pkind.value, mine = src.value;
-    casHold.set(name, d.rev || 0);
+    casHold.set(name, isRev(d.rev) ? d.rev : null);
     paintCas();
     keepAside({ name, kind, body: mine }, keptName('mine', name)).then((alt) => {
       if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
@@ -1080,7 +1092,7 @@
     pageRevs.delete(name);
     let res = null;
     if (th && th.body === (sent || '\n')) { knowRev(name, th.rev); res = { rev: th.rev, body: sent, how: 'saved' }; }
-    if (th && !res && base) {
+    if (th && !res && isRev(base)) {
       let mb = null;
       let bt = shipText.get(name);
       if (typeof bt !== 'string') {
@@ -1097,7 +1109,7 @@
         if (r && r.ok) { try { j = await r.json(); } catch {} }
         //  the ship still holding what this window last knew is no change
         //  made elsewhere: the claim was only behind
-        if (j && j.rev) {
+        if (j && isRev(j.rev)) {
           knowRev(name, j.rev);
           res = { rev: j.rev, body: mb, how: bt === th.body ? 'saved' : 'saved, merged with a change made elsewhere' };
         }
@@ -1112,7 +1124,7 @@
       if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
     }
     if (!res) {
-      casHold.set(name, th ? th.rev : 0);
+      casHold.set(name, th && isRev(th.rev) ? th.rev : null);
       st(name + ' changed elsewhere, so your text was not saved over it. '
         + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
       if (here()) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
@@ -1271,7 +1283,7 @@
     // live-editor state only if the editor is still on the doc we autosaved
     if (here()) {
       if (src.value === sent) dirty = false;   // typed during the request? stay dirty
-      if (!know && vr && vr.rev) curRev = vr.rev;
+      if (!know && vr && isRev(vr.rev)) curRev = vr.rev;
       // the conflict verdict must be the LAST word, not clobbered by the
       // ordinary confirmation a line later
       if (vr && vr.conflicted)
@@ -1320,7 +1332,7 @@
     if (!know && (casHold.has(name) || tooBig(sent))) return;
     const url = know ? api + '/know-save?key=' + encodeURIComponent(name)
       : api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
-        + (linkOf(name) && s.rev ? '&base=' + s.rev : '') + casQ(name, s.rev);
+        + (linkOf(name) && isRev(s.rev) ? '&base=' + s.rev : '') + casQ(name, s.rev);
     let w = { gone: true };
     //  behind a folder job a page's save queues instead of going out, as
     //  the live editor's does (jobWait, 08-offline.js)
@@ -1335,7 +1347,7 @@
       // back in front by now: the live editor holds it
       if (t === activeTab && current === name && (mode === 'know') === know && !grubPath) {
         if (src.value === sent) dirty = false;
-        if (!know && rev) curRev = rev;
+        if (!know && isRev(rev)) curRev = rev;
       }
     };
     if (!know && await linkSaveFail(name, w)) { flushPending(); return; }

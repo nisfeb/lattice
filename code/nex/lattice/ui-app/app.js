@@ -189,7 +189,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     let v = null;
     try { v = await offGet(q.name); } catch {}
     const kept = !!v && !sameRec(v, q);
-    if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: 0 });
+    if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: null, bv: 1 });
     if (kept) offKept = true;
     bustPages(q.name);
     await offRecount();
@@ -358,11 +358,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!on && probeTimer) { clearInterval(probeTimer); probeTimer = null; }
   }
 
+  const qBase = (q) => (isRev(q.baseRev) && (q.bv || q.baseRev) ? q.baseRev : null);
   async function enqueueSave(name, kind, body, isNew, rn, rev = curRev, drawn = false) {
     let prev = null;
     try { prev = await offGet(name); } catch {}
     if (tooBig(body)) { st(TOO_BIG, false); return false; }
-    const queued = await offPut({ name, kind, body, baseRev: jobWait || replaying ? 0 : rev || 0,
+    const queued = await offPut({ name, kind, body, baseRev: jobWait || replaying || !isRev(rev) ? null : rev, bv: 1,
       isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(), ...qStamp(),
       drawn: !!drawn || !!(prev && prev.drawn),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
@@ -375,7 +376,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
-    snapPage(name, { body, kind, rev: rev || 0 });
+    snapPage(name, { body, kind, rev: isRev(rev) ? rev : null });
     st(job ? JOB_NOTE : 'saved offline — ' + offCount + ' waiting to sync');
     return job ? 'job' : true;
   }
@@ -414,7 +415,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
         if (rec.op === 'move' && under(q.name, rec.from)) {
           await offDel(q.name);
-          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0,
+          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: null, bv: 1,
             body: moveBody(q.body || '', rec.from, rec.to), via: stamp.id, from: q.name, drawn: false });
         }
       }
@@ -684,7 +685,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           r = await tfetch(api + '/page-save-batch?report=1', {
             method: 'POST',
             body: JSON.stringify(part.map((q) =>
-              ({ name: q.name, type: q.kind, body: q.body || '\n', base: q.baseRev || 0 }))),
+              ({ name: q.name, type: q.kind, body: q.body || '\n', base: qBase(q) }))),
           }, 120000);
         } catch {}
       } else r = { status: 413 };
@@ -703,7 +704,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         else {
           try {
             one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
-              '&type=' + q.kind + '&base=' + (q.baseRev || 0) + '&by=' + (q.win || winId),
+              '&type=' + q.kind + (isRev(qBase(q)) ? '&base=' + qBase(q) : '') + '&by=' + (q.win || winId),
               { method: 'POST', body: q.body || '\n' }, 20000);
           } catch {}
         }
@@ -1479,7 +1480,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
     current = name;
     deletedHere = null;              // another document, or this one renamed
-    if (name === null) curRev = 0;   // a new buffer claims no page's rev
+    if (name === null) curRev = null;   // a new buffer claims no page's rev
     pname.value = shown === undefined ? (name || '') : shown;
     pname.readOnly = readOnly;
     if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;
@@ -1490,7 +1491,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
-  let curRev = 0;          // the open page's server revision (offline baseRev)
+  let curRev = null;
+  const isRev = (r) => typeof r === 'number';
   let curFolder = null;    // selected folder path. Right-pane ops target it
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree
@@ -1750,7 +1752,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         const n = nodes.find((x) => x.page && x.path === t.key);
         applyPage(t.key, { body: s.body, kind: s.kind || s.pkind, rev: s.rev,
           share: (n && n.share) || 'private' }, true);
-        if (!s.hist) { curRev = s.rev || 0; if (!s.dirty) shipText.set(t.key, s.body); }
+        if (!s.hist) { curRev = isRev(s.rev) ? s.rev : null; if (!s.dirty) shipText.set(t.key, s.body); }
         if (!CONTENT()) refreshPreview();
       },
       park: parkDoc,
@@ -2182,7 +2184,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     for (const t of allTabs()) {
       if (t.kind !== kind || t.key !== name || (t.ship || null) !== ship || !t.snap) continue;
       if (t.snap.body === sent && t.snap.dirty) t.snap.dirty = false;
-      if (rev) t.snap.rev = rev;
+      if (isRev(rev)) t.snap.rev = rev;
     }
   }
 
@@ -6514,7 +6516,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     setFolderCtx(name);
     const q = await offGet(name);
     if (q) {
-      const d = { body: q.body, kind: q.kind, rev: q.baseRev || 0, share: 'private' };
+      const d = { body: q.body, kind: q.kind, rev: qBase(q), share: 'private' };
       applyPage(name, d, true);
       snapPage(name, d);
       return true;
@@ -6523,8 +6525,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (hit) {
       const local = ['md', 'gmi', 'html', 'text'].includes(hit.kind);
       applyPage(name, local ? { ...hit, html: undefined } : hit, local);
-      curRev = hit.rev || 0;
+      curRev = isRev(hit.rev) ? hit.rev : null;
       shipText.set(name, hit.body);
+      freshPending.delete(name);
       snapPage(name, hit);
       return true;
     }
@@ -6568,7 +6571,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           srcRead(name).catch(() => {});
           painted = true;
           applyPage(name, b, true);
-          curRev = b.rev || 0;           // a fresh read: its rev may be claimed
+          curRev = isRev(b.rev) ? b.rev : null;   // a fresh read: its rev may be claimed
           shipText.set(name, b.body);
           snapPage(name, b);
           bodyShown(b.kind || node.kind);
@@ -6646,7 +6649,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     setOpen(name, { readOnly: true, kind: d.kind,
       url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
-    curRev = quiet ? 0 : d.rev || 0;
+    curRev = quiet || !isRev(d.rev) ? null : d.rev;
     if (quiet) shipText.delete(name); else { shipText.set(name, d.body); freshPending.delete(name); }
     refreshTexButton();
     src.value = d.body;
@@ -6827,7 +6830,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     e.returnValue = '';
   });
 
-  const linkBase = (name) => (linkOf(name) && curRev ? '&base=' + curRev : '');
+  const linkBase = (name) => (linkOf(name) && isRev(curRev) ? '&base=' + curRev : '');
   async function linkSaveFail(name, w) {
     const lk = linkOf(name);
     const r = w.r;
@@ -6938,7 +6941,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     };
     if (!fixed && editLocked()) { saving = false; st(LOCK_NOTE, false); return failed(); }
     if (tooBig(sent)) { saving = false; st(TOO_BIG, false); return failed(); }
-    const base = creating ? 0 : baseFor(name, curRev);
+    const base = creating ? null : baseFor(name, curRev);
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1&by=' + winId : casQ(name, base)) + dnameQ(rnc)
       + (creating ? '' : linkBase(name));
@@ -6981,7 +6984,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         drawnNames.delete(name);
         tabFollow();         // a new page's tab is named now (21-tabs.js)
         curKind = kind;
-        if (creating) curRev = 0;
+        if (creating) curRev = null;
         pname.readOnly = true;
         if (src.value === sent) dirty = false;
         else if (!savePending) savePending = true;
@@ -7041,7 +7044,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
       else if (!savePending) savePending = true;   // flushPending below saves it
-      if (vr && typeof vr.rev === 'number' && (vr.rev || creating)) curRev = vr.rev;
+      if (vr && isRev(vr.rev)) curRev = vr.rev;
+      else if (creating) curRev = null;
       if (linkCf.delete(name)) paintLinkCf(name);   // a retried link save landed
       if (vr && vr.conflicted) {
         st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
@@ -7056,11 +7060,17 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
 
   const pageRevs = new Map();
-  const knowRev = (name, rev) => { if (rev && rev > (pageRevs.get(name) || 0)) pageRevs.set(name, rev); };
-  const baseFor = (name, rev) => Math.max(rev || 0, pageRevs.get(name) || 0);
+  const knowRev = (name, rev) => {
+    if (isRev(rev) && !(pageRevs.get(name) >= rev)) pageRevs.set(name, rev);
+  };
+  const baseFor = (name, rev) => {
+    const k = pageRevs.get(name);
+    if (!isRev(rev)) return isRev(k) ? k : null;
+    return isRev(k) ? Math.max(rev, k) : rev;
+  };
   const casQ = (name, rev) => {
     const b = baseFor(name, rev);
-    return linkOf(name) ? '' : '&by=' + winId + (b ? '&base=' + b + '&cas=1' : '');
+    return linkOf(name) ? '' : '&by=' + winId + (isRev(b) ? '&base=' + b + '&cas=1' : '');
   };
   const takeRev = async (name, w) => {
     if (!w || !w.r || !w.r.ok) return;
@@ -7101,7 +7111,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     freshPending.delete(name);
     if (!d || typeof d.body !== 'string' || typeof painted !== 'string') return;
     if (current !== name || mode === 'know' || grubPath) return;
-    curRev = d.rev || 0;
+    curRev = isRev(d.rev) ? d.rev : null;
     shipText.set(name, d.body);
     if (d.body === (painted || '\n')) return;   // an empty paint is the ship's one newline
     if (src.value === painted) {
@@ -7117,7 +7127,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       return;
     }
     const kind = curKind || pkind.value, mine = src.value;
-    casHold.set(name, d.rev || 0);
+    casHold.set(name, isRev(d.rev) ? d.rev : null);
     paintCas();
     keepAside({ name, kind, body: mine }, keptName('mine', name)).then((alt) => {
       if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
@@ -7145,7 +7155,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     pageRevs.delete(name);
     let res = null;
     if (th && th.body === (sent || '\n')) { knowRev(name, th.rev); res = { rev: th.rev, body: sent, how: 'saved' }; }
-    if (th && !res && base) {
+    if (th && !res && isRev(base)) {
       let mb = null;
       let bt = shipText.get(name);
       if (typeof bt !== 'string') {
@@ -7160,7 +7170,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);
         let j = null;
         if (r && r.ok) { try { j = await r.json(); } catch {} }
-        if (j && j.rev) {
+        if (j && isRev(j.rev)) {
           knowRev(name, j.rev);
           res = { rev: j.rev, body: mb, how: bt === th.body ? 'saved' : 'saved, merged with a change made elsewhere' };
         }
@@ -7172,7 +7182,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
     }
     if (!res) {
-      casHold.set(name, th ? th.rev : 0);
+      casHold.set(name, th && isRev(th.rev) ? th.rev : null);
       st(name + ' changed elsewhere, so your text was not saved over it. '
         + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
       if (here()) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
@@ -7276,7 +7286,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!here()) tabLanded(tk, target, sent, vr && vr.rev);
     if (here()) {
       if (src.value === sent) dirty = false;   // typed during the request? stay dirty
-      if (!know && vr && vr.rev) curRev = vr.rev;
+      if (!know && vr && isRev(vr.rev)) curRev = vr.rev;
       if (vr && vr.conflicted)
         st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
       else st('autosaved');
@@ -7306,7 +7316,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!know && (casHold.has(name) || tooBig(sent))) return;
     const url = know ? api + '/know-save?key=' + encodeURIComponent(name)
       : api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
-        + (linkOf(name) && s.rev ? '&base=' + s.rev : '') + casQ(name, s.rev);
+        + (linkOf(name) && isRev(s.rev) ? '&base=' + s.rev : '') + casQ(name, s.rev);
     let w = { gone: true };
     const sentSeq = offSeq();
     try {
@@ -7318,7 +7328,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       tabLanded(t.kind, name, sent, rev);
       if (t === activeTab && current === name && (mode === 'know') === know && !grubPath) {
         if (src.value === sent) dirty = false;
-        if (!know && rev) curRev = rev;
+        if (!know && isRev(rev)) curRev = rev;
       }
     };
     if (!know && await linkSaveFail(name, w)) { flushPending(); return; }
@@ -7496,6 +7506,13 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     editLock(name);
     st(name + ' is being edited in another window now, so it is read-only here', false);
   };
+  window.addEventListener('pagehide', () => { if (lockName) letGo(); });
+  window.addEventListener('pageshow', (e) => {
+    if (!e.persisted || !lockName) return;
+    const name = lockName;
+    lockName = null;
+    editLock(name);
+  });
 
 // ── src/40-grub.js ────────────────────────────────────────────────────────
   let grubPath = null;
@@ -8977,17 +8994,18 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         b.onclick = fn;
         row.appendChild(b);
       };
-      const canRead = g.peek.includes(path);
-      const canEdit = g.make.includes(path);
+      const names = (x) => x === path || x === path + '/code';
+      const canRead = g.peek.some(names);
+      const canEdit = g.make.some(names);
       mk('read', canRead, () => {
         if (canRead) {
-          g.peek = g.peek.filter((x) => x !== path);
-          g.make = g.make.filter((x) => x !== path);
+          g.peek = g.peek.filter((x) => !names(x));
+          g.make = g.make.filter((x) => !names(x));
         } else g.peek.push(path);
         permSave(g);
       });
       mk('edit', canEdit, () => {
-        if (canEdit) g.make = g.make.filter((x) => x !== path);
+        if (canEdit) g.make = g.make.filter((x) => !names(x));
         else {
           if (!g.peek.includes(path)) g.peek.push(path);   // edit implies read
           g.make.push(path);
@@ -10629,8 +10647,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     pageCache.delete(newName);
     pageRevs.delete(oldName);
     pageRevs.delete(newName);
-    if (j && j.rev) knowRev(newName, j.rev);
-    if (j && j.rev && mode !== 'know' && !grubPath && current === newName) curRev = j.rev;
+    if (j && isRev(j.rev)) knowRev(newName, j.rev);
+    if (j && isRev(j.rev) && mode !== 'know' && !grubPath && current === newName) curRev = j.rev;
     snapTree();
     renderTree();
     return r;
@@ -11636,7 +11654,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent); return; }
     if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
-    if (mode !== 'know' && d.rev && d.rev >= curRev) {
+    if (mode !== 'know' && isRev(d.rev) && (!isRev(curRev) || d.rev >= curRev)) {
       curRev = d.rev; shipText.set(wasCurrent, d.body); freshPending.delete(wasCurrent);
     }
     if (d.body === src.value) return;

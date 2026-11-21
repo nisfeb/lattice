@@ -12,7 +12,15 @@
 //         node scripts/ui-shares-live.mjs
 //
 //  A two-ship suite. Fake fleet ships only; it never falls back to a real one.
-import { shipEnv, launchBrowser, openPage, makeCheck, sleep, shipName } from './lib/harness.mjs';
+//
+//  Run twice on the same base ship it fails on a kernel bug, not on
+//  lattice: the first run's cleanup deletes live/doc, and on grubbery
+//  de92127a making a file again at a deleted path with the same text as
+//  its last version is a no-op (si:record dedupes against the dead top).
+//  The save answers ok and no page is there, so "A has the page" asks the
+//  ship for the text and fails, and share-file takes live/doc as a folder.
+//  Left that way on purpose: the kernel fix is what makes it pass.
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep, shipName, seed } from './lib/harness.mjs';
 
 const unset = ['B_URL', 'B_COOKIE'].filter((v) => !process.env[v]);
 if (unset.length) {
@@ -32,6 +40,9 @@ const post = (f, path, body) => f(path, { method: 'POST', body });
 const ASHIP = await shipName(env);
 const BSHIP = await shipName(benv);
 const PAGE = 'live/doc';
+//  B's own page, so its tree has a row to wait on: a gate lane or peer
+//  starts from an empty vault, whose tree draws no row at all
+const BPAGE = 'livebside/own';
 const ROW = `#treelist a.pg.swm[title^="${ASHIP} "][title$="/page/${PAGE}/code"]`;
 
 const entry = async () => {
@@ -43,6 +54,7 @@ async function cleanup() {
   const e = await entry();
   if (e) await post(B_, 'shared-with-me-del?host=' + q(ASHIP) + '&path=' + q(e.path));
   await post(A_, 'page-del?name=live');
+  await post(B_, 'page-del?name=livebside');
 }
 
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
@@ -51,7 +63,10 @@ const until = async (p, fn, arg, ms) => {
 };
 try {
   await cleanup();
-  check('A has the page', (await post(A_, 'page-save?name=' + PAGE + '&type=md&new=1', '# live')).ok);
+  const made = (await post(A_, 'page-save?name=' + PAGE + '&type=md&new=1', '# live')).ok;
+  const src = await (await A_('page-source?name=' + q(PAGE))).json().catch(() => ({}));
+  check('A has the page', made && src.body === '# live', JSON.stringify({ made, body: src.body ?? null }));
+  await seed(benv, [[BPAGE, '# B\'s own page']]);
   const p = await openPage(browser, benv, { viewport: { width: 1280, height: 900 } });
   let keepUrl = '';
   p.on('request', (r) => { if (r.url().includes('/api/keep')) keepUrl = r.url(); });

@@ -46,6 +46,8 @@ PARAMS = {
     'forum-put:bdir': '/forum/boards/*',
     'write-eval-seen:pdir': '/page/*',
     'pub-save-page:pax.u.or': '/pub/vault/*',
+    'apply-pub-in:pax.u.or': '/pub/vault/*',
+    'pub-drop-dead:pax.u.or': '/pub/vault/*',
     'eval-run:pdir': '/page/*',
     # a page copy: under /page, or /template for a template's
     'copy-tree:ddir': ['/page/*', '/template/*'],

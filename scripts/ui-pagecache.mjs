@@ -348,9 +348,17 @@ try {
   check('(setup) view recached', await waitCached(PAGE));
   t = await nav(PAGE);
   check('(setup) view cached once more', t < 400, t + 'ms');
+  //  A reload is a navigation with cache 'no-cache', which sw-js does not
+  //  answer, so the document comes from the ship. Asked of the response, as
+  //  the clip above is: the time alone cannot say it, since a quiet ship
+  //  answers this page in about 200 ms, under the 400 ms a cached view
+  //  takes at most
   const t0r = Date.now();
-  await p.reload({ waitUntil: 'domcontentloaded' });
-  check('F5 goes to the network', Date.now() - t0r > 400, (Date.now() - t0r) + 'ms');
+  const rr = await p.reload({ waitUntil: 'domcontentloaded' });
+  t = Date.now() - t0r;
+  check('F5 goes to the network',
+    !!rr && rr.ok() && !rr.fromServiceWorker() && !rr.fromCache() && !p.url().includes('u=sw'),
+    t + 'ms' + (rr ? (rr.fromServiceWorker() ? ', from the worker' : '') + (rr.fromCache() ? ', from the cache' : '') : ', no response'));
 } catch (e) {
   check('the suite threw: ' + String(e.message).slice(0, 140), false);
 } finally {
