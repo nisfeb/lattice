@@ -106,7 +106,7 @@ impl Html {
 
     /// Asks for a page. `html` is given when the page itself is new, not only its width or look.
     pub fn show(&self, ask: Ask, html: Option<String>) {
-        let _ = self.tx.send(Cmd::Show(ask, html));
+        let _ = self.tx.send(Cmd::Show(ask, html.map(|h| crate::html::tamed(&h).into_owned())));
     }
 
     /// A way to say what is in view, for a handler that has no state.
@@ -153,8 +153,12 @@ pub fn wanted(top: f32, view: f32, height: f32) -> (Vec<usize>, std::ops::Range<
 
 /// How many bands a page of a height has.
 pub fn bands(height: f32) -> usize {
-    (height.max(1.0) / BAND).ceil() as usize
+    // a page may say it is any height: no more of it is drawn than `TALLEST`, or the bands would be counted through for ever
+    (height.clamp(1.0, TALLEST) / BAND).ceil() as usize
 }
+
+/// The most of a page's height that is drawn, in points: about 800 screens.
+pub const TALLEST: f32 = 800_000.0;
 
 /// The width a page is laid out at for a room of a width.
 pub fn width_for(room: f32) -> f32 {
@@ -175,6 +179,10 @@ impl NetProvider for Net {
         let url = request.url;
         let tx = self.tx.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let done = move |bytes: Vec<u8>, url: String| {
+            // a picture that says it is vast, or a drawing that would read a file, is not handed on
+            if !crate::html::fetched_ok(&bytes) {
+                return;
+            }
             handler.bytes(url, Bytes::from(bytes));
             let _ = tx.send(Cmd::Loaded);
         };

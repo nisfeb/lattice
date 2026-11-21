@@ -928,8 +928,11 @@ pub fn ship_look(url: &str, cookie: &str, stop: &std::sync::atomic::AtomicBool) 
     if seen.expired && !cfg!(test) {
         if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
             let mut all = crate::accounts::load_at(dir, now_secs());
-            all.expire(url);
-            let _ = crate::accounts::store_at(dir, &all);
+            // only the session that was turned away is marked: one signed in again since holds another cookie, and is good
+            if all.get(url).is_some_and(|a| a.cookie == cookie) {
+                all.expire(url);
+                let _ = crate::accounts::store_at(dir, &all);
+            }
         }
     }
     seen
@@ -953,9 +956,34 @@ pub fn ships_forget() {
     #[cfg(not(target_arch = "wasm32"))]
     if !cfg!(test) {
         if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            for a in crate::accounts::load_at(dir, now_secs()).list {
+                end_session(a.url, a.cookie);
+            }
             let _ = crate::accounts::store_at(dir, &crate::accounts::Accounts::default());
         }
     }
+}
+
+/// Ends a session that was signed out of: the ship is asked to end it,
+/// so the cookie is good for nothing, and the copy of every page's text
+/// kept on this device for it is taken away. Before this, signing out
+/// only forgot the session here, and both stayed. What still waits to
+/// be sent to the ship is left: it is work not yet saved there.
+#[cfg(not(target_arch = "wasm32"))]
+fn end_session(url: String, cookie: String) {
+    if let Some(kept) = kept_path(&url) {
+        let _ = std::fs::remove_file(kept);
+    }
+    // asked once and not waited for: a ship that is away keeps the session until it lapses
+    let _ = std::thread::Builder::new().name("sign-out".to_owned()).spawn(move || {
+        // what still waits is sent first, while the session is good: the edit being typed when Sign out was pressed is kept there a moment before, and would else reach the ship with a cookie it had just ended
+        let c = Conn { url: url.clone(), cookie: cookie.clone() };
+        if !c.queue().is_empty() || !c.ops().is_empty() {
+            let _ = c.send_waiting(&std::sync::atomic::AtomicBool::new(false));
+        }
+        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(10)).build();
+        let _ = agent.post(&format!("{url}/~/logout")).set("cookie", &cookie).set("origin", &url).send_string("");
+    });
 }
 
 /// Where a signed-in session is kept between runs: the app's own file,
@@ -1059,16 +1087,24 @@ pub mod web {
 /// Writes a file only its owner reads, whole or not at all: beside it first, then moved into place.
 pub fn write_private(p: &std::path::Path, body: &[u8]) -> Result<(), String> {
     std::fs::create_dir_all(p.parent().ok_or("no parent")?).map_err(|e| e.to_string())?;
-    let tmp = p.with_extension("part");
+    // a name of its own for each write: two writes of one file at once, each to the same name beside it, could leave the file with one's start and the other's end
+    static TURN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let turn = TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = p.with_extension(format!("{}-{turn}.part", std::process::id()));
     #[cfg(unix)]
-    {
+    let wrote = {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(body).and_then(|()| f.sync_all())).map_err(|e| e.to_string())?;
-    }
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(body).and_then(|()| f.sync_all())).map_err(|e| e.to_string())
+    };
     #[cfg(not(unix))]
-    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, p).map_err(|e| e.to_string())
+    let wrote = std::fs::write(&tmp, body).map_err(|e| e.to_string());
+    // a write that failed leaves nothing beside the file: each has a name of its own, so a full disk would else gather a part for every try
+    let done = wrote.and_then(|()| std::fs::rename(&tmp, p).map_err(|e| e.to_string()));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done
 }
 
 fn kept_at(p: &std::path::Path) -> Option<(Dump, u64)> {
@@ -1788,8 +1824,8 @@ impl Prefs {
         {
             let put = |of: &str, p: &Prefs| {
                 if let (Some(path), Ok(t)) = (Prefs::path_for(of), serde_json::to_string(p)) {
-                    let _ = path.parent().map(std::fs::create_dir_all);
-                    let _ = std::fs::write(path, t);
+                    // whole or not at all, and the owner's alone: they hold the names of pages lately read
+                    let _ = write_private(&path, t.as_bytes());
                 }
             };
             put(&self.of, self);
@@ -1923,7 +1959,9 @@ pub fn base_url(typed: &str) -> String {
     if t.contains("://") {
         return t.to_owned();
     }
-    let local = t.starts_with("localhost") || t.starts_with("127.");
+    // this computer by its name or a 127 address, and nothing that only begins like one: `localhost.example.com` is another's, and gets no plain http
+    let host = t.split(['/', ':']).next().unwrap_or(t);
+    let local = host == "localhost" || (host.starts_with("127.") && host.split('.').count() == 4 && host.split('.').all(|p| p.parse::<u8>().is_ok()));
     format!("{}://{t}", if local { "http" } else { "https" })
 }
 
@@ -2035,15 +2073,24 @@ pub fn board_names(index_html: &str) -> Vec<String> {
 /// One whose parent is not there, or that would nest without end, is
 /// read at the top.
 pub fn comment_order(comments: &[ForumComment]) -> Vec<(usize, &ForumComment)> {
-    let has = |id: u64| comments.iter().any(|c| c.id == id);
+    // each comment's answers, found once: looked for through the whole thread for each comment, a long thread held the window at every key
+    let ids: std::collections::HashSet<u64> = comments.iter().map(|c| c.id).collect();
+    let mut under: std::collections::HashMap<u64, Vec<&ForumComment>> = std::collections::HashMap::new();
+    for c in comments {
+        if let Some(p) = c.parent.filter(|p| *p != c.id) {
+            under.entry(p).or_default().push(c);
+        }
+    }
     let mut out = Vec::with_capacity(comments.len());
-    let mut stack: Vec<(usize, &ForumComment)> = comments.iter().filter(|c| c.parent.is_none_or(|p| !has(p) || p == c.id)).rev().map(|c| (0, c)).collect();
+    let mut stack: Vec<(usize, &ForumComment)> = comments.iter().filter(|c| c.parent.is_none_or(|p| !ids.contains(&p) || p == c.id)).rev().map(|c| (0, c)).collect();
     while let Some((depth, c)) = stack.pop() {
         out.push((depth, c));
         if out.len() > comments.len() {
             break;
         }
-        stack.extend(comments.iter().filter(|k| k.parent == Some(c.id) && k.id != c.id).rev().map(|k| (depth + 1, k)));
+        if let Some(kids) = under.get(&c.id) {
+            stack.extend(kids.iter().rev().map(|k| (depth + 1, *k)));
+        }
     }
     // what a loop of parents left out is still read
     let seen: std::collections::HashSet<u64> = out.iter().map(|(_, c)| c.id).collect();
@@ -2430,11 +2477,16 @@ impl Conn {
     }
 
     /// Listens to the ship's change stream until it ends, giving each event to `on`. Answers whether the stream was registered, and whether a change came after that. `on` answering false stops the listening.
-    pub fn beacon_stream(&self, base: &str, mut on: impl FnMut(Beacon) -> bool) -> Result<(bool, bool), String> {
+    pub fn beacon_stream(&self, base: &str, on: impl FnMut(Beacon) -> bool) -> Result<(bool, bool), String> {
+        self.beacon_stream_while(base, || true, on)
+    }
+
+    /// As `beacon_stream`, asked at every word from the ship whether to go on: a listener told to stop need not wait for news, or for the stream's end, to hear it.
+    pub fn beacon_stream_while(&self, base: &str, keep: impl Fn() -> bool, mut on: impl FnMut(Beacon) -> bool) -> Result<(bool, bool), String> {
         #[cfg(target_arch = "wasm32")]
         {
             // ponytail: a stream cannot be waited for on the page's one thread. The tree is read again on a timer, as it is without a stream
-            let _ = (base, &mut on);
+            let _ = (base, &keep, &mut on);
             Err("no stream in the browser build".into())
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -2442,7 +2494,7 @@ impl Conn {
             // a read that hears nothing for two minutes is a dead one, since the ship ends each stream itself after about eighty seconds
             let (mut registered, mut bumped) = (false, false);
             self.sse(&format!("{}/grubbery/api/keep{base}/beacon/rev", self.url), 120, |name, data| {
-                let Some(ev) = beacon_of(name, data) else { return true };
+                let Some(ev) = beacon_of(name, data) else { return keep() };
                 match &ev {
                     Beacon::Rev { old: true, .. } => registered = true,
                     Beacon::Rev { old: false, .. } => bumped = true,
@@ -2587,7 +2639,9 @@ impl Conn {
         if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
             let mut all = crate::accounts::load_at(dir, now_secs());
             if let Some(front) = all.front.clone() {
-                all.remove(&front);
+                if let Some(gone) = all.remove(&front) {
+                    end_session(gone.url, gone.cookie);
+                }
                 let _ = crate::accounts::store_at(dir, &all);
             }
         }
@@ -2654,7 +2708,11 @@ impl Conn {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let req = ureq::request(method, url)
+            // a redirect is not followed. The ship answers one for an address nothing is bound to, as while lattice is being put in or started: followed, a write would be taken as done and a read would be the sign-in page
+            let req = ureq::AgentBuilder::new()
+                .redirects(0)
+                .build()
+                .request(method, url)
                 .timeout(Duration::from_secs(secs))
                 .set("cookie", &self.cookie)
                 // the ship refuses a cross-site write, and reads the origin to tell
@@ -2664,7 +2722,12 @@ impl Conn {
                 None => req.call(),
             };
             match res {
-                Ok(r) => r.into_string().map_err(|e| e.to_string()),
+                Ok(r) if (300..400).contains(&r.status()) => Err(format!("{}: the ship sent this elsewhere. Lattice may be starting", r.status())),
+                // the ship answered, so it is not away: an answer cut short is said as one, with its status
+                Ok(r) => {
+                    let code = r.status();
+                    r.into_string().map_err(|e| format!("{code}: the answer could not be read: {e}"))
+                }
                 Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
                 Err(e) => Err(e.to_string()),
             }
@@ -2869,8 +2932,19 @@ impl Conn {
     /// Saves over `base`, the rev the text was read at. The ship answers 409
     /// when the page has moved past it.
     pub fn save(&self, p: &Page, base: u64) -> Result<u64, String> {
-        let q = format!("page-save?name={}&type={}&by=rune&base={base}&cas=1", enc(&p.name), enc(&p.kind));
-        let s: Saved = serde_json::from_str(&self.call("POST", &q, Some(&p.body))?).map_err(|e| e.to_string())?;
+        self.save_as(p, base, false)
+    }
+
+    /// Saves a page, and when it is `fresh`, one this window has never
+    /// seen on the ship, only if the ship has none of that name: the
+    /// ship answers 409 otherwise. A base of 0 is no check to the ship,
+    /// so without this a page begun by name before the tree was read
+    /// would be written over one that was there all along.
+    pub fn save_as(&self, p: &Page, base: u64, fresh: bool) -> Result<u64, String> {
+        let new = if fresh { "&new=1" } else { "" };
+        let q = format!("page-save?name={}&type={}&by=rune&base={base}&cas=1{new}", enc(&p.name), enc(&p.kind));
+        // an answer that cannot be read is still an answer: the ship took the save or refused it, and is not away. Said with a status, so the save is not kept to be sent a second time
+        let s: Saved = serde_json::from_str(&self.call("POST", &q, Some(&p.body))?).map_err(|e| format!("200: the ship's answer to the save could not be read: {e}"))?;
         Ok(s.rev)
     }
 

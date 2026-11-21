@@ -11,6 +11,15 @@ use rune::{Mark, TextEdit};
 pub struct Open {
     pub start: usize,
     pub tail: usize,
+    /// What its Markdown read as when it was opened, as a sum of it: whether it has been typed in since.
+    opened: u64,
+    /// How many steps the history held once it was opened: whether the opening is still the last of them.
+    steps: usize,
+}
+
+/// A sum of a text, to tell it from another.
+fn sum(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
 }
 
 impl Open {
@@ -43,14 +52,29 @@ pub fn literal(lit: &str) -> Option<(usize, &str)> {
 pub fn open(e: &mut TextEdit) -> Option<Open> {
     let (a, b, url) = link_at(e)?;
     let caret = e.focus;
-    e.set_selection(a, b);
-    e.set_link(None);
-    e.set_caret(b);
-    e.insert(&format!("]({url})"));
-    e.set_caret(a);
-    e.insert("[");
-    e.set_caret(caret + 1);
-    Some(Open { start: a, tail: e.text.len() - (b + 1 + url.len() + 3) })
+    // one step of the history, so that leaving the link untouched can take the whole of it back (`close`)
+    let b = e.undo_group(|e| {
+        e.set_selection(a, b);
+        e.set_link(None);
+        // a bracket in the label that would end it early, or open a label of its own, is escaped as it is
+        // when the page is written (`md::label_escapes`): open or shut, the page is the same text. Last
+        // first, so each place is still where it was counted
+        let escapes = crate::md::label_escapes(&e.text[a..b]);
+        for at in escapes.iter().rev() {
+            e.set_caret(a + at);
+            e.insert("\\");
+        }
+        let (b, caret) = (b + escapes.len(), caret + escapes.iter().filter(|at| a + **at <= caret).count());
+        e.set_caret(b);
+        e.insert(&format!("]({url})"));
+        e.set_caret(a);
+        e.insert("[");
+        e.set_caret(caret + 1);
+        b
+    });
+    let tail = e.text.len() - (b + 1 + url.len() + 3);
+    let end = e.text.len() - tail;
+    Some(Open { start: a, tail, opened: e.text.get(a..end).map_or(0, sum), steps: e.history_len().0 })
 }
 
 /// Whether the caret, or either end of a selection, has left an opened link.
@@ -67,16 +91,24 @@ pub fn close(e: &mut TextEdit, o: Open) {
     let Some(end) = o.end(e.text.len()).filter(|end| e.text.is_char_boundary(o.start) && e.text.is_char_boundary(*end)) else { return };
     let Some((label, url)) = literal(&e.text[o.start..end]).map(|(n, u)| (n, u.to_owned())) else { return };
     let (anchor, focus) = (e.anchor, e.focus);
-    // what follows the label, then the bracket before it, then the link over what is left
-    e.set_selection(o.start + 1 + label, end);
-    e.insert("");
-    e.set_selection(o.start, o.start + 1);
-    e.insert("");
-    e.set_selection(o.start, o.start + label);
-    e.set_link(Some(&url));
     // a caret past the link moved back by what was taken out
     let gone = end - o.start - label;
     let moved = |c: usize| if c >= end { c - gone } else { c.min(o.start) };
+    // only when the opening is still the history's last step. Text typed in the link and taken out again reads the same and is not: an undo would then bring the typing back
+    if sum(&e.text[o.start..end]) == o.opened && e.history_len().0 == o.steps {
+        // nothing was typed in it: the opening is taken back, and the history is as it was before the caret came. Opened and closed as two edits, each pass of the caret left two steps to undo, and the first undo of them took the link's address away
+        e.undo();
+    } else {
+        // what follows the label, then the bracket before it, then the link over what is left, as one step
+        e.undo_group(|e| {
+            e.set_selection(o.start + 1 + label, end);
+            e.insert("");
+            e.set_selection(o.start, o.start + 1);
+            e.insert("");
+            e.set_selection(o.start, o.start + label);
+            e.set_link(Some(&url));
+        });
+    }
     e.set_selection(moved(anchor), moved(focus));
 }
 
@@ -151,6 +183,29 @@ mod tests {
     }
 
     #[test]
+    fn a_caret_passing_through_a_link_leaves_nothing_to_undo() {
+        let mut e = edit("go there now", vec![MarkRange::new(3..8, Mark::Link("https://x.y".into()))], 0);
+        // something typed first, that an undo should reach
+        e.insert("WORD ");
+        e.break_history_group();
+        let before = e.history_len();
+        for _ in 0..3 {
+            e.set_caret(10);
+            let o = open(&mut e).expect("the caret is in the link");
+            e.set_caret(e.text.len());
+            close(&mut e, o);
+        }
+        assert_eq!(e.text, "WORD go there now");
+        assert_eq!(links(&e), vec![(8, 13, "https://x.y".to_owned())]);
+        assert_eq!(e.history_len().0, before.0, "the passes left no step");
+        assert_eq!(e.focus, e.text.len(), "the caret is where it was put");
+        // one undo takes back what was typed, and the link is whole
+        e.undo();
+        assert_eq!(e.text, "go there now");
+        assert_eq!(links(&e), vec![(3, 8, "https://x.y".to_owned())]);
+    }
+
+    #[test]
     fn what_is_no_longer_a_link_is_left_as_text() {
         let mut e = edit("go there now", vec![MarkRange::new(3..8, Mark::Link("u".into()))], 5);
         let o = open(&mut e).unwrap();
@@ -162,8 +217,44 @@ mod tests {
         close(&mut e, o);
         assert_eq!((e.text.as_str(), links(&e)), ("go [there](u now", vec![]));
         // and a range that no longer fits the text does nothing
-        close(&mut e, Open { start: 40, tail: 0 });
-        close(&mut e, Open { start: 0, tail: 400 });
+        close(&mut e, Open { start: 40, tail: 0, opened: 0, steps: 0 });
+        close(&mut e, Open { start: 0, tail: 400, opened: 0, steps: 0 });
         assert_eq!(e.text, "go [there](u now");
+    }
+
+    #[test]
+    fn what_was_typed_in_a_link_and_taken_out_does_not_come_back() {
+        let mut e = edit("go there now", vec![MarkRange::new(3..8, Mark::Link("https://x.y".into()))], 5);
+        let o = open(&mut e).expect("the caret is in the link");
+        let opened = e.text.clone();
+        e.insert("x");
+        let at = e.focus;
+        e.set_selection(at - 1, at);
+        e.insert("");
+        assert_eq!(e.text, opened, "the link reads as it did when it was opened");
+        e.set_caret(e.text.len());
+        close(&mut e, o);
+        assert_eq!(e.text, "go there now");
+        assert_eq!(links(&e), vec![(3, 8, "https://x.y".to_owned())]);
+    }
+
+    #[test]
+    fn a_bracket_in_a_label_is_escaped_when_the_link_opens_so_the_page_is_the_same_open_or_shut() {
+        use rune::Block::Paragraph as P;
+        // "see a[b](c now", with "a[b](c" a link, and the caret before its "("
+        let mut e = edit("see a[b](c now", vec![MarkRange::new(4..10, Mark::Link("http://u".into()))], 8);
+        let shut = crate::md::emit(&e.text, e.marks(), &[P], &[]);
+        assert_eq!(shut, "see [a\\[b\\](c](http://u) now\n");
+        let o = open(&mut e).expect("the caret is in the link");
+        assert_eq!((e.text.as_str(), &e.text[e.focus..e.focus + 1]), ("see [a\\[b\\](c](http://u) now", "("));
+        assert_eq!(crate::md::emit(&e.text, e.marks(), &[P], &[]), shut, "written while open, it is the page it is when shut");
+        // and that page reads back as the one link
+        let d = crate::md::exact(&shut).expect("exact");
+        assert_eq!(d.marks, vec![MarkRange::new(4..12, Mark::Link("http://u".into()))]);
+        e.set_caret(0);
+        close(&mut e, o);
+        // left untouched, the opening is taken back whole: the text and the link are as they were
+        assert_eq!((e.text.as_str(), links(&e)), ("see a[b](c now", vec![(4, 10, "http://u".to_owned())]));
+        assert_eq!(crate::md::emit(&e.text, e.marks(), &[P], &[]), shut);
     }
 }

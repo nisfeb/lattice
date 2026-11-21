@@ -15,6 +15,7 @@ mod code;
 mod fonts;
 mod formula;
 mod html;
+mod inturn;
 mod local;
 mod mounts;
 mod notify;
@@ -534,7 +535,8 @@ struct App {
     lapsed: bool,
     login_req: Latest<Result<Conn, String>>,
     prompt: Option<Prompt>,
-    op_req: Latest<Result<Op, String>>,
+    /// Changes sent to the ship, each answered in its turn: none drops another's answer (`inturn`).
+    op_req: inturn::InTurn<Result<Op, String>>,
     /// The rendered page beside the source while editing.
     preview: bool,
     sidebar: PaneState,
@@ -740,7 +742,8 @@ struct App {
     /// Vim's state between keys, for the source editor when vim mode is on.
     vim: vim::Vim,
     /// The agent keys as read, and the secret of one just made.
-    keys_req: Latest<Result<(Vec<api::AgentKey>, Option<String>), String>>,
+    /// In turn too: a new key's secret is shown once, and a list read made beside it must not drop it.
+    keys_req: inturn::InTurn<Result<(Vec<api::AgentKey>, Option<String>), String>>,
     /// The map token's state and the OpenSCAD runtime's as read, the openscad found here when it was looked for, and what to say of what was just done.
     set_req: Latest<Result<SetGot, String>>,
     stack_req: Latest<Result<api::Stack, String>>,
@@ -871,6 +874,12 @@ struct App {
     here_key: (usize, usize, u64),
     /// How many times what the table shows has changed.
     here_heard: u64,
+    /// The field's selection as vim last left it.
+    vim_seen: (usize, usize),
+    /// The editor's text and caret as last looked at, to tell typing by.
+    typed_seen: (usize, usize, usize),
+    /// A page moved while it was being edited, until the tree says what revision it now has.
+    moved_wait: Option<String>,
     /// When the ship last heard from this window.
     here_beat: f64,
     /// Whether anyone is at the window (`sync_away`): a key or the pointer moved since the last look, when one last did, since when the window has not been in front, and when it is looked at again.
@@ -948,10 +957,13 @@ struct App {
     /// The page a save on its way carries, and the revision it was written over: put by if the ship does not answer.
     save_sent: Option<(Page, u64, bool)>,
     /// The saves that waited, on their way to the ship: each as it was sent, and how it came out.
-    drain_req: Latest<Drained>,
+    /// In turn, so it is on its way until its answer is taken: a `Latest` that has landed and not yet been looked at reads as done, and what waited was then sent a second time
+    drain_req: inturn::InTurn<Drained>,
     /// The deletes and moves made with the ship away, waiting in the order they were made.
     ops: Vec<api::QueuedOp>,
     next_sync: f64,
+    /// When each backup schedule was last tried by the clock, in seconds since 1970.
+    bk_tried: HashMap<String, u64>,
     page_req: Latest<Result<Page, String>>,
     save_req: Latest<Result<Page, String>>,
 }
@@ -1132,7 +1144,7 @@ fn init() -> App {
         lapsed: false,
         login_req: Latest::default(),
         prompt: None,
-        op_req: Latest::default(),
+        op_req: inturn::InTurn::default(),
         preview: true,
         sidebar: PaneState::new(264.0).range(160.0, 520.0),
         files: Files::default(),
@@ -1258,7 +1270,7 @@ fn init() -> App {
         beacon_state: api::BeaconState::default(),
         beacon_stop: Default::default(),
         vim: vim::Vim::default(),
-        keys_req: Latest::default(),
+        keys_req: inturn::InTurn::default(),
         set_req: Latest::default(),
         stack_req: Latest::default(),
         local_req: Latest::default(),
@@ -1339,6 +1351,9 @@ fn init() -> App {
         here_tints: Vec::new(),
         here_key: (0, 0, 0),
         here_heard: 0,
+        vim_seen: (0, 0),
+        typed_seen: (0, 0, 0),
+        moved_wait: None,
         here_beat: 0.0,
         // a window is in front and in use when it opens
         touched: true,
@@ -1385,9 +1400,10 @@ fn init() -> App {
         offline: None,
         queue: conn.as_ref().map(Conn::queue).unwrap_or_default(),
         save_sent: None,
-        drain_req: Latest::default(),
+        drain_req: inturn::InTurn::default(),
         ops: conn.as_ref().map(Conn::ops).unwrap_or_default(),
         next_sync: 0.0,
+        bk_tried: HashMap::new(),
         page_req: Latest::default(),
         save_req: Latest::default(),
         conn,
@@ -1587,16 +1603,28 @@ fn watch_ships(s: &mut App) {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         s.watch_stop = stop.clone();
         let seen = s.seen.clone();
-        std::thread::spawn(move || loop {
+        std::thread::spawn(move || {
+          // a ship that turned this session away is not asked again with it: each asking is kept by the ship for good
+          let mut refused: std::collections::HashSet<String> = std::collections::HashSet::new();
+          loop {
             for (url, cookie) in &others {
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
+                if refused.contains(url) {
+                    continue;
+                }
                 let got = api::ship_look(url, cookie, &stop);
+                if got.expired {
+                    refused.insert(url.clone());
+                }
                 let changed = seen.lock().map(|mut m| m.insert(url.clone(), got.clone()) != Some(got)).unwrap_or(false);
                 if changed {
                     waker();
                 }
+            }
+            if refused.len() == others.len() {
+                return;
             }
             // a minute between looks, let go of at once when the ship in front changes
             for _ in 0..60 {
@@ -1605,6 +1633,7 @@ fn watch_ships(s: &mut App) {
                 }
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
+          }
         });
     }
 }
@@ -1665,6 +1694,10 @@ fn ship_mounts(s: &App, all: bool) -> Vec<mounts::MountSpec> {
 /// Sign out, asked for: at once when nothing of the ship's is mounted, and after a question when
 /// something is, since its folder goes with its session.
 fn sign_out_asked(s: &mut App, all: bool) {
+    // what is typed is kept first, or the window stays and says why
+    if !leave_edit(s) {
+        return;
+    }
     s.ships_open = false;
     if ship_mounts(s, all).is_empty() {
         if all { sign_out_all(s) } else { sign_out(s) }
@@ -1718,34 +1751,62 @@ fn reset(s: &mut App, signed: bool) {
     }
     // the window's title is as it was set: what it should say now is worked out against that
     fresh.titled = s.titled.clone();
-    // the wakers were set once, on the requests this window keeps
+    // the wakers were set once, on the requests this window keeps. What each was asked is let go first: an answer from the ship that was in front must not land in the window of the one that is now
+    s.tree_req.cancel();
     fresh.tree_req = std::mem::take(&mut s.tree_req);
+    s.page_req.cancel();
     fresh.page_req = std::mem::take(&mut s.page_req);
+    s.save_req.cancel();
     fresh.save_req = std::mem::take(&mut s.save_req);
+    s.login_req.cancel();
     fresh.login_req = std::mem::take(&mut s.login_req);
+    s.op_req.cancel();
     fresh.op_req = std::mem::take(&mut s.op_req);
+    s.hist_req.cancel();
     fresh.hist_req = std::mem::take(&mut s.hist_req);
+    s.know_req.cancel();
     fresh.know_req = std::mem::take(&mut s.know_req);
+    s.groups_req.cancel();
     fresh.groups_req = std::mem::take(&mut s.groups_req);
+    s.base_req.cancel();
     fresh.base_req = std::mem::take(&mut s.base_req);
+    s.bans_req.cancel();
     fresh.bans_req = std::mem::take(&mut s.bans_req);
+    s.sens_req.cancel();
     fresh.sens_req = std::mem::take(&mut s.sens_req);
+    s.comments_req.cancel();
     fresh.comments_req = std::mem::take(&mut s.comments_req);
+    s.comments_on_req.cancel();
     fresh.comments_on_req = std::mem::take(&mut s.comments_on_req);
+    s.held_req.cancel();
     fresh.held_req = std::mem::take(&mut s.held_req);
+    s.notices_req.cancel();
     fresh.notices_req = std::mem::take(&mut s.notices_req);
+    s.tile_status_req.cancel();
     fresh.tile_status_req = std::mem::take(&mut s.tile_status_req);
+    s.kept_req.cancel();
     fresh.kept_req = std::mem::take(&mut s.kept_req);
+    s.templates_req.cancel();
     fresh.templates_req = std::mem::take(&mut s.templates_req);
+    s.back_req.cancel();
     fresh.back_req = std::mem::take(&mut s.back_req);
+    s.asks_req.cancel();
     fresh.asks_req = std::mem::take(&mut s.asks_req);
+    s.waiting_req.cancel();
     fresh.waiting_req = std::mem::take(&mut s.waiting_req);
+    s.comets_req.cancel();
     fresh.comets_req = std::mem::take(&mut s.comets_req);
+    s.thread_req.cancel();
     fresh.thread_req = std::mem::take(&mut s.thread_req);
+    s.comment_req.cancel();
     fresh.comment_req = std::mem::take(&mut s.comment_req);
+    s.switch_req.cancel();
     fresh.switch_req = std::mem::take(&mut s.switch_req);
+    s.shared_req.cancel();
     fresh.shared_req = std::mem::take(&mut s.shared_req);
+    s.remote_req.cancel();
     fresh.remote_req = std::mem::take(&mut s.remote_req);
+    s.old_req.cancel();
     fresh.old_req = std::mem::take(&mut s.old_req);
     fresh.sidebar = s.sidebar.clone();
     // the reader's comet is this computer's, not a session's: its thread and its store stay as they are
@@ -1963,7 +2024,7 @@ fn confirm(s: &mut App) {
         match s.conn.clone() {
             Some(c) => s.op_req.request((c, copy), |(c, copy)| {
                 // made by its first save, with the kind and the text of the page it copies
-                c.save(&copy, 0)?;
+                c.save_as(&copy, 0, true)?;
                 Ok(Op::Created(copy.name))
             }),
             None => {
@@ -1991,12 +2052,22 @@ fn confirm(s: &mut App) {
     };
     let rn = match typed.as_deref().map(api::real_name) {
         Some(None) => {
+            // the question stays, with what was typed, to be mended
             s.note = "that name has nothing a path can keep".into();
+            s.prompt = Some(p);
             return;
         }
         Some(Some(rn)) => rn,
         None => api::RealName { name: String::new(), dname: String::new(), dnames: String::new() },
     };
+    // a move onto a page that is there is not made: the question stays, with what was typed
+    if let Prompt::Rename(from, _) = &p {
+        if rn.name != *from && !under(&s.names, &rn.name).is_empty() {
+            s.note = format!("there is a page or folder at {} already", rn.name);
+            s.prompt = Some(p);
+            return;
+        }
+    }
     let op = match p {
         Prompt::New(_) => Op::Created(rn.name.clone()),
         Prompt::NewFolder(_) if s.memory => return,
@@ -2070,6 +2141,24 @@ fn under(names: &[String], path: &str) -> Vec<String> {
     names.iter().filter(|n| n.as_str() == path || n.strip_prefix(path).is_some_and(|r| r.starts_with('/'))).cloned().collect()
 }
 
+/// Whether another screen stands where the open page would: its keys are not that page's then.
+fn page_hidden(s: &App) -> bool {
+    s.settings.is_some() || s.access || s.inbox || s.shared_open || s.forum.is_some() || s.folder.is_some()
+}
+
+/// A change to a sheet, worked out so that a fault in the working out is
+/// a refusal and not the end of the app with whatever was unsaved in it.
+/// The sheet is not touched by a change that failed: each is worked out
+/// on a copy of the page's text.
+fn guarded<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|_| Err("it could not be worked out, and nothing was changed".into()))
+}
+
+/// Whether a name is the page or folder at `path`, or is in that folder.
+fn is_under(name: &str, path: &str) -> bool {
+    name == path || name.strip_prefix(path).is_some_and(|r| r.starts_with('/'))
+}
+
 /// A change landed: follow it here, then read the tree again.
 fn applied(s: &mut App, op: Op) {
     match op {
@@ -2080,7 +2169,10 @@ fn applied(s: &mut App, op: Op) {
             }
             s.names.push(n.clone());
             s.files.select(&n);
-            s.open = None;
+            // an edit under way is left as any other is, its text kept: the page is not taken from under it
+            if !s.editing {
+                s.open = None;
+            }
             open_page(s, &n);
             s.note = "created".into();
         }
@@ -2091,6 +2183,10 @@ fn applied(s: &mut App, op: Op) {
                 let new = format!("{b}{}", &old[a.len()..]);
                 if let Some(mut p) = s.cache.remove(&old) {
                     p.name = new.clone();
+                    // the ship makes the moved page anew from the revisions it keeps, so its revision there is not the one it had: held as none until it is read, or a newer answer would be let go as an older one
+                    if s.offline.is_none() && s.conn.is_some() {
+                        p.rev = 0;
+                    }
                     s.cache.insert(new.clone(), p);
                 }
                 // a memory's tags and date go with it
@@ -2100,11 +2196,33 @@ fn applied(s: &mut App, op: Op) {
                 s.names.retain(|x| *x != old);
                 s.names.push(new);
             }
-            s.open = None;
-            if was_folder {
-                s.folder = Some(b);
-            } else {
-                open_page(s, &b);
+            // every tab that held one of them holds it still, by its new name
+            let moved = |name: &str| is_under(name, &a).then(|| format!("{b}{}", &name[a.len()..]));
+            for name in s.trail.iter_mut().chain(s.tabs.iter_mut().flat_map(|t| t.trail.iter_mut())).chain(s.tgroups.iter_mut().flat_map(|g| g.tabs.iter_mut()).flat_map(|t| t.trail.iter_mut())) {
+                if let Some(new) = moved(name) {
+                    *name = new;
+                }
+            }
+            if let Some(new) = s.folder.as_deref().and_then(moved) {
+                s.folder = Some(new);
+            }
+            // the page in front follows only when it was one of them. One being edited keeps its editor and what is typed in it, under its new name
+            match s.open.as_ref().and_then(|p| moved(&p.name)) {
+                Some(new) if s.editing => {
+                    if let Some(p) = &mut s.open {
+                        p.name = new.clone();
+                    }
+                    // its revision on the ship is no longer the one this edit began from: saves wait for the next read of the tree to say what it is
+                    if s.offline.is_none() && s.conn.is_some() {
+                        s.moved_wait = Some(new);
+                    }
+                }
+                Some(new) => {
+                    s.open = None;
+                    open_page(s, &new);
+                }
+                None if was_folder && !s.editing && s.open.is_none() => s.folder = Some(b),
+                None => {}
             }
             s.note = "renamed".into();
         }
@@ -2333,8 +2451,13 @@ fn applied(s: &mut App, op: Op) {
                 s.cache.remove(&old);
                 s.names.retain(|x| *x != old);
             }
-            s.open = None;
-            s.folder = None;
+            // only the page or folder that went is closed: an edit of another page is not touched
+            if s.open.as_ref().is_some_and(|p| is_under(&p.name, &n)) {
+                (s.open, s.editing, s.capture) = (None, false, false);
+            }
+            if s.folder.as_deref().is_some_and(|f| is_under(f, &n)) {
+                s.folder = None;
+            }
             s.note = "deleted".into();
         }
     }
@@ -2511,7 +2634,7 @@ fn listen(s: &mut App) {
                 base = c.lat_base().ok();
             }
             let got = match &base {
-                Some(b) => c.beacon_stream(b, |ev| {
+                Some(b) => c.beacon_stream_while(b, || !stop.load(Ordering::Relaxed), |ev| {
                     heard.lock().unwrap().push(ev);
                     waker();
                     !stop.load(Ordering::Relaxed)
@@ -2522,9 +2645,17 @@ fn listen(s: &mut App) {
             if got.is_err() {
                 base = None;
             }
-            heard.lock().unwrap().push(api::Beacon::Down);
-            waker();
+            // a session the ship turns away is not offered again: each try is kept by the ship for good. Signing in starts a listener anew
+            let refused = got.as_ref().is_err_and(|e| api::lapsed(e));
             let (registered, bumped) = got.unwrap_or((false, false));
+            // a stream that was registered and ran its time has only ended as the ship ends each one, and the next is opened in a moment: nothing is down. Said only of one that never registered, or the tree would be read every half minute for good
+            if !registered {
+                heard.lock().unwrap().push(api::Beacon::Down);
+                waker();
+            }
+            if refused {
+                return;
+            }
             fail = api::beacon_fail(fail, registered, began.elapsed().as_millis(), bumped);
             let jitter = f64::from(crate::api::since_epoch().map_or(0, |d| d.subsec_nanos())) / 1e9;
             wait_or_stop(api::beacon_wait(fail, jitter), &stop);
@@ -2649,10 +2780,16 @@ fn sync_map(s: &mut App) {
     let old = s.map.take().filter(|m| m.name == p.name);
     // a layer's own layers are not followed, so there is no cycle
     let under: Vec<_> = map::layers(&p.body).into_iter().map(|n| (n.clone(), s.cache.get(&n).filter(|l| l.kind == "geojson").and_then(|l| map::parse(&l.body)))).collect();
+    // a page too large to draw in full is cut short, and says so once as it opens
+    if p.body.len() > 100_000 {
+        if let Some(said) = map::parse_cut(&p.body).and_then(|(_, cut)| cut.notice()) {
+            s.note = said;
+        }
+    }
     s.map = map::parse(&p.body).map(|feats| {
         let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
         let pick_new = old.as_ref().is_some_and(|m| m.pick_new);
-        MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, tool: old.as_ref().and_then(|m| m.tool), verts: old.as_ref().map_or(Vec::new(), |m| m.verts.clone()), moving: None, grip: None, pick_new: false, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: if pick_new { feats.len().checked_sub(1) } else { old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()) }, feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
+        MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, tool: old.as_ref().and_then(|m| m.tool), verts: old.as_ref().map_or(Vec::new(), |m| m.verts.clone()), moving: None, grip: None, pick_new: false, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: if pick_new { last_added(&feats) } else { old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()) }, feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
     });
 }
 
@@ -2902,7 +3039,9 @@ fn commit_cell(s: &mut App) {
         return;
     }
     // the value or the formula goes in, and every formula that reads the cell is worked out again
-    match calc::enter(&p.body, v.at, r, c, &v.entry.text) {
+    // what an earlier change left unworked is told to this one: the engine is made anew at each change, and would else work a formula out from a cell it once knew to be stale and say it was done
+    let stale: Vec<(usize, usize, usize)> = v.stale.iter().copied().collect();
+    match guarded(|| calc::enter_knowing(&p.body, v.at, r, c, &v.entry.text, &stale)) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(got) => {
             if let Some(v) = &mut s.sheet {
@@ -2925,7 +3064,7 @@ fn format_picked(s: &mut App, change: calc::Fmt) {
         s.note = "this spreadsheet is not changed here".into();
         return;
     }
-    match calc::format_cell(&p.body, v.at, r, c, &change) {
+    match guarded(|| calc::format_cell(&p.body, v.at, r, c, &change)) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(body) if body == p.body => {}
         Ok(body) => save_body(s, p, body),
@@ -2941,7 +3080,7 @@ fn shift_picked(s: &mut App, rows: bool, off: usize, n: i64) {
     if v.name != p.name {
         return;
     }
-    match calc::shift(&p.body, v.at, rows, if rows { r } else { c } + off, n) {
+    match guarded(|| calc::shift(&p.body, v.at, rows, if rows { r } else { c } + off, n)) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(got) => {
             // the formulas moved with the rows, so what could not be worked out is counted afresh
@@ -3174,7 +3313,7 @@ fn add_sheet(s: &mut App) {
     if v.name != p.name {
         return;
     }
-    match sheet::add_sheet(&p.body, "") {
+    match guarded(|| sheet::add_sheet(&p.body, "")) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok((body, at)) => {
             v.want = Some(at);
@@ -3390,7 +3529,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
     let mut shape = Shape::new();
     let lon0 = ((a[0] - 0.5) * 360.0 / step).floor() as i64;
     let lon1 = ((z[0] - 0.5) * 360.0 / step).ceil() as i64;
-    for i in lon0..=lon1.min(lon0 + 60) {
+    for i in lon0..=lon1.min(lon0.saturating_add(60)) {
         let x = to(map::mercator(i as f64 * step, 0.0))[0];
         shape = shape.line([x, 0.0], [x, h], 1.0, LineCap::Butt, c.border_weak);
     }
@@ -3854,8 +3993,17 @@ fn outside_ok(s: &App) -> bool {
     s.open.as_ref().is_some_and(|p| s.prefs.outside.contains(&p.name))
 }
 
+/// Whether the open page is another ship's map whose tiles are held back.
+fn tiles_held(s: &App) -> bool {
+    s.remote.is_some() && !outside_ok(s) && s.map.as_ref().zip(s.open.as_ref()).is_some_and(|(m, p)| m.name == p.name)
+}
+
 /// The open page's images from other sites that are held back.
 fn held_back(s: &App) -> usize {
+    // another ship's map, whose tiles wait to be allowed (`sync_tiles`)
+    if tiles_held(s) {
+        return 1;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(p) = web_page(s) {
         return if s.web.laid.as_ref().is_some_and(|l| l.0.key.name == p.name) { s.web.held } else { 0 };
@@ -3936,11 +4084,16 @@ fn finish_shape(s: &mut App) {
     }
 }
 
+/// The feature just added, which is the page's last, when it is among those drawn. On a page cut short to what can be drawn it is not, and the last one drawn is another: none is picked then, or its card's Delete would take that other one away.
+fn last_added(feats: &[map::Feature]) -> Option<usize> {
+    feats.len().checked_sub(1).filter(|_| feats.len() < map::SHOWN_FEATURES)
+}
+
 /// Picks the feature just added: now, or when the page comes back from the ship with it.
 fn pick_added(s: &mut App) {
     let coming = s.save_req.is_pending();
     if let Some(m) = &mut s.map {
-        if coming { m.pick_new = true } else { m.picked = m.feats.len().checked_sub(1) }
+        if coming { m.pick_new = true } else { m.picked = last_added(&m.feats) }
     }
 }
 
@@ -4071,6 +4224,10 @@ fn sync_tiles(s: &mut App) {
     if !s.open.as_ref().is_some_and(|p| p.name == m.name) || s.editing {
         return;
     }
+    // another ship's map chooses the place: the tiles for it are fetched by this ship, with its own token, from the map's maker. That is content from outside, and waits to be allowed as a picture on such a page does
+    if s.remote.is_some() && !outside_ok(s) {
+        return;
+    }
     let Some(status) = &s.tile_status else {
         // asked once: the answer brings the first tiles
         if !s.tile_status_req.is_pending() && s.tiles_off.is_none() {
@@ -4131,6 +4288,10 @@ fn take_pics(s: &mut App) -> bool {
             }
         }
         match (res, &s.image_cache) {
+            // a drawing that would read a file from this computer, or a picture that says it is vast, is not decoded
+            (Ok(bytes), _) if !html::fetched_ok(&bytes) => {
+                s.pics_failed.insert(src);
+            }
             (Ok(bytes), Some(cache)) => {
                 s.pics.insert(src, cache.load(bytes));
             }
@@ -4148,7 +4309,7 @@ fn take_pics(s: &mut App) -> bool {
 /// the pictures had so far.
 fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
     let pics = s.pics.clone();
-    let src = md::wikilinks(&md::html_shown(body), &|n| ghost(s, n));
+    let src = md::wikilinks(&md::html_shown(&md::shallow(body)), &|n| ghost(s, n));
     // what find matches is marked, the current one apart from the rest
     let mut marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = match s.find.as_ref().filter(|_| found) {
         Some(q) => find_in(&src, &q.text).into_iter().enumerate().map(|(i, m)| (m, if i == s.find_at { rune_kit::Highlight::current() } else { rune_kit::Highlight::new() })).collect(),
@@ -4697,7 +4858,15 @@ fn rich_edit(d: md::Doc, seps: &mut md::Seps) -> TextEdit {
 
 /// The Markdown the editor holds, whichever way it is being edited.
 fn edited(s: &App) -> String {
-    if s.rich { md::emit_with(&s.edit.text, s.edit.marks(), s.edit.blocks(), s.edit.soft_breaks(), &s.seps) } else { s.edit.text.clone() }
+    if !s.rich {
+        return s.edit.text.clone();
+    }
+    let mut out = md::emit_with(&s.edit.text, s.edit.marks(), s.edit.blocks(), s.edit.soft_breaks(), &s.seps);
+    // a page that ended with no new line is given none: `md::exact` lets such a page into the rich editor, and it is not to be rewritten by being opened
+    if out.ends_with('\n') && s.open.as_ref().is_some_and(|p| !p.body.is_empty() && !p.body.ends_with('\n')) {
+        out.pop();
+    }
+    out
 }
 
 /// The editor field's key. Focus is asked for by it: the page tree keeps the
@@ -4780,6 +4949,7 @@ fn vim_settle(s: &mut App) {
     let mut b = vim_buf(&s.edit);
     s.vim.settle(&mut b);
     vim_put(&mut s.edit, &b);
+    s.vim_seen = (s.edit.anchor, s.edit.focus);
 }
 
 /// A key as vim names it, and whether Ctrl or Cmd is held.
@@ -4808,12 +4978,17 @@ fn vim_key(ev: &KeyEvent) -> (String, bool) {
 /// Gives a key to vim. `true` when vim took it. What vim asks for beside the text (a save, an undo) is done here.
 fn vim_take(s: &mut App, ev: &KeyEvent) -> bool {
     let (name, held) = vim_key(ev);
+    // visual mode keeps its own ends of what is selected. A press of the pointer moves the field's and not vim's, and the next key would then act on a selection no longer shown, perhaps out of view: the mode is left first
+    if s.vim.mode == vim::Mode::Visual && (s.edit.anchor, s.edit.focus) != s.vim_seen {
+        s.vim = vim::Vim::default();
+    }
     let mut b = vim_buf(&s.edit);
     let out = s.vim.key(&mut b, &name, held);
     if !out.taken {
         return false;
     }
     vim_put(&mut s.edit, &b);
+    s.vim_seen = (s.edit.anchor, s.edit.focus);
     if out.undo || out.redo {
         if out.undo {
             s.edit.undo();
@@ -5086,6 +5261,9 @@ fn open_today(s: &mut App) {
 /// Leaves the editor without saving. A capture never saved is dropped.
 fn cancel_edit(s: &mut App) {
     s.editing = false;
+    s.moved_wait = None;
+    // that the page changed elsewhere was said of this edit: the next one starts from the page as it then is
+    s.stale = false;
     if s.capture {
         s.capture = false;
         s.open = None;
@@ -5232,6 +5410,27 @@ fn write(s: &mut App) {
         }
         return;
     }
+    // a save of this page already on its way is followed, on its rev: sent beside it, the second would be refused as a change made elsewhere
+    if own && s.save_req.is_pending() {
+        if s.save_sent.as_ref().is_some_and(|(sent, ..)| sent.name == p.name) {
+            s.save_again = true;
+        } else {
+            // another page's save is on its way, as a sheet's or a map's may be: this one is kept and sent behind it, not dropped with that one's answer
+            queue_save(s, p, base, memory);
+            if s.offline.is_none() {
+                drain(s);
+            }
+        }
+        return;
+    }
+    // a page just moved does not know its revision yet (`moved_wait`): the save waits a moment for it
+    if own && s.moved_wait.as_deref() == Some(p.name.as_str()) {
+        s.note = "the page was just moved: saving in a moment".into();
+        s.resync = true;
+        return;
+    }
+    // a page this window has never seen on the ship is saved only if the ship has none of that name
+    let fresh = own && !memory && base == 0 && !s.names.contains(&p.name);
     s.save_sent = own.then(|| (p.clone(), base, memory));
     match s.conn.clone() {
         Some(c) => s.save_req.request((c, p), move |(c, mut p)| {
@@ -5241,7 +5440,7 @@ fn write(s: &mut App) {
             } else if memory {
                 c.know_save(&format!("/{}", p.name), &p.body)?;
             } else {
-                p.rev = c.save(&p, base)?;
+                p.rev = c.save_as(&p, base, fresh)?;
             }
             Ok(p)
         }),
@@ -5510,9 +5709,15 @@ fn landed(s: &mut App, p: Page) {
         if made {
             s.names.push(p.name.clone());
         }
-        s.cache.insert(p.name.clone(), p.clone());
+        // a text held that is newer than this save's is kept: another's change was read while the save was on its way
+        if s.cache.get(&p.name).is_none_or(|c| c.rev <= p.rev) {
+            s.cache.insert(p.name.clone(), p.clone());
+        }
         if made {
-            s.open = Some(p.clone());
+            // the page it made is in front only if it still is: a capture that was cancelled, and then answered, is not put under the edit that came after it
+            if s.open.as_ref().is_some_and(|o| o.name == p.name) {
+                s.open = Some(p.clone());
+            }
             refresh_tree(s);
         }
     }
@@ -5536,6 +5741,11 @@ fn landed(s: &mut App, p: Page) {
     if std::mem::take(&mut s.autosaving) {
         return;
     }
+    // what was typed while the save was on its way is not in it: the editor stays open on it
+    if s.editing && s.open.as_ref().is_some_and(|o| edited(s) != o.body) {
+        s.note = "saved. What you typed since is still in the editor".into();
+        return;
+    }
     s.editing = false;
     sync_map(s);
     sync_sheet(s);
@@ -5547,11 +5757,15 @@ fn landed(s: &mut App, p: Page) {
 const SYNC_EVERY: f64 = 30.0;
 /// How often it is read while the change stream is registered: the stream tells of changes, so this only catches one it merged or missed.
 const SYNC_LIVE: f64 = 300.0;
+/// How often it is read once the ship has turned the session away.
+const SYNC_LAPSED: f64 = 900.0;
 
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     changed |= sync_scrub(s, clock, tx);
+    let was_away = s.away;
     changed |= sync_away(s, clock, tx);
+    sync_idle(s, was_away, clock, tx);
     changed |= sync_here(s, clock, tx);
     changed |= sync_draft(s);
     #[cfg(not(target_arch = "wasm32"))]
@@ -5624,7 +5838,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             tx.wake_after(std::time::Duration::from_secs_f64(SYNC_EVERY));
         }
     }
-    if s.conn.is_some() && clock >= s.next_sync {
+    // a window nobody is at asks the ship nothing by the clock (`sync_idle`)
+    // unless something waits to be sent: that is work asked for, and the read is what sends it
+    if s.conn.is_some() && clock >= s.next_sync && (!s.away || !s.queue.is_empty() || !s.ops.is_empty()) {
         if s.next_sync > 0.0 {
             load_tree(s);
         }
@@ -5636,7 +5852,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             s.theme_req.request(c, move |c| c.worn(had));
         }
         // while the stream is registered it says when anything changes, and asking is only a floor
-        let every = if s.beacon_state.live { SYNC_LIVE } else { SYNC_EVERY };
+        // a session the ship has turned away is tried again only now and then: it will not come good by itself
+        let every = if s.lapsed { SYNC_LAPSED } else if s.beacon_state.live { SYNC_LIVE } else { SYNC_EVERY };
         s.next_sync = clock + every;
         tx.wake_after(std::time::Duration::from_secs_f64(every));
     }
@@ -5897,7 +6114,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
         // an answer that lands after the forum was left is dropped
         match (r, &mut s.forum) {
-            (Ok(ForumGot::Boards(b)), Some(f)) => f.boards = Some(b),
+            // a list read took the place of whatever was being sent: nothing is on its way any more
+            (Ok(ForumGot::Boards(b)), Some(f)) => (f.boards, f.sending) = (Some(b), false),
             (Ok(ForumGot::More(more)), Some(f)) => {
                 if let Some(b) = f.board.as_mut().filter(|b| b.board == more.board) {
                     b.posts = forum_joined(&b.posts, more.posts);
@@ -5934,6 +6152,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 }
             }
             (Ok(ForumGot::Thread(th)), Some(f)) => {
+                // an answer begun for one thread is not carried to another: it would be sent to a comment of that number there, or refused
+                if !f.thread.as_ref().is_some_and(|was| (was.board.as_str(), was.post.id) == (th.board.as_str(), th.post.id)) {
+                    f.reply = None;
+                }
                 f.thread = Some(th);
                 if std::mem::take(&mut f.sending) {
                     (f.comment, f.reply) = (TextEdit::new(""), None);
@@ -5998,6 +6220,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 Err(e)
             }
             Ok(d) => {
+                // a session that came good again is listened on again
+                if s.lapsed {
+                    listen(s);
+                }
                 (s.offline, s.lapsed) = (None, false);
                 // the ship answers: what waited for it goes now
                 drain(s);
@@ -6034,6 +6260,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                         s.cache.insert(n.path.clone(), Page { name: n.path.clone(), body: body.clone(), kind: n.kind.clone(), rev: n.rev });
                     }
                 }
+                // a page moved while it was being edited takes the revision the ship now has it at, and is not said to have changed elsewhere. A read that does not bring it leaves it with none, which the ship takes as no check
+                if let Some(moved) = s.moved_wait.take() {
+                    if let Some(p) = s.open.as_mut().filter(|p| p.name == moved) {
+                        p.rev = s.cache.get(&moved).map_or(0, |c| c.rev);
+                    }
+                }
                 // a page being edited that was written elsewhere: say so, since its save would be refused
                 if s.editing && !away {
                     s.stale = s.open.as_ref().is_some_and(|p| s.cache.get(&p.name).is_some_and(|c| c.rev > p.rev));
@@ -6065,8 +6297,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 if first {
                     s.files.expand_all();
                 }
+                // what was just made is gone to at this read or not at all: kept for a later one, it would pull the window there long after
+                let land = s.land.take();
                 if !away {
-                    if let Some(name) = s.land.take() {
+                    if let Some(name) = land {
                         land_on(s, &name);
                     }
                 }
@@ -6111,6 +6345,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
             // a page with a save that waits shows that save, not what the ship still has
             Ok(p) if s.queue.contains_key(&p.name) => {}
+            // an answer older than what is held is let go: a read of the tree may have brought a newer text meanwhile, and that text is not sent again
+            Ok(p) if s.cache.get(&p.name).is_some_and(|c| c.rev > p.rev) => {}
             Ok(p) => {
                 s.cache.insert(p.name.clone(), p.clone());
                 // shown when it is the page on screen, or the one waited for
@@ -6264,7 +6500,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             tx.wake_after(std::time::Duration::from_secs(60));
         }
         let now = backups::now();
-        if let Some(id) = s.backups.iter().find(|b| backups::is_due(b, now)).map(|b| b.id.clone()).filter(|_| s.conn.is_some() && !s.bk_req.is_pending()) {
+        // one that failed, or came out incomplete, stays due: it is tried again in an hour, not at the next minute. Each try reads the whole store from the ship and writes it all to disk
+        let rested = |id: &str| s.bk_tried.get(id).is_none_or(|t| now.saturating_sub(*t) >= 3600);
+        if let Some(id) = s.backups.iter().find(|b| backups::is_due(b, now) && rested(&b.id)).map(|b| b.id.clone()).filter(|_| s.conn.is_some() && !s.bk_req.is_pending()) {
+            s.bk_tried.insert(id.clone(), now);
             backup_run(s, &id);
         }
     }
@@ -6771,7 +7010,7 @@ fn land_on(s: &mut App, name: &str) {
     } else if s.names.contains(&index) {
         s.files.select(&index);
         open_page(s, &index);
-    } else if !under(&s.names, name).is_empty() {
+    } else if !under(&s.names, name).is_empty() && leave_edit(s) {
         (s.open, s.remote, s.access, s.shared_open, s.inbox) = (None, None, false, false, false);
         s.forum = None;
         s.folder = Some(name.to_owned());
@@ -7834,7 +8073,7 @@ fn forum_act(s: &mut App, act: ForumAct) {
         forum_send(&c, &board, post, &act)?;
         if let ForumAct::Delete(None) = act {
             let b = c.forum_board(&board)?;
-            forum_taken(&board, forum_took(&act, before, b.posts.iter().find(|p| p.id == post), &[]))?;
+            forum_row_taken(&board, &act, before, b.posts.iter().find(|p| p.id == post))?;
             return Ok(ForumGot::Board(b));
         }
         let th = c.forum_thread(&board, post)?;
@@ -7874,7 +8113,7 @@ fn forum_list_act(s: &mut App, board: String, post: u64, act: ForumAct) {
     s.forum_req.request((c, board, act), move |(c, board, act)| {
         forum_send(&c, &board, post, &act)?;
         let b = c.forum_board(&board)?;
-        forum_taken(&board, forum_took(&act, before, b.posts.iter().find(|p| p.id == post), &[]))?;
+        forum_row_taken(&board, &act, before, b.posts.iter().find(|p| p.id == post))?;
         Ok(ForumGot::Board(b))
     });
 }
@@ -7907,6 +8146,19 @@ fn forum_took(act: &ForumAct, before: (u64, u64), after: Option<&api::ForumPost>
         }),
         ForumAct::Delete(None) => after.is_none(),
         ForumAct::Delete(Some(id)) => !comments.contains(id),
+    }
+}
+
+/// As `forum_taken`, for an action taken from a board's list, where only the newest threads are read back.
+/// A thread that is not among them was acted on from further down the list: whether it took is not known,
+/// and is not said to have failed. A point given twice changes nothing, and that is said as what it is.
+fn forum_row_taken(board: &str, act: &ForumAct, before: (u64, u64), after: Option<&api::ForumPost>) -> Result<(), String> {
+    if after.is_none() && !matches!(act, ForumAct::Delete(_)) {
+        return Ok(());
+    }
+    match (act, forum_taken(board, forum_took(act, before, after, &[]))) {
+        (ForumAct::Vote, Err(_)) => Err("no point was added. You may have given yours already: once given it stays".into()),
+        (_, r) => r,
     }
 }
 
@@ -8078,13 +8330,23 @@ fn forum_submit(s: &mut App) {
         }
     };
     let Some(c) = s.conn.clone() else { return };
-    f.sending = true;
-    let (board, had) = (b.board.clone(), b.count);
+    // the ship's forms cap these, and say nothing when they cut one off
+    if body.len() > 40_000 || title.len() > 300 || link.len() > 2048 {
+        s.note = "that is too long for the board to take: a title may be 300 bytes, a link 2,048 and a thread's text 40,000".into();
+        return;
+    }
+    let (board, had): (String, Vec<u64>) = (b.board.clone(), b.posts.iter().map(|p| p.id).collect());
+    // said to be on its way only now that it is: a post refused here for its length sends nothing
+    if let Some(f) = &mut s.forum {
+        f.sending = true;
+    }
     s.forum_req.request((c, board), move |(c, board)| {
         c.forum_submit(&board, &title, &link, &body, &tags)?;
         let now = c.forum_board(&board)?;
-        // another ship takes a thread in its own time: it is not yet there to count
-        if now.count <= had && !board.starts_with('~') { Err("the ship did not take that thread: its board may not let you post, or the thread is too long".into()) } else { Ok(ForumGot::Board(now)) }
+        // another ship takes a thread in its own time: it is not yet there to look for.
+        // On this ship it took if there is a thread of this ship's that was not there before: a count that went up may be someone else's thread, and one that did not may be a prune
+        let took = now.posts.iter().any(|p| !had.contains(&p.id) && p.author == c.ship());
+        if !took && !board.starts_with('~') { Err("the ship did not take that thread: its board may not let you post, or the thread is too long".into()) } else { Ok(ForumGot::Board(now)) }
     });
 }
 
@@ -8098,14 +8360,26 @@ fn forum_comment(s: &mut App) {
         return;
     }
     let Some(c) = s.conn.clone() else { return };
-    f.sending = true;
-    let (board, post, parent, had) = (th.board.clone(), th.post.id, f.reply, th.comments.len());
+    if body.len() > FORUM_MOST {
+        s.note = "that is too long for the board to take: a comment may be 10,000 bytes".into();
+        return;
+    }
+    let (board, post, parent, had): (String, u64, Option<u64>, Vec<u64>) = (th.board.clone(), th.post.id, f.reply, th.comments.iter().map(|c| c.id).collect());
+    // said to be on its way only now that it is: a post refused here for its length sends nothing
+    if let Some(f) = &mut s.forum {
+        f.sending = true;
+    }
     s.forum_req.request((c, board), move |(c, board)| {
         c.forum_comment(&board, post, parent, &body)?;
         let now = c.forum_thread(&board, post)?;
-        if now.comments.len() <= had && !board.starts_with('~') { Err("the ship did not take that comment: the board may not let you post, or it is too long".into()) } else { Ok(ForumGot::Thread(now)) }
+        // it took if there is a comment of this ship's that was not there before, as with a thread
+        let took = now.comments.iter().any(|m| !had.contains(&m.id) && m.author == c.ship());
+        if !took && !board.starts_with('~') { Err("the ship did not take that comment: the board may not let you post, or it is too long".into()) } else { Ok(ForumGot::Thread(now)) }
     });
 }
+
+/// The most a comment may be, in bytes, as the ship's forum holds it to (`+sane-comment`).
+const FORUM_MOST: usize = 10_000;
 
 /// The field of the thread being written, by its place: title, link, text, tags.
 fn draft_field(s: &mut App, i: usize) -> &mut TextEdit {
@@ -8142,7 +8416,8 @@ fn forum_make(s: &mut App) {
 
 /// Sends the board's title and description as changed, or flips it between public and private, then reads it again.
 fn forum_change(s: &mut App, flip: bool) {
-    let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+    // a flip is a flip of whatever the board is when it lands: a second one sent before the first is answered would put it back
+    let Some(f) = s.forum.as_mut().filter(|f| !f.sending && !(flip && f.acting)) else { return };
     let Some(b) = &f.board else { return };
     let texts = f.editing.as_ref().map(|e| (e[0].text.trim().to_owned(), e[1].text.trim().to_owned()));
     if !flip && texts.as_ref().is_none_or(|(title, _)| title.is_empty()) {
@@ -8152,6 +8427,7 @@ fn forum_change(s: &mut App, flip: bool) {
     let Some(c) = s.conn.clone() else { return };
     f.sending = !flip;
     if flip {
+        f.acting = true;
         // what the moderation showed of comets and invitations is no longer so
         f.moding = None;
     }
@@ -8409,7 +8685,7 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
             page = page.children(forum_preview(f, pics, Some(link), p.id, k));
         }
         if let Some(body) = p.body.as_deref().filter(|b| !b.trim().is_empty()) {
-            page = page.child(Markdown::new(body.to_owned()).selectable(true).on_link_tx(follow).build(k).key("forum-body"));
+            page = page.child(Markdown::new(md::shallow(body).into_owned()).selectable(true).on_link_tx(follow).build(k).key("forum-body"));
             // the pictures the text names, folded under it as the web folds them
             page = page.children(forum_text_previews(f, pics, body, &format!("p{}", p.id), k));
         }
@@ -8439,7 +8715,7 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
                             }
                         }).build(k).key(format!("reply-{id}"))).children(forum_may(&th.board, th.role.as_deref(), ours, &cm.author).change.then(|| Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Delete this comment").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumDelete(Some(id)))).build(k).key(format!("comment-delete-{id}"))))
                     })
-                    .child(Markdown::new(cm.body.clone()).selectable(true).on_link_tx(follow).build(k))
+                    .child(Markdown::new(md::shallow(&cm.body).into_owned()).selectable(true).on_link_tx(follow).build(k))
                     .children(forum_text_previews(f, pics, &cm.body, &format!("c{}", cm.id), k)),
             );
         }
@@ -8654,7 +8930,7 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
             let small = |label: &str, help: &str| Button::new(label.to_owned()).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(help.to_owned()).disabled(f.acting);
             let (vb, pb, db, pinned) = (board.clone(), board.clone(), board.clone(), p.pinned);
             let may = forum_may(&board, b.role.as_deref(), ours, &p.author);
-            let mut acts = row().px(4.0).gap(2.0).child(small("Vote", "Vote this thread up, or take the vote back").on_press(move |s: &mut App| forum_list_act(s, vb.clone(), id, ForumAct::Vote)).build(k).key(format!("row-vote-{id}")));
+            let mut acts = row().px(4.0).gap(2.0).child(small("Vote", "Give this thread your point. Once given it stays").on_press(move |s: &mut App| forum_list_act(s, vb.clone(), id, ForumAct::Vote)).build(k).key(format!("row-vote-{id}")));
             if may.pin {
                 acts = acts.child(small(if pinned { "Unpin" } else { "Pin" }, "Keep this thread at the top of the board, or let it go").on_press(move |s: &mut App| forum_list_act(s, pb.clone(), id, ForumAct::Pin(!pinned))).build(k).key(format!("row-pin-{id}")));
             }
@@ -9846,7 +10122,14 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
             s.ships = api::ships();
             s.ships_open = true;
         }
-        "signout" => sign_out(s),
+        // as the button does: asked, with an edit kept and a guest only led back
+        "signout" => {
+            if s.conn.is_some() {
+                sign_out_asked(s, false)
+            } else {
+                leave_guest(s)
+            }
+        }
         _ => {}
     }
 }
@@ -9935,12 +10218,15 @@ fn login_view(s: &App, k: &Kit) -> El {
     if busy {
         go = go.child(Spinner::new().build(k));
     }
-    card = card
-        .child(go)
-        .child(Button::new("Browse sample pages").variant(ButtonVariant::Ghost).on_press(browse_sample).build(k).key("sample"));
+    card = card.child(go);
+    // the two ways in with no ship are for a window with none. With a ship in front, signed in, they would put sample pages or the reader's state over that ship's
+    let alone = s.conn.is_none();
+    if alone {
+        card = card.child(Button::new("Browse sample pages").variant(ButtonVariant::Ghost).on_press(browse_sample).build(k).key("sample"));
+    }
     // the one other way in: no node, and other ships' published pages read by this computer itself
     #[cfg(unix)]
-    {
+    if alone {
         card = card
             .child(text("No node? You can use lattice anonymously. You can browse pages people publish, but you can't save or host pages without a node.").key("anon-said").font(k.ty.small).color(c.text_muted).wrap())
             .child(Button::new("Use anonymously").variant(ButtonVariant::Ghost).on_press(browse_anon).build(k).key("anon"));
@@ -10274,8 +10560,7 @@ fn browse_anon(s: &mut App) {
     s.marks = Some(anon_marks_load());
     s.visits = anon_visits_load();
     if s.engine.is_none() {
-        let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")));
-        s.engine = base.map(|b| engine::Engine::new(b.join("lattice-rune").join("urb")));
+        s.engine = api::config_dir().map(|d| engine::Engine::new(d.join("urb")));
     }
     #[cfg(unix)]
     id_refresh(s);
@@ -10597,8 +10882,7 @@ fn anon_visits_store(list: &[api::Visit]) {
 }
 
 fn anon_marks_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
-    Some(base.join("lattice-rune").join("anon-bookmarks.json"))
+    Some(api::config_dir()?.join("anon-bookmarks.json"))
 }
 
 /// The bookmarks kept with no ship, on this computer.
@@ -10611,7 +10895,8 @@ fn anon_marks_store(list: &[api::Bookmark]) -> Result<(), String> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&p, serde_json::to_vec(list).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    // the owner's alone, as the list of what was read is: it is where someone has been
+    api::write_private(&p, &serde_json::to_vec(list).map_err(|e| e.to_string())?)
 }
 
 /// With no ship there is nowhere to write a page: said, where a sample page would be kept for the session.
@@ -11223,6 +11508,10 @@ fn load_groups(s: &mut App) {
 /// Writes `g` to the ship, then says `say`.
 fn save_group(s: &mut App, g: Group, say: String) {
     let Some(c) = s.conn.clone() else { return };
+    // kept here at once: the whole group is written each time, so a second change made before the ship has answered the first must be made to this one and not to the group as it was read
+    if let Some(mine) = s.groups.iter_mut().find(|x| x.name == g.name) {
+        *mine = g.clone();
+    }
     s.op_req.request((c, g), move |(c, g)| {
         c.group_save(&g)?;
         Ok(Op::Grouped(say))
@@ -11619,13 +11908,15 @@ fn share_body(s: &App, k: &Kit) -> Option<(String, El)> {
             let now = g.level(&s.base, &p.name);
             let mut line = row().key(format!("grp-{}", g.name)).w_full().gap(6.0).center_y().child(text(g.name.clone()).font(k.ty.ui).color(c.text_base).grow(1.0).min_w(0.0).truncate());
             for (label, level) in [("None", Level::None), ("Read", Level::Read), ("Edit", Level::Edit)] {
-                let (g, page) = (g.clone(), p.name.clone());
+                let (group, page) = (g.name.clone(), p.name.clone());
                 let key = format!("grp-{}-{}", g.name, label.to_lowercase());
                 line = line.child(
                     Button::new(label)
                         .control_size(ControlSize::Small)
                         .variant(if now == level { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
                         .on_press(move |s: &mut App| {
+                            // the group as it is now, not as it was when this was drawn: the whole of it is written
+                            let Some(g) = s.groups.iter().find(|g| g.name == group).cloned() else { return };
                             let say = match level {
                                 Level::None => format!("{} no longer reads {page}", g.name),
                                 Level::Read => format!("{} can now read {page}", g.name),
@@ -11869,6 +12160,10 @@ fn page_link(s: &App) -> Option<String> {
 }
 
 fn ask_delete(s: &mut App) {
+    // only of the page that is in view: one behind another screen is not asked about by a key
+    if page_hidden(s) {
+        return;
+    }
     if let Some(p) = &s.open {
         s.prompt = Some(Prompt::Delete(p.name.clone()));
     }
@@ -12341,6 +12636,10 @@ fn sidebar(s: &App, k: &Kit) -> El {
                     let (at, mid, page) = (n.path.clone(), n.path.clone(), !n.dir);
                     let sheet = el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).on_secondary_press(move |s: &mut App, p, _| {
                         s.files.select(&at);
+                        // a memory's "folder" is only the first part of some keys: there is nothing of that name to rename or delete
+                        if s.memory && !page {
+                            return;
+                        }
                         s.tree_menu = Some((at.clone(), p));
                     });
                     // a middle click on a page opens it in a new tab, as a browser opens a link
@@ -12527,6 +12826,11 @@ fn wait_or_stop(ms: u64, stop: &std::sync::atomic::AtomicBool) {
 /// changed. While the window is in use it is looked at again when it
 /// would count as left, which costs the ship nothing.
 fn sync_away(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
+    // typing in a field is being at the window, and the app's own key handler is only given the keys a field did not take: the text and the caret are looked at too
+    let typed = (s.edit.text.len(), s.edit.focus, s.edit.anchor);
+    if std::mem::replace(&mut s.typed_seen, typed) != typed {
+        s.touched = true;
+    }
     if std::mem::take(&mut s.touched) || s.touched_at == 0.0 {
         s.touched_at = clock;
     }
@@ -12540,6 +12844,31 @@ fn sync_away(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(std::time::Duration::from_secs_f64(again - clock));
     }
     was != s.away
+}
+
+/// Stops what this window asks the ship by the clock while nobody is at
+/// it, and starts it again when someone is: the read of the tree, the
+/// change stream, and the look at the other ships signed in. Each
+/// request is kept by the ship for good, and a window left open made a
+/// few thousand a day. The cost is that a window nobody is at does not
+/// learn of a change or a share until someone is back, when it reads
+/// the tree at once. What was asked for stays asked: a save, a backup
+/// that is due, an update of the app.
+fn sync_idle(s: &mut App, was_away: bool, clock: f64, tx: &mut Tx) {
+    use std::sync::atomic::Ordering;
+    if was_away == s.away || s.conn.is_none() {
+        return;
+    }
+    if s.away {
+        s.beacon_stop.store(true, Ordering::Relaxed);
+        s.watch_stop.store(true, Ordering::Relaxed);
+    } else {
+        // back: what changed meanwhile is read now, and listened for again
+        s.next_sync = clock;
+        listen(s);
+        watch_ships(s);
+        tx.wake_after(std::time::Duration::from_millis(50));
+    }
 }
 
 /// The page whose table this window is on: the open page, when it is
@@ -12976,7 +13305,9 @@ fn start_scrub(s: &mut App) {
 /// Takes the film when it is whole, and steps it while it plays. Whether anything changed.
 fn sync_scrub(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     // the page was left: its history goes with it
-    if s.scrub.as_ref().is_some_and(|sc| s.editing || s.memory || s.remote.is_some() || s.open.as_ref().is_none_or(|p| p.name != sc.name)) {
+    // or another screen was gone to: the history is drawn in the page's place, and would stand over it
+    let elsewhere = s.settings.is_some() || s.access || s.inbox || s.shared_open || s.forum.is_some() || s.folder.is_some();
+    if s.scrub.as_ref().is_some_and(|sc| elsewhere || s.editing || s.memory || s.remote.is_some() || s.open.as_ref().is_none_or(|p| p.name != sc.name)) {
         s.scrub = None;
         return true;
     }
@@ -13109,7 +13440,14 @@ fn scrub_page(s: &App, sc: &Scrub, k: &Kit) -> El {
     let pics = s.pics.clone();
     let mark = rune_kit::Highlight::new().bg(k.c.text_accent.alpha(0.16));
     let marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = f.changed.iter().map(|r| (vec![r.clone()], mark.clone())).collect();
-    let page = Markdown::new(f.src.clone()).block_keys(f.keys.clone()).highlights(marks).images(move |src| pics.get(src).cloned()).style(page_style(k)).build(k);
+    // a revision nested too deep to draw is drawn shallow, without the marks and keys that were measured in the text as it stood
+    let page = match md::shallow(&f.src) {
+        std::borrow::Cow::Borrowed(_) => Markdown::new(f.src.clone()).block_keys(f.keys.clone()).highlights(marks),
+        std::borrow::Cow::Owned(shallow) => Markdown::new(shallow),
+    }
+    .images(move |src| pics.get(src).cloned())
+    .style(page_style(k))
+    .build(k);
     col().key("scrub-page").w_full().h_full().min_h(0.0).items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(12.0).child(page)).scroll(ScrollSpec { stick_bottom: false })
 }
 
@@ -13240,7 +13578,7 @@ fn body(s: &App, k: &Kit) -> El {
         let web = false;
         Some(banner(
             "outside",
-            format!("{} from another site {} not loaded. Loading {} tells that site your address.", match (n, web) { (1, false) => "An image".to_owned(), (1, true) => "A file".to_owned(), (_, false) => format!("{n} images"), (_, true) => format!("{n} files") }, if n == 1 { "is" } else { "are" }, if n == 1 { "it" } else { "them" }),
+            if tiles_held(s) { "This map is another ship's. Its background is not loaded: loading it asks the map's maker for the places this page chose, through your ship.".to_owned() } else { format!("{} from another site {} not loaded. Loading {} tells that site your address.", match (n, web) { (1, false) => "An image".to_owned(), (1, true) => "A file".to_owned(), (_, false) => format!("{n} images"), (_, true) => format!("{n} files") }, if n == 1 { "is" } else { "are" }, if n == 1 { "it" } else { "them" }) },
             "Load outside content for this page",
             |s| {
                 if let Some(name) = s.open.as_ref().map(|p| p.name.clone()) {
@@ -13619,6 +13957,9 @@ fn update_restart(s: &mut App) {
 /// What is done before the program goes, however it goes: the reader's engine closes its store, so
 /// what libmesa holds is written.
 fn closing(s: &mut App) {
+    // what is typed is kept on this device, to be sent when the app is next opened. A window cannot be held open to ask
+    // ponytail: an edit that cannot be left by itself (another ship's page, a page changed elsewhere, a save on its way) is still lost at a close. A close that can be refused, when Rune has one, is the fix
+    let _ = leave_edit(s);
     #[cfg(unix)]
     if let Some(e) = s.engine.take() {
         e.close();
@@ -14003,7 +14344,7 @@ fn page_body(s: &App, k: &Kit) -> El {
         let source = fill_editor(s, "Page source", marks, &editor_kit(k, &s.prefs.font));
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
-            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(md::html_shown(&s.edit.text)).style(page_style(k)).build(k));
+            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(md::html_shown(&md::shallow(&s.edit.text))).style(page_style(k)).build(k));
             panes = panes.child(col().key("preview").grow(1.0).min_w(0.0).h_full().min_h(0.0).child(shown).scroll(ScrollSpec { stick_bottom: false }));
         }
         return panes;
@@ -14624,6 +14965,10 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if s.conn.is_none() && !s.sample {
         return false;
     }
+    // a question is answered before anything else is done: it acts on what is in front when it is answered, so nothing may be put in front of that meanwhile
+    if s.prompt.is_some() {
+        return false;
+    }
     // Ctrl+Shift and a figure goes to that ship of those signed in, in the order they were added
     if let Some(n) = ship_figure(ev) {
         if let Some(url) = s.ships.get(n).map(|x| x.url.clone()) {
@@ -14702,7 +15047,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         save(s);
         return true;
     }
-    if ev.is_command('e') && !s.editing && s.remote.as_ref().is_none_or(Shared::editable) {
+    if ev.is_command('e') && !s.editing && !page_hidden(s) && s.remote.as_ref().is_none_or(Shared::editable) {
         start_edit(s);
         tx.focus_when_shown(FIELD, false);
         return true;
@@ -14830,7 +15175,7 @@ mod tests {
         struct Doc(String);
         fn view(d: &Doc, _: &mut Cx<Doc>) -> El {
             let k = Kit::neutral(true);
-            col().w_full().child(Markdown::new(md::wikilinks(&md::html_shown(&d.0), &|_| false)).selectable(true).style(page_style(&k)).build(&k))
+            col().w_full().child(Markdown::new(md::wikilinks(&md::html_shown(&md::shallow(&d.0)), &|_| false)).selectable(true).style(page_style(&k)).build(&k))
         }
         let mut rt = rune::Runtime::new(Doc(src.to_owned()), view, (800.0, 20000.0), rune::Env::new(true, 1.0));
         rt.frame(0.0);

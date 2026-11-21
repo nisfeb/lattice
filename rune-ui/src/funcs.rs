@@ -132,12 +132,19 @@ fn variance(ns: &[f64], pop: bool) -> Result<f64, V> {
 
 /// A text against a pattern where `*` is any run and `?` any one character, without case.
 fn wild(pat: &[char], text: &[char]) -> bool {
-    match pat.split_first() {
-        None => text.is_empty(),
-        Some(('*', rest)) => (0..=text.len()).any(|i| wild(rest, &text[i..])),
-        Some(('?', rest)) => !text.is_empty() && wild(rest, &text[1..]),
-        Some((c, rest)) => text.first() == Some(c) && wild(rest, &text[1..]),
+    // one place to go back to, the last star: a pattern of many stars is not tried every way it could be cut
+    let (mut p, mut t, mut star, mut held) = (0, 0, None, 0);
+    while t < text.len() {
+        match pat.get(p) {
+            Some('*') => (star, held, p) = (Some(p), t, p + 1),
+            Some(c) if *c == '?' || *c == text[t] => (p, t) = (p + 1, t + 1),
+            _ => match star {
+                Some(s) => (p, held, t) = (s + 1, held + 1, held + 1),
+                None => return false,
+            },
+        }
     }
+    pat[p..].iter().all(|c| *c == '*')
 }
 
 /// A criterion as SUMIF and COUNTIF read it: ">3", "<>x", "abc", 4.
@@ -187,12 +194,19 @@ fn criterion(e: &mut Engine, c: &V) -> Box<dyn Fn(&V) -> bool> {
 
 /// The cells of a range and, beside each, the cell at the same place in another range.
 /// The rectangle is walked whole, held to what the sheet has in it.
-fn pairs(e: &mut Engine, test: Rg, other: Option<Rg>, f: &mut dyn FnMut(V, V)) {
+fn pairs(e: &mut Engine, test: Rg, other: Option<Rg>, f: &mut dyn FnMut(V, V)) -> Result<(), Unsupported> {
     let (rows, cols) = e.used(test.s);
     let r2 = test.r2.min(rows.saturating_sub(1).max(test.r1));
     let c2 = test.c2.min(cols.saturating_sub(1).max(test.c1));
+    // as a range is walked elsewhere: more cells than a formula may walk, and it keeps what it had
+    if (r2 - test.r1 + 1).saturating_mul(c2 - test.c1 + 1) > WALK_MOST {
+        return Err(Unsupported);
+    }
     for r in test.r1..=r2 {
         for c in test.c1..=c2 {
+            if e.leaving() {
+                return Err(Unsupported);
+            }
             let v = e.value((test.s, r, c));
             let w = match other {
                 Some(o) => e.value((o.s, o.r1 + (r - test.r1), o.c1 + (c - test.c1))),
@@ -201,7 +215,11 @@ fn pairs(e: &mut Engine, test: Rg, other: Option<Rg>, f: &mut dyn FnMut(V, V)) {
             f(v, w);
         }
     }
+    Ok(())
 }
+
+/// The most cells one test of a range may walk.
+const WALK_MOST: usize = 5_000_000;
 
 /// SUMIFS and COUNTIFS: every row and column of the first test range where every test holds.
 fn ifs(e: &mut Engine, sum: Option<&V>, tests: &[V], step: impl Fn(f64, &V) -> f64) -> V {
@@ -214,6 +232,9 @@ fn ifs(e: &mut Engine, sum: Option<&V>, tests: &[V], step: impl Fn(f64, &V) -> f
     let f = *f;
     let (rows, cols) = e.used(f.s);
     let mut acc = 0.0;
+    if f.rows().min(rows.saturating_sub(f.r1)).saturating_mul(f.cols().min(cols.saturating_sub(f.c1))) > WALK_MOST {
+        return err(ILLEGAL);
+    }
     for i in 0..f.rows().min(rows.saturating_sub(f.r1)) {
         for j in 0..f.cols().min(cols.saturating_sub(f.c1)) {
             let mut all = true;
@@ -237,8 +258,16 @@ fn ifs(e: &mut Engine, sum: Option<&V>, tests: &[V], step: impl Fn(f64, &V) -> f
 
 /// Rounded as Calc rounds: half away from nothing, with a hair's allowance for what a binary fraction cannot hold.
 fn round(n: f64, d: f64, mode: u8) -> f64 {
-    let f = 10f64.powf(d);
+    // the count of places is a whole number: 2.9 places are 2
+    let f = 10f64.powf(d.trunc());
     let x = n * f;
+    // more places than a number can have leave it as it is, and fewer than it has digits leave nothing
+    if !f.is_finite() || !x.is_finite() {
+        return n;
+    }
+    if f == 0.0 {
+        return 0.0;
+    }
     let y = match mode {
         b'u' if n < 0.0 => -(-x - 1e-9).ceil(),
         b'u' => (x - 1e-9).ceil(),
@@ -353,6 +382,15 @@ fn utc_days(y: f64, m0: f64, d: f64) -> f64 {
 /// A day number as its year, month (from one) and day, on the document's null date.
 fn date_of(e: &Engine, n: f64) -> (i64, i64, i64) {
     crate::sheet::civil_from_days(((n + 1e-9).floor() + e.null_date()) as i64)
+}
+
+/// The furthest day from 1970 a date can be: a hundred million days, as JavaScript's `Date`
+/// has it. A day number past it is no date.
+const DAYS_MOST: f64 = 1e8;
+
+/// Whether a day number, on the document's null date, is a day a date can be.
+fn is_day(e: &Engine, n: f64) -> bool {
+    (n + e.null_date()).abs() <= DAYS_MOST
 }
 
 /// The seconds this machine's clock is ahead of UTC.
@@ -543,7 +581,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             Some(V::Range(g)) => {
                 let mut full = 0usize;
                 e.each(*g, &mut |v| full += usize::from(v != V::Str(String::new())))?;
-                n((g.rows() * g.cols() - full) as f64)
+                n(g.rows() as f64 * g.cols() as f64 - full as f64)
             }
             _ => err(VALUE),
         },
@@ -591,7 +629,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         "RANK" => {
             let V::Num(v) = to_num(&scalar(e, &arg(0))) else { return Ok(to_num(&scalar(e, &arg(0)))) };
             let asc = a.get(2).is_some_and(|x| *x != V::Missing) && to_num(&scalar(e, &arg(2))) != V::Num(0.0);
-            stat(e, &a[1..a.len().min(2)], |ns| if ns.contains(&v) { n(1.0 + ns.iter().filter(|x| if asc { **x < v } else { **x > v }).count() as f64) } else { err(VALUE) })?
+            stat(e, a.get(1..a.len().min(2)).unwrap_or(&[]), |ns| if ns.contains(&v) { n(1.0 + ns.iter().filter(|x| if asc { **x < v } else { **x > v }).count() as f64) } else { err(VALUE) })?
         }
         "SUMIF" | "COUNTIF" | "AVERAGEIF" => {
             let Some(V::Range(test)) = a.first() else { return Ok(err(VALUE)) };
@@ -601,7 +639,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
                 _ => None,
             };
             let (mut ns, mut hits, mut bad) = (Vec::new(), 0usize, None);
-            pairs(e, *test, other, &mut |v, w| {
+            let walked = pairs(e, *test, other, &mut |v, w| {
                 if ok(&v) {
                     hits += 1;
                     match w {
@@ -612,6 +650,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
                     }
                 }
             });
+            walked?;
             match name {
                 "COUNTIF" => n(hits as f64),
                 "SUMIF" => bad.unwrap_or_else(|| n(ksum(&ns))),
@@ -676,7 +715,8 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             let m = (x.abs() - 1e-12).ceil();
             V::Num(if x < 0.0 { -1.0 } else { 1.0 } * if m % 2.0 != 0.0 { m } else { m + 1.0 })
         }),
-        "FACT" => num1!(|x| if x < 0.0 { err(ARG) } else { fin((2..=x.floor() as u64).fold(1.0, |f, i| f * i as f64)) }),
+        // past 170 it is more than a number can hold, and is not counted up to
+        "FACT" => num1!(|x| if x < 0.0 { err(ARG) } else if x > 170.0 { fin(f64::INFINITY) } else { fin((2..=x.floor() as u64).fold(1.0, |f, i| f * i as f64)) }),
         "CEILING" => num2!(or(1, 1.0), |x, s| V::Num(if s == 0.0 { 0.0 } else if x < 0.0 && s < 0.0 { (x / s + 1e-12).floor() * s } else { (x / s - 1e-12).ceil() * s })),
         "FLOOR" => num2!(or(1, 1.0), |x, s| if s == 0.0 { err(DIV0) } else { V::Num(if x < 0.0 && s < 0.0 { (x / s - 1e-12).ceil() * s } else { (x / s + 1e-12).floor() * s }) }),
         "MROUND" => num2!(arg(1), |x, s| V::Num(if s == 0.0 { 0.0 } else { js_round(x / s) * s })),
@@ -971,7 +1011,11 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         "DATE" | "TIME" => {
             let v: Vec<V> = (0..3).map(|i| to_num(&scalar(e, &arg(i)))).collect();
             match (&v[0], &v[1], &v[2]) {
-                (V::Num(x), V::Num(y), V::Num(z)) if name == "DATE" => n(utc_days(x.floor(), y.floor() - 1.0, z.floor()) - e.null_date()),
+                (V::Num(x), V::Num(y), V::Num(z)) if name == "DATE" => {
+                    // a year, a month or a day past any calendar makes no date
+                    let days = utc_days(x.floor(), y.floor() - 1.0, z.floor());
+                    if x.abs() <= 1e9 && y.abs() <= 1e9 && days.abs() <= DAYS_MOST { n(days - e.null_date()) } else { err("#NUM!") }
+                }
                 (V::Num(h), V::Num(m), V::Num(s)) => {
                     let t = (h * 3600.0 + m * 60.0 + s) / 86_400.0;
                     n(t - t.floor())
@@ -980,6 +1024,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             }
         }
         "YEAR" | "MONTH" | "DAY" => match to_num(&scalar(e, &arg(0))) {
+            V::Num(x) if !is_day(e, x) => err("#NUM!"),
             V::Num(x) => {
                 let (y, m, d) = date_of(e, x);
                 n(match name {
@@ -999,7 +1044,17 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
                 (V::Num(x), V::Num(how)) => {
                     // 0 is Sunday. The first day of 1970 was a Thursday
                     let d = (((x + 1e-9).floor() + e.null_date()) + 4.0).rem_euclid(7.0);
-                    n(if how == 2.0 { (d + 6.0) % 7.0 + 1.0 } else if how == 3.0 { (d + 6.0) % 7.0 } else { d + 1.0 })
+                    // 11 to 17 count from 1 on a Monday, a Tuesday and so on to a Sunday
+                    let from = how.trunc() - 11.0;
+                    n(if how == 2.0 {
+                        (d + 6.0) % 7.0 + 1.0
+                    } else if how == 3.0 {
+                        (d + 6.0) % 7.0
+                    } else if (0.0..=6.0).contains(&from) {
+                        (d - 1.0 - from).rem_euclid(7.0) + 1.0
+                    } else {
+                        d + 1.0
+                    })
                 }
                 (V::Num(_), bad) | (bad, _) => bad,
             }
@@ -1008,6 +1063,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         "EDATE" | "EOMONTH" => {
             let (x, m) = (to_num(&scalar(e, &arg(0))), to_num(&scalar(e, &arg(1))));
             match (x, m) {
+                (V::Num(x), V::Num(m)) if !is_day(e, x) || m.abs() > 1e9 => err("#NUM!"),
                 (V::Num(x), V::Num(m)) => {
                     let (y, mo, d) = date_of(e, x);
                     let mo = (mo - 1) as f64 + m.trunc();

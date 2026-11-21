@@ -488,7 +488,8 @@ fn set_aside(dir: &Path, what: Damage) -> Result<(), String> {
     let names: Vec<String> = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
     let gone = |n: &str| match what {
         Damage::Port => n.ends_with(".db.port"),
-        Damage::Identity => n == "comet.key" || [".db", ".db-wal", ".db-shm", ".db.port"].iter().any(|x| n.ends_with(x)),
+        // with the identity goes what was said of it: that it was exported, and which posts were its own. Left behind, the new one made in its place would be said to have been exported
+        Damage::Identity => n == "comet.key" || n == "exported" || n == "my-posts.json" || [".db", ".db-wal", ".db-shm", ".db.port"].iter().any(|x| n.ends_with(x)),
         Damage::None => false,
     };
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
