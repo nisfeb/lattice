@@ -31,25 +31,51 @@ pub struct Film {
 }
 
 /// Where each top-level block of a Markdown text lies, from the start
-/// of its first line to its end.
+/// of its first line to its end. The blocks are in order and no two
+/// share a byte: one that the parser starts on the line another ends
+/// on, or inside it, starts where that one ends.
+///
+/// Text that draws nothing is a block too: a link's definition
+/// (`[ref]: http://x`) is no block of Markdown's, but changing it sends
+/// every `[text][ref]` somewhere else, so a change to it has to be one
+/// the history can show.
 pub fn blocks(src: &str) -> Vec<std::ops::Range<usize>> {
     let opts = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
-    let (mut out, mut depth) = (Vec::new(), 0usize);
+    let (mut out, mut depth): (Vec<std::ops::Range<usize>>, usize) = (Vec::new(), 0);
     let line_start = |at: usize| src[..at].rfind('\n').map_or(0, |i| i + 1);
+    // what stands between two blocks, when it is more than white space
+    let between = |out: &mut Vec<std::ops::Range<usize>>, from: usize, to: usize| {
+        let gap = &src[from..to];
+        let said = gap.trim();
+        if !said.is_empty() {
+            let at = from + (gap.len() - gap.trim_start().len());
+            out.push(line_start(at).max(from)..at + said.len());
+        }
+    };
+    let push = |out: &mut Vec<std::ops::Range<usize>>, at: std::ops::Range<usize>| {
+        let end = out.last().map_or(0, |r| r.end);
+        let start = line_start(at.start).max(end).min(src.len());
+        between(out, end, start);
+        if at.end > start {
+            out.push(start..at.end.min(src.len()));
+        }
+    };
     for (ev, at) in Parser::new_ext(src, opts).into_offset_iter() {
         match ev {
             Event::Start(_) => {
                 if depth == 0 {
-                    out.push(line_start(at.start)..at.end);
+                    push(&mut out, at);
                 }
                 depth += 1;
             }
             Event::End(_) => depth = depth.saturating_sub(1),
             // a rule stands alone, with no start and end of its own
-            Event::Rule if depth == 0 => out.push(line_start(at.start)..at.end),
+            Event::Rule if depth == 0 => push(&mut out, at),
             _ => {}
         }
     }
+    let end = out.last().map_or(0, |r| r.end);
+    between(&mut out, end, src.len());
     out
 }
 
@@ -128,6 +154,8 @@ fn same_in(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
 // ponytail: a changed line is one whose text the old block had nowhere. A line moved is not marked, nor one written twice. A line diff if that shows
 fn marks_in(old: &str, new: &str, base: usize) -> Vec<std::ops::Range<usize>> {
     let was: Vec<&str> = old.lines().map(str::trim_end).collect();
+    // every line the old block had, to be asked of at once: a block of thousands of lines is not read through for each of them
+    let had: std::collections::HashSet<&str> = was.iter().copied().collect();
     let cells = |line: &str| -> Vec<(usize, usize)> {
         // each cell of a table's row: where its text starts and ends in the line
         let mut out = Vec::new();
@@ -150,7 +178,7 @@ fn marks_in(old: &str, new: &str, base: usize) -> Vec<std::ops::Range<usize>> {
     let (mut out, mut at) = (Vec::new(), 0);
     for (i, raw) in new.split_inclusive('\n').enumerate() {
         let line = raw.trim_end();
-        if !line.is_empty() && !was.contains(&line) {
+        if !line.is_empty() && !had.contains(line) {
             let lead = line.len() - line.trim_start().len();
             let before = was.get(i).filter(|w| w.trim_start().starts_with('|') && line.trim_start().starts_with('|')).map(|w| cells(w));
             let now = cells(line);
@@ -527,5 +555,61 @@ mod tests {
     fn a_place_on_the_track_is_its_nearest_frame() {
         assert_eq!([frame_at(0.0, 300.0, 4), frame_at(100.0, 300.0, 4), frame_at(160.0, 300.0, 4), frame_at(900.0, 300.0, 4), frame_at(-5.0, 300.0, 4)], [0, 1, 2, 3, 0]);
         assert_eq!((frame_at(50.0, 300.0, 1), frame_at(50.0, 0.0, 9)), (0, 0));
+    }
+
+    #[test]
+    fn blocks_are_in_order_apart_and_hold_every_word() {
+        // each of these once gave two blocks at one place, or one inside another
+        for src in ["&\r>", "-\n `", "a\r\n> b\r\n\r\n- c\r- d", "> a\n- b\n# c\n---\n| a |\n|---|\n", "1.\n   x\n\n  y", "<div>\n\n*a*\n</div>\nb", "\n\n", "[ref]: http://x"] {
+            let got = blocks(src);
+            let mut at = 0;
+            for r in &got {
+                assert!(r.start >= at && r.end > r.start && r.end <= src.len() && src.is_char_boundary(r.start) && src.is_char_boundary(r.end), "{src:?} gave {got:?}");
+                at = r.end;
+            }
+            // nothing but white space is outside every block
+            let mut left = String::new();
+            let mut from = 0;
+            for r in &got {
+                left.push_str(&src[from..r.start]);
+                from = r.end;
+            }
+            left.push_str(&src[from..]);
+            assert!(left.trim().is_empty(), "{src:?} leaves {left:?} in no block");
+        }
+        assert_eq!(blocks("&\r>"), [0..2, 2..3]);
+        // a link's definition is a block, wherever it stands
+        let src = "[a]: http://a\n\nSee [this][ref].\n\n[ref]: http://x\n[other]: http://y\n\n# End\n\n[z]: http://z\n";
+        let got: Vec<&str> = blocks(src).iter().map(|r| src[r.clone()].trim_end()).collect();
+        assert_eq!(got, ["[a]: http://a", "See [this][ref].", "[ref]: http://x\n[other]: http://y", "# End", "[z]: http://z"]);
+    }
+
+    #[test]
+    fn a_link_sent_somewhere_else_is_a_change_the_history_shows() {
+        let mut film = Film::default();
+        film.push(1, String::new(), "See [this][ref].\n\n[ref]: http://good.example\n".into());
+        film.push(2, String::new(), "See [this][ref].\n\n[ref]: http://evil.example\n".into());
+        let f = &film.frames[1];
+        assert_eq!((f.touched, film.said(1).as_str()), (1, "1 block written or changed"));
+        assert_eq!(f.changed.iter().map(|r| &f.src[r.clone()]).collect::<Vec<_>>(), ["[ref]: http://evil.example"]);
+        // the paragraph that uses it keeps its name
+        assert_eq!(film.frames[0].keys[0], film.frames[1].keys[0]);
+    }
+
+    #[test]
+    fn a_change_in_a_block_of_thousands_of_lines_is_found_in_time() {
+        // one paragraph, then one table, of 8,000 lines each, with every tenth line changed
+        let para = |mark: &str| (0..8000).map(|i| if i % 10 == 0 { format!("line {i} {mark} of the paragraph\n") } else { format!("line {i} of the paragraph\n") }).collect::<String>();
+        let table = |mark: &str| format!("| n | v |\n|---|---|\n{}", (0..8000).map(|i| if i % 10 == 0 { format!("| {i} | {mark} |\n") } else { format!("| {i} | same |\n") }).collect::<String>());
+        for (one, two) in [(para("old"), para("new")), (table("old"), table("new"))] {
+            let mut film = Film::default();
+            film.push(1, String::new(), one);
+            let t = std::time::Instant::now();
+            film.push(2, String::new(), two);
+            assert!(t.elapsed().as_millis() < 1500, "{:?}", t.elapsed());
+            let f = &film.frames[1];
+            assert_eq!((f.touched, f.changed.len()), (1, 800));
+            assert!(f.changed.iter().all(|r| f.src[r.clone()].contains("new")));
+        }
     }
 }
