@@ -308,13 +308,17 @@
     (expect-eq !>(&) !>((save-moved:lu 504 | old)))
     (expect-eq !>(&) !>((save-moved:lu 504 | new)))
     (expect-eq !>(&) !>((save-moved:lu 504 | app)))
+    ::  the host has no such file there: nothing was written, and a
+    ::  kernel that moved the shell answers so at the old path
+    (expect-eq !>(&) !>((save-moved:lu 404 | old)))
+    (expect-eq !>(&) !>((save-moved:lu 404 & old)))
+    (expect-eq !>(|) !>((save-moved:lu 404 | /apps/other/thing)))
     ::  sent and not acked: it may still land where it went
     (expect-eq !>(|) !>((save-moved:lu 504 & old)))
     ::  any answer from the host is final
     (expect-eq !>(|) !>((save-moved:lu 409 | old)))
     (expect-eq !>(|) !>((save-moved:lu 502 | old)))
     (expect-eq !>(|) !>((save-moved:lu 403 | old)))
-    (expect-eq !>(|) !>((save-moved:lu 404 | old)))
     (expect-eq !>(|) !>((save-moved:lu 202 | old)))
     (expect-eq !>(|) !>((save-moved:lu 415 | old)))
     ::  not lattice's: nowhere else to try
