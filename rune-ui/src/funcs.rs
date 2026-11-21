@@ -204,6 +204,9 @@ fn pairs(e: &mut Engine, test: Rg, other: Option<Rg>, f: &mut dyn FnMut(V, V)) -
     }
     for r in test.r1..=r2 {
         for c in test.c1..=c2 {
+            if e.leaving() {
+                return Err(Unsupported);
+            }
             let v = e.value((test.s, r, c));
             let w = match other {
                 Some(o) => e.value((o.s, o.r1 + (r - test.r1), o.c1 + (c - test.c1))),
@@ -255,8 +258,16 @@ fn ifs(e: &mut Engine, sum: Option<&V>, tests: &[V], step: impl Fn(f64, &V) -> f
 
 /// Rounded as Calc rounds: half away from nothing, with a hair's allowance for what a binary fraction cannot hold.
 fn round(n: f64, d: f64, mode: u8) -> f64 {
-    let f = 10f64.powf(d);
+    // the count of places is a whole number: 2.9 places are 2
+    let f = 10f64.powf(d.trunc());
     let x = n * f;
+    // more places than a number can have leave it as it is, and fewer than it has digits leave nothing
+    if !f.is_finite() || !x.is_finite() {
+        return n;
+    }
+    if f == 0.0 {
+        return 0.0;
+    }
     let y = match mode {
         b'u' if n < 0.0 => -(-x - 1e-9).ceil(),
         b'u' => (x - 1e-9).ceil(),
@@ -371,6 +382,15 @@ fn utc_days(y: f64, m0: f64, d: f64) -> f64 {
 /// A day number as its year, month (from one) and day, on the document's null date.
 fn date_of(e: &Engine, n: f64) -> (i64, i64, i64) {
     crate::sheet::civil_from_days(((n + 1e-9).floor() + e.null_date()) as i64)
+}
+
+/// The furthest day from 1970 a date can be: a hundred million days, as JavaScript's `Date`
+/// has it. A day number past it is no date.
+const DAYS_MOST: f64 = 1e8;
+
+/// Whether a day number, on the document's null date, is a day a date can be.
+fn is_day(e: &Engine, n: f64) -> bool {
+    (n + e.null_date()).abs() <= DAYS_MOST
 }
 
 /// The seconds this machine's clock is ahead of UTC.
@@ -561,7 +581,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             Some(V::Range(g)) => {
                 let mut full = 0usize;
                 e.each(*g, &mut |v| full += usize::from(v != V::Str(String::new())))?;
-                n((g.rows() * g.cols() - full) as f64)
+                n(g.rows() as f64 * g.cols() as f64 - full as f64)
             }
             _ => err(VALUE),
         },
@@ -991,7 +1011,11 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         "DATE" | "TIME" => {
             let v: Vec<V> = (0..3).map(|i| to_num(&scalar(e, &arg(i)))).collect();
             match (&v[0], &v[1], &v[2]) {
-                (V::Num(x), V::Num(y), V::Num(z)) if name == "DATE" => n(utc_days(x.floor(), y.floor() - 1.0, z.floor()) - e.null_date()),
+                (V::Num(x), V::Num(y), V::Num(z)) if name == "DATE" => {
+                    // a year, a month or a day past any calendar makes no date
+                    let days = utc_days(x.floor(), y.floor() - 1.0, z.floor());
+                    if x.abs() <= 1e9 && y.abs() <= 1e9 && days.abs() <= DAYS_MOST { n(days - e.null_date()) } else { err("#NUM!") }
+                }
                 (V::Num(h), V::Num(m), V::Num(s)) => {
                     let t = (h * 3600.0 + m * 60.0 + s) / 86_400.0;
                     n(t - t.floor())
@@ -1000,6 +1024,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             }
         }
         "YEAR" | "MONTH" | "DAY" => match to_num(&scalar(e, &arg(0))) {
+            V::Num(x) if !is_day(e, x) => err("#NUM!"),
             V::Num(x) => {
                 let (y, m, d) = date_of(e, x);
                 n(match name {
@@ -1019,7 +1044,17 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
                 (V::Num(x), V::Num(how)) => {
                     // 0 is Sunday. The first day of 1970 was a Thursday
                     let d = (((x + 1e-9).floor() + e.null_date()) + 4.0).rem_euclid(7.0);
-                    n(if how == 2.0 { (d + 6.0) % 7.0 + 1.0 } else if how == 3.0 { (d + 6.0) % 7.0 } else { d + 1.0 })
+                    // 11 to 17 count from 1 on a Monday, a Tuesday and so on to a Sunday
+                    let from = how.trunc() - 11.0;
+                    n(if how == 2.0 {
+                        (d + 6.0) % 7.0 + 1.0
+                    } else if how == 3.0 {
+                        (d + 6.0) % 7.0
+                    } else if (0.0..=6.0).contains(&from) {
+                        (d - 1.0 - from).rem_euclid(7.0) + 1.0
+                    } else {
+                        d + 1.0
+                    })
                 }
                 (V::Num(_), bad) | (bad, _) => bad,
             }
@@ -1028,6 +1063,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         "EDATE" | "EOMONTH" => {
             let (x, m) = (to_num(&scalar(e, &arg(0))), to_num(&scalar(e, &arg(1))));
             match (x, m) {
+                (V::Num(x), V::Num(m)) if !is_day(e, x) || m.abs() > 1e9 => err("#NUM!"),
                 (V::Num(x), V::Num(m)) => {
                     let (y, mo, d) = date_of(e, x);
                     let mo = (mo - 1) as f64 + m.trunc();

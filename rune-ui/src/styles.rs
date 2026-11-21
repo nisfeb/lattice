@@ -115,16 +115,151 @@ fn compile(src: &str, el: &El) -> Option<Format> {
     Some(Format { kind: el.name.clone(), am_pm: parts.iter().any(|p| matches!(p, Part::AmPm)), long_hours: attr(src, el, "number:truncate-on-overflow") == Some("false"), parts })
 }
 
+/// A number of days as a whole number, held where the sums done on it cannot wrap: a number
+/// past any calendar is the furthest day, not a near one.
+fn day(n: f64) -> i64 {
+    n.clamp(-1e15, 1e15) as i64
+}
+
+/// Digits at the start of a text, no more than `most`: the number, and the rest.
+fn digits(t: &str, most: usize) -> Option<(i64, &str)> {
+    let n = t.bytes().take(most).take_while(u8::is_ascii_digit).count();
+    Some((t[..n].parse().ok()?, &t[n..]))
+}
+
+/// One of the names at the start of a text, whole or its first three letters, without
+/// case: which it is, and the rest.
+fn named<'a>(t: &'a str, names: &[&str], long: bool) -> Option<(usize, &'a str)> {
+    names.iter().enumerate().find_map(|(i, name)| {
+        let want = if long { name } else { &name[..3] };
+        t.get(..want.len()).filter(|have| have.eq_ignore_ascii_case(want)).map(|_| (i, &t[want.len()..]))
+    })
+}
+
 impl Format {
+    /// The number a text is when it is written as this format writes one, or nothing when it
+    /// is not: the other way round from `text`. Only whole dates, times, and plain numbers
+    /// with the format's own words round them are read.
+    fn read(&self, text: &str, null_date: f64) -> Option<f64> {
+        let (mut y, mut mo, mut d, mut h, mut mi, mut s) = (None, None, None, None, None, None);
+        let (mut num, mut pm) = (None, None);
+        let mut rest = text;
+        for p in &self.parts {
+            rest = match p {
+                // the words between, a space of any kind standing for any other
+                Part::Text(t) => {
+                    let mut left = rest.chars();
+                    let same = |a: char, b: char| a == b || (a.is_whitespace() && b.is_whitespace());
+                    if !t.chars().all(|c| left.next().is_some_and(|x| same(c, x))) {
+                        return None;
+                    }
+                    left.as_str()
+                }
+                Part::Number { group, factor, .. } => {
+                    let b = rest.as_bytes();
+                    let mut n = 0;
+                    while n < b.len() && (b[n].is_ascii_digit() || (*group && n > 0 && b[n] == b',' && b.get(n + 1).is_some_and(u8::is_ascii_digit))) {
+                        n += 1;
+                    }
+                    if b.get(n) == Some(&b'.') && b.get(n + 1).is_some_and(u8::is_ascii_digit) {
+                        n += 1;
+                        while n < b.len() && b[n].is_ascii_digit() {
+                            n += 1;
+                        }
+                    }
+                    let v: f64 = rest[..n].replace(',', "").parse().ok()?;
+                    num = Some(v * factor);
+                    &rest[n..]
+                }
+                Part::Year(long) => {
+                    let (v, r) = digits(rest, 4)?;
+                    // two digits are a year of the century round now, as Calc reads them: 30 to 99 in the 1900s
+                    let two = rest.len() - r.len() <= 2 && !*long;
+                    y = Some(if two { v + if v < 30 { 2000 } else { 1900 } } else { v });
+                    r
+                }
+                Part::Month { textual: true, long } => {
+                    let (i, r) = named(rest, &MONTHS, *long)?;
+                    mo = Some(i as i64 + 1);
+                    r
+                }
+                Part::Month { textual: false, .. } => {
+                    let (v, r) = digits(rest, 2)?;
+                    mo = Some(v);
+                    r
+                }
+                Part::Day(_) => {
+                    let (v, r) = digits(rest, 2)?;
+                    d = Some(v);
+                    r
+                }
+                // the day of the week is said by the date
+                Part::DayOfWeek(long) => named(rest, &DAYS, *long)?.1,
+                Part::Hours(_) => {
+                    let (v, r) = digits(rest, if self.long_hours { 6 } else { 2 })?;
+                    h = Some(v);
+                    r
+                }
+                Part::Minutes(_) => {
+                    let (v, r) = digits(rest, 2)?;
+                    mi = Some(v);
+                    r
+                }
+                Part::Seconds(_) => {
+                    let (v, r) = digits(rest, 2)?;
+                    s = Some(v);
+                    r
+                }
+                Part::AmPm => {
+                    let said = rest.get(..2)?;
+                    pm = Some(if said.eq_ignore_ascii_case("PM") { true } else if said.eq_ignore_ascii_case("AM") { false } else { return None });
+                    &rest[2..]
+                }
+                Part::Boolean | Part::Content => return None,
+            };
+        }
+        if !rest.is_empty() {
+            return None;
+        }
+        if let Some(n) = num {
+            // a number with a date or a time beside it is no format read here
+            let lone = y.is_none() && mo.is_none() && d.is_none() && h.is_none() && mi.is_none() && s.is_none();
+            return lone.then_some(if self.kind == "number:percentage-style" { n / 100.0 } else { n });
+        }
+        let clock = match (h, mi, s) {
+            (None, None, None) => None,
+            (h, mi, s) => {
+                let (mut h, mi, s) = (h.unwrap_or(0), mi.unwrap_or(0), s.unwrap_or(0));
+                if mi > 59 || s > 59 || (!self.long_hours && h > 23) || (pm.is_some() && !(1..=12).contains(&h)) {
+                    return None;
+                }
+                if let Some(pm) = pm {
+                    h = h % 12 + if pm { 12 } else { 0 };
+                }
+                Some((h * 3600 + mi * 60 + s) as f64 / 86_400.0)
+            }
+        };
+        match (y, mo, d) {
+            (None, None, None) => clock,
+            (Some(y), Some(mo), Some(d)) => {
+                // a day the month has, in a year a page can hold
+                let days = sheet::days_from_civil(y, mo, d);
+                (sheet::civil_from_days(days) == (y, mo, d)).then(|| days as f64 - null_date + clock.unwrap_or(0.0))
+            }
+            // part of a date says no day
+            _ => None,
+        }
+    }
+
     fn text(&self, v: f64, null_date: f64) -> String {
         let timed = self.kind == "number:date-style" || self.kind == "number:time-style";
         let whole = (v + 1e-9).floor();
         let secs = if timed { ((v - whole) * 86_400.0 + 0.5).floor() as i64 } else { 0 };
-        let (y, m, d) = sheet::civil_from_days(whole as i64 + null_date as i64 + i64::from(secs >= 86_400));
+        let (y, m, d) = sheet::civil_from_days(day(whole) + null_date as i64 + i64::from(secs >= 86_400));
         // 1970 began on a Thursday
-        let dow = (whole as i64 + null_date as i64 + i64::from(secs >= 86_400) + 4).rem_euclid(7) as usize;
+        let dow = (day(whole) + null_date as i64 + i64::from(secs >= 86_400) + 4).rem_euclid(7) as usize;
         let sod = secs % 86_400;
-        let (h, mi, s) = (sod / 3600 + if self.long_hours { whole as i64 * 24 } else { 0 }, sod / 60 % 60, sod % 60);
+        let (h, mi, s) = (sod / 3600 + if self.long_hours { day(whole) * 24 } else { 0 }, sod / 60 % 60, sod % 60);
         let show = if self.kind == "number:percentage-style" { v * 100.0 } else { v };
         let two = |n: i64, long: bool| if long { format!("{n:02}") } else { n.to_string() };
         let mut out = String::new();
@@ -509,8 +644,24 @@ impl Styles {
         }
     }
 
+    /// The number a text is when it is written as a cell style's number format writes one: a
+    /// date in the format's own order, money with its symbol. Nothing when the style has no
+    /// format read here, or the text is not written its way.
+    pub fn read_as(&self, style: &str, text: &str) -> Option<f64> {
+        let (_, Some(f)) = self.data.get(self.data_of(style)?)? else { return None };
+        // the sign goes before everything, the symbol too
+        let (neg, body) = text.strip_prefix('-').map_or((false, text), |b| (true, b));
+        let timed = f.kind == "number:date-style" || f.kind == "number:time-style";
+        f.read(text, self.null_date).or_else(|| f.read(body, self.null_date).filter(|_| neg && !timed).map(|n| -n))
+    }
+
     /// The text a number shows in a cell of this style and value type.
     pub fn text(&self, style: &str, v: f64, vt: &str) -> String {
+        // a day number no calendar date stands for is shown as the number it is, not as a date made up for it
+        let format = self.data_of(style).and_then(|d| self.data.get(d));
+        if (vt == "date" || format.is_some_and(|(kind, _)| kind == "number:date-style")) && !sheet::dated(v, self.null_date) {
+            return general(v);
+        }
         // money in the format lattice makes shows its sign before the symbol, as the web client writes it
         if v < 0.0 && self.data_of(style).is_some_and(|d| DATA.iter().any(|(k, xml)| *k == "currency" && d == format!("Ln{}", hash(xml)))) {
             return format!("-${}", fixed(v.abs(), 2, 1, true));
@@ -522,12 +673,12 @@ impl Styles {
         match vt {
             "percentage" => fixed(v * 100.0, 2, 1, false) + "%",
             "date" => {
-                let (y, m, d) = sheet::civil_from_days((v + 1e-9).floor() as i64 + self.null_date as i64);
+                let (y, m, d) = sheet::civil_from_days(day((v + 1e-9).floor()) + self.null_date as i64);
                 format!("{y}-{m:02}-{d:02}")
             }
             "time" => {
                 let s = ((v - v.floor()) * 86_400.0 + 0.5).floor() as i64;
-                format!("{:02}:{:02}:{:02}", s / 3600 + v.floor() as i64 * 24, s / 60 % 60, s % 60)
+                format!("{:02}:{:02}:{:02}", s / 3600 + day(v.floor()) * 24, s / 60 % 60, s % 60)
             }
             "currency" => fixed(v, 2, 1, true),
             _ => general(v),

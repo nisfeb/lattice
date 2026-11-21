@@ -102,6 +102,22 @@ pub fn parse(src: &str) -> Vec<Sheet> {
                 unescape(&src[i..at], text);
             }
         }
+        // a comment is not shown, and a CDATA section is text as it stands: neither is a tag, whatever is inside it
+        if src[at..].starts_with("<!--") {
+            let Some(end) = src[at..].find("-->") else { break };
+            i = at + end + 3;
+            continue;
+        }
+        if let Some(raw) = src[at..].strip_prefix("<![CDATA[") {
+            let Some(end) = raw.find("]]>") else { break };
+            if para && note == 0 {
+                if let Some((text, _)) = &mut cell {
+                    text.push_str(&raw[..end]);
+                }
+            }
+            i = at + 9 + end + 3;
+            continue;
+        }
         let Some(gt) = src[at..].find('>') else { break };
         let tag = &src[at + 1..at + gt];
         i = at + gt + 1;
@@ -208,7 +224,9 @@ pub fn typed_on(text: &str, null_date: f64) -> Result<Typed, String> {
         return Err("formulas are not written here yet".into());
     }
     if numeric(t) {
-        return t.replace(',', "").parse().map(Typed::Number).map_err(|_| "that number cannot be read".to_owned());
+        let n: f64 = t.replace(',', "").parse().map_err(|_| "that number cannot be read".to_owned())?;
+        // more than a number can hold is kept as the text it was typed as, never as a nought
+        return Ok(if n.is_finite() { Typed::Number(n) } else { Typed::Text(text.to_owned()) });
     }
     let digits = |s: &str, lo: usize, hi: usize| (lo..=hi).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit());
     // a plain number, with no grouping and no exponent, as a percentage's is
@@ -334,6 +352,10 @@ const VALUE_ATTRS: [&str; 11] = [
     "office:boolean-value", "office:string-value", "office:currency", "calcext:value-type",
 ];
 
+/// The attributes that make a cell's formula an array formula. They go when a person types
+/// over the cell, or what was typed would be an array formula too.
+const MATRIX_ATTRS: [&str; 2] = ["table:number-matrix-columns-spanned", "table:number-matrix-rows-spanned"];
+
 /// Where an element's own content ends: at its closing tag, or at once for an empty one.
 pub(crate) fn inner_end(src: &str, el: &El) -> usize {
     if src[el.start..el.open_end].ends_with("/>") { el.open_end } else { src[..el.end].rfind("</").unwrap_or(el.end) }
@@ -367,8 +389,12 @@ pub(crate) fn copy(src: &str, el: &El, count: &str, n: usize) -> String {
 
 pub(crate) fn count(src: &str, el: &El, name: &str) -> usize {
     let tag = &src[el.start..el.open_end];
-    attrs(tag).into_iter().find(|(k, _)| *k == name).and_then(|(_, at)| tag[at].parse().ok()).unwrap_or(1).max(1)
+    // no more than a sheet has rows: a count of two to the sixty-fourth would wrap every sum it is added to
+    attrs(tag).into_iter().find(|(k, _)| *k == name).and_then(|(_, at)| tag[at].parse().ok()).unwrap_or(1).clamp(1, COUNT_MOST)
 }
+
+/// The most a row, a cell or a span may be said to repeat: the rows of a whole sheet.
+const COUNT_MOST: usize = 1_048_576;
 
 /// The spaces an element is indented by when it starts its line, and
 /// what goes between it and a sibling put beside it.
@@ -417,8 +443,21 @@ pub(crate) fn esc_attr(s: &str) -> String {
     esc_text(s).replace('"', "&quot;").replace('\'', "&apos;")
 }
 
+/// The furthest year, and the furthest day from 1970, the calendar sums below are done for.
+/// Past them a date is held at the edge: a year of a billion billions is a far day, not a
+/// sum that wrapped round to a near one.
+const FAR_YEAR: i64 = 1_000_000_000_000;
+const FAR_DAY: i64 = FAR_YEAR * 366;
+
+/// Whether a day number, counted from the null date, is a day of the years 9999 before to
+/// 9999 after: the dates a page can hold and a person can mean.
+pub(crate) fn dated(n: f64, null_date: f64) -> bool {
+    (n + null_date).abs() <= 4_400_000.0
+}
+
 /// Days from 1970-01-01 to a day of the calendar, and back.
 pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let (y, m, d) = (y.clamp(-FAR_YEAR, FAR_YEAR), m.clamp(-FAR_YEAR, FAR_YEAR), d.clamp(-FAR_DAY, FAR_DAY));
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
@@ -427,7 +466,7 @@ pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 }
 
 pub(crate) fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719_468;
+    let z = z.clamp(-FAR_DAY, FAR_DAY) + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -487,7 +526,7 @@ fn serial_time(n: f64) -> String {
 }
 
 /// A cell holding `v`, keeping the style, the span and the notes of the cell it takes the place of.
-fn cell_xml(src: &str, old: Option<&El>, pad: &str, v: &Put, calcext: bool, null_date: f64) -> Result<String, String> {
+fn cell_xml(src: &str, old: Option<&El>, pad: &str, v: &Put, care: Care, calcext: bool, null_date: f64) -> Result<String, String> {
     let name = old.map_or("table:table-cell", |o| o.name.as_str());
     let tag = old.map_or("", |o| &src[o.start..o.open_end]);
     let had = attrs(tag);
@@ -504,13 +543,15 @@ fn cell_xml(src: &str, old: Option<&El>, pad: &str, v: &Put, calcext: bool, null
         a.push_str(&format!(" table:formula=\"{}\"", esc_attr(f)));
     }
     if !v.vt.is_empty() {
-        a.push_str(&format!(" office:value-type=\"{}\"", v.vt));
         let n = match &v.v {
             Val::Num(n) => *n,
             Val::Bool(b) => f64::from(*b),
             _ => 0.0,
         };
-        match (v.vt.as_str(), &v.v) {
+        // a day number no calendar date stands for is kept as the number it is, not as a date made up for it
+        let vt = if v.vt == "date" && !dated(n, null_date) { "float" } else { v.vt.as_str() };
+        a.push_str(&format!(" office:value-type=\"{vt}\""));
+        match (vt, &v.v) {
             // a formula's text is kept beside it, so a reader need not work the formula out
             ("string", Val::Str(t)) if v.f.is_some() => a.push_str(&format!(" office:string-value=\"{}\"", esc_attr(if v.err { "" } else { t }))),
             ("string", _) => {}
@@ -527,10 +568,10 @@ fn cell_xml(src: &str, old: Option<&El>, pad: &str, v: &Put, calcext: bool, null
         }
         // LibreOffice's own attribute, only where the document declares its namespace
         if calcext {
-            a.push_str(&format!(" calcext:value-type=\"{}\"", if v.err { "error" } else { &v.vt }));
+            a.push_str(&format!(" calcext:value-type=\"{}\"", if v.err { "error" } else { vt }));
         }
     }
-    for (k, at) in had.iter().filter(|(k, _)| !VALUE_ATTRS.contains(k) && *k != "table:content-validation-name") {
+    for (k, at) in had.iter().filter(|(k, _)| !VALUE_ATTRS.contains(k) && *k != "table:content-validation-name" && (care == Care::Result || !MATRIX_ATTRS.contains(k))) {
         a.push_str(&format!(" {k}=\"{}\"", &tag[at.clone()]));
     }
     // what the cell held that is not its text: a note, a picture
@@ -604,6 +645,8 @@ pub struct MCell {
     pub st: Option<String>,
     /// It lies under a merged cell.
     pub covered: bool,
+    /// Its formula was entered as an array formula, worked out cell by cell over its ranges.
+    pub array: bool,
 }
 
 pub struct MRow {
@@ -634,10 +677,10 @@ impl Book {
         if let Some(st) = self.at(s, r, c).and_then(|cell| cell.st.clone()) {
             return st;
         }
-        let mut seen = 0;
+        let mut seen = 0usize;
         let col = self.sheets.get(s).and_then(|sh| {
             sh.cols.iter().find(|(rep, _)| {
-                seen += rep;
+                seen = seen.saturating_add(*rep);
                 c < seen
             })
         });
@@ -648,10 +691,10 @@ impl Book {
     pub fn at(&self, s: usize, r: usize, c: usize) -> Option<&MCell> {
         let sh = self.sheets.get(s)?;
         // the last run that starts at or before the row
-        let row = sh.rows.get(sh.starts.partition_point(|at| *at <= r).checked_sub(1)?).filter(|row| r < sh.starts[sh.starts.partition_point(|at| *at <= r) - 1] + row.rep)?;
-        let mut seen = 0;
+        let row = sh.rows.get(sh.starts.partition_point(|at| *at <= r).checked_sub(1)?).filter(|row| r < sh.starts[sh.starts.partition_point(|at| *at <= r) - 1].saturating_add(row.rep))?;
+        let mut seen = 0usize;
         row.cells.iter().find(|cell| {
-            seen += cell.rep;
+            seen = seen.saturating_add(cell.rep);
             c < seen
         })
     }
@@ -684,7 +727,7 @@ pub fn book(src: &str) -> Result<Book, String> {
                     "time" => Some(Val::Num(get("office:time-value").and_then(|d| time_serial(&d)).unwrap_or(0.0))),
                     _ => Some(Val::Num(num("office:value").unwrap_or(0.0))),
                 };
-                cells.push(MCell { rep: count(src, cell, COLS), vt, v, f: get("table:formula"), text, err, st: get("table:style-name"), covered: cell.name == "table:covered-table-cell" });
+                cells.push(MCell { rep: count(src, cell, COLS), vt, v, f: get("table:formula"), text, err, st: get("table:style-name"), covered: cell.name == "table:covered-table-cell", array: get("table:number-matrix-columns-spanned").is_some() || get("table:number-matrix-rows-spanned").is_some() });
             }
             out.push(MRow { rep: count(src, row, ROWS), cells });
         }
@@ -715,10 +758,10 @@ pub fn book(src: &str) -> Result<Book, String> {
         let mut col_styles = Vec::new();
         col_styles_of(src, &table, &mut col_styles)?;
         let mut starts = Vec::with_capacity(out.len());
-        let mut at = 0;
+        let mut at = 0usize;
         for row in &out {
             starts.push(at);
-            at += row.rep;
+            at = at.saturating_add(row.rep);
         }
         sheets.push(MSheet { name: attr(&src[table.start + 1..table.open_end], "table:name").unwrap_or_default(), rows: out, cols, col_styles, starts });
     }
@@ -728,15 +771,15 @@ pub fn book(src: &str) -> Result<Book, String> {
 /// The formula a cell holds, as it is stored, or nothing.
 pub fn formula_at(src: &str, sheet: usize, r: usize, c: usize) -> Option<String> {
     let (_, rows, _) = sheet_rows(src, sheet).ok()?;
-    let mut seen = 0;
+    let mut seen = 0usize;
     let row = rows.iter().find(|row| {
-        seen += count(src, row, ROWS);
+        seen = seen.saturating_add(count(src, row, ROWS));
         r < seen
     })?;
-    let mut seen = 0;
+    let mut seen = 0usize;
     let cells = kids(src, row).ok()?;
     let cell = cells.iter().filter(|k| k.name == "table:table-cell" || k.name == "table:covered-table-cell").find(|cell| {
-        seen += count(src, cell, COLS);
+        seen = seen.saturating_add(count(src, cell, COLS));
         c < seen
     })?;
     attr(&src[cell.start + 1..cell.open_end], "table:formula")
@@ -798,7 +841,7 @@ fn row_with(src: &str, row: Option<&El>, pad: &str, c: usize, value: &Put, care:
             if before > 0 {
                 parts.push(copy(src, cell, COLS, before));
             }
-            parts.push(cell_xml(src, Some(cell), &sep, value, calcext, null_date)?);
+            parts.push(cell_xml(src, Some(cell), &sep, value, care, calcext, null_date)?);
             if after > 0 {
                 parts.push(copy(src, cell, COLS, after));
             }
@@ -811,7 +854,7 @@ fn row_with(src: &str, row: Option<&El>, pad: &str, c: usize, value: &Put, care:
             if c > seen {
                 new.push_str(&format!("{sep}<table:table-cell{}/>", if c - seen > 1 { format!(" {COLS}=\"{}\"", c - seen) } else { String::new() }));
             }
-            new.push_str(&format!("{sep}{}", cell_xml(src, None, &sep, value, calcext, null_date)?));
+            new.push_str(&format!("{sep}{}", cell_xml(src, None, &sep, value, care, calcext, null_date)?));
             let end = cells.last().map_or_else(|| row.map_or(0, |r| if r.open_end == inner_end(src, r) { r.open_end } else { r.open_end }), |l| l.end);
             (end, end, new)
         }
@@ -966,8 +1009,17 @@ pub fn add_sheet(src: &str, name: &str) -> Result<(String, usize), String> {
 /// the separator when the first line has more of them than commas.
 pub fn parse_csv(src: &str) -> Vec<Vec<String>> {
     let text = src.strip_prefix('\u{feff}').unwrap_or(src);
-    let first = text.split('\n').next().unwrap_or("");
-    let count = |ch: char| first.matches(ch).count();
+    // the separators of the first line that are not inside a quoted field, which may hold any of them and a line break too
+    let (mut seps, mut inside) = ([0usize; 3], false);
+    for ch in text.chars() {
+        match ch {
+            '"' => inside = !inside,
+            '\n' if !inside => break,
+            ',' | ';' | '\t' if !inside => seps[if ch == ',' { 0 } else if ch == ';' { 1 } else { 2 }] += 1,
+            _ => {}
+        }
+    }
+    let count = |ch: char| seps[if ch == ',' { 0 } else if ch == ';' { 1 } else { 2 }];
     let sep = if count('\t') > count(',') {
         '\t'
     } else if count(';') > count(',') {
@@ -1185,6 +1237,16 @@ mod tests {
     }
 
     #[test]
+    fn a_typed_number_too_large_to_hold_is_text() {
+        assert_eq!(typed("1e999"), Ok(Typed::Text("1e999".into())));
+        assert_eq!(typed("-1e999"), Ok(Typed::Text("-1e999".into())));
+        assert_eq!(typed("1e308"), Ok(Typed::Number(1e308)));
+        // and the page holds the text, with no value of nought beside it
+        let out = set_cell(BOOK, 0, 0, 0, "1e999").unwrap();
+        assert!(out.contains("<text:p>1e999</text:p>") && !out.contains("office:value=\"0\""), "{out}");
+    }
+
+    #[test]
     fn a_number_shows_as_the_web_client_shows_it() {
         // what ui-src/sheet/funcs.js general gives
         for (n, t) in [(0.0, "0"), (27.5, "27.5"), (1.0 / 3.0, "0.333333333333333"), (1e16, "1E+016"), (123_456_789_012_345_678.0, "1.23456789012346E+017"), (1.5e-16, "1.5E-016"), (-2.5e20, "-2.5E+020"), (0.1 + 0.2, "0.3"), (100.0, "100"), (1e15, "1000000000000000"), (12_345.678_901_234_567, "12345.6789012346")] {
@@ -1339,6 +1401,29 @@ mod tests {
         // 250 lines of styles and settings around one empty cell, as LibreOffice writes it
         let s = parse(include_str!("../../ui-src/sheet/blank.fods"));
         assert_eq!(s, vec![Sheet { name: "Sheet1".into(), rows: vec![] }]);
+    }
+
+    #[test]
+    fn a_csvs_separator_is_counted_outside_its_quoted_fields() {
+        // the commas inside quotes are text, so the semicolon is the separator
+        assert_eq!(parse_csv("\"a,b\";c\n1;2\n"), vec![vec!["a,b", "c"], vec!["1", "2"]]);
+        assert_eq!(parse_csv("\"x;y;z\",2\n"), vec![vec!["x;y;z", "2"]]);
+        assert_eq!(parse_csv("\"a,\nb,c\"\td\n"), vec![vec!["a,\nb,c", "d"]], "a quoted line break does not end the first line");
+        assert_eq!(parse_csv("\"say \"\"a,b,c\"\"\";2;3\n"), vec![vec!["say \"a,b,c\"", "2", "3"]]);
+    }
+
+    #[test]
+    fn a_cdata_section_and_a_comment_are_read_as_what_they_are() {
+        let page = |inner: &str| format!("<table:table table:name=\"s\"><table:table-row><table:table-cell><text:p>{inner}</text:p></table:table-cell></table:table-row></table:table>");
+        let shown = |inner: &str| parse(&page(inner))[0].rows[0][0].clone();
+        assert_eq!(shown("A<![CDATA[<raw> & ]]>B"), "A<raw> & B");
+        assert_eq!(shown("A<!-- a > b -->B"), "AB");
+        assert_eq!(shown("A<![CDATA[]]>"), "A");
+        // cut off inside one, what came before is still read
+        assert!(parse("<table:table table:name=\"s\"><table:table-row><table:table-cell><text:p>A<![CDATA[x").len() == 1);
+        // and in the typed model, which reads a cell's text the same way
+        let doc = format!("<office:document><office:body><office:spreadsheet>{}</office:spreadsheet></office:body></office:document>", page("A<![CDATA[<raw>]]>").replace("<table:table-cell>", "<table:table-cell office:value-type=\"string\">"));
+        assert_eq!(book(&doc).unwrap().at(0, 0, 0).map(|c| c.text.clone()).as_deref(), Some("A<raw>"));
     }
 
     #[test]
