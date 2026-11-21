@@ -1416,6 +1416,9 @@ try {
     await setText(BODY);
     const gsaved = await waitFor(async () => (await shipBody(G)) === BODY, 15000, 500);
     check('D: the page with the links is saved', !!gsaved);
+    //  the ship holds the edit before its save answers: a reload while
+    //  the answer is owed asks to leave, and that stops the navigation
+    await waitFor(() => page.evaluate(() => !window.__latUnsaved()), 30000, 100);
     //  painted fresh from the ship, as a reload paints it
     await page.evaluate(() => window.latSetRead(true));
     await boot();
