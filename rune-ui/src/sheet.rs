@@ -647,6 +647,8 @@ pub struct MCell {
     pub covered: bool,
     /// Its formula was entered as an array formula, worked out cell by cell over its ranges.
     pub array: bool,
+    /// How far an array formula's results spread from the cell: rows, then columns.
+    pub spill: (usize, usize),
 }
 
 pub struct MRow {
@@ -727,7 +729,7 @@ pub fn book(src: &str) -> Result<Book, String> {
                     "time" => Some(Val::Num(get("office:time-value").and_then(|d| time_serial(&d)).unwrap_or(0.0))),
                     _ => Some(Val::Num(num("office:value").unwrap_or(0.0))),
                 };
-                cells.push(MCell { rep: count(src, cell, COLS), vt, v, f: get("table:formula"), text, err, st: get("table:style-name"), covered: cell.name == "table:covered-table-cell", array: get("table:number-matrix-columns-spanned").is_some() || get("table:number-matrix-rows-spanned").is_some() });
+                cells.push(MCell { rep: count(src, cell, COLS), vt, v, f: get("table:formula"), text, err, st: get("table:style-name"), covered: cell.name == "table:covered-table-cell", array: get("table:number-matrix-columns-spanned").is_some() || get("table:number-matrix-rows-spanned").is_some(), spill: (count(src, cell, "table:number-matrix-rows-spanned"), count(src, cell, "table:number-matrix-columns-spanned")) });
             }
             out.push(MRow { rep: count(src, row, ROWS), cells });
         }
@@ -1009,17 +1011,34 @@ pub fn add_sheet(src: &str, name: &str) -> Result<(String, usize), String> {
 /// the separator when the first line has more of them than commas.
 pub fn parse_csv(src: &str) -> Vec<Vec<String>> {
     let text = src.strip_prefix('\u{feff}').unwrap_or(src);
-    // the separators of the first line that are not inside a quoted field, which may hold any of them and a line break too
-    let (mut seps, mut inside) = ([0usize; 3], false);
-    for ch in text.chars() {
-        match ch {
-            '"' => inside = !inside,
-            '\n' if !inside => break,
-            ',' | ';' | '\t' if !inside => seps[if ch == ',' { 0 } else if ch == ';' { 1 } else { 2 }] += 1,
-            _ => {}
+    // the separators of the first line, counted as the reader below would meet them with each
+    // as the separator: a quote opens a quoted field only at the start of a field, and a
+    // quoted field may hold any of them and a line break too
+    let count = |sep: char| {
+        let (mut n, mut len, mut quoted) = (0usize, 0usize, false);
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if quoted {
+                if ch == '"' && chars.peek() != Some(&'"') {
+                    quoted = false;
+                } else {
+                    len += 1;
+                    if ch == '"' {
+                        chars.next();
+                    }
+                }
+            } else if ch == '"' && len == 0 {
+                quoted = true;
+            } else if ch == sep {
+                (n, len) = (n + 1, 0);
+            } else if ch == '\n' || ch == '\r' {
+                break;
+            } else {
+                len += 1;
+            }
         }
-    }
-    let count = |ch: char| seps[if ch == ',' { 0 } else if ch == ';' { 1 } else { 2 }];
+        n
+    };
     let sep = if count('\t') > count(',') {
         '\t'
     } else if count(';') > count(',') {
@@ -1408,6 +1427,9 @@ mod tests {
         // the commas inside quotes are text, so the semicolon is the separator
         assert_eq!(parse_csv("\"a,b\";c\n1;2\n"), vec![vec!["a,b", "c"], vec!["1", "2"]]);
         assert_eq!(parse_csv("\"x;y;z\",2\n"), vec![vec!["x;y;z", "2"]]);
+        // a quote that is not at the start of a field is a character of it, and opens nothing
+        assert_eq!(parse_csv("size 5\";name;price\n1;2;3\n"), vec![vec!["size 5\"", "name", "price"], vec!["1", "2", "3"]]);
+        assert_eq!(parse_csv("a\"b,c\"\td\te\n"), vec![vec!["a\"b,c\"", "d", "e"]]);
         assert_eq!(parse_csv("\"a,\nb,c\"\td\n"), vec![vec!["a,\nb,c", "d"]], "a quoted line break does not end the first line");
         assert_eq!(parse_csv("\"say \"\"a,b,c\"\"\";2;3\n"), vec![vec!["say \"a,b,c\"", "2", "3"]]);
     }

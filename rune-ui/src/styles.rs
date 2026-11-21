@@ -142,7 +142,7 @@ impl Format {
     /// with the format's own words round them are read.
     fn read(&self, text: &str, null_date: f64) -> Option<f64> {
         let (mut y, mut mo, mut d, mut h, mut mi, mut s) = (None, None, None, None, None, None);
-        let (mut num, mut pm) = (None, None);
+        let (mut num, mut pm, mut dow) = (None, None, None);
         let mut rest = text;
         for p in &self.parts {
             rest = match p {
@@ -156,10 +156,20 @@ impl Format {
                     left.as_str()
                 }
                 Part::Number { group, factor, .. } => {
-                    let b = rest.as_bytes();
+                    // the sign is written at the number, after any words before it: $-5.00
+                    let (neg, body) = rest.strip_prefix('-').map_or((false, rest), |b| (true, b));
+                    let b = body.as_bytes();
                     let mut n = 0;
-                    while n < b.len() && (b[n].is_ascii_digit() || (*group && n > 0 && b[n] == b',' && b.get(n + 1).is_some_and(u8::is_ascii_digit))) {
+                    while n < b.len() && (b[n].is_ascii_digit() || (*group && b[n] == b',')) {
                         n += 1;
+                    }
+                    // a comma is a group separator only where the format puts one: between groups of
+                    // three, counted from the decimal point. 5,00 and 1,2,3 are not this format
+                    let whole = &body[..n];
+                    let mut groups = whole.split(',');
+                    let lead = groups.next().is_some_and(|g| (1..=3).contains(&g.len()));
+                    if whole.contains(',') && !(lead && groups.all(|g| g.len() == 3)) {
+                        return None;
                     }
                     if b.get(n) == Some(&b'.') && b.get(n + 1).is_some_and(u8::is_ascii_digit) {
                         n += 1;
@@ -167,15 +177,19 @@ impl Format {
                             n += 1;
                         }
                     }
-                    let v: f64 = rest[..n].replace(',', "").parse().ok()?;
-                    num = Some(v * factor);
-                    &rest[n..]
+                    let v: f64 = body[..n].replace(',', "").parse().ok()?;
+                    num = Some(if neg { -v } else { v } * factor);
+                    &body[n..]
                 }
                 Part::Year(long) => {
                     let (v, r) = digits(rest, 4)?;
-                    // two digits are a year of the century round now, as Calc reads them: 30 to 99 in the 1900s
-                    let two = rest.len() - r.len() <= 2 && !*long;
-                    y = Some(if two { v + if v < 30 { 2000 } else { 1900 } } else { v });
+                    // a year written in full is four digits. Where the pattern writes two, two are a year
+                    // of the century round now, as Calc reads them: 30 to 99 in the 1900s
+                    y = Some(match (rest.len() - r.len(), *long) {
+                        (4, _) => v,
+                        (2, false) => v + if v < 30 { 2000 } else { 1900 },
+                        _ => return None,
+                    });
                     r
                 }
                 Part::Month { textual: true, long } => {
@@ -193,8 +207,12 @@ impl Format {
                     d = Some(v);
                     r
                 }
-                // the day of the week is said by the date
-                Part::DayOfWeek(long) => named(rest, &DAYS, *long)?.1,
+                // the day of the week is said by the date, and must be the date's own
+                Part::DayOfWeek(long) => {
+                    let (i, r) = named(rest, &DAYS, *long)?;
+                    dow = Some(i as i64);
+                    r
+                }
                 Part::Hours(_) => {
                     let (v, r) = digits(rest, if self.long_hours { 6 } else { 2 })?;
                     h = Some(v);
@@ -240,11 +258,13 @@ impl Format {
             }
         };
         match (y, mo, d) {
-            (None, None, None) => clock,
+            (None, None, None) => clock.filter(|_| dow.is_none()),
             (Some(y), Some(mo), Some(d)) => {
-                // a day the month has, in a year a page can hold
+                // a day the month has, in a year a page can hold, on the day of the week it was said to be.
+                // 1970 began on a Thursday
                 let days = sheet::days_from_civil(y, mo, d);
-                (sheet::civil_from_days(days) == (y, mo, d)).then(|| days as f64 - null_date + clock.unwrap_or(0.0))
+                let right_day = dow.is_none_or(|w| (days + 4).rem_euclid(7) == w);
+                (sheet::civil_from_days(days) == (y, mo, d) && right_day).then(|| days as f64 - null_date + clock.unwrap_or(0.0))
             }
             // part of a date says no day
             _ => None,
@@ -652,7 +672,7 @@ impl Styles {
         // the sign goes before everything, the symbol too
         let (neg, body) = text.strip_prefix('-').map_or((false, text), |b| (true, b));
         let timed = f.kind == "number:date-style" || f.kind == "number:time-style";
-        f.read(text, self.null_date).or_else(|| f.read(body, self.null_date).filter(|_| neg && !timed).map(|n| -n))
+        f.read(text, self.null_date).or_else(|| f.read(body, self.null_date).filter(|n| neg && !timed && *n >= 0.0).map(|n| -n))
     }
 
     /// The text a number shows in a cell of this style and value type.

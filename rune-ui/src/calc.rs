@@ -71,7 +71,12 @@ struct Entry {
     deps: Vec<[usize; 5]>,
     /// It may read anything: a reference or a name this engine does not follow.
     wild: bool,
+    /// How far an array formula's results spread from its cell: rows, then columns.
+    spill: (usize, usize),
 }
+
+/// The most cells one array formula's results are followed over, each by itself.
+const SPILL_MOST: usize = 10_000;
 
 fn err(code: &str) -> V {
     V::Err(code.to_owned())
@@ -205,12 +210,21 @@ fn calls(n: &Node, names: &[&str]) -> bool {
     }
 }
 
-/// The functions that take a range whole and give one value, so are the same inside an
-/// expression worked out cell by cell as outside one.
-const WHOLE: [&str; 30] = [
-    "SUM", "PRODUCT", "AVERAGE", "MIN", "MAX", "COUNT", "COUNTA", "COUNTBLANK", "MEDIAN", "MODE", "VAR", "VARP", "STDEV", "STDEVP", "LARGE", "SMALL", "RANK", "SUMIF", "COUNTIF", "AVERAGEIF",
-    "SUMIFS", "COUNTIFS", "SUMPRODUCT", "VLOOKUP", "HLOOKUP", "MATCH", "INDEX", "ROWS", "COLUMNS", "TEXTJOIN",
-];
+/// Whether a function takes its argument at `i` as a range whole, to give one value, so is
+/// the same inside an expression worked out cell by cell as outside one. A range anywhere
+/// else would be one value for each of its cells, which is not worked out here.
+fn whole_at(name: &str, i: usize) -> bool {
+    match name {
+        "SUM" | "PRODUCT" | "AVERAGE" | "MIN" | "MAX" | "COUNT" | "COUNTA" | "MEDIAN" | "MODE" | "VAR" | "VARP" | "STDEV" | "STDEVP" | "SUMPRODUCT" => true,
+        "COUNTBLANK" | "ROWS" | "COLUMNS" | "LARGE" | "SMALL" | "COUNTIF" | "INDEX" => i == 0,
+        "RANK" | "VLOOKUP" | "HLOOKUP" | "MATCH" => i == 1,
+        "SUMIF" | "AVERAGEIF" => i == 0 || i == 2,
+        "SUMIFS" => i == 0 || i % 2 == 1,
+        "COUNTIFS" => i % 2 == 0,
+        "TEXTJOIN" => i >= 2,
+        _ => false,
+    }
+}
 
 /// A cell's value, as formulas see it.
 fn cell_value(cell: Option<&MCell>) -> V {
@@ -315,37 +329,7 @@ fn compare_op(a: &V, b: &V) -> i32 {
         let k = if k.is_eq() { y.cmp(x) } else { k };
         return k as i32;
     }
-    // two numbers a hair apart are the same number, as Calc has it: 0.1+0.2 is 0.3
-    let num = |v: &V| match v {
-        V::Num(n) => Some(*n),
-        V::Bool(b) => Some(f64::from(*b)),
-        _ => None,
-    };
-    if let (Some(x), Some(y)) = (num(a), num(b)) {
-        if near(x, y) {
-            return 0;
-        }
-    }
     compare(a, b)
-}
-
-/// Whether two numbers differ by no more than the last bits of the larger: Calc's own test,
-/// which lets through what a binary fraction cannot hold. Whole numbers are told apart exactly.
-fn near(a: f64, b: f64) -> bool {
-    if a == b {
-        return true;
-    }
-    if a == 0.0 || b == 0.0 {
-        return false;
-    }
-    let d = (a - b).abs();
-    // two to the power of minus forty-eight
-    const HAIR: f64 = 1.0 / (16_777_216.0 * 16_777_216.0);
-    if !d.is_finite() || d > a.abs() * HAIR || d > b.abs() * HAIR {
-        return false;
-    }
-    let whole = |x: f64| x.fract() == 0.0 && x.abs() < 9_007_199_254_740_992.0;
-    !(whole(d) && whole(a) && whole(b))
 }
 
 /// A power as Calc takes it: an odd root of a negative number is real.
@@ -387,11 +371,18 @@ pub struct Engine<'a> {
     /// A formula met too deep inside others, to be worked out before them. While it is set
     /// nothing more is worked out, and what was begun is left waiting.
     first: Option<usize>,
+    /// The cells whose value cannot be trusted: a formula that could not be worked out, the
+    /// cells an array formula's results spread over, and whatever read one of these.
+    unsure: HashSet<Key>,
+    /// Rectangles of such cells, under array results spread too far to list cell by cell.
+    wide: Vec<[usize; 5]>,
+    /// The formula being worked out read such a cell, so what it comes to cannot be trusted either.
+    tainted: bool,
 }
 
 impl<'a> Engine<'a> {
     pub fn new(book: &'a Book, styles: &'a Styles) -> Engine<'a> {
-        let mut e = Engine { book, styles, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, done: Vec::new(), depth: 0, first: None };
+        let mut e = Engine { book, styles, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, done: Vec::new(), depth: 0, first: None, unsure: HashSet::new(), wide: Vec::new(), tainted: false };
         for (s, sh) in book.sheets.iter().enumerate() {
             let mut r = 0usize;
             for row in &sh.rows {
@@ -407,6 +398,7 @@ impl<'a> Engine<'a> {
                                         break;
                                     }
                                     let entry = e.entry((s, r + i, c + j), f, cell.array);
+                                    let entry = Entry { spill: if cell.array { cell.spill } else { (1, 1) }, ..entry };
                                     e.formulas.push(entry);
                                 }
                             }
@@ -429,7 +421,7 @@ impl<'a> Engine<'a> {
         if let Some(ast) = &ast {
             self.deps_of(ast, at.0, &mut deps, &mut wild);
         }
-        Entry { at, f: f.to_owned(), ast: ast.filter(|_| !array), deps, wild }
+        Entry { at, f: f.to_owned(), ast: ast.filter(|_| !array), deps, wild, spill: (1, 1) }
     }
 
     fn sheet_index(&self, name: &str) -> Option<usize> {
@@ -507,7 +499,7 @@ impl<'a> Engine<'a> {
     /// The cell as it stands: what was worked out for it, else what the book holds.
     fn stored(&self, at: Key) -> Option<MCell> {
         match self.over.get(&at) {
-            Some(p) => Some(MCell { rep: 1, vt: p.vt.clone(), v: (!p.vt.is_empty()).then(|| p.v.clone()), f: p.f.clone(), text: p.text.clone(), err: p.err, st: None, covered: false, array: false }),
+            Some(p) => Some(MCell { rep: 1, vt: p.vt.clone(), v: (!p.vt.is_empty()).then(|| p.v.clone()), f: p.f.clone(), text: p.text.clone(), err: p.err, st: None, covered: false, array: false, spill: (1, 1) }),
             None => self.book.at(at.0, at.1, at.2).cloned(),
         }
     }
@@ -520,7 +512,12 @@ impl<'a> Engine<'a> {
         }
         match self.pending.get(&at).copied() {
             Some(i) => self.compute(i),
-            None if at.0 < self.book.sheets.len() => cell_value(self.stored(at).as_ref()),
+            None if at.0 < self.book.sheets.len() => {
+                if (!self.unsure.is_empty() && self.unsure.contains(&at)) || self.wide.iter().any(|d| d[0] == at.0 && (d[1]..=d[3]).contains(&at.1) && (d[2]..=d[4]).contains(&at.2)) {
+                    self.tainted = true;
+                }
+                cell_value(self.stored(at).as_ref())
+            }
             None => err("#REF!"),
         }
     }
@@ -736,7 +733,8 @@ impl<'a> Engine<'a> {
                 Grid { rows, cols, v: (0..rows * cols).map(|i| bin(op, at(&l, i), at(&r, i))).collect() }
             }
             // a function over ranges is one value only when it takes its ranges whole
-            Node::Call(name, args) if ranged(n) && !(WHOLE.contains(&name.as_str()) && args.iter().all(|a| matches!(bare(a), Node::Ref(_)) || !ranged(a))) => return Err(Unsupported),
+            // and only where it takes them whole: the criterion of COUNTIF given a range is one test for each cell of it
+            Node::Call(name, args) if ranged(n) && !args.iter().enumerate().all(|(i, a)| !ranged(a) || (matches!(bare(a), Node::Ref(_)) && whole_at(name, i))) => return Err(Unsupported),
             _ => {
                 let v = self.ev(n, ctx)?;
                 one(self.one(v, ctx))
@@ -806,30 +804,43 @@ impl<'a> Engine<'a> {
         }
         self.busy.insert(at);
         self.depth += 1;
+        let outer = std::mem::replace(&mut self.tainted, false);
         let got = match self.formulas[i].ast.clone() {
             Some(ast) => self.evaluate(&ast, at),
             None => Err(Unsupported),
         };
         self.depth -= 1;
         self.busy.remove(&at);
+        let read_unsure = std::mem::replace(&mut self.tainted, outer);
         // left for now: it stays waiting, and nothing is kept of what it came to
         if self.first.is_some() {
             return V::Blank;
         }
         self.pending.remove(&at);
         match got {
-            Err(Unsupported) => {
-                self.stale.insert(at);
-                cell_value(self.stored(at).as_ref())
-            }
-            Ok(v) => {
+            Ok(v) if !read_unsure => {
+                self.unsure.remove(&at);
                 self.stale.remove(&at);
                 self.done.push(at);
                 let f = self.formulas[i].f.clone();
                 self.store(at, f, v.clone());
                 v
             }
+            // not worked out, or worked out from a value that cannot be trusted: it keeps what it
+            // had, it is counted stale, and so is whatever reads it
+            _ => {
+                self.stale.insert(at);
+                self.unsure.insert(at);
+                self.tainted = true;
+                cell_value(self.stored(at).as_ref())
+            }
         }
+    }
+
+    /// Takes cells as not to be trusted from the start: the formulas an earlier change left
+    /// stale. One of them worked out now is trusted again, and what reads the others is stale.
+    pub fn distrust(&mut self, cells: &[Key]) {
+        self.unsure.extend(cells.iter().copied());
     }
 
     /// Keeps a result for a cell: the type, the value and the text it shows. A numeric
@@ -898,6 +909,20 @@ impl<'a> Engine<'a> {
         // from each cell that changed to the formulas that read it, and on from each of those
         let readers = Readers::new(&self.formulas);
         let mut front: VecDeque<Key> = edited.iter().copied().chain(hit.iter().map(|i| self.formulas[*i].at)).collect();
+        // an array formula reached is not worked out, so the cells its results spread over are
+        // as stale as it is: what reads them is reached too, and finds them not to be trusted
+        let mut spread: Vec<Key> = Vec::new();
+        let mut all = false;
+        let spill = |e: &Entry, spread: &mut Vec<Key>, all: &mut bool| {
+            let (rows, cols) = e.spill;
+            if rows.saturating_mul(cols) > SPILL_MOST {
+                *all = true;
+            } else if rows * cols > 1 {
+                spread.extend((0..rows).flat_map(|i| (0..cols).map(move |j| (e.at.0, e.at.1 + i, e.at.2 + j))).skip(1));
+            }
+        };
+        hit.iter().for_each(|i| spill(&self.formulas[*i], &mut spread, &mut all));
+        front.extend(spread.iter().copied());
         let (mut found, mut looked) = (Vec::new(), 0usize);
         while let Some((s, r, c)) = front.pop_front() {
             found.clear();
@@ -912,7 +937,7 @@ impl<'a> Engine<'a> {
             }
             looked = looked.saturating_add(readers.blocks.len());
             // too many large ranges to look through for every cell: every formula is worked out again, so none is missed
-            if looked > 50_000_000 {
+            if looked > 50_000_000 || all {
                 (0..self.formulas.len()).filter(|i| !std::mem::replace(&mut seen[*i], true)).for_each(|i| hit.push(i));
                 break;
             }
@@ -921,10 +946,30 @@ impl<'a> Engine<'a> {
                 if !std::mem::replace(&mut seen[i], true) {
                     hit.push(i);
                     front.push_back(self.formulas[i].at);
+                    let from = spread.len();
+                    spill(&self.formulas[i], &mut spread, &mut all);
+                    front.extend(spread[from..].iter().copied());
                 }
             }
         }
+        // results spread too far to follow: every formula is worked out again, so none is missed
+        if all {
+            (0..self.formulas.len()).filter(|i| !std::mem::replace(&mut seen[*i], true)).for_each(|i| hit.push(i));
+        }
         self.pending = hit.iter().map(|i| (self.formulas[*i].at, *i)).collect();
+        // a formula that sits in such a cell is worked out for itself, and is what it comes to
+        spread.retain(|k| !self.pending.contains_key(k));
+        self.stale.extend(spread.iter().copied());
+        self.unsure.extend(spread);
+        // results spread too far to follow cell by cell: every cell under them is not to be trusted
+        if all {
+            for i in 0..self.formulas.len() {
+                let (e, (rows, cols)) = (&self.formulas[i], self.formulas[i].spill);
+                if rows.saturating_mul(cols) > SPILL_MOST {
+                    self.wide.push([e.at.0, e.at.1, e.at.2, e.at.1.saturating_add(rows - 1), e.at.2.saturating_add(cols - 1)]);
+                }
+            }
+        }
         // each is worked out with what it reads worked out first. One met too deep inside
         // others is put on top of them here, so the stack that grows is this one
         for i in hit {
@@ -987,9 +1032,6 @@ fn bin(op: &str, l: V, r: V) -> V {
     let (V::Num(a), b) = (to_num(&l), to_num(&r)) else { return to_num(&l) };
     let V::Num(b) = b else { return b };
     let v = match op {
-        // a sum that comes to a hair off nothing is nothing, as in Calc: 0.1+0.2-0.3 is 0
-        "+" if a * b < 0.0 && near(a, -b) => 0.0,
-        "-" if a * b > 0.0 && near(a, b) => 0.0,
         "+" => a + b,
         "-" => a - b,
         "*" => a * b,
@@ -1071,6 +1113,14 @@ pub struct Entered {
 /// cell, however indirectly, is worked out again and its result written.
 // ponytail: this runs where it is called. A worker if a large sheet stalls the window
 pub fn enter(src: &str, s: usize, r: usize, c: usize, typed: &str) -> Result<Entered, String> {
+    enter_knowing(src, s, r, c, typed, &[])
+}
+
+/// The same, told which formulas an earlier change left stale. A formula worked out now
+/// from one of those is stale too, and is not among the done: without this, a formula
+/// that reads a stale one is worked out from its old value the next time something else
+/// it reads changes.
+pub fn enter_knowing(src: &str, s: usize, r: usize, c: usize, typed: &str, stale: &[(usize, usize, usize)]) -> Result<Entered, String> {
     let formula = typed.len() > 1 && typed.starts_with('=');
     // the page is read once here: a large one takes long enough to read
     let before = sheet::book(src)?;
@@ -1119,13 +1169,21 @@ pub fn enter(src: &str, s: usize, r: usize, c: usize, typed: &str) -> Result<Ent
     };
     let book = sheet::book(&body)?;
     let mut eng = Engine::new(&book, &styles);
+    // the cell typed into is what was typed, whatever it was before
+    let was_stale = stale.contains(&(s, r, c));
+    let known: Vec<Key> = stale.iter().copied().filter(|k| *k != (s, r, c)).collect();
+    eng.distrust(&known);
     let mut results = eng.recalc(&[(s, r, c)], formula.then_some((s, r, c)));
     let stale: Vec<Key> = {
         let mut v: Vec<Key> = eng.stale.iter().copied().collect();
         v.sort_unstable();
         v
     };
-    let done = std::mem::take(&mut eng.done);
+    let mut done = std::mem::take(&mut eng.done);
+    // a value typed over a formula that was stale is stale no more
+    if !formula && was_stale {
+        done.push((s, r, c));
+    }
     // a formula that makes a date or a time, in a cell with no number format of its own, gets one:
     // =DATE(2026,11,10) shows as a date and not as the day number, as it does in Calc
     if formula {
@@ -1627,7 +1685,13 @@ mod tests {
   <number:time-style style:name="N3"><number:hours/><number:text>:</number:text><number:minutes number:style="long"/><number:text> </number:text><number:am-pm/></number:time-style>
   <style:style style:name="ce1" style:family="table-cell" style:data-style-name="N1"/>
   <style:style style:name="ce2" style:family="table-cell" style:data-style-name="N2"/>
+  <number:date-style style:name="N4"><number:year number:style="long"/><number:text>-</number:text><number:month number:style="long"/><number:text>-</number:text><number:day number:style="long"/></number:date-style>
+  <number:date-style style:name="N5"><number:day-of-week/><number:text>, </number:text><number:day/><number:text> </number:text><number:month number:textual="true"/><number:text> </number:text><number:year number:style="long"/></number:date-style>
+  <number:currency-style style:name="N6"><number:currency-symbol number:language="en" number:country="US">$</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style>
   <style:style style:name="ce3" style:family="table-cell" style:data-style-name="N3"/>
+  <style:style style:name="ce4" style:family="table-cell" style:data-style-name="N4"/>
+  <style:style style:name="ce5" style:family="table-cell" style:data-style-name="N5"/>
+  <style:style style:name="ce6" style:family="table-cell" style:data-style-name="N6"/>
  </office:automatic-styles>
  <office:body>
   <office:spreadsheet>
@@ -1636,6 +1700,9 @@ mod tests {
      <table:table-cell table:style-name="ce1" office:value-type="date" office:date-value="2024-02-29" calcext:value-type="date"><text:p>02/29/24</text:p></table:table-cell>
      <table:table-cell table:style-name="ce2" office:value-type="currency" office:currency="EUR" office:value="5" calcext:value-type="currency"><text:p>5 €</text:p></table:table-cell>
      <table:table-cell table:style-name="ce3" office:value-type="time" office:time-value="PT09H15M00S" calcext:value-type="time"><text:p>9:15 AM</text:p></table:table-cell>
+     <table:table-cell table:style-name="ce4" office:value-type="date" office:date-value="2026-11-21" calcext:value-type="date"><text:p>2026-11-21</text:p></table:table-cell>
+     <table:table-cell table:style-name="ce5" office:value-type="date" office:date-value="2026-11-21" calcext:value-type="date"><text:p>Sat, 21 Nov 2026</text:p></table:table-cell>
+     <table:table-cell table:style-name="ce6" office:value-type="currency" office:currency="USD" office:value="5" calcext:value-type="currency"><text:p>$5.00</text:p></table:table-cell>
     </table:table-row>
    </table:table>
   </office:spreadsheet>
@@ -1665,6 +1732,32 @@ mod tests {
         for (c, typed) in [(0, "02/30/24"), (0, "13/01/24"), (0, "03/05"), (0, "03/05/24x"), (1, "6 $"), (1, "6€"), (2, "13:30 PM"), (0, "'03/05/24")] {
             assert_eq!(cell(&enter(FORMATTED, 0, 0, c, typed).unwrap().body, c).0, "string", "{typed}");
         }
+        // a comma is a group separator only between groups of three: anything else is not the cell's format
+        for (c, typed) in [(1, "5,00 €"), (1, "1,2,3 €"), (1, "12,06 €"), (1, ",206 €"), (1, "1,206, €"), (5, "$5,00"), (5, "$1,2,3.00")] {
+            assert_eq!(cell(&enter(FORMATTED, 0, 0, c, typed).unwrap().body, c), ("string".to_owned(), typed.to_owned()), "{typed}");
+        }
+        assert_eq!(cell(&enter(FORMATTED, 0, 0, 1, "1,234,567 €").unwrap().body, 1), ("currency".to_owned(), "1,234,567 €".to_owned()));
+        // a year written in full takes four digits, and a pattern of two takes two or four
+        for typed in ["03-02-01", "3-02-01", "026-11-21", "20261-11-21"] {
+            assert_eq!(cell(&enter(FORMATTED, 0, 0, 3, typed).unwrap().body, 3), ("string".to_owned(), typed.to_owned()), "{typed}");
+        }
+        assert!(enter(FORMATTED, 0, 0, 0, "03/05/2031").unwrap().body.contains("office:date-value=\"2031-03-05\""));
+        assert_eq!(cell(&enter(FORMATTED, 0, 0, 0, "03/05/203").unwrap().body, 0).0, "string");
+        // a day of the week in what is typed must be the date's own
+        let got = enter(FORMATTED, 0, 0, 4, "Tue, 24 Nov 2026").unwrap().body;
+        assert_eq!(cell(&got, 4), ("date".to_owned(), "Tue, 24 Nov 2026".to_owned()));
+        assert!(got.contains("office:date-value=\"2026-11-24\""), "{got}");
+        for typed in ["Mon, 21 Nov 2026", "Sun, 24 Nov 2026"] {
+            assert_eq!(cell(&enter(FORMATTED, 0, 0, 4, typed).unwrap().body, 4), ("string".to_owned(), typed.to_owned()), "{typed}");
+        }
+        // a negative number is typed back as the format writes it, the sign at the number, or before the symbol
+        for typed in ["$-5.00", "-$5.00", "$-1,234.50"] {
+            let got = enter(FORMATTED, 0, 0, 5, typed).unwrap().body;
+            let (vt, text) = cell(&got, 5);
+            assert_eq!((vt.as_str(), text.starts_with("$-")), ("currency", true), "{typed}: {text}");
+        }
+        assert!(enter(FORMATTED, 0, 0, 5, "$-1,234.50").unwrap().body.contains("office:currency=\"USD\" office:value=\"-1234.5\""));
+        assert_eq!(cell(&enter(FORMATTED, 0, 0, 5, "-$-5.00").unwrap().body, 5).0, "string");
     }
 
     /// What a formula typed into A3 of a small sheet shows.
@@ -1710,14 +1803,6 @@ mod tests {
     }
 
     #[test]
-    fn numbers_a_hair_apart_are_equal() {
-        let v = shown;
-        // numbers a hair apart are equal, and a sum a hair off nothing is nothing, as in Calc
-        assert_eq!((v("=0.1+0.2=0.3"), v("=0.1+0.2-0.3"), v("=0.3-0.1-0.2"), v("=1=1.0000001"), v("=3-2.5")), ("TRUE".into(), "0".into(), "0".into(), "FALSE".into(), "0.5".into()));
-        assert_eq!((v("=0.1+0.2<>0.3"), v("=0.1+0.2>0.3"), v("=0.1+0.2<=0.3"), v("=5-4=1"), v("=1E+20+1=1E+20")), ("FALSE".into(), "FALSE".into(), "TRUE".into(), "TRUE".into(), "TRUE".into()));
-    }
-
-    #[test]
     fn a_date_past_any_calendar_is_an_error() {
         let v = shown;
         for f in ["=DATE(1E+300,1,1)", "=DATE(2026,1E+300,1)", "=DATE(2026,1,1E+300)", "=DATE(-1E+300,1,1)", "=YEAR(1E+300)", "=MONTH(-1E+300)", "=DAY(1E+18)", "=EDATE(1E+300,1)", "=EDATE(1,1E+300)", "=EOMONTH(-1E+300,1)"] {
@@ -1759,7 +1844,8 @@ mod tests {
         for typed in ["-1e30", "=(-1e30)", "=1E+30"] {
             let got = enter(FORMATTED, 0, 0, 0, typed).unwrap().body;
             let n = if typed.contains('-') { "-1E30" } else { "1E30" };
-            assert!(got.contains(&format!("office:value-type=\"float\" office:value=\"{n}\"")) && !got.contains("office:date-value"), "{typed}: {got}");
+            assert!(got.contains(&format!("office:value-type=\"float\" office:value=\"{n}\"")), "{typed}: {got}");
+            assert_eq!(sheet::book(&got).unwrap().at(0, 0, 0).map(|c| c.vt.clone()).as_deref(), Some("float"), "{typed}");
             assert_eq!(sheet::book(&got).unwrap().at(0, 0, 0).map(|c| c.text.clone()).as_deref(), Some(if typed.contains('-') { "-1E+030" } else { "1E+030" }));
         }
         // and in a time cell, which has no day to be wrong about
@@ -1767,11 +1853,66 @@ mod tests {
     }
 
     #[test]
+    fn what_reads_a_stale_cell_is_stale_too_and_keeps_what_it_had() {
+        // C1 is an array formula. D1 and E1 read it, F1 reads D1, and G1 reads only A1
+        let plain = doc(&[&["1", "1", "=SUM(A1:A3*B1:B3)|14", "=C1+1|15", "=SUM(C1:C3)|14", "=D1*2|30", "=A1+1|2"], &["2", "2"], &["3", "3"]]);
+        let src = plain.replacen("table:formula=\"of:=SUM(", "table:number-matrix-columns-spanned=\"1\" table:number-matrix-rows-spanned=\"1\" table:formula=\"of:=SUM(", 1);
+        assert_ne!(src, plain);
+        let got = enter(&src, 0, 0, 0, "10").unwrap();
+        assert_eq!(grid(&got.body)[0], ["10", "1", "14", "15", "14", "30", "11"]);
+        assert_eq!((got.stale, got.done), (vec![(0, 0, 2), (0, 0, 3), (0, 0, 4), (0, 0, 5)], vec![(0, 0, 6)]));
+        // an array formula whose results spread over C1:C3: the cells under it are stale with it, and so is what reads them
+        let plain = doc(&[&["1", "1", "=A1:A3*B1:B3|1", "=C2+1|5", "=SUM(C1:C3)|14", "=C3|9", "=D1+E1|19"], &["2", "2", "4"], &["3", "3", "9"]]);
+        let src = plain.replacen("table:formula=\"of:=[.A1:.A3]", "table:number-matrix-columns-spanned=\"1\" table:number-matrix-rows-spanned=\"3\" table:formula=\"of:=[.A1:.A3]", 1);
+        assert_ne!(src, plain);
+        let got = enter(&src, 0, 1, 0, "10").unwrap();
+        let g = grid(&got.body);
+        assert_eq!((g[0].clone(), g[1][2].as_str(), g[2][2].as_str()), (vec!["1".to_owned(), "1".into(), "1".into(), "5".into(), "14".into(), "9".into(), "19".into()], "4", "9"));
+        assert_eq!((got.stale, got.done), (vec![(0, 0, 2), (0, 0, 3), (0, 0, 4), (0, 0, 5), (0, 0, 6), (0, 1, 2), (0, 2, 2)], vec![]));
+        // a formula left stale by an earlier change: told of it, what reads it is not worked out from its old value
+        let src = doc(&[&["2", "=NOPE(A1:A1)+3|5", "=B1+D1|6", "1", "=D1*2|2"]]);
+        let blind = enter(&src, 0, 0, 3, "2").unwrap();
+        assert_eq!((grid(&blind.body)[0][2].as_str(), blind.stale.len()), ("7", 0));
+        let got = enter_knowing(&src, 0, 0, 3, "2", &[(0, 0, 1)]).unwrap();
+        assert_eq!((grid(&got.body)[0].clone(), got.stale, got.done), (vec!["2".to_owned(), "5".into(), "6".into(), "2".into(), "4".into()], vec![(0, 0, 2)], vec![(0, 0, 4)]));
+        // typed over, the stale formula is a value, and what reads it is worked out
+        let got = enter_knowing(&src, 0, 0, 1, "8", &[(0, 0, 1)]).unwrap();
+        assert_eq!((grid(&got.body)[0][2].as_str(), got.stale.len(), got.done), ("9", 0, vec![(0, 0, 2), (0, 0, 1)]));
+    }
+
+    #[test]
+    fn a_criterion_given_as_a_range_inside_sumproduct_is_not_guessed_at() {
+        let src = doc(&[&["1", "3", "10"], &["2", "1", "20"], &["3", "2", "30"]]);
+        let v = |f: &str| {
+            let got = enter(&src, 0, 4, 0, f).unwrap();
+            (grid(&got.body).get(4).and_then(|r| r.first().cloned()).unwrap_or_default(), got.stale.contains(&(0, 4, 0)))
+        };
+        // each would need the test made once for every cell of the criterion: 6, 60 and 3 in Calc
+        for f in ["=SUMPRODUCT(A1:A3*COUNTIF(B1:B3,A1:A3))", "=SUMPRODUCT(SUMIF(B1:B3,A1:A3,C1:C3))", "=SUMPRODUCT(1/COUNTIF(A1:A3,A1:A3))", "=SUMPRODUCT(A1:A3*MATCH(A1:A3,B1:B3,0))", "=SUMPRODUCT(A1:A3*LARGE(C1:C3,A1:A3))"] {
+            assert_eq!(v(f), (String::new(), true), "{f}");
+        }
+        // a criterion that is one value is one test, and the range is taken whole
+        assert_eq!(v("=SUMPRODUCT(A1:A3*COUNTIF(B1:B3,\">1\"))"), ("12".to_owned(), false));
+        assert_eq!(v("=SUMPRODUCT(A1:A3*SUMIF(B1:B3,A1,C1:C3))"), ("120".to_owned(), false));
+    }
+
+    #[test]
+    fn comparisons_and_sums_are_exact_as_on_the_web() {
+        let v = shown;
+        assert_eq!((v("=0.1*3>0.3"), v("=1e16-9999999999999998"), v("=0.1+0.2=0.3"), v("=0.1+0.2-0.3")), ("TRUE".into(), "2".into(), "FALSE".into(), "5.55111512312578E-017".into()));
+    }
+
+    #[test]
     fn what_cannot_be_worked_out_keeps_what_it_had_and_is_counted() {
-        // a function not known here: its cached 5 stays, and what reads it still follows the 5
-        let src = doc(&[&["2", "=NOPE(A1:A1)+3|5", "=B1*2|10"]]);
+        // a function not known here: its cached 5 stays. What reads it cannot be worked out either,
+        // so it keeps its 10, is counted with it, and is not among the done
+        let src = doc(&[&["2", "=NOPE(A1:A1)+3|5", "=B1*2|10", "=C1+A1|12", "=A1*3|6"]]);
         let got = enter(&src, 0, 0, 0, "100").unwrap();
-        assert_eq!((grid(&got.body)[0].clone(), got.stale, got.done), (vec!["100".to_owned(), "5".into(), "10".into()], vec![(0, 0, 1)], vec![(0, 0, 2)]));
+        assert_eq!((grid(&got.body)[0].clone(), got.stale, got.done), (vec!["100".to_owned(), "5".into(), "10".into(), "12".into(), "300".into()], vec![(0, 0, 1), (0, 0, 2), (0, 0, 3)], vec![(0, 0, 4)]));
+        // a branch not taken is not read, so a stale cell in it spoils nothing
+        let pick = doc(&[&["2", "=NOPE(A1:A1)|5", "=IF(A1>50,A1,B1)|5"]]);
+        let got = enter(&pick, 0, 0, 0, "100").unwrap();
+        assert_eq!((grid(&got.body)[0][2].as_str(), got.stale, got.done), ("100", vec![(0, 0, 1)], vec![(0, 0, 2)]));
         // a cycle is Calc's own error for one, in every cell of it
         let ring = doc(&[&["1", "=A1+1|2"]]);
         let got = enter(&ring, 0, 0, 0, "=B1+1").unwrap();
