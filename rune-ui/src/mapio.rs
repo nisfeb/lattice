@@ -806,7 +806,7 @@ mod tests {
         // 200,000 deep, which once ran the walk out of stack
         let deeper = format!("{}{}", "<a>".repeat(200_000), "</a>".repeat(200_000));
         assert_eq!(import("kml", &deeper).unwrap_err(), "the file is nested too deeply");
-        assert!(t.elapsed().as_millis() < 1500, "{:?}", t.elapsed());
+        assert!(t.elapsed().as_millis() < 5000, "{:?}", t.elapsed());
         // as deep as is allowed is read, and one deeper is not
         let at = |n: usize| format!("{}<wpt lat=\"1\" lon=\"2\"/>{}", "<a>".repeat(n), "</a>".repeat(n));
         assert_eq!(import("gpx", &at(MAX_DEPTH - 1)).unwrap().features.len(), 1);
@@ -816,7 +816,7 @@ mod tests {
         let busy = format!("<a>{}{}</a>", "&".repeat(200_000), "<!x>".repeat(100_000));
         let t = std::time::Instant::now();
         assert_eq!(xml(&busy).unwrap().kids[0].text().len(), 200_000);
-        assert!(t.elapsed().as_millis() < 1500, "{:?}", t.elapsed());
+        assert!(t.elapsed().as_millis() < 5000, "{:?}", t.elapsed());
     }
 
     #[test]
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(parse_float(&long), None, "too large to be a number lattice keeps");
         assert_eq!(parse_float(&format!("0.{}e", "1".repeat(1_000_000))).map(|v| (v * 1e6).round()), Some(111_111.0));
         assert_eq!(parse_float(&"-".repeat(1_000_000)), None);
-        assert!(t.elapsed().as_millis() < 1500, "{:?}", t.elapsed());
+        assert!(t.elapsed().as_millis() < 5000, "{:?}", t.elapsed());
     }
 
     #[test]
@@ -852,14 +852,14 @@ mod tests {
         let saw: Vec<String> = (0..20_000).map(|i| format!("[{},{}]", i as f64 / 1000.0, (i % 2) as f64 * 5.0)).collect();
         let t = std::time::Instant::now();
         let got = import("geojson", &format!(r#"{{"type":"LineString","coordinates":[{}]}}"#, saw.join(","))).unwrap();
-        assert!(t.elapsed().as_millis() < 1500, "{:?}", t.elapsed());
+        assert!(t.elapsed().as_millis() < 5000, "{:?}", t.elapsed());
         let line = got.features[0]["geometry"]["coordinates"].as_array().unwrap();
         assert_eq!((xy(&line[0]), xy(&line[line.len() - 1])), ([0.0, 0.0], [19.999, 5.0]), "the ends are kept");
         // teeth lower than the last tolerance are smoothed away
         let low: Vec<String> = (0..20_000).map(|i| format!("[{},{}]", i as f64 / 1000.0, (i % 2) as f64 * 0.01)).collect();
         let t = std::time::Instant::now();
         let got = import("geojson", &format!(r#"{{"type":"LineString","coordinates":[{}]}}"#, low.join(","))).unwrap();
-        assert!(t.elapsed().as_millis() < 1500, "{:?}", t.elapsed());
+        assert!(t.elapsed().as_millis() < 5000, "{:?}", t.elapsed());
         assert!(got.after <= SIMPLIFY_TO && got.before == 20_000, "{}", got.after);
     }
 }

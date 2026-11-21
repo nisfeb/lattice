@@ -2765,6 +2765,12 @@ fn sync_map(s: &mut App) {
     let old = s.map.take().filter(|m| m.name == p.name);
     // a layer's own layers are not followed, so there is no cycle
     let under: Vec<_> = map::layers(&p.body).into_iter().map(|n| (n.clone(), s.cache.get(&n).filter(|l| l.kind == "geojson").and_then(|l| map::parse(&l.body)))).collect();
+    // a page too large to draw in full is cut short, and says so once as it opens
+    if p.body.len() > 100_000 {
+        if let Some(said) = map::parse_cut(&p.body).and_then(|(_, cut)| cut.notice()) {
+            s.note = said;
+        }
+    }
     s.map = map::parse(&p.body).map(|feats| {
         let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
         let pick_new = old.as_ref().is_some_and(|m| m.pick_new);
@@ -3506,7 +3512,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
     let mut shape = Shape::new();
     let lon0 = ((a[0] - 0.5) * 360.0 / step).floor() as i64;
     let lon1 = ((z[0] - 0.5) * 360.0 / step).ceil() as i64;
-    for i in lon0..=lon1.min(lon0 + 60) {
+    for i in lon0..=lon1.min(lon0.saturating_add(60)) {
         let x = to(map::mercator(i as f64 * step, 0.0))[0];
         shape = shape.line([x, 0.0], [x, h], 1.0, LineCap::Butt, c.border_weak);
     }
@@ -3970,8 +3976,17 @@ fn outside_ok(s: &App) -> bool {
     s.open.as_ref().is_some_and(|p| s.prefs.outside.contains(&p.name))
 }
 
+/// Whether the open page is another ship's map whose tiles are held back.
+fn tiles_held(s: &App) -> bool {
+    s.remote.is_some() && !outside_ok(s) && s.map.as_ref().zip(s.open.as_ref()).is_some_and(|(m, p)| m.name == p.name)
+}
+
 /// The open page's images from other sites that are held back.
 fn held_back(s: &App) -> usize {
+    // another ship's map, whose tiles wait to be allowed (`sync_tiles`)
+    if tiles_held(s) {
+        return 1;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(p) = web_page(s) {
         return if s.web.laid.as_ref().is_some_and(|l| l.0.key.name == p.name) { s.web.held } else { 0 };
@@ -4185,6 +4200,10 @@ fn tile_key(style: &str, t: &map::Tile) -> String {
 fn sync_tiles(s: &mut App) {
     let (Some(c), Some(m)) = (s.conn.clone(), &s.map) else { return };
     if !s.open.as_ref().is_some_and(|p| p.name == m.name) || s.editing {
+        return;
+    }
+    // another ship's map chooses the place: the tiles for it are fetched by this ship, with its own token, from the map's maker. That is content from outside, and waits to be allowed as a picture on such a page does
+    if s.remote.is_some() && !outside_ok(s) {
         return;
     }
     let Some(status) = &s.tile_status else {
@@ -13505,7 +13524,7 @@ fn body(s: &App, k: &Kit) -> El {
         let web = false;
         Some(banner(
             "outside",
-            format!("{} from another site {} not loaded. Loading {} tells that site your address.", match (n, web) { (1, false) => "An image".to_owned(), (1, true) => "A file".to_owned(), (_, false) => format!("{n} images"), (_, true) => format!("{n} files") }, if n == 1 { "is" } else { "are" }, if n == 1 { "it" } else { "them" }),
+            if tiles_held(s) { "This map is another ship's. Its background is not loaded: loading it asks the map's maker for the places this page chose, through your ship.".to_owned() } else { format!("{} from another site {} not loaded. Loading {} tells that site your address.", match (n, web) { (1, false) => "An image".to_owned(), (1, true) => "A file".to_owned(), (_, false) => format!("{n} images"), (_, true) => format!("{n} files") }, if n == 1 { "is" } else { "are" }, if n == 1 { "it" } else { "them" }) },
             "Load outside content for this page",
             |s| {
                 if let Some(name) = s.open.as_ref().map(|p| p.name.clone()) {

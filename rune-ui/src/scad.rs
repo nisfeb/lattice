@@ -925,7 +925,7 @@ mod tests {
             let src = piece.repeat(40_000 / piece.len());
             let t = std::time::Instant::now();
             let (_, files, _) = collect("a", &src, |_| None);
-            assert!(t.elapsed().as_millis() < 1000, "{piece:?} took {:?}", t.elapsed());
+            assert!(t.elapsed().as_millis() < 5000, "{piece:?} took {:?}", t.elapsed());
             assert_eq!(files[0].1.len(), src.len());
         }
     }

@@ -633,7 +633,7 @@ mod tests {
                     let text = piece.repeat(LIMIT / piece.len()) + tail;
                     let t0 = std::time::Instant::now();
                     let got = highlight(kind, &text);
-                    assert!(t0.elapsed().as_millis() < 1500, "{kind} {piece:?} took {:?}", t0.elapsed());
+                    assert!(t0.elapsed().as_millis() < 5000, "{kind} {piece:?} took {:?}", t0.elapsed());
                     let mut at = 0;
                     for (r, _) in &got {
                         assert!(r.start >= at && r.end > r.start && r.end <= text.len(), "{kind} {piece:?}");

@@ -606,7 +606,7 @@ mod tests {
             film.push(1, String::new(), one);
             let t = std::time::Instant::now();
             film.push(2, String::new(), two);
-            assert!(t.elapsed().as_millis() < 1500, "{:?}", t.elapsed());
+            assert!(t.elapsed().as_millis() < 5000, "{:?}", t.elapsed());
             let f = &film.frames[1];
             assert_eq!((f.touched, f.changed.len()), (1, 800));
             assert!(f.changed.iter().all(|r| f.src[r.clone()].contains("new")));

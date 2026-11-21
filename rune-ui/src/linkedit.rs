@@ -234,7 +234,8 @@ mod tests {
         assert_eq!(d.marks, vec![MarkRange::new(4..12, Mark::Link("http://u".into()))]);
         e.set_caret(0);
         close(&mut e, o);
-        assert_eq!((e.text.as_str(), links(&e)), ("see a\\[b\\](c now", vec![(4, 12, "http://u".to_owned())]));
+        // left untouched, the opening is taken back whole: the text and the link are as they were
+        assert_eq!((e.text.as_str(), links(&e)), ("see a[b](c now", vec![(4, 10, "http://u".to_owned())]));
         assert_eq!(crate::md::emit(&e.text, e.marks(), &[P], &[]), shut);
     }
 }
