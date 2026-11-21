@@ -220,6 +220,8 @@ pub struct Cut {
 
 impl Cut {
     /// A line to tell the reader, or nothing when the whole map is drawn.
+    // for the map's view to show: until it does, only the tests ask
+    #[allow(dead_code)]
     pub fn notice(&self) -> Option<String> {
         match (self.features, self.thinned) {
             (0, false) => None,
