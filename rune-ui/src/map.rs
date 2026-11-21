@@ -116,23 +116,36 @@ pub fn kinds(feats: &[Feature]) -> Vec<(String, usize)> {
     m.into_iter().collect()
 }
 
+/// The furthest east or west a longitude is taken to be: two turns of
+/// the world. A page may go past 180 to cross the date line, but a
+/// longitude of 1e300 is no place, and drawn it would be no number.
+const LON_MOST: f64 = 720.0;
+
 /// Longitude and latitude to the unit square. The latitude is held inside
-/// what Mercator can show.
+/// what Mercator can show, and the longitude inside `LON_MOST`, so the
+/// answer is always a number whatever is asked: what is not a number at
+/// all is taken as nought.
 pub fn mercator(lon: f64, lat: f64) -> P {
-    let lat = lat.clamp(-85.0511, 85.0511).to_radians();
+    let lon = if lon.is_nan() { 0.0 } else { lon.clamp(-LON_MOST, LON_MOST) };
+    let lat = if lat.is_nan() { 0.0 } else { lat.clamp(-85.0511, 85.0511) }.to_radians();
     [lon / 360.0 + 0.5, 0.5 - (std::f64::consts::FRAC_PI_4 + lat / 2.0).tan().ln() / std::f64::consts::TAU]
 }
 
 /// The longitude and latitude of a position on the unit square: what
-/// `mercator` undoes. The longitude is held in -180 to 180.
+/// `mercator` undoes. The longitude is held in -180 to 180. A position
+/// that is not a number is the middle of the map.
 pub fn lonlat(p: P) -> [f64; 2] {
+    let p = [if p[0].is_finite() { p[0] } else { 0.5 }, if p[1].is_nan() { 0.5 } else { p[1] }];
     let lon = ((p[0] - 0.5) * 360.0 + 180.0).rem_euclid(360.0) - 180.0;
     [lon, (std::f64::consts::PI * (1.0 - 2.0 * p[1])).sinh().atan().to_degrees().clamp(-85.0511, 85.0511)]
 }
 
+/// A position of the page on the map. One that is not two numbers is no
+/// position, and is left out.
 fn pos(v: &Value) -> Option<P> {
     let a = v.as_array()?;
-    Some(mercator(a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+    let (lon, lat) = (a.first()?.as_f64()?, a.get(1)?.as_f64()?);
+    (lon.is_finite() && lat.is_finite()).then(|| mercator(lon, lat))
 }
 
 fn ring(v: &Value) -> Vec<P> {
@@ -188,9 +201,54 @@ fn geoms(g: &Value, out: &mut Vec<Geom>) {
     });
 }
 
+/// The most features of a page that are drawn, and the most positions
+/// in all. The view builds every shape again for each frame, so a page
+/// of 200,000 positions held the window for seconds at a time. A page
+/// may hold more (`MAX_FEATURES`, `MAX_POSITIONS`): the rest is kept in
+/// the page and not drawn.
+pub const SHOWN_FEATURES: usize = 5_000;
+pub const SHOWN_POINTS: usize = 20_000;
+
+/// What of a page was not drawn as it is written.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Cut {
+    /// How many features with a shape are left out.
+    pub features: usize,
+    /// Whether lines and areas are drawn with fewer positions than they have.
+    pub thinned: bool,
+}
+
+impl Cut {
+    /// A line to tell the reader, or nothing when the whole map is drawn.
+    pub fn notice(&self) -> Option<String> {
+        match (self.features, self.thinned) {
+            (0, false) => None,
+            (0, true) => Some("This map is too large to draw in full: its lines are drawn roughly.".into()),
+            (n, false) => Some(format!("This map is too large to draw in full: {n} of its shapes are not shown.")),
+            (n, true) => Some(format!("This map is too large to draw in full: {n} of its shapes are not shown, and its lines are drawn roughly.")),
+        }
+    }
+}
+
 /// The features of a GeoJSON page that have something to draw. `None` when
 /// the text is not a FeatureCollection.
+///
+/// No more than `SHOWN_FEATURES` features and `SHOWN_POINTS` positions
+/// come back: see `parse_cut`, which also says whether the page was cut
+/// short. This keeps the answer it always had, so a caller that does not
+/// ask is still safe from a page too large to draw.
 pub fn parse(body: &str) -> Option<Vec<Feature>> {
+    parse_cut(body).map(|(feats, _)| feats)
+}
+
+/// The features of a GeoJSON page that have something to draw, and what
+/// of the page was left out to keep the drawing quick. Past
+/// `SHOWN_FEATURES` features the rest are left out. Past `SHOWN_POINTS`
+/// positions, lines and areas are thinned evenly, each keeping its ends,
+/// and if that is not enough the shapes past the limit are left out.
+/// Each feature keeps its place in the page (`at`), and its corners are
+/// those of the page, so what is drawn can still be edited.
+pub fn parse_cut(body: &str) -> Option<(Vec<Feature>, Cut)> {
     let v: Value = serde_json::from_str(body).ok()?;
     let feats = v["features"].as_array()?;
     let text = |v: &Value| match v {
@@ -198,20 +256,55 @@ pub fn parse(body: &str) -> Option<Vec<Feature>> {
         Value::Null => String::new(),
         other => other.to_string(),
     };
-    Some(
-        feats
-            .iter()
-            .enumerate()
-            .filter_map(|(at, f)| {
-                let mut g = Vec::new();
-                geoms(&f["geometry"], &mut g);
-                let p = &f["properties"];
-                let props = p.as_object().map_or(Vec::new(), |o| o.iter().map(|(k, v)| (k.clone(), text(v))).filter(|(_, v)| !v.is_empty()).collect());
-                let (kind, color, icon) = look(p);
-                (!g.is_empty()).then(|| Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g, at, corners: corners(&f["geometry"]), radius: p["radius"].as_f64().filter(|r| r.is_finite() && *r > 0.0 && *r <= 2e7).unwrap_or(0.0), kind, color, icon })
-            })
-            .collect(),
-    )
+    let mut cut = Cut::default();
+    let mut out: Vec<Feature> = Vec::new();
+    for (at, f) in feats.iter().enumerate() {
+        let mut g = Vec::new();
+        geoms(&f["geometry"], &mut g);
+        if g.is_empty() {
+            continue;
+        }
+        if out.len() >= SHOWN_FEATURES {
+            cut.features += 1;
+            continue;
+        }
+        let p = &f["properties"];
+        let props = p.as_object().map_or(Vec::new(), |o| o.iter().map(|(k, v)| (k.clone(), text(v))).filter(|(_, v)| !v.is_empty()).collect());
+        let (kind, color, icon) = look(p);
+        out.push(Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g, at, corners: corners(&f["geometry"]), radius: p["radius"].as_f64().filter(|r| r.is_finite() && *r > 0.0 && *r <= 2e7).unwrap_or(0.0), kind, color, icon });
+    }
+    let count = |g: &Geom| match g {
+        Geom::Point(_) => 1,
+        Geom::Line(l) | Geom::Area(l) => l.len(),
+    };
+    let all: usize = out.iter().flat_map(|f| &f.geoms).map(count).sum();
+    if all > SHOWN_POINTS {
+        // every line and area gives up the same share of its positions, down to the fewest that still draw it
+        let points = out.iter().flat_map(|f| &f.geoms).filter(|g| matches!(g, Geom::Point(_))).count();
+        let share = SHOWN_POINTS.saturating_sub(points) as f64 / (all - points).max(1) as f64;
+        let mut left = SHOWN_POINTS;
+        for f in &mut out {
+            for g in &mut f.geoms {
+                if let Geom::Line(l) | Geom::Area(l) = g {
+                    let most = ((l.len() as f64 * share) as usize).max(4);
+                    if l.len() > most {
+                        *l = thin(l, most);
+                        cut.thinned = true;
+                    }
+                }
+            }
+            // and what is still past the limit is left out
+            f.geoms.retain(|g| {
+                let n = count(g);
+                let fits = n <= left;
+                left -= if fits { n } else { 0 };
+                fits
+            });
+        }
+        cut.features += out.iter().filter(|f| f.geoms.is_empty()).count();
+        out.retain(|f| !f.geoms.is_empty());
+    }
+    Some((out, cut))
 }
 
 /// Where the map is looking: the world position at the view's centre, and
@@ -225,6 +318,10 @@ pub struct Camera {
 /// One world unit is never smaller than a small window or larger than a
 /// street: about zoom 0 to zoom 20 on a tiled map.
 const SCALE: (f64, f64) = (200.0, 256.0 * 1_048_576.0);
+
+/// How far east or west of the map the camera may look: as far as a
+/// longitude may be (`LON_MOST`), and a world more.
+const AT: (f64, f64) = (-2.5, 3.5);
 
 impl Camera {
     /// The camera that shows every feature inside a `w` by `h` view with a
@@ -264,13 +361,23 @@ impl Camera {
     /// Zooms by `factor` keeping the world position under (`x`, `y`) there.
     pub fn zoom_at(&mut self, factor: f64, x: f32, y: f32, w: f32, h: f32) {
         let under = self.unproject(x, y, w, h);
-        self.scale = (self.scale * factor).clamp(SCALE.0, SCALE.1);
-        self.at = [under[0] - (x - w / 2.0) as f64 / self.scale, under[1] - (y - h / 2.0) as f64 / self.scale];
+        let scale = (self.scale * factor).clamp(SCALE.0, SCALE.1);
+        let at = [under[0] - (x - w / 2.0) as f64 / scale, under[1] - (y - h / 2.0) as f64 / scale];
+        // a step that is not a number moves nothing
+        if scale.is_finite() && at[0].is_finite() && at[1].is_finite() {
+            (self.scale, self.at) = (scale, [at[0].clamp(AT.0, AT.1), at[1]]);
+        }
     }
 
-    /// The camera `from` moved by a drag of (`dx`, `dy`) points.
+    /// The camera `from` moved by a drag of (`dx`, `dy`) points. It stays
+    /// within a few worlds of the map, so nothing worked out from where
+    /// it looks can run past what a number holds.
     pub fn dragged(from: Camera, dx: f32, dy: f32) -> Camera {
-        Camera { at: [from.at[0] - dx as f64 / from.scale, (from.at[1] - dy as f64 / from.scale).clamp(0.0, 1.0)], scale: from.scale }
+        let at = [from.at[0] - dx as f64 / from.scale, from.at[1] - dy as f64 / from.scale];
+        if !(at[0].is_finite() && at[1].is_finite()) {
+            return from;
+        }
+        Camera { at: [at[0].clamp(AT.0, AT.1), at[1].clamp(0.0, 1.0)], scale: from.scale }
     }
 
     /// The step in degrees between graticule lines, so that a few cross the view.
@@ -301,9 +408,14 @@ pub const MAX_TILES: usize = 24;
 /// zoom is the one whose tiles draw nearest 512 points across, which is
 /// the size they are made at, and no deeper than `max_z`.
 pub fn tiles(cam: &Camera, w: f32, h: f32, max_z: u32) -> Vec<Tile> {
-    let z = (cam.scale / 512.0).log2().round().clamp(0.0, f64::from(max_z)) as u32;
+    // no deeper than a tile's place can be counted in
+    let z = (cam.scale / 512.0).log2().round().clamp(0.0, f64::from(max_z.min(30))) as u32;
     let n = f64::from(1u32 << z);
     let (a, b) = (cam.unproject(0.0, 0.0, w, h), cam.unproject(w, h, w, h));
+    // a view that is nowhere has no tiles, and a view of more tiles than could be asked for is not counted through
+    if !a.iter().chain(&b).all(|v| v.is_finite()) || (b[0] - a[0]) * n * (b[1] - a[1]) * n > 1e6 {
+        return Vec::new();
+    }
     // the world does not wrap here: what is past its edge has no tile
     let span = |lo: f64, hi: f64| ((lo * n).floor().max(0.0) as u32, ((hi * n).ceil() - 1.0).min(n - 1.0).max(-1.0));
     let ((x0, x1), (y0, y1)) = (span(a[0], b[0]), span(a[1], b[1]));
@@ -659,6 +771,10 @@ pub fn add(body: &str, geometry: Value, properties: Value) -> Option<String> {
 /// A map page with its feature `at` moved by so many degrees, every
 /// position of it. Anything a position has past its first two is kept.
 pub fn shift(body: &str, at: usize, dlon: f64, dlat: f64) -> Option<String> {
+    // a move that is not a number would write positions that are not numbers
+    if !(dlon.is_finite() && dlat.is_finite()) {
+        return None;
+    }
     fn walk(c: &mut Value, dlon: f64, dlat: f64) {
         let Value::Array(a) = c else { return };
         if let [Value::Number(x), Value::Number(y), ..] = a.as_slice() {
@@ -687,6 +803,9 @@ pub fn shift(body: &str, at: usize, dlon: f64, dlat: f64) -> Option<String> {
 /// `path` is the corner's place in the coordinates. The first corner
 /// of an area's ring takes the closing position with it.
 pub fn set_corner(body: &str, at: usize, path: &[usize], lon: f64, lat: f64) -> Option<String> {
+    if !(lon.is_finite() && lat.is_finite()) {
+        return None;
+    }
     change(body, |d| {
         let g = d.get_mut("features")?.as_array_mut()?.get_mut(at)?.get_mut("geometry")?;
         let closed = matches!(g.get("type")?.as_str()?, "Polygon" | "MultiPolygon");
@@ -1133,5 +1252,98 @@ mod tests {
         assert_eq!(base_style(r#"{"type":"FeatureCollection","features":[],"lattice":{"base":"nonsense"}}"#), "streets");
         assert_eq!(base_style(r#"{"type":"FeatureCollection","features":[]}"#), "streets");
         assert_eq!(base_style("not json"), "streets");
+    }
+
+    /// How many positions the shapes of these features have in all.
+    fn positions(feats: &[Feature]) -> usize {
+        feats.iter().flat_map(|f| &f.geoms).map(|g| match g {
+            Geom::Point(_) => 1,
+            Geom::Line(l) | Geom::Area(l) => l.len(),
+        }).sum()
+    }
+
+    #[test]
+    fn a_page_too_large_to_draw_is_cut_short_and_says_so() {
+        let page = |feats: &[String]| format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, feats.join(","));
+        let line = |n: usize, at: usize| {
+            let pts: Vec<String> = (0..n).map(|i| format!("[{},{}]", i as f64 / 1000.0, at)).collect();
+            format!(r#"{{"type":"Feature","geometry":{{"type":"LineString","coordinates":[{}]}},"properties":{{"name":"L{at}"}}}}"#, pts.join(","))
+        };
+        // 200,000 positions in 40 lines: every line is still there, each with fewer positions and its own ends
+        let big = page(&(0..40).map(|i| line(5000, i)).collect::<Vec<_>>());
+        let t = std::time::Instant::now();
+        let (feats, cut) = parse_cut(&big).unwrap();
+        assert!(t.elapsed().as_millis() < 1900, "{:?}", t.elapsed());
+        assert_eq!((feats.len(), cut), (40, Cut { features: 0, thinned: true }));
+        assert!(positions(&feats) <= SHOWN_POINTS && positions(&feats) > SHOWN_POINTS / 2, "{}", positions(&feats));
+        assert!(feats.iter().all(|f| matches!(&f.geoms[..], [Geom::Line(l)] if l[0] == mercator(0.0, f.at as f64) && l[l.len() - 1] == mercator(4.999, f.at as f64))));
+        assert!(cut.notice().unwrap().contains("drawn roughly"));
+        assert_eq!(parse(&big).unwrap().len(), 40, "the plain answer is cut the same way");
+        // more features than are drawn: the first are, each in its place in the page, and the rest are counted
+        let point = |i: usize| format!(r#"{{"type":"Feature","geometry":{{"type":"Point","coordinates":[{},1]}},"properties":{{}}}}"#, i as f64 / 1000.0);
+        let many = page(&(0..SHOWN_FEATURES + 700).map(point).collect::<Vec<_>>());
+        let (feats, cut) = parse_cut(&many).unwrap();
+        assert_eq!((feats.len(), feats[feats.len() - 1].at, cut), (SHOWN_FEATURES, SHOWN_FEATURES - 1, Cut { features: 700, thinned: false }));
+        assert!(cut.notice().unwrap().contains("700 of its shapes are not shown"));
+        // one feature of more points than are drawn, and lines too many to thin enough: what is past the limit is left out
+        let multi: Vec<String> = (0..SHOWN_POINTS + 50).map(|i| format!("[{},2]", i as f64 / 1000.0)).collect();
+        let crowd = page(&[format!(r#"{{"type":"Feature","geometry":{{"type":"MultiPoint","coordinates":[{}]}},"properties":{{}}}}"#, multi.join(",")), line(10, 0)]);
+        let (feats, cut) = parse_cut(&crowd).unwrap();
+        assert_eq!((positions(&feats), feats.len(), cut.features), (SHOWN_POINTS, 1, 1));
+        // a page that fits is whole, and nothing is said of it
+        let (feats, cut) = parse_cut(PAGE).unwrap();
+        assert_eq!((feats.len(), cut, cut.notice()), (4, Cut::default(), None));
+    }
+
+    #[test]
+    fn no_position_that_is_not_a_number_reaches_the_drawing() {
+        let body = r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[1e300,95]},"properties":{}},
+            {"type":"Feature","geometry":{"type":"LineString","coordinates":[[-1e300,-95],[1e308,1e308],[0,0]]},"properties":{}}]}"#;
+        let feats = parse(body).unwrap();
+        let cam = Camera::fit(&feats, 800.0, 600.0);
+        assert!(cam.at.iter().all(|v| v.is_finite()) && cam.scale.is_finite());
+        for g in feats.iter().flat_map(|f| &f.geoms) {
+            let pts: &[P] = match g {
+                Geom::Point(p) => std::slice::from_ref(p),
+                Geom::Line(l) | Geom::Area(l) => l,
+            };
+            for p in pts {
+                assert!((-1.5..=2.5).contains(&p[0]) && (0.0..=1.0).contains(&p[1]), "{p:?}");
+                assert!(cam.project(*p, 800.0, 600.0).iter().all(|v| v.is_finite()));
+            }
+        }
+        // asked for what is no place, the answer is still a number
+        for (lon, lat) in [(f64::NAN, f64::NAN), (f64::INFINITY, f64::NEG_INFINITY), (1e300, 95.0)] {
+            assert!(mercator(lon, lat).iter().all(|v| v.is_finite()), "{lon} {lat}");
+        }
+        for p in [[f64::NAN, f64::NAN], [f64::INFINITY, f64::NEG_INFINITY], [1e300, -1e300]] {
+            assert!(lonlat(p).iter().all(|v| v.is_finite()), "{p:?}");
+        }
+        // the camera stays a number and near the map whatever moves it
+        let start = Camera { at: [0.5, 0.5], scale: 800.0 };
+        assert_eq!(Camera::dragged(start, f32::NAN, 0.0), start);
+        assert_eq!(Camera::dragged(start, f32::INFINITY, f32::NEG_INFINITY), start);
+        let mut far = start;
+        for _ in 0..100 {
+            far = Camera::dragged(far, -3.0e38, 0.0);
+        }
+        assert_eq!(far.at, [3.5, 0.5]);
+        let mut z = start;
+        z.zoom_at(f64::NAN, 10.0, 10.0, 800.0, 600.0);
+        z.zoom_at(1.0, f32::NAN, 10.0, 800.0, 600.0);
+        assert_eq!(z, start);
+        // the lines of longitude the view counts from where it looks fit a whole number with room to count on
+        let edge = far.unproject(0.0, 0.0, 800.0, 600.0);
+        assert!(((edge[0] - 0.5) * 360.0 / 0.001).abs() < 1e12);
+        // a camera that is nowhere asks for no tiles, at once, and a zoom deeper than can be counted is held
+        let t = std::time::Instant::now();
+        assert!(tiles(&Camera { at: [f64::NAN, 0.5], scale: 512.0 * 131_072.0 }, 800.0, 600.0, 17).is_empty());
+        assert!(tiles(&Camera { at: [0.5, 0.5], scale: f64::INFINITY }, 800.0, 600.0, 40).len() <= MAX_TILES);
+        assert!(t.elapsed().as_millis() < 500);
+        // a move or a corner that is not a number writes nothing
+        assert_eq!(shift(PAGE, 0, f64::NAN, 0.0), None);
+        assert_eq!(shift(PAGE, 0, 0.0, f64::INFINITY), None);
+        assert_eq!(set_corner(PAGE, 1, &[0], f64::NAN, 0.0), None);
     }
 }
