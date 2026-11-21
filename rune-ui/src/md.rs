@@ -77,9 +77,13 @@ pub fn html_made(src: &str) -> String {
             Event::Start(Tag::TableCell) => cell += 1,
             // a tag left open, or closed and never opened, is not made into a mark with no partner
             Event::End(TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::TableCell | TagEnd::Item) => {
+                // each name's openings less its closings, counted once: a paragraph of many tags is not counted through for each of them
+                let mut open: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+                for p in &pairs {
+                    *open.entry(p.1.as_str()).or_default() += if p.2 { -1 } else { 1 };
+                }
                 for (range, name, _, with) in &pairs {
-                    let (opens, closes) = (pairs.iter().filter(|p| p.1 == *name && !p.2).count(), pairs.iter().filter(|p| p.1 == *name && p.2).count());
-                    if opens == closes {
+                    if open.get(name.as_str()) == Some(&0) {
                         swaps.push((range.clone(), (*with).to_owned()));
                     }
                 }
@@ -132,6 +136,83 @@ pub fn html_made(src: &str) -> String {
     out
 }
 
+/// The longest a wiki link's inside may be, in bytes.
+const WIKI_MOST: usize = 512;
+
+/// The most blocks, quotes and lists, that may stand one inside another
+/// in what is drawn.
+pub const NEST_MOST: usize = 8;
+
+/// A page for display with no line nested deeper than `NEST_MOST`: the
+/// drawing of quotes and lists doubles in cost with each one inside
+/// another, so forty `>` on a line would hold the window for ever. The
+/// markers past the eighth are dropped and deep indents drawn in, which
+/// leaves the words. Fenced code is left as it is. Only what is read is
+/// passed through this, never what is edited or saved.
+pub fn shallow(src: &str) -> std::borrow::Cow<'_, str> {
+    // how many block markers a line opens with, and where they end
+    fn lead(line: &str) -> (usize, usize, usize) {
+        let (b, mut i, mut n, mut indent, mut cut) = (line.as_bytes(), 0, 0, 0, 0);
+        while i < b.len() {
+            match b[i] {
+                b' ' | b'\t' if n == 0 => (i, indent) = (i + 1, indent + if b[i] == b'\t' { 4 } else { 1 }),
+                b' ' | b'\t' => i += 1,
+                b'>' => (i, n) = (i + 1, n + 1),
+                b'-' | b'*' | b'+' if b.get(i + 1).is_some_and(|c| *c == b' ' || *c == b'\t') => (i, n) = (i + 2, n + 1),
+                b'0'..=b'9' => {
+                    let d = b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+                    if d > 9 || !matches!(b.get(i + d), Some(b'.' | b')')) || !matches!(b.get(i + d + 1), Some(b' ' | b'\t')) {
+                        break;
+                    }
+                    (i, n) = (i + d + 2, n + 1);
+                }
+                _ => break,
+            }
+            if n == NEST_MOST && cut == 0 {
+                cut = i;
+            }
+        }
+        (n, indent, if cut == 0 { i } else { cut })
+    }
+    let deep = |line: &str| {
+        let (n, indent, _) = lead(line);
+        n > NEST_MOST || indent > NEST_MOST * 4
+    };
+    if !src.lines().any(deep) {
+        return std::borrow::Cow::Borrowed(src);
+    }
+    let (mut out, mut fenced) = (String::with_capacity(src.len()), false);
+    for line in src.split_inclusive('\n') {
+        if fence(line) {
+            fenced = !fenced;
+        }
+        if fenced || !deep(line) {
+            out.push_str(line);
+            continue;
+        }
+        let (n, indent, cut) = lead(line);
+        if indent > NEST_MOST * 4 {
+            // a deep indent is drawn in to the deepest one allowed
+            out.push_str(&" ".repeat(NEST_MOST * 4));
+            out.push_str(line.trim_start_matches([' ', '\t']));
+        } else if n > NEST_MOST {
+            // the markers past the last allowed are dropped, and what they led to kept
+            let mut rest = &line[cut..];
+            loop {
+                let (more, _, end) = lead(rest);
+                if more == 0 {
+                    break;
+                }
+                rest = &rest[end..];
+            }
+            let end = line.len() - rest.len();
+            out.push_str(&line[..cut]);
+            out.push_str(&line[end..]);
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// The page for display: each wiki link, `[[name]]` or `[[name|label]]`,
 /// becomes a Markdown link to `lattice:name`. Fenced code and inline code
 /// are left as they are. Only the reader uses this, never the editor.
@@ -158,7 +239,16 @@ pub fn wikilinks(src: &str, ghost: &dyn Fn(&str) -> bool) -> String {
             }
             let mut rest = piece;
             while let Some(a) = rest.find("[[") {
-                let Some(z) = rest[a + 2..].find("]]") else { break };
+                // a link's end is looked for near its start only: a line of many openings would else be read through once for each
+                let mut near = (a + 2 + WIKI_MOST).min(rest.len());
+                while !rest.is_char_boundary(near) {
+                    near -= 1;
+                }
+                let Some(z) = rest[a + 2..near].find("]]") else {
+                    out.push_str(&rest[..a + 2]);
+                    rest = &rest[a + 2..];
+                    continue;
+                };
                 let inner = &rest[a + 2..a + 2 + z];
                 let (name, label) = inner.split_once('|').unwrap_or((inner, inner));
                 let (name, label) = (name.trim(), label.trim());
@@ -937,6 +1027,39 @@ mod tests {
         assert_eq!(links(src), ["a", "b/c", "d"]);
         assert!(links("no links here").is_empty());
         assert_eq!(super::wikilinks("[[a]] [[b|B]]", &|n| n == "b"), "[a](lattice:a) [*B*](lattice:b)");
+    }
+
+    #[test]
+    fn deep_nesting_is_drawn_in() {
+        // what is not deep is not touched, and not copied
+        assert!(matches!(shallow("> a\n\n- one\n  - two\n"), std::borrow::Cow::Borrowed(_)));
+        let plain = "> a\n\n```\n>>>>>>>>>>>>>>>>>>>> kept\n```\n";
+        assert_eq!(shallow(plain), plain);
+        // forty quotes become eight, and the word stays
+        let deep = format!("{} x\n", ">".repeat(40));
+        assert_eq!(shallow(&deep), format!("{} x\n", ">".repeat(NEST_MOST)));
+        let lists = format!("{}x\n", "- ".repeat(30));
+        assert_eq!(shallow(&lists), format!("{}x\n", "- ".repeat(NEST_MOST)));
+        let mixed = format!("{}word\n", "> - 1. ".repeat(10));
+        let out = shallow(&mixed).into_owned();
+        assert!(out.ends_with("word\n") && out.matches('>').count() + out.matches("- ").count() + out.matches("1. ").count() == NEST_MOST, "{out}");
+        // a deep indent is drawn in
+        assert_eq!(shallow(&format!("{}- x\n", " ".repeat(200))), format!("{}- x\n", " ".repeat(NEST_MOST * 4)));
+        // code in a fence is left alone beside a deep line
+        let both = format!("```\n{} code\n```\n{} x\n", ">".repeat(40), ">".repeat(40));
+        assert!(shallow(&both).starts_with(&format!("```\n{} code\n```\n", ">".repeat(40))));
+        // multibyte text after the markers is not cut inside a character
+        let wide = format!("{}é☃\n", "> ".repeat(20));
+        assert!(shallow(&wide).ends_with("é☃\n"));
+    }
+
+    #[test]
+    fn a_line_of_many_openings_is_read_once() {
+        let line = format!("{}]]\n", "[[".repeat(50_000));
+        let t = std::time::Instant::now();
+        let _ = wikilinks(&line, &|_| false);
+        assert!(t.elapsed().as_secs() < 2);
+        assert_eq!(wikilinks("see [[a|b]] and [[c]]", &|_| false), "see [b](lattice:a) and [c](lattice:c)");
     }
 
     #[test]

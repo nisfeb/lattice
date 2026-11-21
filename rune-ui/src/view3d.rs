@@ -90,7 +90,8 @@ fn plate(m: &Mesh) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
     let (cx, cy) = (mid(0), mid(1));
     let grey = [0.5, 0.5, 0.5, 0.3];
     let mut out = Vec::new();
-    let n = (half / step).round() as i32;
+    // a part near the largest number there is makes the plate's own size overflow: no more lines than a plate has
+    let n = if (half / step).is_finite() { ((half / step).round() as i32).clamp(0, 200) } else { 0 };
     for i in -n..=n {
         let at = i as f32 * step;
         out.push(([cx + at, cy - half, 0.0], [cx + at, cy + half, 0.0], grey));

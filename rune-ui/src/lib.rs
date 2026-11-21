@@ -4194,6 +4194,10 @@ fn take_pics(s: &mut App) -> bool {
             }
         }
         match (res, &s.image_cache) {
+            // a drawing that would read a file from this computer, or a picture that says it is vast, is not decoded
+            (Ok(bytes), _) if !html::fetched_ok(&bytes) => {
+                s.pics_failed.insert(src);
+            }
             (Ok(bytes), Some(cache)) => {
                 s.pics.insert(src, cache.load(bytes));
             }
@@ -4211,7 +4215,7 @@ fn take_pics(s: &mut App) -> bool {
 /// the pictures had so far.
 fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
     let pics = s.pics.clone();
-    let src = md::wikilinks(&md::html_shown(body), &|n| ghost(s, n));
+    let src = md::wikilinks(&md::html_shown(&md::shallow(body)), &|n| ghost(s, n));
     // what find matches is marked, the current one apart from the rest
     let mut marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = match s.find.as_ref().filter(|_| found) {
         Some(q) => find_in(&src, &q.text).into_iter().enumerate().map(|(i, m)| (m, if i == s.find_at { rune_kit::Highlight::current() } else { rune_kit::Highlight::new() })).collect(),
@@ -8495,7 +8499,7 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
             page = page.children(forum_preview(f, pics, Some(link), p.id, k));
         }
         if let Some(body) = p.body.as_deref().filter(|b| !b.trim().is_empty()) {
-            page = page.child(Markdown::new(body.to_owned()).selectable(true).on_link_tx(follow).build(k).key("forum-body"));
+            page = page.child(Markdown::new(md::shallow(body).into_owned()).selectable(true).on_link_tx(follow).build(k).key("forum-body"));
             // the pictures the text names, folded under it as the web folds them
             page = page.children(forum_text_previews(f, pics, body, &format!("p{}", p.id), k));
         }
@@ -8525,7 +8529,7 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
                             }
                         }).build(k).key(format!("reply-{id}"))).children(forum_may(&th.board, th.role.as_deref(), ours, &cm.author).change.then(|| Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Delete this comment").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumDelete(Some(id)))).build(k).key(format!("comment-delete-{id}"))))
                     })
-                    .child(Markdown::new(cm.body.clone()).selectable(true).on_link_tx(follow).build(k))
+                    .child(Markdown::new(md::shallow(&cm.body).into_owned()).selectable(true).on_link_tx(follow).build(k))
                     .children(forum_text_previews(f, pics, &cm.body, &format!("c{}", cm.id), k)),
             );
         }
@@ -13211,7 +13215,14 @@ fn scrub_page(s: &App, sc: &Scrub, k: &Kit) -> El {
     let pics = s.pics.clone();
     let mark = rune_kit::Highlight::new().bg(k.c.text_accent.alpha(0.16));
     let marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = f.changed.iter().map(|r| (vec![r.clone()], mark.clone())).collect();
-    let page = Markdown::new(f.src.clone()).block_keys(f.keys.clone()).highlights(marks).images(move |src| pics.get(src).cloned()).style(page_style(k)).build(k);
+    // a revision nested too deep to draw is drawn shallow, without the marks and keys that were measured in the text as it stood
+    let page = match md::shallow(&f.src) {
+        std::borrow::Cow::Borrowed(_) => Markdown::new(f.src.clone()).block_keys(f.keys.clone()).highlights(marks),
+        std::borrow::Cow::Owned(shallow) => Markdown::new(shallow),
+    }
+    .images(move |src| pics.get(src).cloned())
+    .style(page_style(k))
+    .build(k);
     col().key("scrub-page").w_full().h_full().min_h(0.0).items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(12.0).child(page)).scroll(ScrollSpec { stick_bottom: false })
 }
 
@@ -14108,7 +14119,7 @@ fn page_body(s: &App, k: &Kit) -> El {
         let source = fill_editor(s, "Page source", marks, &editor_kit(k, &s.prefs.font));
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
-            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(md::html_shown(&s.edit.text)).style(page_style(k)).build(k));
+            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(md::html_shown(&md::shallow(&s.edit.text))).style(page_style(k)).build(k));
             panes = panes.child(col().key("preview").grow(1.0).min_w(0.0).h_full().min_h(0.0).child(shown).scroll(ScrollSpec { stick_bottom: false }));
         }
         return panes;
@@ -14939,7 +14950,7 @@ mod tests {
         struct Doc(String);
         fn view(d: &Doc, _: &mut Cx<Doc>) -> El {
             let k = Kit::neutral(true);
-            col().w_full().child(Markdown::new(md::wikilinks(&md::html_shown(&d.0), &|_| false)).selectable(true).style(page_style(&k)).build(&k))
+            col().w_full().child(Markdown::new(md::wikilinks(&md::html_shown(&md::shallow(&d.0)), &|_| false)).selectable(true).style(page_style(&k)).build(&k))
         }
         let mut rt = rune::Runtime::new(Doc(src.to_owned()), view, (800.0, 20000.0), rune::Env::new(true, 1.0));
         rt.frame(0.0);

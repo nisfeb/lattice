@@ -22,7 +22,7 @@ pub fn fixed(n: f64, places: usize, min_int: usize, group: bool) -> String {
     let a = ((n.abs() * f * (1.0 + 4.0 * f64::EPSILON)) + 0.5).floor() / f;
     let text = format!("{a:.*}", places.min(20));
     let (i, d) = text.split_once('.').unwrap_or((&text, ""));
-    let mut i = format!("{i:0>min_int$}");
+    let mut i = format!("{i:0>w$}", w = min_int.min(64));
     if min_int == 0 && i == "0" {
         i.clear();
     }

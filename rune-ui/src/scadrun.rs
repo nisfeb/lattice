@@ -150,7 +150,8 @@ pub fn parse_stl(b: &[u8]) -> Result<Mesh, String> {
         let o = 84 + t * 50 + 12;
         for k in 0..9 {
             let v = f32::from_le_bytes([b[o + k * 4], b[o + k * 4 + 1], b[o + k * 4 + 2], b[o + k * 4 + 3]]);
-            wild |= !v.is_finite();
+            // a corner past any size a part is made at is as wild as one that is no number: its span would overflow
+            wild |= !v.is_finite() || v.abs() > 1e12;
             min[k % 3] = min[k % 3].min(v);
             max[k % 3] = max[k % 3].max(v);
             pos.push(v);
