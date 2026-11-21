@@ -24,25 +24,71 @@ pub fn file_kind(name: &str) -> &'static str {
     }
 }
 
+/// How deep the elements of a file may stand one in another. A track
+/// point of a GPX file is five deep and a KML placemark seldom ten, so
+/// this refuses only a file made to be deep: the tree is walked by
+/// functions that call themselves, and a deep one would run them out of
+/// stack and stop the whole app.
+const MAX_DEPTH: usize = 256;
+
 /// An element of an XML file: its name as written, its attributes, the
-/// elements in it, and all the text in it and under it.
+/// elements in it, and the text that stands directly in it. The text is
+/// kept once, where it stands: an element with a thousand over it does
+/// not make a thousand copies.
 #[derive(Debug, Default)]
 pub struct Node {
     pub name: String,
     pub attrs: Vec<(String, String)>,
     pub kids: Vec<Node>,
-    pub text: String,
+    /// The text directly in it, every run of it joined.
+    own: String,
+    /// Where each run of text after an element starts: how many elements come before it, and where it starts in `own`.
+    cuts: Vec<(usize, usize)>,
 }
 
 impl Node {
     /// Every element under this one with this name, in the file's order.
+    /// One inside another of the same name is not looked for: no GPX or
+    /// KML file nests them, and a file made to would have its points
+    /// counted once for each one round them.
     pub fn all<'a>(&'a self, name: &str, out: &mut Vec<&'a Node>) {
         for k in &self.kids {
             if k.name == name {
                 out.push(k);
+            } else {
+                k.all(name, out);
             }
-            k.all(name, out);
         }
+    }
+
+    /// All the text in it and under it, in the file's order.
+    pub fn text(&self) -> std::borrow::Cow<'_, str> {
+        if self.kids.is_empty() {
+            return std::borrow::Cow::Borrowed(&self.own);
+        }
+        let mut out = String::new();
+        self.gather(&mut out);
+        std::borrow::Cow::Owned(out)
+    }
+
+    fn gather(&self, out: &mut String) {
+        let (mut at, mut kid) = (0, 0);
+        for &(kids, off) in self.cuts.iter().chain(std::iter::once(&(self.kids.len(), self.own.len()))) {
+            out.push_str(&self.own[at..off]);
+            self.kids[kid..kids].iter().for_each(|k| k.gather(out));
+            (at, kid) = (off, kids);
+        }
+    }
+
+    /// Adds a run of text where the file has it: after the elements read so far.
+    fn say(&mut self, t: &str) {
+        if t.is_empty() {
+            return;
+        }
+        if self.cuts.last().map_or(0, |c| c.0) != self.kids.len() {
+            self.cuts.push((self.kids.len(), self.own.len()));
+        }
+        self.own.push_str(t);
     }
 
     pub fn each(&self, name: &str) -> Vec<&Node> {
@@ -68,7 +114,8 @@ fn unescape(s: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        let end = rest.find(';').filter(|e| *e <= 10);
+        // a reference is short: its end is looked for no further than the longest one reaches
+        let end = rest.bytes().take(11).position(|c| c == b';');
         let ch = end.and_then(|e| match &rest[1..e] {
             "amp" => Some('&'),
             "lt" => Some('<'),
@@ -93,13 +140,16 @@ fn unescape(s: &str) -> String {
 }
 
 /// An XML file as a tree, under a nameless root. Comments, processing
-/// instructions and the doctype are passed over. `None` for a file that
-/// is not well formed.
+/// instructions and the doctype are passed over. The error says why a
+/// file is not read: it is not well formed, or its elements stand
+/// deeper one in another than `MAX_DEPTH`.
 // ponytail: no namespaces, no DTD entities. GPX and KML need neither
-pub fn xml(src: &str) -> Option<Node> {
+pub fn xml(src: &str) -> Result<Node, String> {
+    let bad = || "the file is not valid XML".to_owned();
     let mut stack = vec![Node::default()];
     let mut rest = src.trim_start_matches('\u{feff}');
-    let say = |stack: &mut Vec<Node>, t: &str| stack.iter_mut().for_each(|n| n.text.push_str(t));
+    // text belongs to the element it stands in, and to no other
+    let say = |stack: &mut Vec<Node>, t: &str| stack.last_mut().into_iter().for_each(|n| n.say(t));
     while !rest.is_empty() {
         let Some(lt) = rest.find('<') else {
             say(&mut stack, &unescape(rest));
@@ -108,102 +158,148 @@ pub fn xml(src: &str) -> Option<Node> {
         say(&mut stack, &unescape(&rest[..lt]));
         rest = &rest[lt..];
         if let Some(r) = rest.strip_prefix("<!--") {
-            rest = &r[r.find("-->")? + 3..];
+            rest = &r[r.find("-->").ok_or_else(bad)? + 3..];
         } else if let Some(r) = rest.strip_prefix("<![CDATA[") {
-            let end = r.find("]]>")?;
+            let end = r.find("]]>").ok_or_else(bad)?;
             say(&mut stack, &r[..end]);
             rest = &r[end + 3..];
         } else if let Some(r) = rest.strip_prefix("<?") {
-            rest = &r[r.find("?>")? + 2..];
+            rest = &r[r.find("?>").ok_or_else(bad)? + 2..];
         } else if rest.starts_with("<!") {
-            // a doctype, with whatever it holds in square brackets
-            let end = rest.find(']').filter(|b| rest[..*b].contains('[')).map_or(0, |b| b);
-            rest = &rest[end + rest[end..].find('>')? + 1..];
+            // a doctype, with whatever it holds in square brackets when it opens them before it ends
+            let gt = rest.find('>').ok_or_else(bad)?;
+            let end = match rest[..gt].find('[') {
+                Some(open) => {
+                    let close = open + rest[open..].find(']').ok_or_else(bad)?;
+                    close + rest[close..].find('>').ok_or_else(bad)?
+                }
+                None => gt,
+            };
+            rest = &rest[end + 1..];
         } else if let Some(r) = rest.strip_prefix("</") {
-            let end = r.find('>')?;
-            let done = stack.pop()?;
+            let end = r.find('>').ok_or_else(bad)?;
+            let done = stack.pop().ok_or_else(bad)?;
             if done.name != r[..end].trim() || stack.is_empty() {
-                return None;
+                return Err(bad());
             }
-            stack.last_mut()?.kids.push(done);
+            stack.last_mut().ok_or_else(bad)?.kids.push(done);
             rest = &r[end + 1..];
         } else {
             // a tag ends at the first > outside a quoted value
             let mut quote = None;
-            let end = rest.char_indices().find(|(_, c)| match quote {
-                Some(q) => {
-                    if *c == q {
-                        quote = None;
+            let end = rest
+                .char_indices()
+                .find(|(_, c)| match quote {
+                    Some(q) => {
+                        if *c == q {
+                            quote = None;
+                        }
+                        false
                     }
-                    false
-                }
-                None if *c == '"' || *c == '\'' => {
-                    quote = Some(*c);
-                    false
-                }
-                None => *c == '>',
-            })?.0;
+                    None if *c == '"' || *c == '\'' => {
+                        quote = Some(*c);
+                        false
+                    }
+                    None => *c == '>',
+                })
+                .ok_or_else(bad)?
+                .0;
             let tag = rest[1..end].trim_end();
             let (tag, empty) = tag.strip_suffix('/').map_or((tag, false), |t| (t, true));
             let name_end = tag.find(char::is_whitespace).unwrap_or(tag.len());
             let mut node = Node { name: tag[..name_end].to_owned(), ..Node::default() };
             if node.name.is_empty() {
-                return None;
+                return Err(bad());
             }
             let mut a = tag[name_end..].trim_start();
             while !a.is_empty() {
-                let (key, after) = a.split_once('=')?;
+                let (key, after) = a.split_once('=').ok_or_else(bad)?;
                 let after = after.trim_start();
-                let q = after.chars().next().filter(|c| *c == '"' || *c == '\'')?;
-                let close = after[1..].find(q)?;
+                let q = after.chars().next().filter(|c| *c == '"' || *c == '\'').ok_or_else(bad)?;
+                let close = after[1..].find(q).ok_or_else(bad)?;
                 node.attrs.push((key.trim().to_owned(), unescape(&after[1..1 + close])));
                 a = after[close + 2..].trim_start();
             }
             if empty {
-                stack.last_mut()?.kids.push(node);
+                stack.last_mut().ok_or_else(bad)?.kids.push(node);
             } else {
+                // the root is on the stack too, and is no element of the file
+                if stack.len() > MAX_DEPTH {
+                    return Err("the file is nested too deeply".into());
+                }
                 stack.push(node);
             }
             rest = &rest[end + 1..];
         }
     }
     // everything opened was closed, and there was an element at all
-    (stack.len() == 1).then(|| stack.pop()).flatten().filter(|root| !root.kids.is_empty())
+    (stack.len() == 1).then(|| stack.pop()).flatten().filter(|root| !root.kids.is_empty()).ok_or_else(bad)
 }
 
 /// A number as JavaScript's `parseFloat` reads one: from the start of
 /// the text, as far as it is a number.
+///
+/// How far it is one is found in a single pass, and that much is read
+/// once, so a numeral of a million figures costs a million steps and not
+/// a million times that.
 fn parse_float(s: &str) -> Option<f64> {
     let s = s.trim_start();
-    let run = s.find(|c: char| !(c.is_ascii_digit() || "+-.eE".contains(c))).unwrap_or(s.len());
-    (1..=run).rev().find_map(|end| s[..end].parse::<f64>().ok()).filter(|v| v.is_finite())
+    let b = s.as_bytes();
+    let digits = |from: usize| b[from..].iter().take_while(|c| c.is_ascii_digit()).count();
+    let mut end = usize::from(matches!(b.first(), Some(b'+' | b'-')));
+    let whole = digits(end);
+    end += whole;
+    let mut part = 0;
+    if b.get(end) == Some(&b'.') {
+        part = digits(end + 1);
+        // a point with no figure on either side is no number
+        if whole + part > 0 {
+            end += 1 + part;
+        }
+    }
+    if whole + part == 0 {
+        return None;
+    }
+    if matches!(b.get(end), Some(b'e' | b'E')) {
+        let sign = usize::from(matches!(b.get(end + 1), Some(b'+' | b'-')));
+        let power = digits(end + 1 + sign);
+        // an exponent with no figures is not part of the number
+        if power > 0 {
+            end += 1 + sign + power;
+        }
+    }
+    s[..end].parse::<f64>().ok().filter(|v| v.is_finite())
 }
 
 /// The text of the first element under `n` with this name, when it has any.
-fn said<'a>(n: &'a Node, name: &str) -> Option<&'a str> {
-    n.first(name).map(|e| e.text.as_str()).filter(|t| !t.is_empty())
+fn said<'a>(n: &'a Node, name: &str) -> Option<std::borrow::Cow<'a, str>> {
+    n.first(name).map(Node::text).filter(|t| !t.is_empty())
 }
 
 /// A GPX point: its position, with its height when it has one, and its time.
-fn gpx_point(n: &Node) -> Option<(Value, Option<&str>)> {
+fn gpx_point(n: &Node) -> Option<(Value, Option<std::borrow::Cow<'_, str>>)> {
     let (lon, lat) = (parse_float(n.attr("lon"))?, parse_float(n.attr("lat"))?);
     let mut c = vec![json!(lon), json!(lat)];
-    c.extend(n.first("ele").and_then(|e| parse_float(&e.text)).map(Value::from));
-    Some((Value::Array(c), n.first("time").map(|t| t.text.as_str()).filter(|t| !t.is_empty())))
+    c.extend(n.first("ele").and_then(|e| parse_float(&e.text())).map(Value::from));
+    Some((Value::Array(c), said(n, "time")))
 }
 
 /// The points of a track segment or a route as a line, with the first
 /// time among them. Fewer than two points is no line.
-fn gpx_line<'a>(n: &'a Node, each: &str) -> Option<(Vec<Value>, Option<&'a str>)> {
-    let pts: Vec<_> = n.each(each).into_iter().filter_map(gpx_point).collect();
-    (pts.len() >= 2).then(|| (pts.iter().map(|(c, _)| c.clone()).collect(), pts.iter().find_map(|(_, t)| *t)))
+fn gpx_line<'a>(n: &'a Node, each: &str) -> Option<(Vec<Value>, Option<std::borrow::Cow<'a, str>>)> {
+    let (mut line, mut time) = (Vec::new(), None);
+    for (c, t) in n.each(each).into_iter().filter_map(gpx_point) {
+        line.push(c);
+        time = time.or(t);
+    }
+    (line.len() >= 2).then_some((line, time))
 }
 
 /// What lattice keeps of a GPX element: its name, its description as the
 /// note, its time, and its type as the kind.
-fn gpx_props(n: &Node, time: Option<&str>) -> Value {
+fn gpx_props(n: &Node, time: Option<std::borrow::Cow<'_, str>>) -> Value {
     let mut p = serde_json::Map::new();
-    let mut put = |k: &str, v: Option<&str>| drop(v.map(|v| p.insert(k.into(), v.into())));
+    let mut put = |k: &str, v: Option<std::borrow::Cow<'_, str>>| drop(v.map(|v| p.insert(k.into(), v.into_owned().into())));
     put("name", said(n, "name"));
     put("note", said(n, "desc"));
     put("time", said(n, "time").or(time));
@@ -217,7 +313,7 @@ fn gpx(root: &Node) -> Vec<Value> {
     let feat = |geometry: Value, properties: Value| json!({"type": "Feature", "geometry": geometry, "properties": properties});
     for trk in root.each("trk") {
         let segs: Vec<_> = trk.each("trkseg").into_iter().filter_map(|s| gpx_line(s, "trkpt")).collect();
-        let time = segs.iter().find_map(|(_, t)| *t);
+        let time = segs.iter().find_map(|(_, t)| t.clone());
         let mut lines: Vec<Value> = segs.into_iter().map(|(l, _)| Value::Array(l)).collect();
         let geometry = match lines.len() {
             0 => continue,
@@ -247,7 +343,7 @@ fn kml_pos(t: &str) -> Vec<Value> {
 
 /// The positions of a KML `coordinates` element, apart by white space.
 fn kml_line(n: &Node) -> Vec<Value> {
-    let text = n.first("coordinates").map_or("", |c| c.text.as_str());
+    let text = n.first("coordinates").map_or("".into(), Node::text);
     text.split_whitespace().map(kml_pos).filter(|p| p.len() >= 2).map(Value::Array).collect()
 }
 
@@ -258,7 +354,7 @@ fn kml_geoms(n: &Node, out: &mut Vec<Value>, times: &mut Vec<Vec<String>>) {
         match k.name.as_str() {
             "MultiGeometry" | "MultiTrack" | "gx:MultiTrack" => kml_geoms(k, out, times),
             "Point" => {
-                let p = kml_pos(k.first("coordinates").map_or("", |c| c.text.as_str()));
+                let p = kml_pos(&k.first("coordinates").map_or("".into(), Node::text));
                 if p.len() >= 2 {
                     out.push(json!({"type": "Point", "coordinates": p}));
                 }
@@ -291,13 +387,13 @@ fn kml_geoms(n: &Node, out: &mut Vec<Value>, times: &mut Vec<Vec<String>>) {
                     coords = k.each("gx:coord");
                 }
                 // what is not a number stays as it is, and the check refuses the file for it
-                let mut line: Vec<Value> = coords.iter().map(|c| c.text.split(' ').map(|v| parse_float(v).map_or(Value::Null, Value::from)).collect()).collect();
+                let mut line: Vec<Value> = coords.iter().map(|c| c.text().split(' ').map(|v| parse_float(v).map_or(Value::Null, Value::from)).collect()).collect();
                 match line.len() {
                     0 => continue,
                     1 => out.push(json!({"type": "Point", "coordinates": line.remove(0)})),
                     _ => out.push(json!({"type": "LineString", "coordinates": line})),
                 }
-                let when: Vec<String> = k.each("when").iter().map(|w| w.text.clone()).collect();
+                let when: Vec<String> = k.each("when").iter().map(|w| w.text().into_owned()).collect();
                 if !when.is_empty() {
                     times.push(when);
                 }
@@ -323,13 +419,13 @@ fn kml(root: &Node) -> Vec<Value> {
             _ => json!({"type": "GeometryCollection", "geometries": geoms}),
         };
         // read in togeojson's order, a later one taking the place of an earlier
-        let mut raw: Vec<(String, Option<String>)> = ["name", "description"].iter().filter_map(|k| said(pm, k).map(|v| ((*k).to_owned(), Some(v.to_owned())))).collect();
+        let mut raw: Vec<(String, Option<String>)> = ["name", "description"].iter().filter_map(|k| said(pm, k).map(|v| ((*k).to_owned(), Some(v.into_owned())))).collect();
         if let Some(ext) = pm.first("ExtendedData") {
             for d in ext.each("Data") {
-                raw.push((d.attr("name").to_owned(), Some(d.first("value").map_or(String::new(), |v| v.text.clone()))));
+                raw.push((d.attr("name").to_owned(), Some(d.first("value").map_or(String::new(), |v| v.text().into_owned()))));
             }
             for d in ext.each("SimpleData") {
-                raw.push((d.attr("name").to_owned(), (!typed.contains(&d.attr("name"))).then(|| d.text.clone())));
+                raw.push((d.attr("name").to_owned(), (!typed.contains(&d.attr("name"))).then(|| d.text().into_owned())));
             }
         }
         let get = |k: &str| raw.iter().rev().find(|(n, _)| n == k).and_then(|(_, v)| v.as_deref());
@@ -350,37 +446,53 @@ fn xy(p: &Value) -> [f64; 2] {
 
 /// Each position nearer than `tol` to the last one kept is dropped, the
 /// two ends always kept: one pass, so `dp` then works on far fewer.
-fn radial(pts: &[Value], tol: f64) -> Vec<Value> {
-    let mut out = vec![pts[0].clone()];
-    let mut last = xy(&pts[0]);
-    for p in &pts[1..pts.len() - 1] {
-        let q = xy(p);
+/// Positions are named by where they are in the line.
+fn radial(pts: &[[f64; 2]], tol: f64) -> Vec<usize> {
+    let mut out = vec![0];
+    let mut last = pts[0];
+    for (i, q) in pts.iter().enumerate().take(pts.len() - 1).skip(1) {
         if (q[0] - last[0]).powi(2) + (q[1] - last[1]).powi(2) > tol * tol {
-            out.push(p.clone());
-            last = q;
+            out.push(i);
+            last = *q;
         }
     }
-    out.push(pts[pts.len() - 1].clone());
+    out.push(pts.len() - 1);
     out
 }
 
-/// Douglas-Peucker, without recursion so a long track cannot overflow
-/// the stack. The first and last positions are kept.
-fn dp(pts: &[Value], tol: f64) -> Vec<Value> {
-    let n = pts.len();
+/// How many times over `dp` may look at each position it is given.
+const DP_LOOKS: usize = 48;
+
+/// Douglas-Peucker over the positions named by `of`, without recursion
+/// so a long track cannot overflow the stack. The first and last are
+/// kept. A line whose farthest position is always beside an end, as a
+/// sawtooth's is, would be looked through once for every position in
+/// it: the looking is counted, and once it has gone `DP_LOOKS` times
+/// round, what is left is kept as it is and not looked through again.
+fn dp(pts: &[[f64; 2]], of: &[usize], tol: f64) -> Vec<usize> {
+    let n = of.len();
     if n < 3 {
-        return pts.to_vec();
+        return of.to_vec();
     }
     let mut keep = vec![false; n];
     (keep[0], keep[n - 1]) = (true, true);
+    let mut looks = n.saturating_mul(DP_LOOKS);
     let mut stack = vec![(0, n - 1)];
     while let Some((a, b)) = stack.pop() {
-        let ([ax, ay], [bx, by]) = (xy(&pts[a]), xy(&pts[b]));
+        if b - a < 2 {
+            continue;
+        }
+        if looks < b - a {
+            keep[a..=b].fill(true);
+            continue;
+        }
+        looks -= b - a;
+        let ([ax, ay], [bx, by]) = (pts[of[a]], pts[of[b]]);
         let (dx, dy) = (bx - ax, by - ay);
         let len = dx * dx + dy * dy;
         let (mut far, mut fd) = (None, tol * tol);
-        for (i, p) in pts.iter().enumerate().take(b).skip(a + 1) {
-            let [px, py] = xy(p);
+        for i in a + 1..b {
+            let [px, py] = pts[of[i]];
             let u = if len == 0.0 { 0.0 } else { (((px - ax) * dx + (py - ay) * dy) / len).clamp(0.0, 1.0) };
             let d = (ax + u * dx - px).powi(2) + (ay + u * dy - py).powi(2);
             if d > fd {
@@ -392,30 +504,31 @@ fn dp(pts: &[Value], tol: f64) -> Vec<Value> {
             stack.extend([(a, f), (f, b)]);
         }
     }
-    pts.iter().zip(keep).filter(|(_, k)| *k).map(|(p, _)| p.clone()).collect()
+    of.iter().zip(keep).filter(|(_, k)| *k).map(|(i, _)| *i).collect()
 }
 
 /// A line of more than `SIMPLIFY_TO` positions, simplified until it
 /// fits. The tolerance starts at a ten-thousandth of the line's extent
 /// and doubles.
-fn simplify(pts: &[Value]) -> Vec<Value> {
-    if pts.len() <= SIMPLIFY_TO {
-        return pts.to_vec();
+fn simplify(line: &[Value]) -> Vec<Value> {
+    if line.len() <= SIMPLIFY_TO {
+        return line.to_vec();
     }
+    // the positions as numbers, read once: every pass works on these
+    let pts: Vec<[f64; 2]> = line.iter().map(xy).collect();
     let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
-    for p in pts {
-        let q = xy(p);
+    for q in &pts {
         for i in 0..2 {
             (lo[i], hi[i]) = (lo[i].min(q[i]), hi[i].max(q[i]));
         }
     }
     let mut tol = ((hi[0] - lo[0]).hypot(hi[1] - lo[1]) * 1e-4).max(0.00001);
-    let mut out = pts.to_vec();
+    let mut out: Vec<usize> = (0..pts.len()).collect();
     while out.len() > SIMPLIFY_TO && tol < 1.0 {
-        out = dp(&radial(pts, tol), tol);
+        out = dp(&pts, &radial(&pts, tol), tol);
         tol *= 2.0;
     }
-    out
+    out.into_iter().map(|i| line[i].clone()).collect()
 }
 
 /// What an import read: the features, and the positions its long lines
@@ -449,8 +562,8 @@ pub fn import(kind: &str, text: &str) -> Result<Imported, String> {
                 None => return Err("the file is not GeoJSON".into()),
             }
         }
-        "gpx" => gpx(&xml(text).ok_or("the file is not valid XML")?),
-        "kml" => kml(&xml(text).ok_or("the file is not valid XML")?),
+        "gpx" => gpx(&xml(text)?),
+        "kml" => kml(&xml(text)?),
         _ => return Err("lattice reads .geojson, .json, .gpx and .kml files".into()),
     };
     let whole = |features: &[Value]| json!({"type": "FeatureCollection", "features": features});
@@ -671,5 +784,82 @@ mod tests {
         assert_eq!(back.len(), 4);
         assert_eq!(back[2]["properties"]["name"], "A <b> & \"c\"");
         assert_eq!(export_gpx("[]", "x"), None);
+    }
+
+    #[test]
+    fn text_is_kept_once_and_read_in_the_files_order() {
+        let root = xml("<a>one<b>two<c/>three</b>four<d>five</d>six</a>").unwrap();
+        let a = &root.kids[0];
+        assert_eq!((a.text().as_ref(), a.kids[0].text().as_ref(), a.kids[1].text().as_ref()), ("onetwothreefourfivesix", "twothree", "five"));
+        assert_eq!(a.own, "onefoursix", "an element holds only the text that stands in it");
+        assert_eq!(xml("<a> x &amp; <![CDATA[<y>]]> &#65;&bogus; &</a>").unwrap().kids[0].text(), " x & <y> A&bogus; &");
+        // a doctype is passed over with what it holds, and does not take what follows it
+        let doc = xml("<!DOCTYPE gpx [ <!ENTITY a \"b\"> ]><!DOCTYPE x><gpx><desc><![CDATA[[x]]]></desc></gpx>").unwrap();
+        assert_eq!(doc.kids[0].text(), "[x]");
+        // 80 KB of elements each inside the last, a word in each: once every word was copied into every element round it
+        let nested = "<a>x".repeat(20_000);
+        let t = std::time::Instant::now();
+        assert_eq!(import("gpx", &nested).unwrap_err(), "the file is nested too deeply");
+        // deep and closed, with a long name at the bottom: refused before it is built
+        let deep = format!("{}<name>{}</name>{}", "<a>".repeat(500), "n".repeat(1_000_000), "</a>".repeat(500));
+        assert_eq!(import("gpx", &deep).unwrap_err(), "the file is nested too deeply");
+        // 200,000 deep, which once ran the walk out of stack
+        let deeper = format!("{}{}", "<a>".repeat(200_000), "</a>".repeat(200_000));
+        assert_eq!(import("kml", &deeper).unwrap_err(), "the file is nested too deeply");
+        assert!(t.elapsed().as_millis() < 1500, "{:?}", t.elapsed());
+        // as deep as is allowed is read, and one deeper is not
+        let at = |n: usize| format!("{}<wpt lat=\"1\" lon=\"2\"/>{}", "<a>".repeat(n), "</a>".repeat(n));
+        assert_eq!(import("gpx", &at(MAX_DEPTH - 1)).unwrap().features.len(), 1);
+        assert_eq!(import("gpx", &at(MAX_DEPTH)).unwrap().features.len(), 1, "an element with nothing in it opens nothing");
+        assert_eq!(import("gpx", &at(MAX_DEPTH + 1)).unwrap_err(), "the file is nested too deeply");
+        // a long text with many references and many declarations is read once through
+        let busy = format!("<a>{}{}</a>", "&".repeat(200_000), "<!x>".repeat(100_000));
+        let t = std::time::Instant::now();
+        assert_eq!(xml(&busy).unwrap().kids[0].text().len(), 200_000);
+        assert!(t.elapsed().as_millis() < 1500, "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn an_element_in_another_of_its_name_is_not_counted_again() {
+        // tracks in tracks and segments in segments: each point is one point, not one for each element round it
+        let pts = "<trkpt lat=\"1\" lon=\"2\"/><trkpt lat=\"3\" lon=\"4\"/>";
+        let nested = format!("<gpx>{}{pts}{}</gpx>", "<trk><name>n</name><trkseg>".repeat(100), "</trkseg></trk>".repeat(100));
+        let got = import("gpx", &nested).unwrap().features;
+        assert_eq!(got.len(), 1);
+        assert_eq!(serde_json::to_string(&got[0]["geometry"]).unwrap(), r#"{"type":"LineString","coordinates":[[2.0,1.0],[4.0,3.0]]}"#);
+    }
+
+    #[test]
+    fn a_number_is_read_as_far_as_it_is_one_in_one_pass() {
+        for (text, want) in [
+            ("12", Some(12.0)), (" -1.5e2x", Some(-150.0)), ("+.5", Some(0.5)), ("5.", Some(5.0)), ("1e", Some(1.0)), ("1e+", Some(1.0)), ("1.2.3", Some(1.2)), ("1-2", Some(1.0)), ("1e5e6", Some(1e5)), ("1.e2", Some(100.0)),
+            ("", None), ("x", None), (".", None), ("-", None), ("--1", None), (".e5", None), ("e5", None), ("1e999", None), ("+-1", None),
+        ] {
+            assert_eq!(parse_float(text), want, "{text:?}");
+        }
+        // a numeral of a million figures that is not a number until its last: once each shorter one was tried in turn
+        let long = format!("{}e", "1".repeat(1_000_000));
+        let t = std::time::Instant::now();
+        assert_eq!(parse_float(&long), None, "too large to be a number lattice keeps");
+        assert_eq!(parse_float(&format!("0.{}e", "1".repeat(1_000_000))).map(|v| (v * 1e6).round()), Some(111_111.0));
+        assert_eq!(parse_float(&"-".repeat(1_000_000)), None);
+        assert!(t.elapsed().as_millis() < 1500, "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn a_sawtooth_track_is_simplified_in_bounded_work() {
+        // 20,000 positions up and down: the farthest is always the next one, which once made every pass the line squared
+        let saw: Vec<String> = (0..20_000).map(|i| format!("[{},{}]", i as f64 / 1000.0, (i % 2) as f64 * 5.0)).collect();
+        let t = std::time::Instant::now();
+        let got = import("geojson", &format!(r#"{{"type":"LineString","coordinates":[{}]}}"#, saw.join(","))).unwrap();
+        assert!(t.elapsed().as_millis() < 1500, "{:?}", t.elapsed());
+        let line = got.features[0]["geometry"]["coordinates"].as_array().unwrap();
+        assert_eq!((xy(&line[0]), xy(&line[line.len() - 1])), ([0.0, 0.0], [19.999, 5.0]), "the ends are kept");
+        // teeth lower than the last tolerance are smoothed away
+        let low: Vec<String> = (0..20_000).map(|i| format!("[{},{}]", i as f64 / 1000.0, (i % 2) as f64 * 0.01)).collect();
+        let t = std::time::Instant::now();
+        let got = import("geojson", &format!(r#"{{"type":"LineString","coordinates":[{}]}}"#, low.join(","))).unwrap();
+        assert!(t.elapsed().as_millis() < 1500, "{:?}", t.elapsed());
+        assert!(got.after <= SIMPLIFY_TO && got.before == 20_000, "{}", got.after);
     }
 }
