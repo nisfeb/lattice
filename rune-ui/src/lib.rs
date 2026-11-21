@@ -2788,7 +2788,7 @@ fn sync_map(s: &mut App) {
     s.map = map::parse(&p.body).map(|feats| {
         let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
         let pick_new = old.as_ref().is_some_and(|m| m.pick_new);
-        MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, tool: old.as_ref().and_then(|m| m.tool), verts: old.as_ref().map_or(Vec::new(), |m| m.verts.clone()), moving: None, grip: None, pick_new: false, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: if pick_new { feats.len().checked_sub(1) } else { old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()) }, feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
+        MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, tool: old.as_ref().and_then(|m| m.tool), verts: old.as_ref().map_or(Vec::new(), |m| m.verts.clone()), moving: None, grip: None, pick_new: false, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: if pick_new { last_added(&feats) } else { old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()) }, feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
     });
 }
 
@@ -4081,11 +4081,16 @@ fn finish_shape(s: &mut App) {
     }
 }
 
+/// The feature just added, which is the page's last, when it is among those drawn. On a page cut short to what can be drawn it is not, and the last one drawn is another: none is picked then, or its card's Delete would take that other one away.
+fn last_added(feats: &[map::Feature]) -> Option<usize> {
+    feats.len().checked_sub(1).filter(|_| feats.len() < map::SHOWN_FEATURES)
+}
+
 /// Picks the feature just added: now, or when the page comes back from the ship with it.
 fn pick_added(s: &mut App) {
     let coming = s.save_req.is_pending();
     if let Some(m) = &mut s.map {
-        if coming { m.pick_new = true } else { m.picked = m.feats.len().checked_sub(1) }
+        if coming { m.pick_new = true } else { m.picked = last_added(&m.feats) }
     }
 }
 
