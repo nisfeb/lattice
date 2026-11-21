@@ -15280,6 +15280,10 @@
   ::  when the timer that writes to every stream is next due, or the
   ::  beginning of time with none set
   =|  tick=@da
+  ::  when each window on a page was last heard from: its stream opened,
+  ::  or it said where it is. A window says so once a minute while someone
+  ::  is at it, so one not heard from in two and a half has vanished
+  =|  seen=(map [@t @t] @da)
   |-
   ;<  got=(unit (each sage:tarball @ta))  bind:m  presence-in
   ?~  got  $
@@ -15297,8 +15301,37 @@
   ?:  =([/ %timer-wake] p.sage)
     =/  wak=path  !<(path q.sage)
     ?:  ?=([%tick *] wak)
+      ?:  =(~ subs)  $(tick *@da, seen ~)
+      ::  a window not heard from in two and a half minutes has vanished:
+      ::  its streams are ended and its row goes, so one that is still
+      ::  there has to open its stream again
+      =/  old=(list @ta)
+        %+  murn  ~(tap by subs)
+        |=  [id=@ta p=@t w=@t]
+        ?:((gth now (add (~(gut by seen) [p w] *@da) ~m2.s30)) `id ~)
+      ;<  ~  bind:m  (presence-send root old (pairs:enjs:format ~[['end' b+&]]))
+      |-
+      ?^  old
+        =/  d  (presence-drop i.old subs tab)
+        =.  subs  subs.d
+        =.  tab  tab.d
+        ?~  page.d  $(old t.old)
+        ;<  t=[last=(map @t @da) dirty=(set @t) seq=@ud]  bind:m
+          (presence-tell root now u.page.d tab subs last dirty seq)
+        %=  $
+          old    t.old
+          last   (presence-forget u.page.d tab subs last.t)
+          dirty  dirty.t
+          seq    seq.t
+        ==
+      ::  only the windows that still hold a stream are remembered
+      =/  live=(set [@t @t])
+        (~(gas in *(set [@t @t])) (turn ~(val by subs) |=([p=@t w=@t] [p w])))
+      =.  seen
+        %-  ~(gas by *(map [@t @t] @da))
+        (skim ~(tap by seen) |=([k=[@t @t] @da] (~(has in live) k)))
+      ?:  =(~ subs)  ^$(tick *@da, seen ~)
       ::  every stream is written to, which keeps it open and finds the dead
-      ?:  =(~ subs)  $(tick *@da)
       ;<  ~  bind:m
         (presence-send root ~(tap in ~(key by subs)) (pairs:enjs:format ~[['ping' b+&]]))
       ;<  ~  bind:m  (set-timer:io /tick (add now ~s30))
@@ -15307,7 +15340,7 @@
       ;<  ~  bind:m
         ?:  =(~ dirty)  (pure:m ~)
         (set-timer:io /cast (add now ~s1))
-      $(tick (add now ~s30))
+      ^$(tick (add now ~s30))
     ?.  ?=([%cast *] wak)  $
     ::  the pages whose second is up are sent, and the wake is set again
     ::  for the first of those whose second is not
@@ -15355,6 +15388,7 @@
       ;<  ~  bind:m  (presence-send root ~[id] (pairs:enjs:format ~[['end' b+&]]))
       $
     =.  subs  (~(put by subs) id [page who])
+    =.  seen  (~(put by seen) [page who] now)
     =/  new=?  !(~(has by rows) who)
     =?  tab  new  (~(put by tab) page (~(put by rows) who [(str 'ship') '' 'read']))
     ::  set when there is none, and again when one is long past due: a
@@ -15394,6 +15428,8 @@
   ::  where a window is: only a window with a stream open has a row to change
   =/  old=(unit presence-row)  (~(get by rows) who)
   ?~  old  $
+  ::  it is heard from, whether or not it has moved
+  =.  seen  (~(put by seen) [page who] now)
   =/  row=presence-row
     [ship.u.old (str 'block') ?:(=('edit' (str 'mode')) 'edit' 'read')]
   ?:  =(row u.old)  $
