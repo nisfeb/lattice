@@ -2165,8 +2165,10 @@
           (save-moved:lu code.p.r =((unacked-msg u.shp) msg.p.r) took ~s10 p.pp)
       ==
     (remote-save-respond eyre-id r)
-  ::  nothing reached the host. The editor may hold the host's path as a
-  ::  share recorded it, from before the host's lattice moved: ask where
+  ::  nothing reached the host, or it has no such file. The editor may hold
+  ::  the host's path as a share recorded it, from before the host's lattice
+  ::  moved, and a host answers "no such file" there once its kernel has
+  ::  moved the shell: ask where
   ::  it lives now (+peer-moved) and write the same file there, once, as
   ::  /browse-file reads it. A key must hold that path too.
   ;<  np=(unit path)  bind:m  (peer-moved u.shp p.pp)
@@ -3410,20 +3412,27 @@
       ;<  sn=view:nexus  bind:m  (peek:fio file-road ~)
       (browse-file-respond eyre-id sn)
     ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
-    ?^  ms  (browse-file-respond eyre-id u.ms)
-    ::  no answer there. A share keeps the host's path as it was that day,
+    ?:  ?=([~ %file *] ms)  (browse-file-respond eyre-id u.ms)
+    ::  no file there. A share keeps the host's path as it was that day,
     ::  and the host's lattice moves when its kernel moves the shell: ask
-    ::  where it lives now and read the same file there (+peer-moved)
+    ::  where it lives now and read the same file there (+peer-moved). A
+    ::  host may not answer at the old path at all, or may answer that
+    ::  nothing is there, as a kernel that moved the shell does: both are
+    ::  followed. What the first read said is the answer when the second
+    ::  finds no file either
+    =/  none=form:m
+      ?~  ms  (send-err eyre-id 504 'unreachable or denied')
+      (browse-file-respond eyre-id u.ms)
     ;<  np=(unit path)  bind:m  (peer-moved u.shp p.pp)
-    ?~  np  (send-err eyre-id 504 'unreachable or denied')
+    ?~  np  none
     ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] u.np %read))
-      (send-err eyre-id 504 'unreachable or denied')
+      none
     =/  k=@ud  (dec (lent u.np))
-    ;<  ms=(unit view:nexus)  bind:m
+    ;<  ns=(unit view:nexus)  bind:m
       (peek-remote-wait [%& %& (scag k u.np) (snag k u.np)] u.shp)
-    ?~  ms  (send-err eyre-id 504 'unreachable or denied')
+    ?.  ?=([~ %file *] ns)  none
     ;<  ~  bind:m  (heal-share u.shp p.pp u.np)
-    (browse-file-respond eyre-id u.ms)
+    (browse-file-respond eyre-id u.ns)
   ::  remote-save: overwrite a file on ANOTHER ship. The editor's save button
   ::  pointed across ames. POST /remote-save?ship=~nec&path=/a/b/c, body = the
   ::  new text. The write is a %grubbery-load %make applied on THEIR side as a

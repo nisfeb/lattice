@@ -65,6 +65,9 @@ struct Format {
     am_pm: bool,
     /// Hours run past a day: 30:00:00 and not 06:00:00.
     long_hours: bool,
+    /// It hands some numbers on to another format (`style:map`), as money does that writes
+    /// what is owed in brackets: its own words are then for the numbers it keeps, the negative ones.
+    mapped: bool,
 }
 
 fn attr<'a>(src: &'a str, el: &El, name: &str) -> Option<&'a str> {
@@ -112,7 +115,7 @@ fn compile(src: &str, el: &El) -> Option<Format> {
     if parts.is_empty() {
         return None;
     }
-    Some(Format { kind: el.name.clone(), am_pm: parts.iter().any(|p| matches!(p, Part::AmPm)), long_hours: attr(src, el, "number:truncate-on-overflow") == Some("false"), parts })
+    Some(Format { kind: el.name.clone(), am_pm: parts.iter().any(|p| matches!(p, Part::AmPm)), long_hours: attr(src, el, "number:truncate-on-overflow") == Some("false"), mapped: all.iter().any(|k| k.name == "style:map"), parts })
 }
 
 /// A number of days as a whole number, held where the sums done on it cannot wrap: a number
@@ -669,6 +672,11 @@ impl Styles {
     /// format read here, or the text is not written its way.
     pub fn read_as(&self, style: &str, text: &str) -> Option<f64> {
         let (_, Some(f)) = self.data.get(self.data_of(style)?)? else { return None };
+        // which of its formats wrote a text is not followed here, and its brackets or its sign
+        // would be taken for words: what is typed stays the text it is
+        if f.mapped {
+            return None;
+        }
         // the sign goes before everything, the symbol too
         let (neg, body) = text.strip_prefix('-').map_or((false, text), |b| (true, b));
         let timed = f.kind == "number:date-style" || f.kind == "number:time-style";

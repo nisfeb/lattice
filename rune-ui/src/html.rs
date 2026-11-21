@@ -608,11 +608,23 @@ fn next_image(s: &str) -> Option<(usize, usize)> {
     let mut from = 0;
     loop {
         let at = from + [find_ci(&s[from..], "<image"), find_ci(&s[from..], "<feimage")].into_iter().flatten().min()?;
-        let name_end = at + if s[at..].len() >= 8 && s[at..at + 8].eq_ignore_ascii_case("<feimage") { 8 } else { 6 };
-        let whole = s[name_end..].chars().next().is_none_or(|c| c.is_whitespace() || c == '/' || c == '>');
+        // by bytes: the letters after the match may be of more than one byte, and a slice of a set length would cut one in two
+        let b = s.as_bytes();
+        let name_end = at + if b.len() >= at + 8 && b[at..at + 8].eq_ignore_ascii_case(b"<feimage") { 8 } else { 6 };
+        let whole = b.get(name_end).is_none_or(|c| c.is_ascii_whitespace() || *c == b'/' || *c == b'>');
         if whole {
-            let len = s[at..].find('>').map_or(s.len() - at, |e| e + 1);
-            return Some((at, len));
+            // to the `>` that ends the tag: one inside a quoted value does not
+            let (mut i, mut quote) = (name_end, None::<u8>);
+            while i < b.len() {
+                match (quote, b[i]) {
+                    (Some(q), c) if c == q => quote = None,
+                    (None, b'"' | b'\'') => quote = Some(b[i]),
+                    (None, b'>') => break,
+                    _ => {}
+                }
+                i += 1;
+            }
+            return Some((at, (i + 1).min(b.len()) - at));
         }
         from = name_end;
     }
@@ -668,10 +680,12 @@ pub fn deeper_than(src: &str, most: usize) -> bool {
             continue;
         }
         let name = &src[from..from + len];
-        // a script's or a style's inside is not markup: `i<n` there opens nothing
-        if !closing && (name.eq_ignore_ascii_case("script") || name.eq_ignore_ascii_case("style")) {
-            let end = format!("</{}", name.to_ascii_lowercase());
-            i = find_ci(&src[i..], &end).map_or(src.len(), |e| i + e);
+        // a script's or a style's inside is not markup: `i<n` there opens nothing. Neither its opening nor its closing is counted
+        if name.eq_ignore_ascii_case("script") || name.eq_ignore_ascii_case("style") {
+            if !closing {
+                let end = format!("</{}", name.to_ascii_lowercase());
+                i = find_ci(&src[i..], &end).map_or(src.len(), |e| i + e);
+            }
             continue;
         }
         if VOID.iter().any(|v| v.eq_ignore_ascii_case(name)) {
@@ -848,6 +862,16 @@ mod tests {
         assert!(fetched_ok(kept.as_bytes()));
         assert_eq!(tamed("<svg><image xlink:href = '/etc/passwd'/></svg>"), "<svg><x-image xlink:href = '/etc/passwd'/></svg>");
         assert!(!fetched_ok(b"<svg><image href='data:image/svg+xml,%3Csvg%3E'/></svg>"), "a drawing inside a drawing may read a file in its turn");
+        // letters of more than one byte right after the name do not end the app
+        assert!(matches!(tamed("<p>Le tag <image \u{e9}tait l\u{e0}</p>"), std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(tamed("<image\u{e9}"), std::borrow::Cow::Borrowed(_)));
+        assert!(fetched_ok("<svg><image\u{e9}\u{e9}\u{e9}".as_bytes()));
+        assert!(!fetched_ok(b"<svg><image \xff\xfe href='/dev/zero'/></svg>"));
+        // a `>` inside a quoted value does not end the tag before its address is read
+        assert_eq!(tamed("<svg><image title=\"a>b\" href=\"file:///etc/passwd\"/></svg>"), "<svg><x-image title=\"a>b\" href=\"file:///etc/passwd\"/></svg>");
+        assert!(!fetched_ok(b"<svg><feImage result='>' xlink:href='/dev/zero'/></svg>"));
+        // scripts between do not hide how deep a page is
+        assert!(deeper_than(&"<div><script></script>".repeat(100_000), DEEPEST));
         // a long list written with no closing tags is not deep, nor is a script that compares
         let list = format!("<html><body><ul>{}</ul></body></html>", "<li>item\n".repeat(30_000));
         assert!(!deeper_than(&list, DEEPEST));
