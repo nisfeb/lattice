@@ -3754,8 +3754,9 @@
     ?~  who  (send-err eyre-id 400 'page and client: 1 to 256 and 1 to 64 bytes')
     (presence-stream up eyre-id page.u.who who.u.who (scot %p src))
   ::  POST /presence?page=&client=&block=&mode=read|edit|gone: where that
-  ::  window is now, sent when it changes and not otherwise, or that it
-  ::  has left. Passed to /presence.sig. Nothing is written.
+  ::  window is now, sent when it changes and once a minute while someone
+  ::  is at it, or that it has left. Passed to /presence.sig. Nothing is
+  ::  written.
       [%'POST' %presence]
     =/  who=(unit [page=@t who=@t])  (presence-who src args)
     ?~  who  (send-err eyre-id 400 'page and client: 1 to 256 and 1 to 64 bytes')
@@ -15119,14 +15120,17 @@
 ::
 ::  One process, /presence.sig, holds a table for each page: a row for
 ::  each window that holds a stream open on it (GET /presence-stream).
-::  A window is there for as long as its stream is, and no longer: it
-::  sends no word to say it is still there. It says where it is only
-::  when that changes (POST /presence). The stream's own process is
+::  A window is there for as long as its stream is and it is heard
+::  from. It says where it is when that changes, and once a minute
+::  while someone is at it (POST /presence). One not heard from in two
+::  and a half minutes is dropped and its stream ended, so a window
+::  that vanished with no word does not stay. The stream's own process is
 ::  poked the table when it changes, once a second at most for a page.
 ::
 ::  What this costs the event log is what matters on a ship left
 ::  running for months, so it is kept to: one request to open a
-::  stream, one for each change of place, and ONE timer for all the
+::  stream, one for each change of place, one a minute from a window
+::  someone is at (a window nobody is at leaves), and ONE timer for all the
 ::  streams there are, every 30 seconds, on which each stream is
 ::  written a comment. The ship's web server closes a stream it has
 ::  written nothing to for about 50 seconds, so the timer cannot be
