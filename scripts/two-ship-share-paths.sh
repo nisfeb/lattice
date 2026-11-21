@@ -99,11 +99,14 @@ grant() {
 }
 
 # --- the checks ---
-# reads_ok <label> <name> <text>: B reads it, both ways
+# reads_ok <label> <name> <text>: B reads it, both ways. Once the grant
+# has had a minute to land, a second reader that fails is asked once, so a
+# share that grants nothing fails in a minute, not in the gate's timeout
 reads_ok() {
+  local n=60
   if until_ 60 reads "$2" "$3"; then ok "$1: B reads it (browse-file)"
-  else fail "$1: B reads it (browse-file)" "status $(status "$2"), body [$(body "$2" | head -c 80)]"; fi
-  if until_ 60 urb_has "$2" "$3"; then ok "$1: B reads it (urb-read)"
+  else fail "$1: B reads it (browse-file)" "status $(status "$2"), body [$(body "$2" | head -c 80)]"; n=1; fi
+  if until_ "$n" urb_has "$2" "$3"; then ok "$1: B reads it (urb-read)"
   else fail "$1: B reads it (urb-read)" "$(urb "$2" | head -c 200)"; fi
 }
 # listed_ok <label> <prefix> <want>: B lists exactly <want> under <prefix>
@@ -116,10 +119,12 @@ writes_ok() {
   local rev out
   rev=$(B_ -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$(code_of "$2")" "$B/browse-file" | jq -r '.rev // empty')
   out=$(B_ -X POST "$B/remote-save?ship=$(enc "$ASHIP")&path=$(enc "$(code_of "$2")")${rev:+&base=$rev}" --data-binary "$3")
-  is "$1: B's remote-save lands" landed "$(jq -r '.outcome // empty' <<<"$out" 2>/dev/null || echo "$out")"
+  local got n=30; got=$(jq -r '.outcome // empty' <<<"$out" 2>/dev/null || echo "$out")
+  is "$1: B's remote-save lands" landed "$got"
+  [ "$got" = landed ] || n=1   # nothing is coming: do not wait for it
   saved() { [ "$(atext "$2")" = "$3" ]; }
-  if until_ 30 saved "$1" "$2" "$3"; then ok "$1: A has B's text"; else fail "$1: A has B's text" "A has [$(atext "$2" | head -c 80)]"; fi
-  if until_ 30 reads "$2" "$3"; then ok "$1: B reads its own edit back"; else fail "$1: B reads its own edit back"; fi
+  if until_ "$n" saved "$1" "$2" "$3"; then ok "$1: A has B's text"; else fail "$1: A has B's text" "A has [$(atext "$2" | head -c 80)]"; fi
+  if until_ "$n" reads "$2" "$3"; then ok "$1: B reads its own edit back"; else fail "$1: B reads its own edit back"; fi
 }
 # no_write <label> <name>: B's remote-save of a page shared for read does not land
 no_write() {
