@@ -3038,7 +3038,9 @@ fn commit_cell(s: &mut App) {
         return;
     }
     // the value or the formula goes in, and every formula that reads the cell is worked out again
-    match guarded(|| calc::enter(&p.body, v.at, r, c, &v.entry.text)) {
+    // what an earlier change left unworked is told to this one: the engine is made anew at each change, and would else work a formula out from a cell it once knew to be stale and say it was done
+    let stale: Vec<(usize, usize, usize)> = v.stale.iter().copied().collect();
+    match guarded(|| calc::enter_knowing(&p.body, v.at, r, c, &v.entry.text, &stale)) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(got) => {
             if let Some(v) = &mut s.sheet {
