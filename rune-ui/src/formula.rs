@@ -496,6 +496,8 @@ struct Parser {
     toks: Vec<Tok>,
     p: usize,
     depth: usize,
+    /// How many operators have been read: a formula of a great many would be a tree too deep to walk.
+    long: usize,
 }
 
 impl Parser {
@@ -506,6 +508,12 @@ impl Parser {
         }
     }
 
+    /// One more operator. A row of them makes a tree as deep as it is long, and everything that reads the tree goes down it, so twenty thousand terms end the app. No real formula has two thousand.
+    fn longer(&mut self) -> Result<(), String> {
+        self.long += 1;
+        if self.long > 2000 { Err("formula too long".into()) } else { Ok(()) }
+    }
+
     fn level(&mut self, n: usize) -> Result<Node, String> {
         if n == LEVELS.len() {
             return self.unary();
@@ -513,6 +521,7 @@ impl Parser {
         let mut l = self.level(n + 1)?;
         while let Some(op) = self.op(LEVELS[n]) {
             self.p += 1;
+            self.longer()?;
             l = Node::Bin(op, Box::new(l), Box::new(self.level(n + 1)?));
         }
         Ok(l)
@@ -533,6 +542,7 @@ impl Parser {
         let mut x = self.primary()?;
         while self.op(&["%"]).is_some() {
             self.p += 1;
+            self.longer()?;
             x = Node::Pct(Box::new(x));
         }
         Ok(x)
@@ -607,7 +617,7 @@ impl Parser {
 
 /// The tree of a formula's body.
 pub fn parse(text: &str, mode: Mode) -> Result<Node, String> {
-    let mut p = Parser { toks: tokenize(text, mode)?, p: 0, depth: 0 };
+    let mut p = Parser { toks: tokenize(text, mode)?, p: 0, depth: 0, long: 0 };
     let tree = p.level(0)?;
     match p.toks.get(p.p) {
         Some(t) => Err(format!("unexpected {}", said(t))),

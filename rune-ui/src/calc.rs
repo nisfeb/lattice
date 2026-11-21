@@ -234,6 +234,10 @@ impl<'a> Engine<'a> {
                         for cell in &row.cells {
                             if let Some(f) = &cell.f {
                                 for j in 0..cell.rep.min(256) {
+                                    // no more than a sheet of formulas in all: forty rows that each say half a million would be twenty million read
+                                    if e.formulas.len() >= 200_000 {
+                                        break;
+                                    }
                                     let entry = e.entry((s, r + i, c + j), f);
                                     e.formulas.push(entry);
                                 }
@@ -1106,6 +1110,22 @@ mod tests {
                 assert_eq!(format_cell(&merged, 0, r, c, &Fmt::Bold(true)).unwrap_err(), "that cell is part of a merged cell");
             }
         }
+    }
+
+    #[test]
+    fn what_ended_or_held_the_app_is_refused_or_quick() {
+        let sheet = doc(&[&["1", "2"], &["3", "4"]]);
+        let t = std::time::Instant::now();
+        // no arguments, a count past any number, a pattern of many stars, a row of twenty thousand terms
+        for typed in ["=RANK()", "=FACT(1E+15)", "=FACT(3000000000)", "=COUNTIF(A1:A1,\"*a*a*a*a*a*a*a*a*a*a*a*a*a*ab\")"] {
+            let _ = enter(&sheet, 0, 1, 1, typed);
+        }
+        let seeded = enter(&sheet, 0, 0, 0, &"a".repeat(40)).map(|e| e.body).unwrap_or(sheet.clone());
+        let _ = enter(&seeded, 0, 1, 1, "=COUNTIF(A1:A1,\"*a*a*a*a*a*a*a*a*a*a*a*a*a*ab\")");
+        let long = format!("=1{}", "+1".repeat(20_000));
+        assert!(enter(&sheet, 0, 2, 2, &long).is_err());
+        assert!(enter(&sheet, 0, 2, 2, &format!("=1{}", "+1".repeat(500))).is_ok());
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
     }
 
     #[test]

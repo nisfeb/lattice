@@ -1081,9 +1081,13 @@ pub fn from_csv(src: &str) -> Result<String, String> {
     Ok(out)
 }
 
+/// The most text one cell's repeats may come to, in bytes. A row's repeats may come to sixteen times it.
+const REPEAT_BYTES: usize = 4 << 20;
+
 fn end_cell(row: &mut Option<(Vec<String>, usize)>, cell: &mut Option<(String, usize)>) {
     let (Some((cells, _)), Some((text, rep))) = (row.as_mut(), cell.take()) else { return };
-    let n = rep;
+    // a cell said to stand many times over is copied only as far as `REPEAT_BYTES` of text goes: a long one said a billion times would else be gigabytes
+    let n = rep.min(REPEAT_BYTES / text.len().max(1)).max(1);
     for _ in 0..n.min(MAX_COLS.saturating_sub(cells.len())) {
         cells.push(text.clone());
     }
@@ -1095,7 +1099,8 @@ fn end_row(sheets: &mut [Sheet], row: &mut Option<(Vec<String>, usize)>) {
         cells.pop();
     }
     // empty rows in the middle keep their place, and the tail of them is cut in +parse
-    let n = rep;
+    let size: usize = cells.iter().map(|c| c.len() + 24).sum();
+    let n = rep.min(REPEAT_BYTES * 16 / size.max(1)).max(1);
     for _ in 0..n.min(MAX_ROWS.saturating_sub(sheet.rows.len())) {
         sheet.rows.push(cells.clone());
     }

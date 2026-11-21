@@ -2118,6 +2118,14 @@ fn under(names: &[String], path: &str) -> Vec<String> {
     names.iter().filter(|n| n.as_str() == path || n.strip_prefix(path).is_some_and(|r| r.starts_with('/'))).cloned().collect()
 }
 
+/// A change to a sheet, worked out so that a fault in the working out is
+/// a refusal and not the end of the app with whatever was unsaved in it.
+/// The sheet is not touched by a change that failed: each is worked out
+/// on a copy of the page's text.
+fn guarded<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|_| Err("it could not be worked out, and nothing was changed".into()))
+}
+
 /// Whether a name is the page or folder at `path`, or is in that folder.
 fn is_under(name: &str, path: &str) -> bool {
     name == path || name.strip_prefix(path).is_some_and(|r| r.starts_with('/'))
@@ -2989,7 +2997,7 @@ fn commit_cell(s: &mut App) {
         return;
     }
     // the value or the formula goes in, and every formula that reads the cell is worked out again
-    match calc::enter(&p.body, v.at, r, c, &v.entry.text) {
+    match guarded(|| calc::enter(&p.body, v.at, r, c, &v.entry.text)) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(got) => {
             if let Some(v) = &mut s.sheet {
@@ -3012,7 +3020,7 @@ fn format_picked(s: &mut App, change: calc::Fmt) {
         s.note = "this spreadsheet is not changed here".into();
         return;
     }
-    match calc::format_cell(&p.body, v.at, r, c, &change) {
+    match guarded(|| calc::format_cell(&p.body, v.at, r, c, &change)) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(body) if body == p.body => {}
         Ok(body) => save_body(s, p, body),
@@ -3028,7 +3036,7 @@ fn shift_picked(s: &mut App, rows: bool, off: usize, n: i64) {
     if v.name != p.name {
         return;
     }
-    match calc::shift(&p.body, v.at, rows, if rows { r } else { c } + off, n) {
+    match guarded(|| calc::shift(&p.body, v.at, rows, if rows { r } else { c } + off, n)) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(got) => {
             // the formulas moved with the rows, so what could not be worked out is counted afresh
@@ -3261,7 +3269,7 @@ fn add_sheet(s: &mut App) {
     if v.name != p.name {
         return;
     }
-    match sheet::add_sheet(&p.body, "") {
+    match guarded(|| sheet::add_sheet(&p.body, "")) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok((body, at)) => {
             v.want = Some(at);

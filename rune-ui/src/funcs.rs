@@ -132,12 +132,19 @@ fn variance(ns: &[f64], pop: bool) -> Result<f64, V> {
 
 /// A text against a pattern where `*` is any run and `?` any one character, without case.
 fn wild(pat: &[char], text: &[char]) -> bool {
-    match pat.split_first() {
-        None => text.is_empty(),
-        Some(('*', rest)) => (0..=text.len()).any(|i| wild(rest, &text[i..])),
-        Some(('?', rest)) => !text.is_empty() && wild(rest, &text[1..]),
-        Some((c, rest)) => text.first() == Some(c) && wild(rest, &text[1..]),
+    // one place to go back to, the last star: a pattern of many stars is not tried every way it could be cut
+    let (mut p, mut t, mut star, mut held) = (0, 0, None, 0);
+    while t < text.len() {
+        match pat.get(p) {
+            Some('*') => (star, held, p) = (Some(p), t, p + 1),
+            Some(c) if *c == '?' || *c == text[t] => (p, t) = (p + 1, t + 1),
+            _ => match star {
+                Some(s) => (p, held, t) = (s + 1, held + 1, held + 1),
+                None => return false,
+            },
+        }
     }
+    pat[p..].iter().all(|c| *c == '*')
 }
 
 /// A criterion as SUMIF and COUNTIF read it: ">3", "<>x", "abc", 4.
@@ -187,10 +194,14 @@ fn criterion(e: &mut Engine, c: &V) -> Box<dyn Fn(&V) -> bool> {
 
 /// The cells of a range and, beside each, the cell at the same place in another range.
 /// The rectangle is walked whole, held to what the sheet has in it.
-fn pairs(e: &mut Engine, test: Rg, other: Option<Rg>, f: &mut dyn FnMut(V, V)) {
+fn pairs(e: &mut Engine, test: Rg, other: Option<Rg>, f: &mut dyn FnMut(V, V)) -> Result<(), Unsupported> {
     let (rows, cols) = e.used(test.s);
     let r2 = test.r2.min(rows.saturating_sub(1).max(test.r1));
     let c2 = test.c2.min(cols.saturating_sub(1).max(test.c1));
+    // as a range is walked elsewhere: more cells than a formula may walk, and it keeps what it had
+    if (r2 - test.r1 + 1).saturating_mul(c2 - test.c1 + 1) > WALK_MOST {
+        return Err(Unsupported);
+    }
     for r in test.r1..=r2 {
         for c in test.c1..=c2 {
             let v = e.value((test.s, r, c));
@@ -201,7 +212,11 @@ fn pairs(e: &mut Engine, test: Rg, other: Option<Rg>, f: &mut dyn FnMut(V, V)) {
             f(v, w);
         }
     }
+    Ok(())
 }
+
+/// The most cells one test of a range may walk.
+const WALK_MOST: usize = 5_000_000;
 
 /// SUMIFS and COUNTIFS: every row and column of the first test range where every test holds.
 fn ifs(e: &mut Engine, sum: Option<&V>, tests: &[V], step: impl Fn(f64, &V) -> f64) -> V {
@@ -214,6 +229,9 @@ fn ifs(e: &mut Engine, sum: Option<&V>, tests: &[V], step: impl Fn(f64, &V) -> f
     let f = *f;
     let (rows, cols) = e.used(f.s);
     let mut acc = 0.0;
+    if f.rows().min(rows.saturating_sub(f.r1)).saturating_mul(f.cols().min(cols.saturating_sub(f.c1))) > WALK_MOST {
+        return err(ILLEGAL);
+    }
     for i in 0..f.rows().min(rows.saturating_sub(f.r1)) {
         for j in 0..f.cols().min(cols.saturating_sub(f.c1)) {
             let mut all = true;
@@ -591,7 +609,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         "RANK" => {
             let V::Num(v) = to_num(&scalar(e, &arg(0))) else { return Ok(to_num(&scalar(e, &arg(0)))) };
             let asc = a.get(2).is_some_and(|x| *x != V::Missing) && to_num(&scalar(e, &arg(2))) != V::Num(0.0);
-            stat(e, &a[1..a.len().min(2)], |ns| if ns.contains(&v) { n(1.0 + ns.iter().filter(|x| if asc { **x < v } else { **x > v }).count() as f64) } else { err(VALUE) })?
+            stat(e, a.get(1..a.len().min(2)).unwrap_or(&[]), |ns| if ns.contains(&v) { n(1.0 + ns.iter().filter(|x| if asc { **x < v } else { **x > v }).count() as f64) } else { err(VALUE) })?
         }
         "SUMIF" | "COUNTIF" | "AVERAGEIF" => {
             let Some(V::Range(test)) = a.first() else { return Ok(err(VALUE)) };
@@ -601,7 +619,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
                 _ => None,
             };
             let (mut ns, mut hits, mut bad) = (Vec::new(), 0usize, None);
-            pairs(e, *test, other, &mut |v, w| {
+            let walked = pairs(e, *test, other, &mut |v, w| {
                 if ok(&v) {
                     hits += 1;
                     match w {
@@ -612,6 +630,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
                     }
                 }
             });
+            walked?;
             match name {
                 "COUNTIF" => n(hits as f64),
                 "SUMIF" => bad.unwrap_or_else(|| n(ksum(&ns))),
@@ -676,7 +695,8 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             let m = (x.abs() - 1e-12).ceil();
             V::Num(if x < 0.0 { -1.0 } else { 1.0 } * if m % 2.0 != 0.0 { m } else { m + 1.0 })
         }),
-        "FACT" => num1!(|x| if x < 0.0 { err(ARG) } else { fin((2..=x.floor() as u64).fold(1.0, |f, i| f * i as f64)) }),
+        // past 170 it is more than a number can hold, and is not counted up to
+        "FACT" => num1!(|x| if x < 0.0 { err(ARG) } else if x > 170.0 { fin(f64::INFINITY) } else { fin((2..=x.floor() as u64).fold(1.0, |f, i| f * i as f64)) }),
         "CEILING" => num2!(or(1, 1.0), |x, s| V::Num(if s == 0.0 { 0.0 } else if x < 0.0 && s < 0.0 { (x / s + 1e-12).floor() * s } else { (x / s - 1e-12).ceil() * s })),
         "FLOOR" => num2!(or(1, 1.0), |x, s| if s == 0.0 { err(DIV0) } else { V::Num(if x < 0.0 && s < 0.0 { (x / s - 1e-12).ceil() * s } else { (x / s + 1e-12).floor() * s }) }),
         "MROUND" => num2!(arg(1), |x, s| V::Num(if s == 0.0 { 0.0 } else { js_round(x / s) * s })),
