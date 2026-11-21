@@ -14040,17 +14040,17 @@
   |-  ^-  form:m
   ?~  l  (pure:m out)
   =/  r=road:tarball  i.l
-  ?.  ?&  ?=([%& %| *] r)
-          ?=(^ p.p.r)
-          (gth (lent p.p.r) (lent sb))
-          =(sb (scag (lent sb) p.p.r))
-      ==
-    $(l t.l, out (~(put in out) r))
-  =/  fr=road:tarball  [%& %& (snip `path`p.p.r) (rear p.p.r)]
+  ::  the dir path of a dir road on our tree, below its root
+  =/  dp=path
+    ?.  ?=([%& %| *] r)  ~
+    ?.  &((gth (lent p.p.r) (lent sb)) =(sb (scag (lent sb) p.p.r)))  ~
+    p.p.r
+  ?~  dp  $(l t.l, out (~(put in out) r))
+  =/  fr=road:tarball  [%& %& (snip `path`dp) (rear dp)]
   ;<  isd=?  bind:m  (peek-exists:fio r)
   ;<  isf=?  bind:m  ?:(isd (pure:(fiber:fiber:nexus ,?) |) (peek-exists:fio fr))
   ?.  isf  $(l t.l, out (~(put in out) r))
-  %-  (say 2 ~[leaf+"lattice: a grant on {(spud p.p.r)} named a file as a folder; granted as the file"])
+  %-  (say 2 ~[leaf+"lattice: a grant on {(spud dp)} named a file as a folder; granted as the file"])
   $(l t.l, out (~(put in out) fr))
 ::  +move-grants: grants follow a page. A group road names a path, so a
 ::  move would leave the ship it was shared with holding the old one, and
