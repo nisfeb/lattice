@@ -49,6 +49,7 @@
 /<  tpl  /lib/lattice-templates.hoon
 /<  lkv  /lib/lattice-know-view.hoon
 /<  lo   /lib/lattice-orrery.hoon
+/<  lfl  /lib/lattice-floor.hoon
 ::  imports resolve relative to THIS file's dir (/nex/lattice), not /nex.
 ::  guestbook writes `guestbook/icon.svg` only because its source sits AT /nex.
 /<  icon  icon.svg
@@ -3101,7 +3102,7 @@
     ;<  fl=(unit @ud)  bind:m  (hist-floor (rf up pdir %code))
     =/  own=(list [c=cass:clay s=sage:tarball])
       ?.  lv  ~
-      (skim p.pe |=([c=cass:clay *] (in-life:lk fl ud.c)))
+      (skim p.pe |=([c=cass:clay *] (in-life:lfl fl ud.c)))
     ::  a revision a move carried is dated when it was saved (+rev-at:lk)
     ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m
       (born:fio (rf up pdir %code))
@@ -3141,7 +3142,7 @@
     ::  as page-history: this page's own revisions only
     ;<  lv=?  bind:m  (peek-exists:fio (rf up pdir %code))
     ;<  fl=(unit @ud)  bind:m  (hist-floor (rf up pdir %code))
-    ?.  &(lv (in-life:lk fl u.rv) (lien p.pe |=([c=cass:clay *] =(ud.c u.rv))))
+    ?.  &(lv (in-life:lfl fl u.rv) (lien p.pe |=([c=cass:clay *] =(ud.c u.rv))))
       (send-err eyre-id 404 'no such revision')
     ;<  sn=view:nexus  bind:m  (peek-at:io (rf up pdir %code) ~ [%ud u.rv])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
@@ -4999,7 +5000,7 @@
     =/  revs=(list [ud=@ud da=@da])
       %+  sort
         %+  murn  p.pe
-        |=([c=cass:clay *] ?.((in-life:lk fl ud.c) ~ `[ud.c da.c]))
+        |=([c=cass:clay *] ?.((in-life:lfl fl ud.c) ~ `[ud.c da.c]))
       |=  [a=[ud=@ud da=@da] b=[ud=@ud da=@da]]
       (lth ud.a ud.b)
     %+  send-json  eyre-id
@@ -5030,7 +5031,7 @@
       (peep:io road.u.hr [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
     ;<  fl=(unit @ud)  bind:m  (hist-floor road.u.hr)
-    ?.  &((in-life:lk fl u.rev) (lien p.pe |=([c=cass:clay *] =(ud.c u.rev))))
+    ?.  &((in-life:lfl fl u.rev) (lien p.pe |=([c=cass:clay *] =(ud.c u.rev))))
       (send-err eyre-id 404 'no such revision')
     ;<  sn=view:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
@@ -5058,7 +5059,7 @@
       (peep:io road.u.hr [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
     ;<  fl=(unit @ud)  bind:m  (hist-floor road.u.hr)
-    ?.  &((in-life:lk fl u.rev) (lien p.pe |=([c=cass:clay *] =(ud.c u.rev))))
+    ?.  &((in-life:lfl fl u.rev) (lien p.pe |=([c=cass:clay *] =(ud.c u.rev))))
       (send-err eyre-id 404 'no such revision')
     ;<  sn=view:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
@@ -5098,7 +5099,7 @@
     ;<  fl=(unit @ud)  bind:m  (hist-floor road)
     =/  revs=(list cass:clay)
       %+  sort
-        (murn p.pe |=([c=cass:clay *] ?.((in-life:lk fl ud.c) ~ `c)))
+        (murn p.pe |=([c=cass:clay *] ?.((in-life:lfl fl ud.c) ~ `c)))
       |=([a=cass:clay b=cass:clay] (lth ud.a ud.b))
     =/  ntot=@ud  (lent revs)
     ?:  (lte ntot u.keep)
@@ -5684,7 +5685,7 @@
     =/  revs=(list [ud=@ud da=@da])
       %+  sort
         %+  murn  p.pe
-        |=([c=cass:clay *] ?.((in-life:lk fl ud.c) ~ `[ud.c da.c]))
+        |=([c=cass:clay *] ?.((in-life:lfl fl ud.c) ~ `[ud.c da.c]))
       |=  [a=[ud=@ud da=@da] b=[ud=@ud da=@da]]
       (lth ud.a ud.b)
     %+  send-json  eyre-id
@@ -5709,7 +5710,7 @@
       (peep:io road.u.hr [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
     ;<  fl=(unit @ud)  bind:m  (hist-floor road.u.hr)
-    ?.  &((in-life:lk fl u.rev) (lien p.pe |=([c=cass:clay *] =(ud.c u.rev))))
+    ?.  &((in-life:lfl fl u.rev) (lien p.pe |=([c=cass:clay *] =(ud.c u.rev))))
       (send-err eyre-id 404 'no such revision')
     ;<  sn=view:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
@@ -10299,7 +10300,7 @@
 ::  memory made at a name used before would serve the old one's versions
 ::  as its own. The floor of a path is the top rev an earlier grub left
 ::  there, noted when a new grub starts at it (+note-floor), and only revs
-::  above it are read as the current grub's (+in-life:lk). Nothing is
+::  above it are read as the current grub's (+in-life:lfl). Nothing is
 ::  dropped: the old versions stay in the path's history, unread.
 ++  floor-key
   |=  road=road:tarball
@@ -10344,7 +10345,7 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  fl=(map path @ud)  bind:m  read-floors
-  =/  nu=(map path @ud)  (floor-put:lk fl key top)
+  =/  nu=(map path @ud)  (floor-put:lfl fl key top)
   ?:  =(nu fl)  (pure:m ~)
   (put-file (rf up / %'hist-floors') [/ %noun] nu)
 ::  +prune-hist-by: +prune-hist, with each revision's writer (`wr`, rev to
@@ -10376,7 +10377,7 @@
       %+  murn  p.bo
       |=  [c=cass:clay tags=(set @t) tomb=?]
       ^-  (unit cass:clay)
-      ?:(|(tomb !(in-life:lk fl ud.c)) ~ `c)
+      ?:(|(tomb !(in-life:lfl fl ud.c)) ~ `c)
     |=([a=cass:clay b=cass:clay] (gth ud.a ud.b))
   ::  each revision's time by +rev-at:lk: one a move carried keeps its own
   =/  at=(map @ud @da)
@@ -10789,7 +10790,7 @@
   ;<  sf=(unit @ud)  bind:m  (hist-floor src)
   ;<  df=(unit @ud)  bind:m  (hist-floor dst)
   =/  dlive
-    (skip p.db |=([c=cass:clay * tomb=?] |(tomb !(in-life:lk df ud.c))))
+    (skip p.db |=([c=cass:clay * tomb=?] |(tomb !(in-life:lfl df ud.c))))
   ?:  (lien dlive |=([c=cass:clay t=(set @t) *] !=(da.c (rev-at:lk da.c t))))
     (pure:m ~)
   ?~  dlive  (pure:m ~)
@@ -10799,7 +10800,7 @@
     %+  sort
       %+  murn  p.sb
       |=  [c=cass:clay t=(set @t) tomb=?]
-      ?:(|(tomb !(in-life:lk sf ud.c)) ~ `[c t])
+      ?:(|(tomb !(in-life:lfl sf ud.c)) ~ `[c t])
     |=([a=[c=cass:clay *] b=[c=cass:clay *]] (lth ud.c.a ud.c.b))
   ?.  ?=([* * *] slive)  (pure:m ~)
   ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
