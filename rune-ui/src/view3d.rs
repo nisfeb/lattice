@@ -215,7 +215,8 @@ pub fn coarse(m: &Mesh, cam: &Cam, w: usize, h: usize) -> usize {
         })
         .sum();
     let over = tests / (LAYERS * w as f64 * h as f64);
-    if over <= 1.0 { 1 } else { (over.sqrt().ceil() as usize).clamp(2, w.max(h)) }
+    // no dot is larger than the picture, and a picture of one pixel is one dot
+    if over <= 1.0 { 1 } else { (over.sqrt().ceil() as usize).clamp(1, w.max(h)).max(1) }
 }
 
 /// The part as a picture `w` by `h`: straight RGBA, clear where nothing is.
@@ -482,6 +483,11 @@ mod tests {
             }
         }
         assert!(all > 100_000, "{all}");
+        // a picture of one pixel, or one pixel wide, is drawn and not refused: once the dot's size could not be worked out for it
+        for (pw, ph) in [(1, 1), (1, 2), (2, 1), (1, 300), (3, 3)] {
+            assert!((1..=pw.max(ph)).contains(&coarse(&heavy, &cam, pw, ph)), "{pw} by {ph}");
+            assert_eq!(render(&heavy, &cam, pw, ph).len(), pw * ph * 4);
+        }
         // nothing to draw, or no picture to draw in, is no work
         assert_eq!((coarse(&m, &near, 0, 0), coarse(&Mesh { tris: 0, pos: Vec::new(), min: [0.0; 3], max: [0.0; 3] }, &near, w, h)), (1, 1));
     }
