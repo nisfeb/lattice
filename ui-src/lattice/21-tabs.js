@@ -165,7 +165,7 @@
           share: (n && n.share) || 'private' }, true);
         //  a tab's rev is the editor's from when it was parked, which only
         //  ever comes from a fresh answer, so its saves may claim it
-        if (!s.hist) { curRev = s.rev || 0; if (!s.dirty) shipText.set(t.key, s.body); }
+        if (!s.hist) { curRev = isRev(s.rev) ? s.rev : null; if (!s.dirty) shipText.set(t.key, s.body); }
         // a quiet applyPage paints a content kind only. A computed page
         // kept whatever the pane showed before it came back: a grub's "no
         // preview", painted while the grub's state was still live (fuzz
@@ -721,7 +721,7 @@
     for (const t of allTabs()) {
       if (t.kind !== kind || t.key !== name || (t.ship || null) !== ship || !t.snap) continue;
       if (t.snap.body === sent && t.snap.dirty) t.snap.dirty = false;
-      if (rev) t.snap.rev = rev;
+      if (isRev(rev)) t.snap.rev = rev;
     }
   }
 
