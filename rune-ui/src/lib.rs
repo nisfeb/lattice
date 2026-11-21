@@ -2619,7 +2619,7 @@ fn listen(s: &mut App) {
                 base = c.lat_base().ok();
             }
             let got = match &base {
-                Some(b) => c.beacon_stream(b, |ev| {
+                Some(b) => c.beacon_stream_while(b, || !stop.load(Ordering::Relaxed), |ev| {
                     heard.lock().unwrap().push(ev);
                     waker();
                     !stop.load(Ordering::Relaxed)
@@ -10488,8 +10488,7 @@ fn browse_anon(s: &mut App) {
     s.marks = Some(anon_marks_load());
     s.visits = anon_visits_load();
     if s.engine.is_none() {
-        let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")));
-        s.engine = base.map(|b| engine::Engine::new(b.join("lattice-rune").join("urb")));
+        s.engine = api::config_dir().map(|d| engine::Engine::new(d.join("urb")));
     }
     #[cfg(unix)]
     id_refresh(s);
@@ -10811,8 +10810,7 @@ fn anon_visits_store(list: &[api::Visit]) {
 }
 
 fn anon_marks_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
-    Some(base.join("lattice-rune").join("anon-bookmarks.json"))
+    Some(api::config_dir()?.join("anon-bookmarks.json"))
 }
 
 /// The bookmarks kept with no ship, on this computer.
@@ -10825,7 +10823,8 @@ fn anon_marks_store(list: &[api::Bookmark]) -> Result<(), String> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&p, serde_json::to_vec(list).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    // the owner's alone, as the list of what was read is: it is where someone has been
+    api::write_private(&p, &serde_json::to_vec(list).map_err(|e| e.to_string())?)
 }
 
 /// With no ship there is nowhere to write a page: said, where a sample page would be kept for the session.
