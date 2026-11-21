@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 1.2, "type": "secondary-click", "key": "lattice:notes/today"},
+  {"t": 2.0, "type": "mark", "name": "menu"},
+  {"t": 2.2, "type": "tap", "key": "link-menu-item1"},
+  {"t": 3.0, "type": "mark", "name": "tab"}
+]}

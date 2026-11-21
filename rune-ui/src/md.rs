@@ -62,7 +62,7 @@ pub fn html_shown(src: &str) -> String {
     })
 }
 
-fn html_made(src: &str) -> String {
+pub fn html_made(src: &str) -> String {
     use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
     // the options rune-kit parses with, so the places agree
     let opts = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;

@@ -418,6 +418,29 @@ impl Worn {
         })
     }
 
+    /// The files of the font Talon sets its text in, when it is an
+    /// installed family: the ids of that family's faces in grubbery's
+    /// store (`talon/fonts/<id>.font`), each the sha256 of its file.
+    /// One Talon removed, or with an id that is no hash, is left out.
+    pub fn font_ids(&self) -> Vec<String> {
+        let Some(Font::Named(_)) = self.font() else { return Vec::new() };
+        let family = self.talon_fonts.get("family").and_then(Value::as_str).unwrap_or_default();
+        let gone: Vec<&str> = self.talon_fonts.get("removed").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        let faces = self.talon_fonts.get("fonts").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        let mut ids: Vec<String> = faces
+            .iter()
+            .filter(|x| x.get("family").and_then(Value::as_str) == Some(family))
+            .filter_map(|x| x.get("id").and_then(Value::as_str))
+            .filter(|id| id.len() == 64 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) && !gone.contains(id))
+            .map(str::to_owned)
+            .collect();
+        ids.dedup();
+        // a family is a handful of faces
+        // ponytail: 24 faces at most. A larger family loses the rest without a word
+        ids.truncate(24);
+        ids
+    }
+
     /// What is said of the font, as the web client's settings page says it.
     pub fn font_said(&self) -> String {
         match self.font() {
@@ -620,6 +643,25 @@ mod tests {
         assert_eq!((w.font(), w.font_said()), (None, "Talon\u{2019}s font is ignored here.".to_owned()));
         w.lattice(Some(&json!({ "bucket": { "use-talon-font": { "enabled": false }, "use-talon-theme": { "enabled": false } } })));
         assert!(!w.reads_talon());
+    }
+
+    #[test]
+    fn the_files_of_talons_font_are_the_chosen_familys_faces() {
+        let (a, b, c) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        let mut w = Worn::default();
+        w.talon_fonts = json!({ "family": "Berkeley Mono", "removed": [c], "fonts": [
+            { "id": a, "family": "Berkeley Mono", "weight": 400, "italic": false },
+            { "id": b, "family": "Other", "weight": 400, "italic": false },
+            { "id": c, "family": "Berkeley Mono", "weight": 700, "italic": false },
+            { "id": "../../etc/passwd", "family": "Berkeley Mono" },
+            { "id": "A".repeat(64), "family": "Berkeley Mono" },
+        ] });
+        assert_eq!(w.font_ids(), [a.clone()], "its family's, not removed, and named by a hash");
+        w.own_font = true;
+        assert!(w.font_ids().is_empty(), "Talon's font is not followed");
+        w.own_font = false;
+        w.talon_fonts["family"] = json!("serif");
+        assert!(w.font_ids().is_empty(), "a generic family has no files");
     }
 
     #[test]

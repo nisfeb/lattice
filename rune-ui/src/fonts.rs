@@ -60,6 +60,69 @@ pub fn of_family(family: &str) -> Vec<Vec<u8>> {
     }).collect()
 }
 
+/// Where the fonts fetched from a ship are kept: beside the app's own
+/// files, one for each face, named by its id. A face is the same file on
+/// every ship, so they are not kept apart by ship.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn kept_dir() -> Option<std::path::PathBuf> {
+    Some(crate::api::config_dir()?.join("fonts"))
+}
+
+/// Whether these bytes are the face of this id: Talon names a font's
+/// file by its sha256, and a file that is not its name is not taken.
+/// Off Unix there is no hash in the build, and the font's own tables are
+/// the only check, as in a browser with no `crypto.subtle`.
+// ponytail: off Unix a fetched font is not checked against its hash, since the build has no hash there. ring built for Windows too is the fix
+pub fn is_face(id: &str, bytes: &[u8]) -> bool {
+    if id.len() != 64 || bytes.len() < 12 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        let sum: String = ring::digest::digest(&ring::digest::SHA256, bytes).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+        sum == id
+    }
+    #[cfg(not(unix))]
+    {
+        id.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn face_path(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    dir.join(format!("{id}.font"))
+}
+
+/// The faces kept in `dir` among these ids, each checked against its
+/// id and mended, for Rune at launch.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn kept_at(dir: &std::path::Path, ids: &[String]) -> Vec<Vec<u8>> {
+    ids.iter()
+        .filter_map(|id| std::fs::read(face_path(dir, id)).ok().filter(|b| is_face(id, b)))
+        .map(|mut b| {
+            mend(&mut b);
+            b
+        })
+        .collect()
+}
+
+/// The ids among these with no file kept in `dir`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn missing_at(dir: &std::path::Path, ids: &[String]) -> Vec<String> {
+    ids.iter().filter(|id| !face_path(dir, id).is_file()).cloned().collect()
+}
+
+/// Keeps a face fetched from a ship, when it is the file its id says.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn keep_at(dir: &std::path::Path, id: &str, bytes: &[u8]) -> Result<(), String> {
+    if !is_face(id, bytes) {
+        return Err("not the file its name says".into());
+    }
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let (tmp, to) = (dir.join(format!("{id}.part")), face_path(dir, id));
+    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &to)).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +176,24 @@ mod tests {
         let mut short = font(0b1100_0000, 0, -16 << 16);
         short.truncate(70);
         assert!(!mend(&mut short), "a file cut short is not read past its end");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fetched_face_is_kept_only_when_it_is_its_name() {
+        let dir = std::env::temp_dir().join(format!("lattice-rune-fonts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bytes = font(0x40, 0, 0);
+        let id: String = ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+        let other = "0".repeat(64);
+        assert_eq!(missing_at(&dir, &[id.clone(), other.clone()]), [id.clone(), other.clone()]);
+        assert!(keep_at(&dir, &other, &bytes).is_err(), "bytes under another name are refused");
+        keep_at(&dir, &id, &bytes).unwrap();
+        assert_eq!(missing_at(&dir, &[id.clone(), other.clone()]), [other.clone()]);
+        assert_eq!(kept_at(&dir, &[id.clone(), other.clone()]), [bytes.clone()]);
+        // a kept file changed on disk is not handed to Rune
+        std::fs::write(dir.join(format!("{id}.font")), b"something else entirely").unwrap();
+        assert!(kept_at(&dir, &[id]).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

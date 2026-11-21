@@ -40,6 +40,14 @@ class H(BaseHTTPRequestHandler):
             if not f.startswith(os.path.realpath(os.environ['LR_WEB']) + os.sep) or not os.path.isfile(f): return self.send(404, 'not found', 'text/plain')
             ct = {'.js': 'text/javascript', '.wasm': 'application/wasm', '.html': 'text/html', '.ttf': 'font/ttf'}.get(os.path.splitext(f)[1], 'application/octet-stream')
             return self.send(200, open(f, 'rb').read(), ct)
+        # LR_SHARE_ADD=1: the change stream, as grubbery's keep sends it, telling of one new share and then ending
+        if u.path.endswith('/beacon/rev') and os.environ.get('LR_SHARE_ADD'):
+            add = json.dumps({"t": "~2026.11.19..10.00.00", "op": "add", "host": "~sampel-palnet", "path": "/lattice/page/notes/plan/code", "rev": 7})
+            return self.send(200, 'event: old /rev\ndata: 1\n\nevent: upd /shares\ndata: ' + add + '\n\n', 'text/event-stream')
+        if u.path.startswith('/grubbery/api/file/talon/fonts/'):
+            b = FONTS.get(u.path.rsplit('/', 1)[1].removesuffix('.font')) if signed else None
+            sys.stderr.write("font %s %s\n" % (u.path.rsplit('/', 1)[1][:12], 'sent' if b else 'refused'))
+            return self.send(200, b, 'application/octet-stream') if b else self.send(404, 'not found', 'text/plain')
         if u.path == '/~/login': return self.send(200, '<title>login</title><p id=login>the ship asks for its code, to go back to ' + q.get('redirect', [''])[0], 'text/html')
         # %settings, as eyre answers a scry of a bucket: each entry is text that holds JSON, and a bucket never written is a 404
         if u.path.startswith('/~/scry/settings/bucket/'):
@@ -60,6 +68,12 @@ class H(BaseHTTPRequestHandler):
             # a link is in the tree with no text, as the ship sends one
             nodes += [{"path":n,"page":True,"kind":"md","rev":l["rev"],"readonly":l["mode"]=="read","link":{"host":l["host"],"path":l["path"],"mode":l["mode"],"kind":"md"}} for n, l in LINKS.items()]
             return self.send(200, json.dumps({"nodes":nodes,"since":"s1"}))
+        if p == 'page-history' and HISTORY:
+            return self.send(200, json.dumps({"revisions": [{"rev": i + 1, "updated": "~2026.11.%d..10.%d.00..0000" % (1 + i // 3, 10 + i)} for i in reversed(range(len(HISTORY)))]}))
+        if p == 'page-source-at' and HISTORY:
+            n = int(q.get('rev', ['0'])[0])
+            if not 1 <= n <= len(HISTORY): return self.send(404, 'not found', 'text/plain')
+            return self.send(200, json.dumps({"body": HISTORY[n - 1], "kind": os.environ.get('LR_KIND', 'md'), "rev": n, "mtime": "~2026.11.17"}))
         if p == 'page-source':
             l = LINKS.get(q.get('name', [''])[0])
             if l: return self.send(200, json.dumps({"body":l["body"],"kind":"md","rev":l["rev"],"mtime":"~2026.11.17"}))
@@ -151,6 +165,12 @@ NOTICES = [
     {"id":"0v1.n","kind":"remote","when":1795000000000,"who":"~bus","host":"~sampel-palnet","where":"tech","post":7,"title":"Rune","body":"I think so too.","read":False},
     {"id":"0v2.n","kind":"reply","when":1794990000000,"who":"~bus","host":"~zod","where":"chat","post":3,"title":"Hello","body":"Welcome.","read":False},
     {"id":"0v3.n","kind":"folder","when":1794980000000,"who":"~sampel-palnet","host":"~sampel-palnet","where":"/notes","post":0,"title":"2 new pages in notes from ~sampel-palnet","body":"","read":False}]
+# LR_HISTORY names a folder of files, one for each revision of the page in the order of their names: the page's history, the last being the page as it is
+HISTORY = []
+if os.environ.get('LR_HISTORY'):
+    _d = os.environ['LR_HISTORY']
+    HISTORY = [open(os.path.join(_d, f)).read() for f in sorted(os.listdir(_d))]
+    PAGES[os.environ.get('LR_NAME', 'places')] = [HISTORY[-1], os.environ.get('LR_KIND', 'md'), len(HISTORY)]
 COMMENTS = [{"page": os.environ.get('LR_NAME', 'places'), "id": "0v1.a", "author": "~sampel-palnet", "when": "~2026.11.17..9.30.0", "body": "A first comment."}]
 COMMENTS_ON = {}
 PENDING = [{"id": "0v9.held", "author": "~doznec-salfun-naptul-habrys--todlux-mosmep-linsub-binzod", "when": 1795000000000, "body": "A comet's comment, held."}]
@@ -291,6 +311,14 @@ def do_POST(self):
 SETTINGS = {}
 # LR_TALON names a file of JSON: Talon's ui-prefs bucket (themes, accent, fonts), as a ship that wears a Talon theme answers
 if os.environ.get('LR_TALON'): SETTINGS['talon'] = json.load(open(os.environ['LR_TALON']))
+# LR_FONT names a font file Talon installed, and LR_FONT_FAMILY its family: the font Talon's text is set in, its file in grubbery's store under its sha256
+FONTS = {}
+if os.environ.get('LR_FONT'):
+    import hashlib
+    _b = open(os.environ['LR_FONT'], 'rb').read()
+    _id = hashlib.sha256(_b).hexdigest()
+    FONTS[_id] = _b
+    SETTINGS.setdefault('talon', {})['fonts'] = {"family": os.environ.get('LR_FONT_FAMILY', ''), "fonts": [{"id": _id, "family": os.environ.get('LR_FONT_FAMILY', ''), "weight": 400, "italic": False}]}
 def do_PUT(self):
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
     for act in json.loads(body or '[]'):
