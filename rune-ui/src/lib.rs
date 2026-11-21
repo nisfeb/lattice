@@ -3074,7 +3074,9 @@ fn commit_cell(s: &mut App) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(got) => {
             if let Some(v) = &mut s.sheet {
-                v.stale.retain(|k| !got.done.contains(k));
+                got.done.iter().for_each(|k| {
+                    v.stale.remove(k);
+                });
                 v.stale.extend(got.stale);
             }
             if got.body != p.body {
@@ -3109,10 +3111,11 @@ fn shift_picked(s: &mut App, rows: bool, off: usize, n: i64) {
     if v.name != p.name {
         return;
     }
-    match guarded(|| calc::shift(&p.body, v.at, rows, if rows { r } else { c } + off, n)) {
+    let stale: Vec<(usize, usize, usize)> = v.stale.iter().copied().collect();
+    match guarded(|| calc::shift_knowing(&p.body, v.at, rows, if rows { r } else { c } + off, n, &stale)) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(got) => {
-            // the formulas moved with the rows, so what could not be worked out is counted afresh
+            // what was stale before is told to the change, and comes back among the stale where it moved to
             v.stale = got.stale.into_iter().collect();
             v.repick = true;
             if got.body != p.body {
