@@ -49,10 +49,12 @@ impl<T: Send + 'static> InTurn<T> {
 
     /// The oldest request's answer, once. Taking it starts the next request.
     pub fn take(&self) -> Option<T> {
+        // asked before the answer is looked for: a request that lands between the two looks then gives its answer, and is not taken for one that ended with none
+        let pending = self.req.is_pending();
         let got = self.req.take();
         let mut turn = self.turn.lock().unwrap_or_else(|e| e.into_inner());
         // a request that ended with no answer is one that panicked: it is passed over, or it would hold every request after it for the rest of the session
-        let ended = got.is_some() || (turn.busy && !self.req.is_pending());
+        let ended = got.is_some() || (turn.busy && !pending);
         if ended {
             match turn.wait.pop_front() {
                 Some(job) => self.req.request((), move |()| job()),

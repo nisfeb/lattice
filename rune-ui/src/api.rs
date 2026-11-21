@@ -2630,6 +2630,23 @@ impl Conn {
         Ok(())
     }
 
+    /// Signs out of the ship at `url`, whichever is in front in the file: another window may have brought another there.
+    pub fn forget_of(url: &str) {
+        if cfg!(test) {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
+            let mut all = crate::accounts::load_at(dir, now_secs());
+            if let Some(gone) = all.remove(url) {
+                end_session(gone.url, gone.cookie);
+            }
+            let _ = crate::accounts::store_at(dir, &all);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = url;
+    }
+
     /// Signs out of the ship in front: its session is let go, and the others signed in stay.
     pub fn forget() {
         if cfg!(test) {
