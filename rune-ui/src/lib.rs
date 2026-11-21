@@ -15,6 +15,7 @@ mod code;
 mod fonts;
 mod formula;
 mod html;
+mod inturn;
 mod local;
 mod mounts;
 mod notify;
@@ -534,7 +535,8 @@ struct App {
     lapsed: bool,
     login_req: Latest<Result<Conn, String>>,
     prompt: Option<Prompt>,
-    op_req: Latest<Result<Op, String>>,
+    /// Changes sent to the ship, each answered in its turn: none drops another's answer (`inturn`).
+    op_req: inturn::InTurn<Result<Op, String>>,
     /// The rendered page beside the source while editing.
     preview: bool,
     sidebar: PaneState,
@@ -740,7 +742,8 @@ struct App {
     /// Vim's state between keys, for the source editor when vim mode is on.
     vim: vim::Vim,
     /// The agent keys as read, and the secret of one just made.
-    keys_req: Latest<Result<(Vec<api::AgentKey>, Option<String>), String>>,
+    /// In turn too: a new key's secret is shown once, and a list read made beside it must not drop it.
+    keys_req: inturn::InTurn<Result<(Vec<api::AgentKey>, Option<String>), String>>,
     /// The map token's state and the OpenSCAD runtime's as read, the openscad found here when it was looked for, and what to say of what was just done.
     set_req: Latest<Result<SetGot, String>>,
     stack_req: Latest<Result<api::Stack, String>>,
@@ -871,6 +874,8 @@ struct App {
     here_key: (usize, usize, u64),
     /// How many times what the table shows has changed.
     here_heard: u64,
+    /// The field's selection as vim last left it.
+    vim_seen: (usize, usize),
     /// When the ship last heard from this window.
     here_beat: f64,
     /// Whether anyone is at the window (`sync_away`): a key or the pointer moved since the last look, when one last did, since when the window has not been in front, and when it is looked at again.
@@ -1134,7 +1139,7 @@ fn init() -> App {
         lapsed: false,
         login_req: Latest::default(),
         prompt: None,
-        op_req: Latest::default(),
+        op_req: inturn::InTurn::default(),
         preview: true,
         sidebar: PaneState::new(264.0).range(160.0, 520.0),
         files: Files::default(),
@@ -1260,7 +1265,7 @@ fn init() -> App {
         beacon_state: api::BeaconState::default(),
         beacon_stop: Default::default(),
         vim: vim::Vim::default(),
-        keys_req: Latest::default(),
+        keys_req: inturn::InTurn::default(),
         set_req: Latest::default(),
         stack_req: Latest::default(),
         local_req: Latest::default(),
@@ -1341,6 +1346,7 @@ fn init() -> App {
         here_tints: Vec::new(),
         here_key: (0, 0, 0),
         here_heard: 0,
+        vim_seen: (0, 0),
         here_beat: 0.0,
         // a window is in front and in use when it opens
         touched: true,
@@ -2039,12 +2045,22 @@ fn confirm(s: &mut App) {
     };
     let rn = match typed.as_deref().map(api::real_name) {
         Some(None) => {
+            // the question stays, with what was typed, to be mended
             s.note = "that name has nothing a path can keep".into();
+            s.prompt = Some(p);
             return;
         }
         Some(Some(rn)) => rn,
         None => api::RealName { name: String::new(), dname: String::new(), dnames: String::new() },
     };
+    // a move onto a page that is there is not made: the question stays, with what was typed
+    if let Prompt::Rename(from, _) = &p {
+        if rn.name != *from && !under(&s.names, &rn.name).is_empty() {
+            s.note = format!("there is a page or folder at {} already", rn.name);
+            s.prompt = Some(p);
+            return;
+        }
+    }
     let op = match p {
         Prompt::New(_) => Op::Created(rn.name.clone()),
         Prompt::NewFolder(_) if s.memory => return,
@@ -4892,6 +4908,7 @@ fn vim_settle(s: &mut App) {
     let mut b = vim_buf(&s.edit);
     s.vim.settle(&mut b);
     vim_put(&mut s.edit, &b);
+    s.vim_seen = (s.edit.anchor, s.edit.focus);
 }
 
 /// A key as vim names it, and whether Ctrl or Cmd is held.
@@ -4920,12 +4937,17 @@ fn vim_key(ev: &KeyEvent) -> (String, bool) {
 /// Gives a key to vim. `true` when vim took it. What vim asks for beside the text (a save, an undo) is done here.
 fn vim_take(s: &mut App, ev: &KeyEvent) -> bool {
     let (name, held) = vim_key(ev);
+    // visual mode keeps its own ends of what is selected. A press of the pointer moves the field's and not vim's, and the next key would then act on a selection no longer shown, perhaps out of view: the mode is left first
+    if s.vim.mode == vim::Mode::Visual && (s.edit.anchor, s.edit.focus) != s.vim_seen {
+        s.vim = vim::Vim::default();
+    }
     let mut b = vim_buf(&s.edit);
     let out = s.vim.key(&mut b, &name, held);
     if !out.taken {
         return false;
     }
     vim_put(&mut s.edit, &b);
+    s.vim_seen = (s.edit.anchor, s.edit.focus);
     if out.undo || out.redo {
         if out.undo {
             s.edit.undo();
@@ -5631,7 +5653,10 @@ fn landed(s: &mut App, p: Page) {
         if made {
             s.names.push(p.name.clone());
         }
-        s.cache.insert(p.name.clone(), p.clone());
+        // a text held that is newer than this save's is kept: another's change was read while the save was on its way
+        if s.cache.get(&p.name).is_none_or(|c| c.rev <= p.rev) {
+            s.cache.insert(p.name.clone(), p.clone());
+        }
         if made {
             // the page it made is in front only if it still is: a capture that was cancelled, and then answered, is not put under the edit that came after it
             if s.open.as_ref().is_some_and(|o| o.name == p.name) {
@@ -6206,8 +6231,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 if first {
                     s.files.expand_all();
                 }
+                // what was just made is gone to at this read or not at all: kept for a later one, it would pull the window there long after
+                let land = s.land.take();
                 if !away {
-                    if let Some(name) = s.land.take() {
+                    if let Some(name) = land {
                         land_on(s, &name);
                     }
                 }
@@ -6252,6 +6279,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
             // a page with a save that waits shows that save, not what the ship still has
             Ok(p) if s.queue.contains_key(&p.name) => {}
+            // an answer older than what is held is let go: a read of the tree may have brought a newer text meanwhile, and that text is not sent again
+            Ok(p) if s.cache.get(&p.name).is_some_and(|c| c.rev > p.rev) => {}
             Ok(p) => {
                 s.cache.insert(p.name.clone(), p.clone());
                 // shown when it is the page on screen, or the one waited for
@@ -7978,7 +8007,7 @@ fn forum_act(s: &mut App, act: ForumAct) {
         forum_send(&c, &board, post, &act)?;
         if let ForumAct::Delete(None) = act {
             let b = c.forum_board(&board)?;
-            forum_taken(&board, forum_took(&act, before, b.posts.iter().find(|p| p.id == post), &[]))?;
+            forum_row_taken(&board, &act, before, b.posts.iter().find(|p| p.id == post))?;
             return Ok(ForumGot::Board(b));
         }
         let th = c.forum_thread(&board, post)?;
@@ -8018,7 +8047,7 @@ fn forum_list_act(s: &mut App, board: String, post: u64, act: ForumAct) {
     s.forum_req.request((c, board, act), move |(c, board, act)| {
         forum_send(&c, &board, post, &act)?;
         let b = c.forum_board(&board)?;
-        forum_taken(&board, forum_took(&act, before, b.posts.iter().find(|p| p.id == post), &[]))?;
+        forum_row_taken(&board, &act, before, b.posts.iter().find(|p| p.id == post))?;
         Ok(ForumGot::Board(b))
     });
 }
@@ -8051,6 +8080,19 @@ fn forum_took(act: &ForumAct, before: (u64, u64), after: Option<&api::ForumPost>
         }),
         ForumAct::Delete(None) => after.is_none(),
         ForumAct::Delete(Some(id)) => !comments.contains(id),
+    }
+}
+
+/// As `forum_taken`, for an action taken from a board's list, where only the newest threads are read back.
+/// A thread that is not among them was acted on from further down the list: whether it took is not known,
+/// and is not said to have failed. A point given twice changes nothing, and that is said as what it is.
+fn forum_row_taken(board: &str, act: &ForumAct, before: (u64, u64), after: Option<&api::ForumPost>) -> Result<(), String> {
+    if after.is_none() && !matches!(act, ForumAct::Delete(_)) {
+        return Ok(());
+    }
+    match (act, forum_taken(board, forum_took(act, before, after, &[]))) {
+        (ForumAct::Vote, Err(_)) => Err("no point was added. You may have given yours already: once given it stays".into()),
+        (_, r) => r,
     }
 }
 
@@ -8223,12 +8265,19 @@ fn forum_submit(s: &mut App) {
     };
     let Some(c) = s.conn.clone() else { return };
     f.sending = true;
-    let (board, had) = (b.board.clone(), b.count);
+    // the ship's forms cap these, and say nothing when they cut one off
+    if body.len() > 40_000 || title.len() > 300 || link.len() > 2048 {
+        s.note = "that is too long for the board to take: a title may be 300 bytes, a link 2,048 and a thread's text 40,000".into();
+        return;
+    }
+    let (board, had): (String, Vec<u64>) = (b.board.clone(), b.posts.iter().map(|p| p.id).collect());
     s.forum_req.request((c, board), move |(c, board)| {
         c.forum_submit(&board, &title, &link, &body, &tags)?;
         let now = c.forum_board(&board)?;
-        // another ship takes a thread in its own time: it is not yet there to count
-        if now.count <= had && !board.starts_with('~') { Err("the ship did not take that thread: its board may not let you post, or the thread is too long".into()) } else { Ok(ForumGot::Board(now)) }
+        // another ship takes a thread in its own time: it is not yet there to look for.
+        // On this ship it took if there is a thread of this ship's that was not there before: a count that went up may be someone else's thread, and one that did not may be a prune
+        let took = now.posts.iter().any(|p| !had.contains(&p.id) && p.author == c.ship());
+        if !took && !board.starts_with('~') { Err("the ship did not take that thread: its board may not let you post, or the thread is too long".into()) } else { Ok(ForumGot::Board(now)) }
     });
 }
 
@@ -8243,13 +8292,22 @@ fn forum_comment(s: &mut App) {
     }
     let Some(c) = s.conn.clone() else { return };
     f.sending = true;
-    let (board, post, parent, had) = (th.board.clone(), th.post.id, f.reply, th.comments.len());
+    if body.len() > FORUM_MOST {
+        s.note = "that is too long for the board to take: a comment may be 10,000 bytes".into();
+        return;
+    }
+    let (board, post, parent, had): (String, u64, Option<u64>, Vec<u64>) = (th.board.clone(), th.post.id, f.reply, th.comments.iter().map(|c| c.id).collect());
     s.forum_req.request((c, board), move |(c, board)| {
         c.forum_comment(&board, post, parent, &body)?;
         let now = c.forum_thread(&board, post)?;
-        if now.comments.len() <= had && !board.starts_with('~') { Err("the ship did not take that comment: the board may not let you post, or it is too long".into()) } else { Ok(ForumGot::Thread(now)) }
+        // it took if there is a comment of this ship's that was not there before, as with a thread
+        let took = now.comments.iter().any(|m| !had.contains(&m.id) && m.author == c.ship());
+        if !took && !board.starts_with('~') { Err("the ship did not take that comment: the board may not let you post, or it is too long".into()) } else { Ok(ForumGot::Thread(now)) }
     });
 }
+
+/// The most a comment may be, in bytes, as the ship's forum holds it to (`+sane-comment`).
+const FORUM_MOST: usize = 10_000;
 
 /// The field of the thread being written, by its place: title, link, text, tags.
 fn draft_field(s: &mut App, i: usize) -> &mut TextEdit {
@@ -8800,7 +8858,7 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
             let small = |label: &str, help: &str| Button::new(label.to_owned()).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(help.to_owned()).disabled(f.acting);
             let (vb, pb, db, pinned) = (board.clone(), board.clone(), board.clone(), p.pinned);
             let may = forum_may(&board, b.role.as_deref(), ours, &p.author);
-            let mut acts = row().px(4.0).gap(2.0).child(small("Vote", "Vote this thread up, or take the vote back").on_press(move |s: &mut App| forum_list_act(s, vb.clone(), id, ForumAct::Vote)).build(k).key(format!("row-vote-{id}")));
+            let mut acts = row().px(4.0).gap(2.0).child(small("Vote", "Give this thread your point. Once given it stays").on_press(move |s: &mut App| forum_list_act(s, vb.clone(), id, ForumAct::Vote)).build(k).key(format!("row-vote-{id}")));
             if may.pin {
                 acts = acts.child(small(if pinned { "Unpin" } else { "Pin" }, "Keep this thread at the top of the board, or let it go").on_press(move |s: &mut App| forum_list_act(s, pb.clone(), id, ForumAct::Pin(!pinned))).build(k).key(format!("row-pin-{id}")));
             }
@@ -12507,6 +12565,10 @@ fn sidebar(s: &App, k: &Kit) -> El {
                     let (at, mid, page) = (n.path.clone(), n.path.clone(), !n.dir);
                     let sheet = el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).on_secondary_press(move |s: &mut App, p, _| {
                         s.files.select(&at);
+                        // a memory's "folder" is only the first part of some keys: there is nothing of that name to rename or delete
+                        if s.memory && !page {
+                            return;
+                        }
                         s.tree_menu = Some((at.clone(), p));
                     });
                     // a middle click on a page opens it in a new tab, as a browser opens a link

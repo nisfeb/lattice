@@ -2038,15 +2038,24 @@ pub fn board_names(index_html: &str) -> Vec<String> {
 /// One whose parent is not there, or that would nest without end, is
 /// read at the top.
 pub fn comment_order(comments: &[ForumComment]) -> Vec<(usize, &ForumComment)> {
-    let has = |id: u64| comments.iter().any(|c| c.id == id);
+    // each comment's answers, found once: looked for through the whole thread for each comment, a long thread held the window at every key
+    let ids: std::collections::HashSet<u64> = comments.iter().map(|c| c.id).collect();
+    let mut under: std::collections::HashMap<u64, Vec<&ForumComment>> = std::collections::HashMap::new();
+    for c in comments {
+        if let Some(p) = c.parent.filter(|p| *p != c.id) {
+            under.entry(p).or_default().push(c);
+        }
+    }
     let mut out = Vec::with_capacity(comments.len());
-    let mut stack: Vec<(usize, &ForumComment)> = comments.iter().filter(|c| c.parent.is_none_or(|p| !has(p) || p == c.id)).rev().map(|c| (0, c)).collect();
+    let mut stack: Vec<(usize, &ForumComment)> = comments.iter().filter(|c| c.parent.is_none_or(|p| !ids.contains(&p) || p == c.id)).rev().map(|c| (0, c)).collect();
     while let Some((depth, c)) = stack.pop() {
         out.push((depth, c));
         if out.len() > comments.len() {
             break;
         }
-        stack.extend(comments.iter().filter(|k| k.parent == Some(c.id) && k.id != c.id).rev().map(|k| (depth + 1, k)));
+        if let Some(kids) = under.get(&c.id) {
+            stack.extend(kids.iter().rev().map(|k| (depth + 1, *k)));
+        }
     }
     // what a loop of parents left out is still read
     let seen: std::collections::HashSet<u64> = out.iter().map(|(_, c)| c.id).collect();
@@ -2657,7 +2666,11 @@ impl Conn {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let req = ureq::request(method, url)
+            // a redirect is not followed. The ship answers one for an address nothing is bound to, as while lattice is being put in or started: followed, a write would be taken as done and a read would be the sign-in page
+            let req = ureq::AgentBuilder::new()
+                .redirects(0)
+                .build()
+                .request(method, url)
                 .timeout(Duration::from_secs(secs))
                 .set("cookie", &self.cookie)
                 // the ship refuses a cross-site write, and reads the origin to tell
@@ -2667,7 +2680,12 @@ impl Conn {
                 None => req.call(),
             };
             match res {
-                Ok(r) => r.into_string().map_err(|e| e.to_string()),
+                Ok(r) if (300..400).contains(&r.status()) => Err(format!("{}: the ship sent this elsewhere. Lattice may be starting", r.status())),
+                // the ship answered, so it is not away: an answer cut short is said as one, with its status
+                Ok(r) => {
+                    let code = r.status();
+                    r.into_string().map_err(|e| format!("{code}: the answer could not be read: {e}"))
+                }
                 Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
                 Err(e) => Err(e.to_string()),
             }
@@ -2883,7 +2901,8 @@ impl Conn {
     pub fn save_as(&self, p: &Page, base: u64, fresh: bool) -> Result<u64, String> {
         let new = if fresh { "&new=1" } else { "" };
         let q = format!("page-save?name={}&type={}&by=rune&base={base}&cas=1{new}", enc(&p.name), enc(&p.kind));
-        let s: Saved = serde_json::from_str(&self.call("POST", &q, Some(&p.body))?).map_err(|e| e.to_string())?;
+        // an answer that cannot be read is still an answer: the ship took the save or refused it, and is not away. Said with a status, so the save is not kept to be sent a second time
+        let s: Saved = serde_json::from_str(&self.call("POST", &q, Some(&p.body))?).map_err(|e| format!("200: the ship's answer to the save could not be read: {e}"))?;
         Ok(s.rev)
     }
 

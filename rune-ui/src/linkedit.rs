@@ -11,6 +11,13 @@ use rune::{Mark, TextEdit};
 pub struct Open {
     pub start: usize,
     pub tail: usize,
+    /// What its Markdown read as when it was opened, as a sum of it: whether it has been typed in since.
+    opened: u64,
+}
+
+/// A sum of a text, to tell it from another.
+fn sum(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
 }
 
 impl Open {
@@ -43,14 +50,19 @@ pub fn literal(lit: &str) -> Option<(usize, &str)> {
 pub fn open(e: &mut TextEdit) -> Option<Open> {
     let (a, b, url) = link_at(e)?;
     let caret = e.focus;
-    e.set_selection(a, b);
-    e.set_link(None);
-    e.set_caret(b);
-    e.insert(&format!("]({url})"));
-    e.set_caret(a);
-    e.insert("[");
-    e.set_caret(caret + 1);
-    Some(Open { start: a, tail: e.text.len() - (b + 1 + url.len() + 3) })
+    // one step of the history, so that leaving the link untouched can take the whole of it back (`close`)
+    e.undo_group(|e| {
+        e.set_selection(a, b);
+        e.set_link(None);
+        e.set_caret(b);
+        e.insert(&format!("]({url})"));
+        e.set_caret(a);
+        e.insert("[");
+        e.set_caret(caret + 1);
+    });
+    let tail = e.text.len() - (b + 1 + url.len() + 3);
+    let end = e.text.len() - tail;
+    Some(Open { start: a, tail, opened: e.text.get(a..end).map_or(0, sum) })
 }
 
 /// Whether the caret, or either end of a selection, has left an opened link.
@@ -67,16 +79,23 @@ pub fn close(e: &mut TextEdit, o: Open) {
     let Some(end) = o.end(e.text.len()).filter(|end| e.text.is_char_boundary(o.start) && e.text.is_char_boundary(*end)) else { return };
     let Some((label, url)) = literal(&e.text[o.start..end]).map(|(n, u)| (n, u.to_owned())) else { return };
     let (anchor, focus) = (e.anchor, e.focus);
-    // what follows the label, then the bracket before it, then the link over what is left
-    e.set_selection(o.start + 1 + label, end);
-    e.insert("");
-    e.set_selection(o.start, o.start + 1);
-    e.insert("");
-    e.set_selection(o.start, o.start + label);
-    e.set_link(Some(&url));
     // a caret past the link moved back by what was taken out
     let gone = end - o.start - label;
     let moved = |c: usize| if c >= end { c - gone } else { c.min(o.start) };
+    if sum(&e.text[o.start..end]) == o.opened {
+        // nothing was typed in it: the opening is taken back, and the history is as it was before the caret came. Opened and closed as two edits, each pass of the caret left two steps to undo, and the first undo of them took the link's address away
+        e.undo();
+    } else {
+        // what follows the label, then the bracket before it, then the link over what is left, as one step
+        e.undo_group(|e| {
+            e.set_selection(o.start + 1 + label, end);
+            e.insert("");
+            e.set_selection(o.start, o.start + 1);
+            e.insert("");
+            e.set_selection(o.start, o.start + label);
+            e.set_link(Some(&url));
+        });
+    }
     e.set_selection(moved(anchor), moved(focus));
 }
 
@@ -151,6 +170,29 @@ mod tests {
     }
 
     #[test]
+    fn a_caret_passing_through_a_link_leaves_nothing_to_undo() {
+        let mut e = edit("go there now", vec![MarkRange::new(3..8, Mark::Link("https://x.y".into()))], 0);
+        // something typed first, that an undo should reach
+        e.insert("WORD ");
+        e.break_history_group();
+        let before = e.history_len();
+        for _ in 0..3 {
+            e.set_caret(10);
+            let o = open(&mut e).expect("the caret is in the link");
+            e.set_caret(e.text.len());
+            close(&mut e, o);
+        }
+        assert_eq!(e.text, "WORD go there now");
+        assert_eq!(links(&e), vec![(8, 13, "https://x.y".to_owned())]);
+        assert_eq!(e.history_len().0, before.0, "the passes left no step");
+        assert_eq!(e.focus, e.text.len(), "the caret is where it was put");
+        // one undo takes back what was typed, and the link is whole
+        e.undo();
+        assert_eq!(e.text, "go there now");
+        assert_eq!(links(&e), vec![(3, 8, "https://x.y".to_owned())]);
+    }
+
+    #[test]
     fn what_is_no_longer_a_link_is_left_as_text() {
         let mut e = edit("go there now", vec![MarkRange::new(3..8, Mark::Link("u".into()))], 5);
         let o = open(&mut e).unwrap();
@@ -162,8 +204,8 @@ mod tests {
         close(&mut e, o);
         assert_eq!((e.text.as_str(), links(&e)), ("go [there](u now", vec![]));
         // and a range that no longer fits the text does nothing
-        close(&mut e, Open { start: 40, tail: 0 });
-        close(&mut e, Open { start: 0, tail: 400 });
+        close(&mut e, Open { start: 40, tail: 0, opened: 0 });
+        close(&mut e, Open { start: 0, tail: 400, opened: 0 });
         assert_eq!(e.text, "go [there](u now");
     }
 }
