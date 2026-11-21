@@ -151,6 +151,17 @@ pub fn write_archive(s: &Schedule, bytes: &[u8], at: u64, complete: bool) -> Res
     crate::api::write_private(&path, bytes)?;
     if complete {
         prune(s, &dir);
+    } else {
+        // only the newest incomplete one is kept: each is the whole store, and a page that cannot be read makes one at every try
+        let mine = format!("lattice-{}-", slug(&s.label));
+        for old in std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()) {
+            let name = old.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
+            // this schedule's own, by the date that follows its name: another schedule's name may begin with this one's
+            let dated = name.strip_prefix(&mine).is_some_and(|r| r.len() > 9 && r.as_bytes()[..8].iter().all(u8::is_ascii_digit) && r.as_bytes()[8] == b'-');
+            if old != path && dated && name.ends_with("-INCOMPLETE.tar") {
+                let _ = std::fs::remove_file(&old);
+            }
+        }
     }
     Ok(path)
 }

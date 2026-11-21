@@ -952,6 +952,8 @@ struct App {
     /// The deletes and moves made with the ship away, waiting in the order they were made.
     ops: Vec<api::QueuedOp>,
     next_sync: f64,
+    /// When each backup schedule was last tried by the clock, in seconds since 1970.
+    bk_tried: HashMap<String, u64>,
     page_req: Latest<Result<Page, String>>,
     save_req: Latest<Result<Page, String>>,
 }
@@ -1388,6 +1390,7 @@ fn init() -> App {
         drain_req: Latest::default(),
         ops: conn.as_ref().map(Conn::ops).unwrap_or_default(),
         next_sync: 0.0,
+        bk_tried: HashMap::new(),
         page_req: Latest::default(),
         save_req: Latest::default(),
         conn,
@@ -1587,16 +1590,28 @@ fn watch_ships(s: &mut App) {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         s.watch_stop = stop.clone();
         let seen = s.seen.clone();
-        std::thread::spawn(move || loop {
+        std::thread::spawn(move || {
+          // a ship that turned this session away is not asked again with it: each asking is kept by the ship for good
+          let mut refused: std::collections::HashSet<String> = std::collections::HashSet::new();
+          loop {
             for (url, cookie) in &others {
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
+                if refused.contains(url) {
+                    continue;
+                }
                 let got = api::ship_look(url, cookie, &stop);
+                if got.expired {
+                    refused.insert(url.clone());
+                }
                 let changed = seen.lock().map(|mut m| m.insert(url.clone(), got.clone()) != Some(got)).unwrap_or(false);
                 if changed {
                     waker();
                 }
+            }
+            if refused.len() == others.len() {
+                return;
             }
             // a minute between looks, let go of at once when the ship in front changes
             for _ in 0..60 {
@@ -1605,6 +1620,7 @@ fn watch_ships(s: &mut App) {
                 }
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
+          }
         });
     }
 }
@@ -2585,9 +2601,17 @@ fn listen(s: &mut App) {
             if got.is_err() {
                 base = None;
             }
-            heard.lock().unwrap().push(api::Beacon::Down);
-            waker();
+            // a session the ship turns away is not offered again: each try is kept by the ship for good. Signing in starts a listener anew
+            let refused = got.as_ref().is_err_and(|e| api::lapsed(e));
             let (registered, bumped) = got.unwrap_or((false, false));
+            // a stream that was registered and ran its time has only ended as the ship ends each one, and the next is opened in a moment: nothing is down. Said only of one that never registered, or the tree would be read every half minute for good
+            if !registered {
+                heard.lock().unwrap().push(api::Beacon::Down);
+                waker();
+            }
+            if refused {
+                return;
+            }
             fail = api::beacon_fail(fail, registered, began.elapsed().as_millis(), bumped);
             let jitter = f64::from(crate::api::since_epoch().map_or(0, |d| d.subsec_nanos())) / 1e9;
             wait_or_stop(api::beacon_wait(fail, jitter), &stop);
@@ -5637,6 +5661,8 @@ fn landed(s: &mut App, p: Page) {
 const SYNC_EVERY: f64 = 30.0;
 /// How often it is read while the change stream is registered: the stream tells of changes, so this only catches one it merged or missed.
 const SYNC_LIVE: f64 = 300.0;
+/// How often it is read once the ship has turned the session away.
+const SYNC_LAPSED: f64 = 900.0;
 
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
@@ -5726,7 +5752,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             s.theme_req.request(c, move |c| c.worn(had));
         }
         // while the stream is registered it says when anything changes, and asking is only a floor
-        let every = if s.beacon_state.live { SYNC_LIVE } else { SYNC_EVERY };
+        // a session the ship has turned away is tried again only now and then: it will not come good by itself
+        let every = if s.lapsed { SYNC_LAPSED } else if s.beacon_state.live { SYNC_LIVE } else { SYNC_EVERY };
         s.next_sync = clock + every;
         tx.wake_after(std::time::Duration::from_secs_f64(every));
     }
@@ -6088,6 +6115,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 Err(e)
             }
             Ok(d) => {
+                // a session that came good again is listened on again
+                if s.lapsed {
+                    listen(s);
+                }
                 (s.offline, s.lapsed) = (None, false);
                 // the ship answers: what waited for it goes now
                 drain(s);
@@ -6354,7 +6385,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             tx.wake_after(std::time::Duration::from_secs(60));
         }
         let now = backups::now();
-        if let Some(id) = s.backups.iter().find(|b| backups::is_due(b, now)).map(|b| b.id.clone()).filter(|_| s.conn.is_some() && !s.bk_req.is_pending()) {
+        // one that failed, or came out incomplete, stays due: it is tried again in an hour, not at the next minute. Each try reads the whole store from the ship and writes it all to disk
+        let rested = |id: &str| s.bk_tried.get(id).is_none_or(|t| now.saturating_sub(*t) >= 3600);
+        if let Some(id) = s.backups.iter().find(|b| backups::is_due(b, now) && rested(&b.id)).map(|b| b.id.clone()).filter(|_| s.conn.is_some() && !s.bk_req.is_pending()) {
+            s.bk_tried.insert(id.clone(), now);
             backup_run(s, &id);
         }
     }

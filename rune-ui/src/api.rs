@@ -928,8 +928,11 @@ pub fn ship_look(url: &str, cookie: &str, stop: &std::sync::atomic::AtomicBool) 
     if seen.expired && !cfg!(test) {
         if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
             let mut all = crate::accounts::load_at(dir, now_secs());
-            all.expire(url);
-            let _ = crate::accounts::store_at(dir, &all);
+            // only the session that was turned away is marked: one signed in again since holds another cookie, and is good
+            if all.get(url).is_some_and(|a| a.cookie == cookie) {
+                all.expire(url);
+                let _ = crate::accounts::store_at(dir, &all);
+            }
         }
     }
     seen
