@@ -2869,7 +2869,17 @@ impl Conn {
     /// Saves over `base`, the rev the text was read at. The ship answers 409
     /// when the page has moved past it.
     pub fn save(&self, p: &Page, base: u64) -> Result<u64, String> {
-        let q = format!("page-save?name={}&type={}&by=rune&base={base}&cas=1", enc(&p.name), enc(&p.kind));
+        self.save_as(p, base, false)
+    }
+
+    /// Saves a page, and when it is `fresh`, one this window has never
+    /// seen on the ship, only if the ship has none of that name: the
+    /// ship answers 409 otherwise. A base of 0 is no check to the ship,
+    /// so without this a page begun by name before the tree was read
+    /// would be written over one that was there all along.
+    pub fn save_as(&self, p: &Page, base: u64, fresh: bool) -> Result<u64, String> {
+        let new = if fresh { "&new=1" } else { "" };
+        let q = format!("page-save?name={}&type={}&by=rune&base={base}&cas=1{new}", enc(&p.name), enc(&p.kind));
         let s: Saved = serde_json::from_str(&self.call("POST", &q, Some(&p.body))?).map_err(|e| e.to_string())?;
         Ok(s.rev)
     }

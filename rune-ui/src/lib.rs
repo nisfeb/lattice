@@ -1665,6 +1665,10 @@ fn ship_mounts(s: &App, all: bool) -> Vec<mounts::MountSpec> {
 /// Sign out, asked for: at once when nothing of the ship's is mounted, and after a question when
 /// something is, since its folder goes with its session.
 fn sign_out_asked(s: &mut App, all: bool) {
+    // what is typed is kept first, or the window stays and says why
+    if !leave_edit(s) {
+        return;
+    }
     s.ships_open = false;
     if ship_mounts(s, all).is_empty() {
         if all { sign_out_all(s) } else { sign_out(s) }
@@ -1718,34 +1722,62 @@ fn reset(s: &mut App, signed: bool) {
     }
     // the window's title is as it was set: what it should say now is worked out against that
     fresh.titled = s.titled.clone();
-    // the wakers were set once, on the requests this window keeps
+    // the wakers were set once, on the requests this window keeps. What each was asked is let go first: an answer from the ship that was in front must not land in the window of the one that is now
+    s.tree_req.cancel();
     fresh.tree_req = std::mem::take(&mut s.tree_req);
+    s.page_req.cancel();
     fresh.page_req = std::mem::take(&mut s.page_req);
+    s.save_req.cancel();
     fresh.save_req = std::mem::take(&mut s.save_req);
+    s.login_req.cancel();
     fresh.login_req = std::mem::take(&mut s.login_req);
+    s.op_req.cancel();
     fresh.op_req = std::mem::take(&mut s.op_req);
+    s.hist_req.cancel();
     fresh.hist_req = std::mem::take(&mut s.hist_req);
+    s.know_req.cancel();
     fresh.know_req = std::mem::take(&mut s.know_req);
+    s.groups_req.cancel();
     fresh.groups_req = std::mem::take(&mut s.groups_req);
+    s.base_req.cancel();
     fresh.base_req = std::mem::take(&mut s.base_req);
+    s.bans_req.cancel();
     fresh.bans_req = std::mem::take(&mut s.bans_req);
+    s.sens_req.cancel();
     fresh.sens_req = std::mem::take(&mut s.sens_req);
+    s.comments_req.cancel();
     fresh.comments_req = std::mem::take(&mut s.comments_req);
+    s.comments_on_req.cancel();
     fresh.comments_on_req = std::mem::take(&mut s.comments_on_req);
+    s.held_req.cancel();
     fresh.held_req = std::mem::take(&mut s.held_req);
+    s.notices_req.cancel();
     fresh.notices_req = std::mem::take(&mut s.notices_req);
+    s.tile_status_req.cancel();
     fresh.tile_status_req = std::mem::take(&mut s.tile_status_req);
+    s.kept_req.cancel();
     fresh.kept_req = std::mem::take(&mut s.kept_req);
+    s.templates_req.cancel();
     fresh.templates_req = std::mem::take(&mut s.templates_req);
+    s.back_req.cancel();
     fresh.back_req = std::mem::take(&mut s.back_req);
+    s.asks_req.cancel();
     fresh.asks_req = std::mem::take(&mut s.asks_req);
+    s.waiting_req.cancel();
     fresh.waiting_req = std::mem::take(&mut s.waiting_req);
+    s.comets_req.cancel();
     fresh.comets_req = std::mem::take(&mut s.comets_req);
+    s.thread_req.cancel();
     fresh.thread_req = std::mem::take(&mut s.thread_req);
+    s.comment_req.cancel();
     fresh.comment_req = std::mem::take(&mut s.comment_req);
+    s.switch_req.cancel();
     fresh.switch_req = std::mem::take(&mut s.switch_req);
+    s.shared_req.cancel();
     fresh.shared_req = std::mem::take(&mut s.shared_req);
+    s.remote_req.cancel();
     fresh.remote_req = std::mem::take(&mut s.remote_req);
+    s.old_req.cancel();
     fresh.old_req = std::mem::take(&mut s.old_req);
     fresh.sidebar = s.sidebar.clone();
     // the reader's comet is this computer's, not a session's: its thread and its store stay as they are
@@ -1963,7 +1995,7 @@ fn confirm(s: &mut App) {
         match s.conn.clone() {
             Some(c) => s.op_req.request((c, copy), |(c, copy)| {
                 // made by its first save, with the kind and the text of the page it copies
-                c.save(&copy, 0)?;
+                c.save_as(&copy, 0, true)?;
                 Ok(Op::Created(copy.name))
             }),
             None => {
@@ -2070,6 +2102,11 @@ fn under(names: &[String], path: &str) -> Vec<String> {
     names.iter().filter(|n| n.as_str() == path || n.strip_prefix(path).is_some_and(|r| r.starts_with('/'))).cloned().collect()
 }
 
+/// Whether a name is the page or folder at `path`, or is in that folder.
+fn is_under(name: &str, path: &str) -> bool {
+    name == path || name.strip_prefix(path).is_some_and(|r| r.starts_with('/'))
+}
+
 /// A change landed: follow it here, then read the tree again.
 fn applied(s: &mut App, op: Op) {
     match op {
@@ -2080,7 +2117,10 @@ fn applied(s: &mut App, op: Op) {
             }
             s.names.push(n.clone());
             s.files.select(&n);
-            s.open = None;
+            // an edit under way is left as any other is, its text kept: the page is not taken from under it
+            if !s.editing {
+                s.open = None;
+            }
             open_page(s, &n);
             s.note = "created".into();
         }
@@ -2100,11 +2140,29 @@ fn applied(s: &mut App, op: Op) {
                 s.names.retain(|x| *x != old);
                 s.names.push(new);
             }
-            s.open = None;
-            if was_folder {
-                s.folder = Some(b);
-            } else {
-                open_page(s, &b);
+            // every tab that held one of them holds it still, by its new name
+            let moved = |name: &str| is_under(name, &a).then(|| format!("{b}{}", &name[a.len()..]));
+            for name in s.trail.iter_mut().chain(s.tabs.iter_mut().flat_map(|t| t.trail.iter_mut())).chain(s.tgroups.iter_mut().flat_map(|g| g.tabs.iter_mut()).flat_map(|t| t.trail.iter_mut())) {
+                if let Some(new) = moved(name) {
+                    *name = new;
+                }
+            }
+            if let Some(new) = s.folder.as_deref().and_then(moved) {
+                s.folder = Some(new);
+            }
+            // the page in front follows only when it was one of them. One being edited keeps its editor and what is typed in it, under its new name
+            match s.open.as_ref().and_then(|p| moved(&p.name)) {
+                Some(new) if s.editing => {
+                    if let Some(p) = &mut s.open {
+                        p.name = new;
+                    }
+                }
+                Some(new) => {
+                    s.open = None;
+                    open_page(s, &new);
+                }
+                None if was_folder && !s.editing && s.open.is_none() => s.folder = Some(b),
+                None => {}
             }
             s.note = "renamed".into();
         }
@@ -2333,8 +2391,13 @@ fn applied(s: &mut App, op: Op) {
                 s.cache.remove(&old);
                 s.names.retain(|x| *x != old);
             }
-            s.open = None;
-            s.folder = None;
+            // only the page or folder that went is closed: an edit of another page is not touched
+            if s.open.as_ref().is_some_and(|p| is_under(&p.name, &n)) {
+                (s.open, s.editing, s.capture) = (None, false, false);
+            }
+            if s.folder.as_deref().is_some_and(|f| is_under(f, &n)) {
+                s.folder = None;
+            }
             s.note = "deleted".into();
         }
     }
@@ -4697,7 +4760,15 @@ fn rich_edit(d: md::Doc, seps: &mut md::Seps) -> TextEdit {
 
 /// The Markdown the editor holds, whichever way it is being edited.
 fn edited(s: &App) -> String {
-    if s.rich { md::emit_with(&s.edit.text, s.edit.marks(), s.edit.blocks(), s.edit.soft_breaks(), &s.seps) } else { s.edit.text.clone() }
+    if !s.rich {
+        return s.edit.text.clone();
+    }
+    let mut out = md::emit_with(&s.edit.text, s.edit.marks(), s.edit.blocks(), s.edit.soft_breaks(), &s.seps);
+    // a page that ended with no new line is given none: `md::exact` lets such a page into the rich editor, and it is not to be rewritten by being opened
+    if out.ends_with('\n') && s.open.as_ref().is_some_and(|p| !p.body.ends_with('\n')) {
+        out.pop();
+    }
+    out
 }
 
 /// The editor field's key. Focus is asked for by it: the page tree keeps the
@@ -5232,6 +5303,13 @@ fn write(s: &mut App) {
         }
         return;
     }
+    // a save of this page already on its way is followed, on its rev: sent beside it, the second would be refused as a change made elsewhere
+    if own && s.save_req.is_pending() {
+        s.save_again = true;
+        return;
+    }
+    // a page this window has never seen on the ship is saved only if the ship has none of that name
+    let fresh = own && !memory && base == 0 && !s.names.contains(&p.name);
     s.save_sent = own.then(|| (p.clone(), base, memory));
     match s.conn.clone() {
         Some(c) => s.save_req.request((c, p), move |(c, mut p)| {
@@ -5241,7 +5319,7 @@ fn write(s: &mut App) {
             } else if memory {
                 c.know_save(&format!("/{}", p.name), &p.body)?;
             } else {
-                p.rev = c.save(&p, base)?;
+                p.rev = c.save_as(&p, base, fresh)?;
             }
             Ok(p)
         }),
@@ -5512,7 +5590,10 @@ fn landed(s: &mut App, p: Page) {
         }
         s.cache.insert(p.name.clone(), p.clone());
         if made {
-            s.open = Some(p.clone());
+            // the page it made is in front only if it still is: a capture that was cancelled, and then answered, is not put under the edit that came after it
+            if s.open.as_ref().is_some_and(|o| o.name == p.name) {
+                s.open = Some(p.clone());
+            }
             refresh_tree(s);
         }
     }
@@ -5534,6 +5615,11 @@ fn landed(s: &mut App, p: Page) {
     }
     // autosave leaves the editor as it is
     if std::mem::take(&mut s.autosaving) {
+        return;
+    }
+    // what was typed while the save was on its way is not in it: the editor stays open on it
+    if s.editing && s.open.as_ref().is_some_and(|o| edited(s) != o.body) {
+        s.note = "saved. What you typed since is still in the editor".into();
         return;
     }
     s.editing = false;
@@ -6771,7 +6857,7 @@ fn land_on(s: &mut App, name: &str) {
     } else if s.names.contains(&index) {
         s.files.select(&index);
         open_page(s, &index);
-    } else if !under(&s.names, name).is_empty() {
+    } else if !under(&s.names, name).is_empty() && leave_edit(s) {
         (s.open, s.remote, s.access, s.shared_open, s.inbox) = (None, None, false, false, false);
         s.forum = None;
         s.folder = Some(name.to_owned());
@@ -9846,7 +9932,14 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
             s.ships = api::ships();
             s.ships_open = true;
         }
-        "signout" => sign_out(s),
+        // as the button does: asked, with an edit kept and a guest only led back
+        "signout" => {
+            if s.conn.is_some() {
+                sign_out_asked(s, false)
+            } else {
+                leave_guest(s)
+            }
+        }
         _ => {}
     }
 }
@@ -9935,12 +10028,15 @@ fn login_view(s: &App, k: &Kit) -> El {
     if busy {
         go = go.child(Spinner::new().build(k));
     }
-    card = card
-        .child(go)
-        .child(Button::new("Browse sample pages").variant(ButtonVariant::Ghost).on_press(browse_sample).build(k).key("sample"));
+    card = card.child(go);
+    // the two ways in with no ship are for a window with none. With a ship in front, signed in, they would put sample pages or the reader's state over that ship's
+    let alone = s.conn.is_none();
+    if alone {
+        card = card.child(Button::new("Browse sample pages").variant(ButtonVariant::Ghost).on_press(browse_sample).build(k).key("sample"));
+    }
     // the one other way in: no node, and other ships' published pages read by this computer itself
     #[cfg(unix)]
-    {
+    if alone {
         card = card
             .child(text("No node? You can use lattice anonymously. You can browse pages people publish, but you can't save or host pages without a node.").key("anon-said").font(k.ty.small).color(c.text_muted).wrap())
             .child(Button::new("Use anonymously").variant(ButtonVariant::Ghost).on_press(browse_anon).build(k).key("anon"));
@@ -11223,6 +11319,10 @@ fn load_groups(s: &mut App) {
 /// Writes `g` to the ship, then says `say`.
 fn save_group(s: &mut App, g: Group, say: String) {
     let Some(c) = s.conn.clone() else { return };
+    // kept here at once: the whole group is written each time, so a second change made before the ship has answered the first must be made to this one and not to the group as it was read
+    if let Some(mine) = s.groups.iter_mut().find(|x| x.name == g.name) {
+        *mine = g.clone();
+    }
     s.op_req.request((c, g), move |(c, g)| {
         c.group_save(&g)?;
         Ok(Op::Grouped(say))
@@ -11619,13 +11719,15 @@ fn share_body(s: &App, k: &Kit) -> Option<(String, El)> {
             let now = g.level(&s.base, &p.name);
             let mut line = row().key(format!("grp-{}", g.name)).w_full().gap(6.0).center_y().child(text(g.name.clone()).font(k.ty.ui).color(c.text_base).grow(1.0).min_w(0.0).truncate());
             for (label, level) in [("None", Level::None), ("Read", Level::Read), ("Edit", Level::Edit)] {
-                let (g, page) = (g.clone(), p.name.clone());
+                let (group, page) = (g.name.clone(), p.name.clone());
                 let key = format!("grp-{}-{}", g.name, label.to_lowercase());
                 line = line.child(
                     Button::new(label)
                         .control_size(ControlSize::Small)
                         .variant(if now == level { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
                         .on_press(move |s: &mut App| {
+                            // the group as it is now, not as it was when this was drawn: the whole of it is written
+                            let Some(g) = s.groups.iter().find(|g| g.name == group).cloned() else { return };
                             let say = match level {
                                 Level::None => format!("{} no longer reads {page}", g.name),
                                 Level::Read => format!("{} can now read {page}", g.name),
@@ -13619,6 +13721,9 @@ fn update_restart(s: &mut App) {
 /// What is done before the program goes, however it goes: the reader's engine closes its store, so
 /// what libmesa holds is written.
 fn closing(s: &mut App) {
+    // what is typed is kept on this device, to be sent when the app is next opened. A window cannot be held open to ask
+    // ponytail: an edit that cannot be left by itself (another ship's page, a page changed elsewhere, a save on its way) is still lost at a close. A close that can be refused, when Rune has one, is the fix
+    let _ = leave_edit(s);
     #[cfg(unix)]
     if let Some(e) = s.engine.take() {
         e.close();
@@ -14622,6 +14727,10 @@ fn chord(s: &App, ev: &KeyEvent) -> Option<Chord> {
 fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     s.touched = true;
     if s.conn.is_none() && !s.sample {
+        return false;
+    }
+    // a question is answered before anything else is done: it acts on what is in front when it is answered, so nothing may be put in front of that meanwhile
+    if s.prompt.is_some() {
         return false;
     }
     // Ctrl+Shift and a figure goes to that ship of those signed in, in the order they were added
