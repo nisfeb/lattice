@@ -124,7 +124,7 @@
   function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
     current = name;
     deletedHere = null;              // another document, or this one renamed
-    if (name === null) curRev = 0;   // a new buffer claims no page's rev
+    if (name === null) curRev = null;   // a new buffer claims no page's rev
     pname.value = shown === undefined ? (name || '') : shown;
     pname.readOnly = readOnly;
     if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;
@@ -136,7 +136,10 @@
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
                            // option, so pkind.value would silently convert it
-  let curRev = 0;          // the open page's server revision (offline baseRev)
+  //  the open page's server revision (offline baseRev), null when unknown.
+  //  0 is a real rev, a page's first: a save claims it like any other
+  let curRev = null;
+  const isRev = (r) => typeof r === 'number';
   let curFolder = null;    // selected folder path. Right-pane ops target it
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree

@@ -91,3 +91,15 @@
     editLock(name);
     st(name + ' is being edited in another window now, so it is read-only here', false);
   };
+  //  A page kept in the back/forward cache keeps its locks. The next page
+  //  opened in this tab then found its own document held by one nobody
+  //  can see, and went read-only until the browser dropped it. Let go on
+  //  the way out, after the pagehide save (35-pages.js), and ask again if
+  //  the page comes back.
+  window.addEventListener('pagehide', () => { if (lockName) letGo(); });
+  window.addEventListener('pageshow', (e) => {
+    if (!e.persisted || !lockName) return;
+    const name = lockName;
+    lockName = null;
+    editLock(name);
+  });

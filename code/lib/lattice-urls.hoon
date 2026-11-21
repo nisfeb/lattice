@@ -94,12 +94,17 @@
 ::  tried once more where the peer's lattice lives now (+moved-path). Only
 ::  a write that reached no one, a 504 with nothing sent (`sent` |), at a
 ::  path under one of +peer-bases. Any answer from the host is final, and
-::  a write sent but not acked may still land where it went.
+::  a write sent but not acked may still land where it went. And only when
+::  the host refused the read before the deadline (`took` under `wait`): a
+::  peer refuses a path it does not grant at once, so a read that ran the
+::  whole deadline found the peer offline, and asking it where its lattice
+::  lives would only wait out a timeout per layout.
 ++  save-moved
-  |=  [code=@ud sent=? p=path]
+  |=  [code=@ud sent=? took=@dr wait=@dr p=path]
   ^-  ?
   ?&  =(504 code)
       !sent
+      (lth took wait)
       (lien peer-bases |=(b=path ?=(^ (strip-prefix b p))))
   ==
 ::  +sub-keep-dir: the directory of a peer's published page that a /sub

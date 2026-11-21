@@ -74,7 +74,7 @@
     // makes the next save carry a stale base, manufacturing a false
     // conflict (and a conflicts/ page) out of nothing
     //  never back: a read sent before our own save landed answers older
-    if (mode !== 'know' && d.rev && d.rev >= curRev) {
+    if (mode !== 'know' && isRev(d.rev) && (!isRev(curRev) || d.rev >= curRev)) {
       curRev = d.rev; shipText.set(wasCurrent, d.body); freshPending.delete(wasCurrent);
     }
     if (d.body === src.value) return;
