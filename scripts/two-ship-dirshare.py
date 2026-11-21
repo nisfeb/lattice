@@ -21,7 +21,12 @@ gate.mjs runs it with --two-ship. Exits non-zero on any failure.
 import json
 import os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
-ROOT = 'dirtwo'
+# A name of its own each run. The base ship keeps its state between gate
+# runs, and on grubbery de92127a making a page again at a deleted path
+# with the text it last held is a no-op (si:record dedupes against the
+# dead top): a second run made none of its pages and failed on that
+# kernel bug, not on folder sharing.
+ROOT = 'dirtwo' + str(os.getpid())
 
 
 def ship(url, cookie_file):
