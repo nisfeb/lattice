@@ -562,7 +562,9 @@ try {
     check('F: vim stays off on a fodt page (a key types)', (await srcVal()) === 'q' + v0);
     await page.keyboard.press('Backspace');
     await page.evaluate(() => { localStorage.removeItem('edVim'); window.dispatchEvent(new StorageEvent('storage', { key: 'edVim' })); });
-    await sleep(2600);
+    //  the typing above autosaves: wait for that save to answer, so its
+    //  "autosaved" is not the status the kind check below reads
+    await wait(() => !window.__latUnsaved());
     await page.evaluate(() => document.querySelector('.tmenu [data-mi="source"]') || document.getElementById('tmenu').click());
     await page.evaluate(() => document.querySelector('.tmenu [data-mi="source"]').click());
     await mounted();

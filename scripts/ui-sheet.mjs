@@ -184,6 +184,9 @@ try {
     const saved2 = await waitFor(async () => { const d = await shipBody(P.calc); return d && d.body.includes('37 total') ? d : null; }, 30000, 500);
     check('B: and saved with its stored spelling', !!saved2 && saved2.body.includes('table:formula="of:=SUM([.A2:.A5])&amp;&quot; total&quot;"'));
     step = 'B reload';
+    //  the ship holds the edit before its save answers: a reload while
+    //  the answer is owed asks to leave, and that stops the navigation
+    await waitFor(() => page.evaluate(() => !window.__latUnsaved()), 30000, 100);
     await page.reload({ waitUntil: 'networkidle2', timeout: 60000 });
     await mounted();
     check('B: after a reload the page opens in the grid with the edit', (await shown(1, 0)) === '20' && (await shown(1, 3)) === '23');
