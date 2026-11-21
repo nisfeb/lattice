@@ -95,15 +95,63 @@ const VOID: &[&str] = &["frame", "embed", "source", "track", "base", "meta", "li
 /// Attributes that load something.
 const LOADS: &[&str] = &["src", "srcset", "imagesrcset", "lowsrc", "dynsrc", "poster", "action", "formaction", "data", "background", "ping", "manifest", "codebase"];
 
-/// Whether a value still holds a character reference after it was
-/// decoded: one this code does not know, which a browser may. It could
-/// be the colon of a scheme, so a value with one is not judged safe.
-fn undecoded(v: &str) -> bool {
-    v.match_indices('&').any(|(i, _)| {
-        let rest = &v[i + 1..];
-        let name = rest.bytes().take_while(|c| c.is_ascii_alphanumeric() || *c == b'#').count();
-        name > 0 && rest.as_bytes().get(name) == Some(&b';')
-    })
+/// What stands for a character reference this code does not know.
+const UNKNOWN: char = '\u{ffff}';
+
+/// A value with its character references read as HTML reads them in an
+/// attribute: a numbered one with or without its semicolon (`&#58` is a
+/// colon as `&#58;` is), and a named one with it. The names known here
+/// are the ones that spell what an address is judged by. Any other name
+/// with a semicolon may be one a browser knows, so it is read as
+/// `UNKNOWN` and judged every way it could fall (`guesses`). A name with
+/// no semicolon is only one of the old ones, none of which spells a
+/// character that matters here, and is left as it is written.
+fn read_refs(raw: &str) -> String {
+    const NAMES: [(&str, char); 34] = [
+        ("amp", '&'), ("lt", '<'), ("gt", '>'), ("quot", '"'), ("apos", '\''), ("colon", ':'), ("Tab", '\t'), ("NewLine", '\n'), ("sol", '/'), ("bsol", '\\'), ("lpar", '('), ("rpar", ')'),
+        ("period", '.'), ("comma", ','), ("num", '#'), ("quest", '?'), ("excl", '!'), ("semi", ';'), ("equals", '='), ("percnt", '%'), ("plus", '+'), ("lowbar", '_'), ("commat", '@'), ("lbrack", '['),
+        ("lsqb", '['), ("rbrack", ']'), ("rsqb", ']'), ("lbrace", '{'), ("lcub", '{'), ("rbrace", '}'), ("rcub", '}'), ("dollar", '$'), ("ast", '*'), ("nbsp", '\u{a0}'),
+    ];
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i + 1..];
+        let b = rest.as_bytes();
+        let (ch, used) = if b.first() == Some(&b'#') {
+            let hex = matches!(b.get(1), Some(b'x' | b'X'));
+            let from = if hex { 2 } else { 1 };
+            let len = b[from..].iter().take_while(|c| if hex { c.is_ascii_hexdigit() } else { c.is_ascii_digit() }).count();
+            // a number too long to be a character is still a reference: HTML reads it as one that stands for nothing
+            let ch = u32::from_str_radix(&rest[from..from + len], if hex { 16 } else { 10 }).ok().and_then(char::from_u32).filter(|c| *c != '\0').unwrap_or('\u{fffd}');
+            if len == 0 { (None, 0) } else { (Some(ch), from + len) }
+        } else {
+            let len = b.iter().take_while(|c| c.is_ascii_alphanumeric()).count();
+            match (len > 0 && b.get(len) == Some(&b';'), NAMES.iter().find(|(n, _)| *n == &rest[..len])) {
+                (true, Some((_, ch))) => (Some(*ch), len),
+                (true, None) => (Some(UNKNOWN), len),
+                _ => (None, 0),
+            }
+        };
+        match ch {
+            Some(ch) => {
+                out.push(ch);
+                rest = &rest[used..];
+                rest = rest.strip_prefix(';').unwrap_or(rest);
+            }
+            None => out.push('&'),
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A value that was read, each way a reference this code does not know
+/// could fall: as the colon of a scheme, as a slash, and as nothing at
+/// all, which is what a tab or a line end is in an address. A value is
+/// safe only when every one of them is.
+fn guesses(read: &str) -> [String; 3] {
+    [read.replace(UNKNOWN, ":"), read.replace(UNKNOWN, "/"), read.replace(UNKNOWN, "")]
 }
 
 /// Whether an address leads off the page's own site: it has a scheme, or starts with two slashes.
@@ -122,8 +170,11 @@ fn leads_off(raw: &str) -> (bool, Option<String>) {
 /// sources only, so reading the page tells no other host. Anything that
 /// embeds or runs is dropped, and so is every `on...` attribute. An
 /// address is judged as a browser reads it, with its character
-/// references read first (`jav&#x61;script:` is `javascript:`), and one
-/// with a reference this code does not know is dropped. A `srcset` is
+/// references read first (`jav&#x61;script:` is `javascript:`, and so is
+/// `javascript&#58` with no semicolon). A reference this code does not
+/// know is judged every way it could fall, so an ordinary address with
+/// `&name;` in its query is kept and a scheme spelled with one is not.
+/// A `srcset` is
 /// dropped when any picture in it is on another site, and a `style`
 /// when it could load anything: it may set sizes and nothing that calls
 /// a function, since `url(...)` is one. A tag is
@@ -185,18 +236,20 @@ pub fn clean(html: &str) -> String {
         for (a, range) in attrs(tag) {
             let n = a.to_ascii_lowercase();
             let raw = &tag[range];
-            let read = crate::html::decode(raw);
-            let (absolute, scheme) = leads_off(&read);
+            let read = read_refs(raw);
+            let ways = guesses(&read);
             let link = n == "href" || n == "xlink:href";
             let loads = LOADS.contains(&n.as_str());
+            let off = |v: &str| {
+                let (absolute, scheme) = leads_off(v);
+                absolute && !(link && matches!(scheme.as_deref(), Some("http" | "https" | "mailto")))
+            };
             let bad = n.starts_with("on")
                 || !n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b':' || b == b'-')
-                || (link || loads || n == "style") && undecoded(&read)
-                || link && absolute && !matches!(scheme.as_deref(), Some("http" | "https" | "mailto"))
-                || loads && absolute
+                || (link || loads) && ways.iter().any(|v| off(v))
                 // each picture of a set is an address of its own
-                || n.ends_with("srcset") && read.split(',').any(|one| leads_off(one.trim_start().split(char::is_whitespace).next().unwrap_or("")).0)
-                || n == "style" && read.contains(['(', '\\', '@']);
+                || n.ends_with("srcset") && ways.iter().any(|v| v.split(',').any(|one| leads_off(one.trim_start().split(char::is_whitespace).next().unwrap_or("")).0))
+                || n == "style" && read.contains(['(', '\\', '@', UNKNOWN]);
             if !bad {
                 out.push_str(&format!(" {n}=\"{}\"", raw.replace('"', "&quot;")));
             }
@@ -349,5 +402,43 @@ mod tests {
             assert!(t.elapsed().as_secs() < 8, "{:?}", t.elapsed());
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn a_reference_with_no_semicolon_is_read_and_an_ordinary_address_is_kept() {
+        // HTML reads a numbered reference without its semicolon: each of these is the scheme or the slashes it spells
+        for bad in [
+            "<a href=\"javascript&#58alert(1)\">x</a>",
+            "<a href=\"&#106avascript:alert(1)\">x</a>",
+            "<a href=\"java&#9script:alert(1)\">x</a>",
+            "<a href=\"java&#x9script:alert(1)\">x</a>",
+            "<a href=\"javascript&#x3A/alert(1)\">x</a>",
+            "<a href=\"javascript&#0000058alert(1)\">x</a>",
+        ] {
+            assert_eq!(clean(bad), "<a>x</a>", "{bad}");
+        }
+        assert_eq!(clean("<img src=\"/&#47x.org/t.png\">"), "<img>");
+        assert_eq!(clean("<img src=\"&#104ttps://x.org/t.png\">"), "<img>");
+        assert_eq!(clean("<img srcset=\"a.png, /&#47x.org/t.png 2x\">"), "<img>");
+        assert_eq!(clean("<p style=\"background:url&#40//x.org/t&#41\">t</p>"), "<p>t</p>");
+        assert_eq!(clean("<p style=\"background:url&lpar;//x.org/t&rpar;\">t</p>"), "<p>t</p>");
+        assert_eq!(clean("<p style=\"width&madeup;1\">t</p>"), "<p>t</p>");
+        // an address is judged by its scheme: one with `&name;` in its query is an ordinary address
+        for kept in [
+            "<a href=\"https://example.org/?a=1&amp;b;c=2\">x</a>",
+            "<a href=\"https://example.org/?a=1&b;c=2\">x</a>",
+            "<a href=\"page?x=1&copy;2\">x</a>",
+            "<a href=\"https://example.org/a&b=1&amp=2&#x26;c\">x</a>",
+            "<a href=\"mailto:a@b.c?subject=x&body;y\">x</a>",
+            "<img src=\"fig/a&b;c.png\">",
+        ] {
+            assert_eq!(clean(kept), kept, "{kept}");
+        }
+        // and one whose scheme could be spelled by a reference this does not know is not
+        assert_eq!(clean("<a href=\"java&NewLine;script:alert(1)\">x</a>"), "<a>x</a>");
+        assert_eq!(clean("<a href=\"javascript&unknown;alert(1)\">x</a>"), "<a>x</a>");
+        assert_eq!(clean("<img src=\"&unknown;/x.org/t.png\">"), "<img>");
+        assert_eq!(clean("<img src=\"/&unknown;x.org/t.png\">"), "<img>");
+        assert_eq!(read_refs("a&#58b&#x3a;c&colon;d&amp;e&ampf&g;h&#;i&#xzz&"), format!("a:b:c:d&e&ampf{UNKNOWN}h&#;i&#xzz&"));
     }
 }
