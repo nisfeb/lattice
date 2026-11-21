@@ -16098,6 +16098,9 @@
   ::  body yields [~ ~] (clean 404) instead of a crash.
   =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.u.ms))))
   ?:  ?=(%| -.res)  (pure:m `~)
+  ::  an empty vault copy is an unpublished page's last revision, which
+  ::  the kernel still hands a peer (+apply-pub-in's %del-page): nothing
+  ?:  =('' p.res)  (pure:m `~)
   (pure:m ``[ud.cass.u.ms p.res])
 ::  +explore: GET /x/<ship>/<path...>, the server-rendered tree explorer
 ::  (docs/platform.md, build step 1). Directories render as listings with
@@ -22416,6 +22419,7 @@
       ::  child is a plain page delete. A truly missing page (no children
       ::  either) stays a no-op.
       ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
+      ?:  (~(has by ix) key)  (pub-drop-dead root key ix)
       =/  pre=path  (snip key)
       =/  kids=(list path)
         %+  skim  ~(tap in ~(key by ix))
@@ -22442,6 +22446,16 @@
     ::  index row so it's no longer live. No trash row. Pages have no restore.
     ::  The history goes first: the /public peek grant covers this path, and
     ::  a peek at an old case read the last published body after the cull.
+    ::  The kernel keeps a path's newest revision through every lose
+    ::  (grubbery 09653ae9), and answers a peer's uncased peek of a culled
+    ::  path with that revision (+process-peek reads born's top and not
+    ::  the peak, the mistake 15c5dc75 fixed for local peeks only). So a
+    ::  page moved out of a shared folder, or unshared, stayed readable to
+    ::  any peer at its vault path. An empty body is written first, so the
+    ::  revision that survives holds no text, and the lose drops the rest.
+    ::  It also keeps a publish again of the same text from being taken as
+    ::  a no-op remake of the dead top (+pub-drop-dead).
+    ;<  ~  bind:m  (over-gained:fio road [/lattice %page] '')
     ;<  ~  bind:m  (prune-hist road 0 ~s0)
     ;<  ~  bind:m  (cull:fio road)
     ::  No tombstone binding: a subscriber learns of the delete from the
@@ -22493,6 +22507,46 @@
     ;<  *  bind:m  (grow-pub-index root nix)
     (pure:m ~)
   ==
+::  +pub-drop-dead: an unpublish of a page the index lists whose vault
+::  grub is gone. A publish can list a page and leave no grub: the
+::  kernel takes a make at a deleted path with the text it last held
+::  as a no-op, so a page unpublished and published again unchanged
+::  was listed and bound with no vault copy. The unpublish then found
+::  no grub and refused, as for a page never published, and the page
+::  stayed in the folder index and in the namespace for good. So its
+::  row goes, and its binding too when the revision list names one (a
+::  listed rev is bound and not yet culled, +apply-pub-in's order), so
+::  the cull never hits a spur twice.
+++  pub-drop-dead
+  |=  [root=@ud key=path ix=pub-index:lp]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %-  (say 2 ~[leaf+"lattice: unpublish {(spud key)}: listed with no vault copy, row dropped"])
+  ::  the dead path's last revision may still hold the text, which the
+  ::  kernel hands a peer's uncased peek (+apply-pub-in's %del-page), so
+  ::  it is written empty and culled again
+  ;<  ~  bind:m
+    =/  or=(unit vrail:lp)  (key-to-rail:lp /pub/vault key)
+    ?~  or  (pure:m ~)
+    ;<  up=@ud  bind:m  nexus-up
+    =/  road=road:tarball  (rf up pax.u.or nom.u.or)
+    ;<  ~  bind:m  (over-gained:fio road [/lattice %page] '')
+    ;<  ~  bind:m  (prune-hist road 0 ~s0)
+    ;<  *  bind:m  (cull-soft:io road)
+    (pure:m ~)
+  =/  nix=pub-index:lp  (~(del by ix) key)
+  ;<  ~  bind:m  (put-file (rf root /pub %index) [/lattice %pub-index] nix)
+  ;<  revs=(map @t json)  bind:m  (read-pub-revs root)
+  =/  was=(unit @ud)
+    =/  r=(unit json)  (~(get by revs) (page-name:lp key))
+    ?~(r ~ (bind (json-rev:lp u.r) head))
+  ;<  salt=@  bind:m  pub-salt
+  ;<  ~  bind:m  (put-pub-revs root salt key ~ revs)
+  ;<  ~  bind:m
+    ?~  was  (pure:m ~)
+    (cull-farm:io (page-spur salt (snip (strip-pub:lp key)) u.was))
+  ;<  *  bind:m  (grow-pub-index root nix)
+  (pure:m ~)
 ::  +pub-save-page: +apply-pub-in's %save-page. `vm` is the page's
 ::  view-mode when the caller read it already (+pub-flush-one), else ~
 ::  and it is read here (+published-mode).
