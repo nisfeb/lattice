@@ -91,15 +91,16 @@
   =/  r=(unit path)  (strip-prefix desk-base-old p)
   ?~(r ~ `(weld desk-base u.r))
 ::  +save-moved: whether a /remote-save write that failed with `code` is
-::  tried once more where the peer's lattice lives now (+moved-path). Only
-::  a write that reached no one, a 504 with nothing sent (`sent` |), at a
-::  path under one of +peer-bases. Any answer from the host is final, and
-::  a write sent but not acked may still land where it went.
+::  tried once more where the peer's lattice lives now (+moved-path). A
+::  write that reached no one, a 504 with nothing sent (`sent` |), or one
+::  the host had no file for (404, nothing written: a kernel that moved
+::  the shell answers so at the old path), at a path under one of
+::  +peer-bases. Any other answer from the host is final, and a write
+::  sent but not acked may still land where it went.
 ++  save-moved
   |=  [code=@ud sent=? p=path]
   ^-  ?
-  ?&  =(504 code)
-      !sent
+  ?&  |(&(=(504 code) !sent) =(404 code))
       (lien peer-bases |=(b=path ?=(^ (strip-prefix b p))))
   ==
 ::  +sub-keep-dir: the directory of a peer's published page that a /sub
