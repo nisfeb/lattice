@@ -539,25 +539,56 @@ fn code_fence(code: &str) -> (usize, bool) {
     (longest + 1, code.starts_with('`') || code.ends_with('`') || (code.starts_with(' ') && code.ends_with(' ')))
 }
 
-/// The code a fence of `run` backticks at the start of `rest` holds, and
-/// where it ends, when it is written just as `code_fence` writes it. Any
-/// other is left as the text it is, so it is written back unchanged.
-fn fenced_code(rest: &str, run: usize) -> Option<(&str, usize)> {
-    let b = rest.as_bytes();
-    // the closing fence is the next run of exactly as many
-    let mut p = run;
-    let close = loop {
-        p += b[p..].iter().position(|c| *c == b'`')?;
-        let n = b[p..].iter().take_while(|c| **c == b'`').count();
-        if n == run {
-            break p;
+/// The runs of backticks in a line: where each starts and how long it
+/// is, and for each length the last run of it. A fence is closed by the
+/// next run of its own length, and looking for that run by run, with a
+/// length that has no later run answered at once, reads a line of many
+/// fences once and not once for each.
+struct Ticks {
+    runs: Vec<(usize, usize)>,
+    last: std::collections::HashMap<usize, usize>,
+}
+
+impl Ticks {
+    fn of(s: &str) -> Ticks {
+        let b = s.as_bytes();
+        let (mut runs, mut last, mut i) = (Vec::new(), std::collections::HashMap::new(), 0);
+        while i < b.len() {
+            if b[i] != b'`' {
+                i += 1;
+                continue;
+            }
+            let n = b[i..].iter().take_while(|c| **c == b'`').count();
+            last.insert(n, runs.len());
+            runs.push((i, n));
+            i += n;
         }
-        p += n;
-    };
-    let raw = &rest[run..close];
-    let padded = raw.len() >= 2 && raw.starts_with(' ') && raw.ends_with(' ');
-    let code = if padded { &raw[1..raw.len() - 1] } else { raw };
-    (!code.is_empty() && code_fence(code) == (run, padded)).then_some((code, close + run))
+        Ticks { runs, last }
+    }
+
+    /// The code that the fence at `i` holds, and where its closing fence
+    /// ends, when it is written just as `code_fence` writes it. Any other
+    /// is left as the text it is, so it is written back unchanged. The
+    /// fence is a whole run: backticks left over from a longer run, some
+    /// of which closed something else, open nothing.
+    fn code<'a>(&self, s: &'a str, i: usize) -> Option<(&'a str, usize)> {
+        let at = self.runs.binary_search_by_key(&i, |r| r.0).ok()?;
+        let run = self.runs[at].1;
+        if self.last.get(&run).is_none_or(|l| *l <= at) {
+            return None;
+        }
+        // the closing fence is the next run of exactly as many, and the longest run before it is the code's own
+        let mut longest = 0;
+        let close = self.runs[at + 1..].iter().find(|r| {
+            longest = longest.max(if r.1 == run { 0 } else { r.1 });
+            r.1 == run
+        })?;
+        let raw = &s[i + run..close.0];
+        let padded = raw.len() >= 2 && raw.starts_with(' ') && raw.ends_with(' ');
+        let code = if padded { &raw[1..raw.len() - 1] } else { raw };
+        let pads = code.starts_with('`') || code.ends_with('`') || (code.starts_with(' ') && code.ends_with(' '));
+        (!code.is_empty() && longest + 1 == run && pads == padded).then_some((code, close.0 + run))
+    }
 }
 
 /// Appends `s` to `out` without its inline markers, recording each as a mark.
@@ -566,6 +597,8 @@ fn inline(s: &str, out: &mut String, marks: &mut Vec<MarkRange>) {
     let mut i = 0;
     // what ends a link's address, looked for from one link's label to the next
     let (mut paren, mut space, mut opening) = (Seek::default(), Seek::default(), Seek::default());
+    // the line's runs of backticks, counted when a fence of more than one is first met
+    let mut ticks: Option<Ticks> = None;
     while i < b.len() {
         let rest = &s[i..];
         match b[i] {
@@ -575,7 +608,7 @@ fn inline(s: &str, out: &mut String, marks: &mut Vec<MarkRange>) {
             }
             b'`' => {
                 let run = rest.len() - rest.trim_start_matches('`').len();
-                let close = if run == 1 { rest[1..].find('`').filter(|&j| j > 0).map(|j| (&rest[1..1 + j], j + 2)) } else { fenced_code(rest, run) };
+                let close = if run == 1 { rest[1..].find('`').filter(|&j| j > 0).map(|j| (&rest[1..1 + j], j + 2)) } else { ticks.get_or_insert_with(|| Ticks::of(s)).code(s, i).map(|(code, end)| (code, end - i)) };
                 match close {
                     Some((code, len)) => {
                         let at = out.len();
@@ -858,57 +891,128 @@ fn emit_inline(line: &str, at: usize, marks: &[&MarkRange], out: &mut String) {
     if from < line.len() {
         pieces.push(Piece::Text(from, line.len()));
     }
-    // how many links are open, and the fence of the code that is
-    let (mut links, mut fence) = (0usize, (1usize, false));
-    for (n, piece) in pieces.iter().enumerate() {
-        match *piece {
-            Piece::Open(k) => match kinds[k] {
-                Mark::Code => {
-                    // the fence is longer than any run of backticks in the code it holds
-                    let held: String = pieces[n + 1..].iter().take_while(|p| !matches!(p, Piece::Close(c) if *c == k)).filter_map(|p| if let Piece::Text(a, z) = *p { Some(&line[a..z]) } else { None }).collect();
-                    fence = code_fence(&held);
-                    out.push_str(&"`".repeat(fence.0));
-                    out.push_str(if fence.1 { " " } else { "" });
-                }
-                Mark::Link(_) => {
-                    links += 1;
-                    out.push('[');
-                }
-                m => out.push_str(open(m)),
-            },
-            Piece::Close(k) => match kinds[k] {
-                Mark::Code => {
-                    out.push_str(if fence.1 { " " } else { "" });
-                    out.push_str(&"`".repeat(fence.0));
-                }
-                Mark::Link(url) => {
-                    links -= 1;
-                    // a backslash left alone before the closing bracket would escape it
-                    if let Some(Piece::Text(a, z)) = n.checked_sub(1).map(|n| &pieces[n]) {
-                        if label_escapes(&line[*a..*z]).last() == Some(&(*z - *a)) {
-                            out.push('\\');
-                        }
+    // how code is written: fenced as `code_fence` says, or between single backticks as it was before
+    // fences were, or as plain text with no mark
+    #[derive(Clone, Copy, PartialEq)]
+    enum Code {
+        Fenced,
+        Single,
+        Plain,
+    }
+    let write = |how: Code| {
+        let mut out = String::with_capacity(line.len() + 8 * pieces.len());
+        // how many links are open, and the fence of the code that is
+        let (mut links, mut fence) = (0usize, (1usize, false));
+        for (n, piece) in pieces.iter().enumerate() {
+            match *piece {
+                Piece::Open(k) => match kinds[k] {
+                    Mark::Code if how == Code::Plain => {}
+                    Mark::Code => {
+                        // the fence is longer than any run of backticks in the code it holds
+                        let held: String = pieces[n + 1..].iter().take_while(|p| !matches!(p, Piece::Close(c) if *c == k)).filter_map(|p| if let Piece::Text(a, z) = *p { Some(&line[a..z]) } else { None }).collect();
+                        fence = if how == Code::Fenced { code_fence(&held) } else { (1, false) };
+                        out.push_str(&"`".repeat(fence.0));
+                        out.push_str(if fence.1 { " " } else { "" });
                     }
-                    out.push_str("](");
-                    out.push_str(url);
-                    out.push(')');
+                    Mark::Link(_) => {
+                        links += 1;
+                        out.push('[');
+                    }
+                    m => out.push_str(open(m)),
+                },
+                Piece::Close(k) => match kinds[k] {
+                    Mark::Code if how == Code::Plain => {}
+                    Mark::Code => {
+                        out.push_str(if fence.1 { " " } else { "" });
+                        out.push_str(&"`".repeat(fence.0));
+                    }
+                    Mark::Link(url) => {
+                        links -= 1;
+                        // a backslash left alone before the closing bracket would escape it
+                        if let Some(Piece::Text(a, z)) = n.checked_sub(1).map(|n| &pieces[n]) {
+                            if label_escapes(&line[*a..*z]).last() == Some(&(*z - *a)) {
+                                out.push('\\');
+                            }
+                        }
+                        out.push_str("](");
+                        out.push_str(url);
+                        out.push(')');
+                    }
+                    m => out.push_str(open(m)),
+                },
+                Piece::Text(a, z) if links == 0 => out.push_str(&line[a..z]),
+                Piece::Text(a, z) => {
+                    // in a link's text a bracket that would open a label or close this one is escaped,
+                    // unless the text escapes it already
+                    let mut done = a;
+                    for p in label_escapes(&line[a..z]).into_iter().filter(|p| *p < z - a) {
+                        out.push_str(&line[done..a + p]);
+                        out.push('\\');
+                        done = a + p;
+                    }
+                    out.push_str(&line[done..z]);
                 }
-                m => out.push_str(open(m)),
-            },
-            Piece::Text(a, z) if links == 0 => out.push_str(&line[a..z]),
-            Piece::Text(a, z) => {
-                // in a link's text a bracket that would open a label or close this one is escaped,
-                // unless the text escapes it already
-                let mut done = a;
-                for p in label_escapes(&line[a..z]).into_iter().filter(|p| *p < z - a) {
-                    out.push_str(&line[done..a + p]);
-                    out.push('\\');
-                    done = a + p;
-                }
-                out.push_str(&line[done..z]);
             }
         }
+        out
+    };
+    if code.is_none() {
+        out.push_str(&write(Code::Fenced));
+        return;
     }
+    // A fence stands beside whatever the text has round it: a backtick just outside the code joins it,
+    // and a backslash before it escapes its first backtick. So what was written is read back, and it
+    // is kept only if it reads as the same text. Fenced first, which also reads back as the same
+    // marks wherever anything does. Then single backticks, which is how code was always written. And
+    // if neither keeps the text, the text is written with no code mark: a mark may be lost, a
+    // character of the page may not
+    let reads = |written: &str| {
+        let (mut text, mut got) = (String::new(), Vec::new());
+        inline(written, &mut text, &mut got);
+        // the marks read, each kind's stretches joined as the ones written were
+        let same = text == line && {
+            let mut read: Vec<Vec<(usize, usize)>> = vec![Vec::new(); kinds.len()];
+            let known = got.iter().all(|m| match kinds.iter().position(|k| **k == m.mark) {
+                Some(k) => {
+                    read[k].push((m.start, m.end));
+                    true
+                }
+                None => false,
+            });
+            known
+                && read.iter_mut().zip(&spans).all(|(r, want)| {
+                    r.sort_unstable();
+                    let mut joined: Vec<(usize, usize)> = Vec::new();
+                    for &(a, z) in r.iter() {
+                        match joined.last_mut() {
+                            Some(last) if a <= last.1 => last.1 = last.1.max(z),
+                            _ => joined.push((a, z)),
+                        }
+                    }
+                    joined == *want
+                })
+        };
+        // three backticks at the start of a line open a block of code, and the line is then read as it is written
+        let block = fence(written) && written != line;
+        (text == line && !block, same && !block)
+    };
+    let mut kept: Option<String> = None;
+    let mut first = None;
+    for how in [Code::Fenced, Code::Single, Code::Plain] {
+        let written = write(how);
+        let (text, marks) = reads(&written);
+        if marks {
+            kept = Some(written);
+            break;
+        }
+        if text && kept.is_none() {
+            kept = Some(written);
+        } else if first.is_none() {
+            first = Some(written);
+        }
+    }
+    // nothing keeps the text when the text itself reads as Markdown: it is written as it always was
+    out.push_str(&kept.or(first).unwrap_or_default());
 }
 
 /// How many newlines the page wrote between two lines, keyed by the two
@@ -1005,33 +1109,15 @@ pub fn emit_with(text: &str, marks: &[MarkRange], blocks: &[Block], soft: &[u32]
     if made {
         lines.push(ticks(true));
     }
-    // a table's second line: only bars, hyphens, colons and spaces
-    let ruled = |s: &str| s.contains('-') && s.contains('|') && s.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'));
-    // a line that opens a table: the line right under it is the ruled one
-    let heads = |i: usize| lines[i].block == Block::Paragraph && lines[i].s.contains('|') && lines.get(i + 1).is_some_and(|d| d.soft && ruled(&d.s));
-    // front matter opens the page and runs to the `---` that stands right under the line before it
-    let front = lines.first().filter(|l| l.s == "---").and_then(|_| lines.iter().skip(1).position(|l| l.s == "---")).map(|c| c + 1).filter(|&c| lines[c].soft);
     let mut out = String::new();
-    // whether the line above is in a table
-    let mut table = false;
     for (i, l) in lines.iter().enumerate() {
         if i > 0 {
             let prev = &lines[i - 1];
-            let kept = if l.soft { Some(1) } else { seps.get(&(prev.s.clone(), l.s.clone())).copied() };
-            let mut n = kept.unwrap_or_else(|| usual(prev, l));
-            // a line the owner put inside a table or front matter stands right under the line
-            // above: a blank line there would end the table or the front matter. A line after a
-            // table's last is one only when it is written as a row, so text can follow a table
-            if kept.is_none() && n > 1 {
-                let row = table && l.block == Block::Paragraph && !heads(i) && (l.s.trim_start().starts_with('|') || lines.get(i + 1).is_some_and(|x| x.soft));
-                if row || front.is_some_and(|c| i < c) {
-                    n = 1;
-                }
-            }
-            table = heads(i) || (table && n == 1 && l.block == Block::Paragraph);
+            // a pair of lines the owner changed gets the usual spacing and no other: a line that was a
+            // paragraph of its own keeps its blank line, whatever stands round it. Nothing is drawn up
+            // under the line above because it looks like a table's row or a line of front matter
+            let n = if l.soft { 1 } else { seps.get(&(prev.s.clone(), l.s.clone())).copied().unwrap_or_else(|| usual(prev, l)) };
             out.push_str(&"\n".repeat(n as usize));
-        } else {
-            table = heads(0);
         }
         out.push_str(&l.s);
     }
@@ -1490,45 +1576,91 @@ mod tests {
         assert_eq!(emit("x[y go", &[m(4, 6, link())], &[P], &[]), "x[y [go](http://u)\n");
     }
 
-    /// The page written after Return at the end of line `after` and `typed` on the new line.
-    fn entered(src: &str, after: usize, typed: &str) -> String {
-        let d = exact(src).expect("opens rich");
+    #[test]
+    fn a_changed_line_beside_a_table_or_a_rule_keeps_its_blank_line() {
+        // each page, what is changed in it, and to what: the page written is the page with that change and no other
+        for (src, was, now) in [
+            // a table's last row, and the first line of the paragraph after it
+            ("| a | b |\n|---|---|\n| 1 | 2 |\n\nfirst line\nsecond line\n", "2", "3"),
+            ("| a | b |\n|---|---|\n| 1 | 2 |\n\nfirst line\nsecond line\n", "first", "First"),
+            ("| a | b |\n|---|---|\n| 1 | 2 |\n\n# Heading\nunder heading\n", "Heading", "Head"),
+            ("a | b\n--|--\n1 | 2\n\nfirst line\nsecond line\n", "first", "First"),
+            ("| a | b |\n|---|---|\n| 1 | 2 |\n\n| not a row\nsecond line\n", "not", "NOT"),
+            ("| a |\n| --- |\n| 1 |\n\n| b |\n| --- |\n| 2 |\n", "| b |", "| c |"),
+            // a rule that opens the page, and a line with a rule right under it later on
+            ("---\n\nintro para\n\nnext para\nits second line\n---\n\nrest\n", "next", "Next"),
+            ("---\n\na\n---\n", "a", "xa"),
+            ("---\ntitle: x\n---\n\n# T\n\ntext\nmore\n", "text", "Text"),
+            ("---\n\npara\nmore\n\n---\n", "para", "PARA"),
+        ] {
+            let d = exact(src).unwrap_or_else(|| panic!("{src:?} opens rich"));
+            assert!(d.text.contains(was), "{src:?}");
+            let out = emit_with(&d.text.replacen(was, now, 1), &d.marks, &d.blocks, &d.soft, &d.seps);
+            assert_eq!(out, src.replacen(was, now, 1), "{src:?} with {was:?} made {now:?}");
+        }
+        // a line entered as a paragraph of its own is written as one, in a table too: the editor made it one
+        let table = "| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n";
+        let d = exact(table).unwrap();
         let mut lines: Vec<&str> = d.text.split('\n').collect();
-        lines.insert(after + 1, typed);
+        lines.insert(3, "| x | y |");
         let mut blocks = d.blocks.clone();
-        blocks.insert(after + 1, Block::Paragraph);
-        let soft: Vec<u32> = d.soft.iter().map(|n| if *n as usize > after { n + 1 } else { *n }).collect();
-        emit_with(&lines.join("\n"), &d.marks, &blocks, &soft, &d.seps)
+        blocks.insert(3, Block::Paragraph);
+        let soft: Vec<u32> = d.soft.iter().map(|n| if *n >= 3 { n + 1 } else { *n }).collect();
+        assert_eq!(emit_with(&lines.join("\n"), &d.marks, &blocks, &soft, &d.seps), "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n| x | y |\n| 3 | 4 |\n");
     }
 
     #[test]
-    fn a_line_entered_in_a_table_or_front_matter_does_not_break_it() {
-        let table = "intro\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n\nafter\n";
-        // a row between two rows, a row after the last, and Return alone
-        assert_eq!(entered(table, 3, "| x | y |"), table.replace("| 1 | 2 |\n", "| 1 | 2 |\n| x | y |\n"));
-        assert_eq!(entered(table, 4, "| x | y |"), table.replace("| 3 | 4 |\n", "| 3 | 4 |\n| x | y |\n"));
-        assert_eq!(entered(table, 3, ""), table);
-        // words between two rows stay in the table, and words after its last row are a paragraph of their own
-        assert_eq!(entered(table, 3, "words"), table.replace("| 1 | 2 |\n", "| 1 | 2 |\nwords\n"));
-        assert_eq!(entered(table, 4, "words"), table.replace("| 3 | 4 |\n", "| 3 | 4 |\n\nwords\n"));
-        // a second table whose first line is changed is still a second table
-        let two = "| a |\n| --- |\n| 1 |\n\n| b |\n| --- |\n| 2 |\n";
-        let d = exact(two).unwrap();
-        assert_eq!(emit_with(&d.text.replace("| b |", "| c |"), &d.marks, &d.blocks, &d.soft, &d.seps), two.replace("| b |", "| c |"));
-        // front matter: a line entered anywhere in it stands right under the line above
-        let front = "---\ntitle: x\ntags:\n- a\n- b\nsensitive: yes\n---\n\n# T\n\ntext\n";
-        for after in 0..=5 {
-            let out = entered(front, after, "new: z");
-            let head = out.split("\n---\n").next().unwrap();
-            assert!(!head.contains("\n\n") && head.contains("\nnew: z"), "after line {after}: {out:?}");
-            assert!(out.ends_with("\n---\n\n# T\n\ntext\n"), "{out:?}");
+    fn code_beside_a_backtick_or_a_backslash_never_changes_the_text() {
+        use Block::Paragraph as P;
+        // the cases a review found: each was written so that it read back as other text
+        for (text, a, z) in [("!``", 0, 2), ("\\`a", 1, 3), ("``*a`", 3, 4), ("`a", 0, 2), ("a``", 0, 2), ("\\a`b", 1, 4)] {
+            let out = emit(text, &[m(a, z, Mark::Code)], &[P], &[]);
+            assert_eq!(parse(&out).text, text, "{text:?} with code over {a}..{z} was written {out:?}");
         }
-        // and a line entered below it is a paragraph, as anywhere else
-        assert_eq!(entered(front, 6, "para"), front.replace("---\n\n# T", "---\n\npara\n\n# T"));
-        // two rules with a paragraph between are not front matter: the paragraph keeps its blank lines when it is changed
-        let rules = "---\n\npara\nmore\n\n---\n";
-        let d = exact(rules).unwrap();
-        assert_eq!(emit_with(&d.text.replace("para", "PARA"), &d.marks, &d.blocks, &d.soft, &d.seps), rules.replace("para", "PARA"));
+        // every text of up to five of these characters, with code over every stretch of it
+        let alphabet = ['`', '\\', ' ', '*', 'a'];
+        let (mut all, mut whole, mut plain_kept) = (0, 0, 0);
+        for len in 1..=5u32 {
+            for n in 0..alphabet.len().pow(len) {
+                let text: String = (0..len).map(|i| alphabet[n / alphabet.len().pow(i) % alphabet.len()]).collect();
+                // a text that is not itself when written with no mark at all is Markdown the owner typed
+                let plain = parse(&emit(&text, &[], &[P], &[])).text == text;
+                for a in 0..text.len() {
+                    for z in a + 1..=text.len() {
+                        let out = emit(&text, &[m(a, z, Mark::Code)], &[P], &[]);
+                        let back = parse(&out);
+                        all += 1;
+                        if plain {
+                            plain_kept += 1;
+                            assert_eq!(back.text, text, "{text:?} with code over {a}..{z} was written {out:?}");
+                        }
+                        // and written again it is the same line: nothing drifts from save to save
+                        if back.text == text {
+                            assert_eq!(emit_with(&back.text, &back.marks, &back.blocks, &back.soft, &back.seps), out, "{text:?} {a}..{z}");
+                        }
+                        whole += usize::from(back.text == text && back.marks == vec![m(a, z, Mark::Code)]);
+                    }
+                }
+            }
+        }
+        // most of them keep the mark too, just where it was put
+        assert!(plain_kept > all / 2 && whole > all / 4, "{whole} whole and {plain_kept} plain of {all}");
+    }
+
+    #[test]
+    fn a_line_of_fences_that_run_together_is_read_once() {
+        // two backticks, a space, one, a space, two, over and over: the closing two of one and the opening two
+        // of the next are a run of four, so every fence looked to the end of the line for its own length
+        for piece in ["`` ` ``", "``` `` ` ", "`` a ``` b ````", "` `` ``` ```` "] {
+            let line = piece.repeat(199_000 / piece.len());
+            let t = std::time::Instant::now();
+            let d = parse(&line);
+            let _ = emit_with(&d.text, &d.marks, &d.blocks, &d.soft, &d.seps);
+            assert!(t.elapsed().as_millis() < 5000, "{piece:?} took {:?}", t.elapsed());
+        }
+        // fences that are whole are still read: one beside another, and one inside a longer one
+        let d = parse("a ``x`y`` b ```p``q``` c");
+        assert_eq!((d.text.as_str(), d.marks), ("a x`y b p``q c", vec![m(2, 5, Mark::Code), m(8, 12, Mark::Code)]));
     }
 
     #[test]
