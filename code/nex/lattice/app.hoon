@@ -1165,6 +1165,10 @@
     ?~  why  $(todo t.todo)
     `(rap 3 ~[nam.i.todo ': ' u.why])
   ?^  bad-map  (send-err eyre-id 400 u.bad-map)
+  ::  every write the writer took before this request lands first, so
+  ::  the reads below, the revs a replay is checked against included,
+  ::  see the pages as those writes left them (see +handle-page-save)
+  ;<  ~  bind:m  writer-drain
   ::  keyed requests: check taint, type allowlist, path scope, and sensitive
   ::  per item. gate returns ~ if ok, or [err-code err-msg] to refuse early.
   ::  The synchronous checks run first; the sensitive check is fiber-based.
@@ -1269,9 +1273,10 @@
     bod
   ::  report mode: read every page's rev BEFORE the write (conflict = the
   ::  ship moved past the base the edit was made from) and after (the new
-  ::  rev the client should carry forward). Same caveat as page-save: the
-  ::  compare is fiber-adjacent to the poke, so a same-ship interleave can
-  ::  mislabel a flag, never lose a revision.
+  ::  rev the client should carry forward). Unlike page-save, the writer
+  ::  does not check a batch item again: a write the writer takes between
+  ::  these reads and the batch's poke is written over, kept only in the
+  ::  page's history. The drain above leaves that window a few steps wide.
   ;<  codes=(list [rev=@ud src=(unit @t)])  bind:m
     =/  n  (fiber:fiber:nexus ,(list [rev=@ud src=(unit @t)]))
     ?.  report  (pure:n ~)
@@ -1335,27 +1340,45 @@
     ?~  marked  (pure:m ~)
     ;<  ~  bind:m  (poke-eval [%make-marked i.marked])
     $(marked t.marked)
+  ::  answer once the writes are down: the writer took the pokes above
+  ::  before it applied them
+  ;<  ~  bind:m  writer-drain
   ?.  report
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['ok' b+&] ['saved' (numb:enjs:format (lent items))]])
-  ::  new rev per item = prev+1, computed for the same reason page-save
-  ::  computes it. A same-fiber peek cannot observe the write it follows.
-  ::  A page that was missing has no prev to count from (its first rev is
-  ::  0, or above its old ones), so its rev is null, as page-save answers
+  ::  each item's rev is read now its write is down: the page holding
+  ::  the item's body is at the item's rev. When it does not (a later
+  ::  save is on top), prev+1 is the lowest rev the item can have, and a
+  ::  page that was missing has no prev to count from, so its rev is null
+  ;<  heads=(list [rev=@ud src=(unit @t)])  bind:m
+    =/  n  (fiber:fiber:nexus ,(list [rev=@ud src=(unit @t)]))
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=(unit @ud)])  items
+    =|  acc=(list [rev=@ud src=(unit @t)])
+    |-  ^-  form:n
+    ?~  todo  (pure:n (flop acc))
+    ;<  r=[rev=@ud src=(unit @t)]  bind:n  (page-head (pax-of nam.i.todo))
+    $(todo t.todo, acc [r acc])
   =/  out=(list json)
     =/  todo  items
     =/  ps  codes
     =/  ds  dups.kd
+    =/  hs  heads
+    =/  pg  pages
     =|  acc=(list json)
     |-  ^-  (list json)
     ?~  todo  (flop acc)
     =/  pv=@ud  ?~(ps 0 rev.i.ps)
-    =/  nw=json  ?~(ps ~ ?~(src.i.ps ~ (numb:enjs:format +(pv))))
+    =/  mine=?  ?&(?=(^ hs) ?=(^ pg) =(src.i.hs `src.i.pg))
+    =/  nw=json
+      ?:  &(mine ?=(^ hs))  (numb:enjs:format rev.i.hs)
+      ?~(ps ~ ?~(src.i.ps ~ (numb:enjs:format +(pv))))
     =/  cf=?  &(?=(^ bas.i.todo) !=(u.bas.i.todo pv) ?~(ds & !i.ds))
     %=  $
       todo  t.todo
       ps    ?~(ps ~ t.ps)
       ds    ?~(ds ~ t.ds)
+      hs    ?~(hs ~ t.hs)
+      pg    ?~(pg ~ t.pg)
       acc
     :_  acc
     %-  pairs:enjs:format
@@ -1406,8 +1429,9 @@
 ::  page's rev is a 409 that begins "stale", and nothing is written. The
 ::  editor's live saves send it, so two windows on one page cannot write
 ::  over each other, and the window refused keeps its text aside itself.
-::  The check sits one fiber bind before the write, so two saves racing
-::  through it at once can both land; each is still a kept revision.
+::  The writer checks the base again as it writes (%make-by), so two
+::  saves racing through the check at once cannot both land: the later
+::  one is a 409 "stale" too. A save answers once its write is down.
 ::  `wid`: who writes, tagged on the revision (+make-by): the window's
 ::  ?by= session id, or the key's name.
 ::
@@ -1437,12 +1461,16 @@
   ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
   ::  ?base=<rev>: the revision the caller edited FROM (the offline queue
   ::  stamps it at enqueue). Compared HERE rather than by the client. A
-  ::  client check-then-write races anything landing in between. The compare
-  ::  sits one fiber-bind from the poke, so a same-ship interleave can still
-  ::  mislabel a conflict in principle. The consequence is only a wrong FLAG
-  ::  (every save is a kept revision either way), which is why apply-and-flag
-  ::  is safe where refuse-and-block would need true writer-side CAS.
+  ::  client check-then-write races anything landing in between. A save
+  ::  that lands between this compare and the write is caught by the
+  ::  writer, which checks the rev again (the claim below).
   =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
+  ::  the writer answers a poke when it takes it, before it has applied
+  ::  it, and the kernel may cut that work into later events. So a save
+  ::  answered a moment ago can still be on its way here. Wait until the
+  ::  writer is done with every poke it took before this one, so the
+  ::  base check below reads the page as those saves left it.
+  ;<  ~  bind:m  writer-drain
   ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of u.name))
   ::  a save into a folder move under way, or an overwrite of a page
   ::  that moved away, would be deleted or make the old folder again.
@@ -1494,34 +1522,31 @@
     ;<  ps=?  bind:n  (page-sensitive (pax-of u.name))
     ;<  ~  bind:n  ?.(ps (pure:n ~) (poke-eval [%page-sensitive (pax-of kept) &]))
     (poke-eval ?:(pw [%make-marked (pax-of kept) u.old] [%make (pax-of kept) u.old]))
-  ;<  ~  bind:m
-    ::  no base: the writer does not check again. A refusal there could
-    ::  not be told from a write still on its way, and a save
-    ::  answered ok but not written is the one outcome never allowed.
-    (poke-eval [%make-by (pax-of u.name) src wid ~])
+  ::  a save that claims a base claims the rev it was checked against
+  ::  here, and the writer checks it again, so a save that lands between
+  ::  this check and the write is not written over. A save that claims
+  ::  nothing, or makes a page, is written as before.
+  =/  claim=(unit @ud)  ?.(&(?=(^ base) ?=(^ src.pc)) ~ `prev)
+  ;<  ~  bind:m  (poke-eval [%make-by (pax-of u.name) src wid claim])
   ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
   ::  client only when the typed name was not a valid path and the path is
   ::  its slug. Absent on every ordinary save, so autosave never touches them.
   ;<  ~  bind:m  (poke-dnames args (pax-of u.name))
-  ::  the new rev is read after the write: two saves that both read prev
-  ::  before either landed answered the same prev+1, and the one written
-  ::  first then claimed the other's rev as its base. The page holding
-  ::  this save's body is this save's rev. When it does not (a later save
-  ::  is already on top, or the read is from before the write), prev+1 is
-  ::  the answer as before. One read, no waiting: the write shows only
-  ::  once the writer's event ends, and polling for it cost every save
-  ::  about two seconds under load. A page that was missing has no prev
-  ::  to count from: a new page's first rev is 0, and a page made again
-  ::  after a delete goes on from its old revisions. So a create waits a
-  ::  little for its write to show (+page-head-landed), at most 2 s, and
-  ::  only a create: an overwrite answers from prev at once. A rev still
-  ::  unseen is answered null, and the editor's next save then claims no
-  ::  base, so it is not refused as stale. 0 would be a claim of rev 0.
-  ;<  ph=[rev=@ud src=(unit @t)]  bind:m
-    ?:  =(src.pc `src)  (pure:(fiber:fiber:nexus ,[rev=@ud src=(unit @t)]) pc)
-    ?^  src.pc  (page-head (pax-of u.name))
-    (page-head-landed (pax-of u.name) src 10)
+  ::  answer once the write is down: the writer took the poke above
+  ::  before it applied it. The next save's base check, and the rev
+  ::  below, then see it.
+  ;<  ~  bind:m  writer-drain
+  ::  the new rev is read after the write has landed. The page holding
+  ::  this save's body is this save's rev. When it does not, a later save
+  ::  is already on top, or the writer refused a claimed base that the
+  ::  page had moved past. A refused save is a 409 like a stale ?cas=1:
+  ::  it was not written, and the caller keeps its text. A save that
+  ::  claimed nothing was written, so prev+1 is its rev, the lowest it
+  ::  can have, and a base from it is refused at worst, never let past.
+  ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of u.name))
   =/  mine=?  =(src.ph `src)
+  ?:  &(!mine ?=(^ claim))
+    (send-err eyre-id 409 (crip "stale: the page is at rev {(num-tape:pg rev.ph)}"))
   ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
   %+  send-json  eyre-id
   %-  pairs:enjs:format
@@ -8811,7 +8836,8 @@
     (grant-new root pax.act)
       %make-by
     ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head pax.act)
-    ?:  ?&(?=(^ base.act) !=(u.base.act rev.pc) !=(`src.act src.pc))
+    ::  a claimed base is a page at that rev: gone since is moved past too
+    ?:  ?&(?=(^ base.act) |(?=(~ src.pc) !=(u.base.act rev.pc)) !=(`src.act src.pc))
       %-  (say 1 ~[leaf+"lattice: a stale save of {(spud pax.act)} was not written"])
       (pure:m ~)
     ;<  old=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
@@ -11833,19 +11859,6 @@
   ;<  cv=view:nexus  bind:m  (peek:fio (rf up (weld /page rel) %code) ~)
   ?.  ?=([%file *] cv)  (pure:m [0 ~])
   (pure:m [ud.cass.cv (mole |.(;;(@t (sang-noun:tarball sang.cv))))])
-::  +page-head-landed: +page-head, read again every 200 ms up to `tries`
-::  times until the page holds `src`: a create's write shows only once
-::  the writer's event ends, and its rev cannot be counted from a prev
-::  (a page made again at a name used before goes on above the old ones).
-::  The last read is answered either way.
-++  page-head-landed
-  |=  [rel=path src=@t tries=@ud]
-  =/  m  (fiber:fiber:nexus ,[rev=@ud src=(unit @t)])
-  ^-  form:m
-  ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head rel)
-  ?:  |(=(src.ph `src) =(0 tries))  (pure:m ph)
-  ;<  ~  bind:m  (sleep:io (div ~s1 5))
-  (page-head-landed rel src (dec tries))
 ::  +fodt-at: is the page at rel a Writer (fodt) page, a spreadsheet
 ::  (fods) or a map (geojson), and which? A key may not save the first
 ::  two (+page-type-ok:ky), so any keyed save onto one would change its

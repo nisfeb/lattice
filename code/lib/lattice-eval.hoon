@@ -29,7 +29,8 @@
       ::  writer's run (+coalesce-victim). base: when set, the rev the
       ::  writer edited from (0 included), checked again here in the
       ::  writer, so a save that raced another past the route's check is
-      ::  not written over it. ~ claims nothing.
+      ::  not written over it. A page gone since has moved past it too.
+      ::  ~ claims nothing.
       [%make-by pax=path src=@t who=@t base=(unit @ud)]
       ::  N pages in ONE writer transaction. An upload used to be one HTTP
       ::  request (and one poke) per file, and every request pays the pier's
