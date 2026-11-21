@@ -71,9 +71,13 @@
       const local = ['md', 'gmi', 'html', 'text'].includes(hit.kind);
       applyPage(name, local ? { ...hit, html: undefined } : hit, local);
       //  this window's own cache: its rev is the one its text was read or
-      //  saved at, so saves may claim it
+      //  saved at, so saves may claim it. That read is the one a painted
+      //  open waits for, so it ends the wait: an open left behind by a
+      //  quicker one caches its read without getting there, and saves
+      //  then sat out the whole 15 s.
       curRev = isRev(hit.rev) ? hit.rev : null;
       shipText.set(name, hit.body);
+      freshPending.delete(name);
       snapPage(name, hit);
       return true;
     }

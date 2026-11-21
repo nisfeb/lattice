@@ -6527,6 +6527,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       applyPage(name, local ? { ...hit, html: undefined } : hit, local);
       curRev = isRev(hit.rev) ? hit.rev : null;
       shipText.set(name, hit.body);
+      freshPending.delete(name);
       snapPage(name, hit);
       return true;
     }
@@ -7505,6 +7506,13 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     editLock(name);
     st(name + ' is being edited in another window now, so it is read-only here', false);
   };
+  window.addEventListener('pagehide', () => { if (lockName) letGo(); });
+  window.addEventListener('pageshow', (e) => {
+    if (!e.persisted || !lockName) return;
+    const name = lockName;
+    lockName = null;
+    editLock(name);
+  });
 
 // ── src/40-grub.js ────────────────────────────────────────────────────────
   let grubPath = null;
