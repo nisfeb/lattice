@@ -401,6 +401,11 @@
             [%stay %& [/know %'terms-stem']]
             [%stay %& [/ %'peers.json']]
             [%stay %& [/ %'peer-revs.json']]
+        ::  /code-named.json: the pages each group's last save named by
+        ::  their code path, so the access list gives them back that way
+        ::  (+code-named). Not a cache: dropped, an old client could not
+        ::  unshare what it shared.
+            [%stay %& [/ %'code-named.json']]
             [%stay %& [/ %'old-beacon.json']]
             [%stay %& [/ %'fodt-peers']]
             [%fall %| /comments-cache empty-dir:loader]
@@ -22455,7 +22460,7 @@
     ::  revision that survives holds no text, and the lose drops the rest.
     ::  It also keeps a publish again of the same text from being taken as
     ::  a no-op remake of the dead top (+pub-drop-dead).
-    ;<  ~  bind:m  (over-gained:fio road [/lattice %page] '')
+    ;<  ~  bind:m  (over-gained:fio (rf up pax.u.or nom.u.or) [/lattice %page] '')
     ;<  ~  bind:m  (prune-hist road 0 ~s0)
     ;<  ~  bind:m  (cull:fio road)
     ::  No tombstone binding: a subscriber learns of the delete from the
@@ -22530,7 +22535,7 @@
     ?~  or  (pure:m ~)
     ;<  up=@ud  bind:m  nexus-up
     =/  road=road:tarball  (rf up pax.u.or nom.u.or)
-    ;<  ~  bind:m  (over-gained:fio road [/lattice %page] '')
+    ;<  ~  bind:m  (over-gained:fio (rf up pax.u.or nom.u.or) [/lattice %page] '')
     ;<  ~  bind:m  (prune-hist road 0 ~s0)
     ;<  *  bind:m  (cull-soft:io road)
     (pure:m ~)
