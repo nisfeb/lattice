@@ -51,14 +51,24 @@ pub fn open(e: &mut TextEdit) -> Option<Open> {
     let (a, b, url) = link_at(e)?;
     let caret = e.focus;
     // one step of the history, so that leaving the link untouched can take the whole of it back (`close`)
-    e.undo_group(|e| {
+    let b = e.undo_group(|e| {
         e.set_selection(a, b);
         e.set_link(None);
+        // a bracket in the label that would end it early, or open a label of its own, is escaped as it is
+        // when the page is written (`md::label_escapes`): open or shut, the page is the same text. Last
+        // first, so each place is still where it was counted
+        let escapes = crate::md::label_escapes(&e.text[a..b]);
+        for at in escapes.iter().rev() {
+            e.set_caret(a + at);
+            e.insert("\\");
+        }
+        let (b, caret) = (b + escapes.len(), caret + escapes.iter().filter(|at| a + **at <= caret).count());
         e.set_caret(b);
         e.insert(&format!("]({url})"));
         e.set_caret(a);
         e.insert("[");
         e.set_caret(caret + 1);
+        b
     });
     let tail = e.text.len() - (b + 1 + url.len() + 3);
     let end = e.text.len() - tail;
@@ -207,5 +217,24 @@ mod tests {
         close(&mut e, Open { start: 40, tail: 0, opened: 0 });
         close(&mut e, Open { start: 0, tail: 400, opened: 0 });
         assert_eq!(e.text, "go [there](u now");
+    }
+
+    #[test]
+    fn a_bracket_in_a_label_is_escaped_when_the_link_opens_so_the_page_is_the_same_open_or_shut() {
+        use rune::Block::Paragraph as P;
+        // "see a[b](c now", with "a[b](c" a link, and the caret before its "("
+        let mut e = edit("see a[b](c now", vec![MarkRange::new(4..10, Mark::Link("http://u".into()))], 8);
+        let shut = crate::md::emit(&e.text, e.marks(), &[P], &[]);
+        assert_eq!(shut, "see [a\\[b\\](c](http://u) now\n");
+        let o = open(&mut e).expect("the caret is in the link");
+        assert_eq!((e.text.as_str(), &e.text[e.focus..e.focus + 1]), ("see [a\\[b\\](c](http://u) now", "("));
+        assert_eq!(crate::md::emit(&e.text, e.marks(), &[P], &[]), shut, "written while open, it is the page it is when shut");
+        // and that page reads back as the one link
+        let d = crate::md::exact(&shut).expect("exact");
+        assert_eq!(d.marks, vec![MarkRange::new(4..12, Mark::Link("http://u".into()))]);
+        e.set_caret(0);
+        close(&mut e, o);
+        assert_eq!((e.text.as_str(), links(&e)), ("see a\\[b\\](c now", vec![(4, 12, "http://u".to_owned())]));
+        assert_eq!(crate::md::emit(&e.text, e.marks(), &[P], &[]), shut);
     }
 }
