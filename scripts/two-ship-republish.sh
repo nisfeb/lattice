@@ -17,7 +17,9 @@ set -uo pipefail
 : "${A_URL:?A_URL}" "${A_COOKIE:?A_COOKIE}" "${B_URL:?B_URL}" "${B_COOKIE:?B_COOKIE}"
 A="${A_URL%/}/apps/lattice"; B="${B_URL%/}/apps/lattice"
 AK="Cookie: $(cat "$A_COOKIE")"; BK="Cookie: $(cat "$B_COOKIE")"
-DATA=/grubbery/api/file/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app
+# the instance under the shell at /apps/shell (grubbery 6ec16c6a), read
+# with the namespace API's peek (grubbery 46fa2bc4)
+DATA=/grubbery/api/peek/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app
 fails=0
 
 ok()   { echo "ok    $1"; }
@@ -41,7 +43,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-row() { A_ "${A_URL%/}$DATA/pub/revs" | jq -c --arg n "/$NAME" '.[$n] // empty'; }
+row() { A_ -f "${A_URL%/}$DATA/pub/revs" | jq -c --arg n "/$NAME" '.[$n] // empty'; }
 read_() { B_ -G --data-urlencode "url=$URL" "$B/urb-read"; }
 waitrow() { for _ in $(seq 1 60); do r=$(row); [ -n "$r" ] && { echo "$r"; return; }; sleep 1; done; }
 

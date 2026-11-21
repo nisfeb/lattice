@@ -17,8 +17,14 @@ any failure. Never point it at a real ship.
 """
 import json, sys, time, urllib.error, urllib.request
 
-INST = '/grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app'
-DATA = '/grubbery/api/file/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app'
+# the instance, under the shell at /apps/shell (grubbery 6ec16c6a), and
+# the namespace API's darts (grubbery 46fa2bc4): GET /peek reads a grub,
+# DELETE /cull drops it, PUT /make?force=1 overwrites it
+APP = '/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app'
+INST = '/grubbery/ball' + APP
+DATA = '/grubbery/api/peek' + APP
+CULL = '/grubbery/api/cull' + APP
+MAKE = '/grubbery/api/make' + APP
 
 
 def main():
@@ -78,7 +84,7 @@ def main():
     check('seed a page', st == 200, st)
     st, out = lat('POST', '/page-share?name=storchk/t1&mode=shared')
     check('publish it', st == 200, out)
-    # a %noun grub: the file API answers its jam, so presence is checked
+    # a %noun grub: a peek answers its jam, so presence is checked
     got = until(lambda: grub('/pub/titles') is not None, 120)
     check('titles: laid', bool(got))
     r1 = until(lambda: revs().get('/storchk/t1'), 60)
@@ -87,7 +93,7 @@ def main():
     reload()
     check('titles: kept across a reload', grub('/pub/titles') is not None)
 
-    st, _ = req('DELETE', DATA + '/pub/titles', timeout=60)
+    st, _ = req('DELETE', CULL + '/pub/titles', timeout=60)
     check('titles: dropped by hand', st == 200 and grub('/pub/titles') is None, st)
     reload()
     got = until(lambda: grub('/pub/titles') is not None, 120)
@@ -107,7 +113,7 @@ def main():
     check('seen: marked', st == 200 and until(lambda: grub('/notify/seen') is not None, 30), st)
     reload()
     check('seen: kept across a reload', grub('/notify/seen') is not None)
-    st, out = req('POST', '/grubbery/api/over' + DATA[len('/grubbery/api/file'):] + '/notify/seen?blot=/txt',
+    st, out = req('PUT', MAKE + '/notify/seen?force=1&blot=/txt',
                   b'not a read state', ctype='text/plain')
     check('corrupt: written', st in (200, 303), out)
     lat('POST', '/notify-read?all=1')
