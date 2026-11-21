@@ -957,7 +957,8 @@ struct App {
     /// The page a save on its way carries, and the revision it was written over: put by if the ship does not answer.
     save_sent: Option<(Page, u64, bool)>,
     /// The saves that waited, on their way to the ship: each as it was sent, and how it came out.
-    drain_req: Latest<Drained>,
+    /// In turn, so it is on its way until its answer is taken: a `Latest` that has landed and not yet been looked at reads as done, and what waited was then sent a second time
+    drain_req: inturn::InTurn<Drained>,
     /// The deletes and moves made with the ship away, waiting in the order they were made.
     ops: Vec<api::QueuedOp>,
     next_sync: f64,
@@ -1399,7 +1400,7 @@ fn init() -> App {
         offline: None,
         queue: conn.as_ref().map(Conn::queue).unwrap_or_default(),
         save_sent: None,
-        drain_req: Latest::default(),
+        drain_req: inturn::InTurn::default(),
         ops: conn.as_ref().map(Conn::ops).unwrap_or_default(),
         next_sync: 0.0,
         bk_tried: HashMap::new(),
