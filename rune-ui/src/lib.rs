@@ -12678,16 +12678,15 @@ fn here_tell(s: &mut App, clock: f64, tx: &mut Tx) {
     if row.block == now.1 && row.mode == now.2 {
         // it took: a ship that loses the row later is told again from the start
         s.here_tries = 0;
-        // said again once a minute all the same, since the ship drops a window it has not heard from in two and a half (`BEAT`). This is only reached with someone at the window
+    }
+    // said again once a minute, moved or not, since the ship drops a window it has not heard from in two and a half (`BEAT`). Also when the ship has not taken the place after three tellings: the window is still there. This is only reached with someone at the window
+    if row.block == now.1 && row.mode == now.2 || s.here_tries >= 3 {
         if clock >= s.here_beat + BEAT {
             let id = s.client_id.clone();
             s.here_req.request((c, now, id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
             s.here_beat = clock;
             tx.wake_after(std::time::Duration::from_secs_f64(BEAT + 0.5));
         }
-        return;
-    }
-    if s.here_tries >= 3 {
         return;
     }
     // a place the caret has rested in for a second is said. Said again only after three more
@@ -12700,6 +12699,8 @@ fn here_tell(s: &mut App, clock: f64, tx: &mut Tx) {
     s.here_req.request((c, now, id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
     (s.here_at, s.here_beat, s.here_tries) = (clock, clock, s.here_tries + 1);
     tx.wake_after(std::time::Duration::from_secs(3));
+    // and a look for the next minute's word, counted from this one
+    tx.wake_after(std::time::Duration::from_secs_f64(BEAT + 0.5));
 }
 
 /// Keeps this window on the table of the page it shows. Holding that
