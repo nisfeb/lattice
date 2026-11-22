@@ -15,7 +15,9 @@ export function printCss(l) {
 }
 
 //  print an HTML document: a frame of its own, same origin so print() can
-//  be called, no allow-scripts so nothing in it runs
+//  be called, no allow-scripts so nothing in it runs. The frame is a copy
+//  of the whole document: it goes when the print is over, and the caller
+//  drops it (the answer) if the editor closes first
 export function printFrame(html) {
   for (const f of document.querySelectorAll('iframe[data-lw-print]')) f.remove();
   const f = document.createElement('iframe');
@@ -23,7 +25,11 @@ export function printFrame(html) {
   f.setAttribute('sandbox', 'allow-same-origin allow-modals');
   f.setAttribute('aria-hidden', 'true');
   f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
-  f.onload = () => f.contentWindow.print();
+  f.onload = () => {
+    f.contentWindow.addEventListener('afterprint', () => f.remove());
+    f.contentWindow.print();
+  };
   f.srcdoc = html;
   document.body.append(f);
+  return f;
 }

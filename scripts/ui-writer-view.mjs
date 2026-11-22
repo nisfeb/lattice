@@ -310,6 +310,24 @@ console.log('==> a pasted slice context');
   }
 }
 
+console.log('==> the print frame');
+{
+  const page = await open(corpus('01-paragraphs'));
+  const r = await page.evaluate(async () => {
+    let printed = 0;
+    const real = HTMLIFrameElement.prototype.__lookupGetter__('contentWindow');
+    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', { get() { const w = real.call(this); if (w && this.hasAttribute('data-lw-print')) w.print = () => { printed++; }; return w; } });
+    window.ctl.print();
+    await new Promise((ok) => setTimeout(ok, 300));
+    const before = document.querySelectorAll('iframe[data-lw-print]').length;
+    window.ctl.destroy();
+    return { printed, before, after: document.querySelectorAll('iframe[data-lw-print]').length };
+  });
+  check('print makes a frame and prints it', r.before === 1 && r.printed === 1, JSON.stringify(r));
+  check.eq('destroy leaves no print frame', r.after, 0);
+  await page.close();
+}
+
 check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 await browser.close();
 check.done();

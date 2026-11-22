@@ -347,7 +347,7 @@ export function mount(host, opts = {}) {
   };
 
   // ------------------------------------------------------------ view
-  let refusedAt = 0, dirty = false, syncTimer = 0, base = text;
+  let refusedAt = 0, dirty = false, syncTimer = 0, base = text, printed = null;
   const guard = new Plugin({
     filterTransaction(tr, state) {
       const why = !pairGuard(tr, state) ? 'Not deleted: that would leave ' + PAIR_WHAT + ' without its other end. Select both ends to delete it.'
@@ -439,7 +439,7 @@ export function mount(host, opts = {}) {
     const r = ctl.text();
     const h = !r.error && render(r.text, true);
     if (!h) return ctl.say(r.error || 'This document cannot be printed.');
-    printFrame(h);
+    printed = printFrame(h);
   };
   //  the outline's nth heading (fodtOutline's order): caret there, in view
   ctl.heading = (i) => {
@@ -456,6 +456,8 @@ export function mount(host, opts = {}) {
     if (ro) ro.disconnect();
     clearTimeout(flashTimer);
     clearTimeout(syncTimer);
+    //  the print frame holds a rendered copy of the whole document
+    if (printed) printed.remove();
     view.destroy();
     host.replaceChildren();
     host.removeAttribute('data-lw');
