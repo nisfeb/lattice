@@ -25,13 +25,30 @@
   =/  t=tape  (scow %da d)
   =/  i=(unit @ud)  (find ".." t)
   ?~(i t (scag u.i t))
+::  +preview: an entry's first line of prose as HTML, cut at 90 bytes
+::  with an ellipsis. The front matter is not prose: every stamped entry
+::  starts with its opening fence. The text is escaped here and the
+::  entity added after, so the entity is not escaped with it. The cut
+::  never splits a UTF-8 character.
 ++  preview
-  |=  t=tape
+  |=  body=@t
   ^-  tape
-  =/  nl=(unit @ud)  (find "\0a" t)
-  =/  one=tape  ?~(nl t (scag u.nl t))
-  ?.  (gth (lent one) 90)  one
-  (weld (scag 90 one) "&hellip;")
+  =/  ls=(list @t)  (skip (to-wain:format rest:(front:lk body)) |=(l=@t =('' l)))
+  =/  one=tape  ?~(ls "" (trip i.ls))
+  ?.  (gth (lent one) 90)  (esc one)
+  ::  a continuation byte right after the cut means the cut is inside
+  ::  a character, and that character goes
+  =/  nx=@tD  (snag 90 one)
+  =/  cut=tape  (scag 90 one)
+  =?  cut  &((gte nx 128) (lth nx 192))  (flop (drop-high:lk (flop cut)))
+  (weld (esc cut) "&hellip;")
+::  +tag-href: the address of a tag's filtered list. The tag is
+::  percent-encoded: written plain, "c++" reached the route as "c  "
+::  and "r&d" as "r".
+++  tag-href
+  |=  t=@t
+  ^-  tape
+  (weld "/apps/lattice/know?tag=" (en-urlt:html (trip t)))
 ++  recent-know
   |=  [es=(map path know-entry:lk) n=@ud]
   ^-  (list (pair path know-entry:lk))
@@ -62,7 +79,7 @@
     |=(t=@t :(weld "#" (esc (trip t)) " "))
   =/  sep=tape  ?:(=("" tl) "" "&middot; ")
   =/  dt=tape  (da-short updated.q.p)
-  =/  prev=tape  (esc (preview (trip body.q.p)))
+  =/  prev=tape  (preview body.q.p)
   ;:  weld
     "<li><a href=\"/apps/lattice/know"  href  "\">"
     "<span class=\"qname\">"  disp  "</span>"
@@ -86,7 +103,7 @@
     =/  on=tape  ?:(=(t sel) " class=\"on\"" "")
     =/  et=tape  (esc (trip t))
     ;:  weld
-      "<a href=\"/apps/lattice/know?tag="  et  "\""  on  ">#"  et  "</a>"
+      "<a href=\""  (tag-href t)  "\""  on  ">#"  et  "</a>"
     ==
   =/  all-on=tape  ?:(=('' sel) " class=\"on\"" "")
   ;:  weld
@@ -213,7 +230,7 @@
     |=  t=@t
     =/  et=tape  (esc (trip t))
     ;:  weld
-      "<a href=\"/apps/lattice/know?tag="  et  "\">#"  et  "</a>"
+      "<a href=\""  (tag-href t)  "\">#"  et  "</a>"
     ==
   =/  chip-row=tape  ?:(=("" chips) "" :(weld "<div class=\"quick\">" chips "</div>"))
   =/  bc=tape  (crumb (snip `path`kp))

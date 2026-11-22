@@ -89,12 +89,26 @@
   ^-  ?
   =/  l=tape  (cass (lstrip u))
   |((has "http://" l) (has "https://" l))
-::  +safe-img: +safe-url, and no remote source unless `outside`
+::  +route-url: does `u` carry a query other than the bare `data` of a
+::  file's raw view? On this host that is a request to a route.
+++  route-url
+  |=  u=tape
+  ^-  ?
+  =/  q  (find "?" u)
+  ?~  q  |
+  !=("data" (sl +(u.q) u))
+::  +safe-img: +safe-url, no remote source unless `outside`, and no
+::  source on this host that calls a route. The browser loads an <img>
+::  as the page is drawn, with the reader's session, and the text may
+::  be a peer's or a clipped page's: "/apps/lattice/clip?url=.." as an
+::  image made the reader's ship fetch that url and file a page.
+::  `outside` does not lift this. Such an image renders as a link.
 ++  safe-img
   |=  u=tape
   ^-  ?
   ?&  (safe-url u)
       |(outside !(remote-url u))
+      |((remote-url u) !(route-url u))
   ==
 ++  img-html
   |=  [alt=tape url=tape title=tape]
@@ -136,8 +150,8 @@
   ^-  @
   (roll cs |=([c=@tD a=@] (con a (bex c))))
 ::  +ib-stop: every character that can start an inline construct in +ib-in
-::  (\ ` ! < [ * _ ~) or that +esc rewrites (& < > ").
-++  ib-stop  ^~((stop-mask "&<>\"\\`![*_~"))
+::  (\ ` ! < [ * _ ~ and the hard break) or that +esc rewrites (& < > ").
+++  ib-stop  ^~((stop-mask "&<>\"\\`![*_~\0a"))
 ::  +find-cap: (find nedl hay), giving up after +scan-cap characters.
 ++  find-cap
   |=  [nedl=tape hay=tape cap=@ud]
@@ -148,22 +162,42 @@
   ?~  hay  ~
   ?:  =(nedl (scag (lent nedl) `tape`hay))  `i
   $(hay t.hay, i +(i))
+::  +find-stop: where the first `c` in `hay` is, giving up after `cap`
+::  characters and at the first place `stop` starts. `stop` is the
+::  opener of the construct `c` closes, so a run of openers with no
+::  closer costs each scan the distance to the next opener, and the
+::  run as a whole one pass. With the cap alone each opener paid the
+::  whole cap: 1 MB of "[a](" was 262.000 scans of 512 characters.
+++  find-stop
+  |=  [c=@tD hay=tape cap=@ud stop=tape]
+  ^-  (unit @ud)
+  =|  i=@ud
+  ?>  ?=(^ stop)
+  |-  ^-  (unit @ud)
+  ?:  (gth i cap)  ~
+  ?~  hay  ~
+  ?:  =(c i.hay)  `i
+  ?:  &(=(i.stop i.hay) (has t.stop t.hay))  ~
+  $(hay t.hay, i +(i))
 ::  +match-bracket: index of the ] that closes the [ at position 0 (t is after
 ::  the opening [), honoring one level of nested []. %| when there is none:
-::  %| %.n when the scan reached the end, which holds for every suffix too,
-::  and %| %.y when it gave up past +scan-cap characters or a second level
-::  of nesting, which says nothing about the rest. Uncapped and at any depth,
-::  a paragraph of nested brackets was rescanned at every '[' (security
-::  audit run-1). Now each scan stops at the cap or the second '[' after it.
+::  %| %.n when the scan reached the end and met no ']' on the way, which
+::  holds for every suffix too, and %| %.y when it gave up past +scan-cap
+::  characters or a second level of nesting, or met a ']' that closed a
+::  nested '[', which says nothing about the rest: in "[ a [b](/u)" the
+::  scan from the first '[' fails, and the rest still holds a ']' and a
+::  link. Uncapped and at any depth, a paragraph of nested brackets was
+::  rescanned at every '[' (security audit run-1). Now each scan stops at
+::  the cap or the second '[' after it.
 ++  match-bracket
   |=  t=tape
   ^-  (each @ud ?)
-  =|  [i=@ud d=@ud]
+  =|  [i=@ud d=@ud met=_|]
   |-  ^-  (each @ud ?)
   ?:  (gth i scan-cap)  [%| &]
-  ?~  t  [%| |]
+  ?~  t  [%| met]
   ?:  =('[' i.t)  ?:((gte d 1) [%| &] $(t t.t, i +(i), d +(d)))
-  ?:  =(']' i.t)  ?:(=(0 d) [%& i] $(t t.t, i +(i), d (dec d)))
+  ?:  =(']' i.t)  ?:(=(0 d) [%& i] $(t t.t, i +(i), d (dec d), met &))
   $(t t.t, i +(i))
 ::  +take-paren: parse (url "title") starting at t (after the [text]). Returns
 ::  [url title rest] where rest is after the closing ).
@@ -172,7 +206,8 @@
   ^-  (unit [url=tape title=tape rest=tape])
   ?~  t  ~
   ?.  =('(' i.t)  ~
-  =/  close  (find-cap ")" t.t link-scan-cap)
+  ::  a destination does not hold the start of another link
+  =/  close  (find-stop ')' t.t link-scan-cap "](")
   ?~  close  ~
   =/  guts=tape  (trim (sc u.close t.t))
   =/  rest=tape  (sl +(u.close) t.t)
@@ -199,6 +234,18 @@
   =/  hit  (~(get by refs) (cass key))
   ?~  hit  ~
   `[url.u.hit title.u.hit rest]
+::  +word-char: a letter, a digit, or a byte of a character past ASCII.
+::  An underscore beside one is part of a word, not emphasis.
+++  word-char
+  |=  c=@tD
+  ^-  ?
+  ?|  &((gte c 'a') (lte c 'z'))
+      &((gte c 'A') (lte c 'Z'))
+      &((gte c '0') (lte c '9'))
+      (gte c 128)
+  ==
+++  word-next  |=(t=tape ^-(? &(?=(^ t) (word-char i.t))))
+++  lead-under  |=(t=tape =|(n=@ud |-(^-(@ud ?~(t n ?:(=('_' i.t) $(t t.t, n +(n)) n))))))
 ::  +ib: render inline markdown to HTML (with reference map).
 ++  ib
   |=  [t=tape refs=refm]
@@ -227,10 +274,18 @@
   ::  that one character at a time, through every test and a weld, which
   ::  was about 15 s of a 1.5 MB page's 20 s render.
   =/  n=@ud  (stop-run t ib-stop)
-  ?.  =(0 n)  (weld (sc n t) (ib-in (sl n t) refs no))
+  ?.  =(0 n)
+    ::  underscores right after a word character are inside a word
+    ::  ("max_size"), and open nothing: they pass with the run
+    =/  aft=tape  (sl n t)
+    =/  u=@ud  ?:((word-char (sn (dec n) t)) (lead-under aft) 0)
+    (weld (sc (add n u) t) (ib-in (sl u aft) refs no))
   =/  c=@tD  i.t
+  ::  a hard line break, as +join-para marks it. A line never holds a
+  ::  line feed of its own, so document text cannot spell one.
+  ?:  =('\0a' c)  (weld "<br>" (ib-in t.t refs no))
   ::  backslash escape
-  ?:  ?&(=('\\' c) ?=(^ t.t))
+  ?:  ?&(=('\\' c) ?=(^ t.t) !=('\0a' i.t.t))
     (weld (esc ~[i.t.t]) (ib-in t.t.t refs no))
   ::  code span (single or double backtick)
   ?:  =('`' c)
@@ -294,6 +349,9 @@
     =/  aft=tape  (sl 2 t)
     =/  cl  (find-cap d aft scan-cap)
     ?~  cl  (weld (esc ~[c]) (ib-in t.t refs no))
+    ?:  &(=('_' c) (word-next (sl (add u.cl 2) aft)))
+      =/  u=@ud  (lead-under t)
+      (weld (sc u t) (ib-in (sl u t) refs no))
     %+  weld  :(weld "<strong>" (ib-in (sc u.cl aft) refs no) "</strong>")
     (ib-in (sl (add u.cl 2) aft) refs no)
   ::  strikethrough ~~text~~
@@ -310,11 +368,14 @@
     ?:  =(0 u.cl)  (weld "*" (ib-in t.t refs no))
     %+  weld  :(weld "<em>" (ib-in (sc u.cl t.t) refs no) "</em>")
     (ib-in (sl +(u.cl) t.t) refs no)
-  ::  italic _text_ (underscore: only at a left word boundary)
+  ::  italic _text_ (underscore: only at word boundaries. An opener
+  ::  after a word character never gets here: the plain run above took
+  ::  it. A closer with a word character after it closes nothing.)
   ?:  =('_' c)
     =/  cl  (find-cap "_" t.t scan-cap)
     ?~  cl  (weld "_" (ib-in t.t refs no))
     ?:  =(0 u.cl)  (weld "_" (ib-in t.t refs no))
+    ?:  (word-next (sl +(u.cl) t.t))  (weld "_" (ib-in t.t refs no))
     %+  weld  :(weld "<em>" (ib-in (sc u.cl t.t) refs no) "</em>")
     (ib-in (sl +(u.cl) t.t) refs no)
   ::  literal char
@@ -332,24 +393,69 @@
   =/  key=tape  (sc u.close t.s)
   =/  rest=tape  (trim (sl (add u.close 2) t.s))
   ?~  rest  ~
-  =/  q  (find " \"" rest)
-  ?~  q  [~ (cass key) rest ""]
-  =/  url=tape  (sc u.q rest)
-  =/  ti=tape  (sl (add u.q 2) rest)
-  =/  q2  (find "\"" ti)
-  [~ (cass key) url ?~(q2 ti (sc u.q2 ti))]
+  ::  the destination is one word, then nothing or a quoted title. Any
+  ::  other line is prose that starts with a bracketed label ("[10:02]:
+  ::  called Bob"), and taking it as a definition deleted it from the page.
+  =/  sp  (find " " rest)
+  ?~  sp  [~ (cass key) rest ""]
+  =/  url=tape  (sc u.sp rest)
+  =/  ti=tape  (ltrm (sl u.sp rest))
+  ?.  &(?=(^ ti) =('"' i.ti))  ~
+  =/  q2  (find "\"" t.ti)
+  [~ (cass key) url ?~(q2 t.ti (sc u.q2 t.ti))]
+::  +unquote: the line `l` under `n` blockquote markers, ~ if it has fewer
+++  unquote
+  |=  [n=@ud l=tape]
+  ^-  (unit tape)
+  =/  w=tape  (ltrm l)
+  ?:  =(0 n)  `w
+  ?.  &(?=(^ w) =('>' i.w))  ~
+  $(n (dec n), l t.w)
+::  +quote-strip: how many blockquote markers `l` starts with, and the
+::  line under them
+++  quote-strip
+  |=  l=tape
+  ^-  [d=@ud s=tape]
+  =|  d=@ud
+  |-  ^-  [d=@ud s=tape]
+  =/  w=tape  (ltrm l)
+  ?:  &(?=(^ w) =('>' i.w))  $(l t.w, d +(d))
+  [d w]
+::  +mark-code: each line with `v`, true when it is a fence line or
+::  inside a fenced block. Such a line is code and passes verbatim: the
+::  passes that run before +rb must not read a definition out of it or
+::  rewrite a footnote mark in it. A fence opened inside a blockquote
+::  closes on a line at the same quote depth, and ends where the quote
+::  ends (a line with fewer markers), as +take-quote and +take-fence
+::  have it.
+++  mark-code
+  |=  lines=(list tape)
+  ^-  (list [v=? l=tape])
+  =|  open=(unit [d=@ud f=tape])
+  =|  out=(list [v=? l=tape])
+  |-  ^-  (list [v=? l=tape])
+  ?~  lines  (flop out)
+  ?^  open
+    =/  u=(unit tape)  (unquote d.u.open i.lines)
+    ?~  u  $(open ~)
+    ?:  (has f.u.open u.u)  $(lines t.lines, open ~, out [[& i.lines] out])
+    $(lines t.lines, out [[& i.lines] out])
+  =/  qs  (quote-strip i.lines)
+  ?:  |((has "```" s.qs) (has "~~~" s.qs))
+    $(lines t.lines, open `[d.qs (sc 3 s.qs)], out [[& i.lines] out])
+  $(lines t.lines, out [[| i.lines] out])
 ::  +collect-refs: pull every reference-definition line out. Return [refs kept].
 ++  collect-refs
-  |=  lines=(list tape)
+  |=  lines=(list [v=? l=tape])
   ^-  [refm (list tape)]
   =|  refs=refm
   =|  kept=(list tape)
   |-  ^-  [refm (list tape)]
   ?~  lines  [refs (flop kept)]
-  =/  rd  (is-ref-def i.lines)
+  =/  rd  ?:(v.i.lines ~ (is-ref-def l.i.lines))
   ?^  rd
     $(lines t.lines, refs (~(put by refs) key.u.rd [url.u.rd title.u.rd]))
-  $(lines t.lines, kept [i.lines kept])
+  $(lines t.lines, kept [l.i.lines kept])
 ::  ── footnotes ─────────────────────────────────────────────────────────────
 ::  +is-foot-def: a `[^id]: text` footnote definition line -> [id text].
 ++  is-foot-def
@@ -365,14 +471,14 @@
 ::  +collect-footnotes: pull `[^id]: text` definitions out and number them (in
 ::  order). The refs themselves are rewritten to links by +sub-foot-refs.
 ++  collect-footnotes
-  |=  lines=(list tape)
-  ^-  [footm (list tape)]
+  |=  lines=(list [v=? l=tape])
+  ^-  [footm (list [v=? l=tape])]
   =|  foot=footm
-  =|  kept=(list tape)
+  =|  kept=(list [v=? l=tape])
   =/  n=@ud  0
-  |-  ^-  [footm (list tape)]
+  |-  ^-  [footm (list [v=? l=tape])]
   ?~  lines  [foot (flop kept)]
-  =/  fd  (is-foot-def i.lines)
+  =/  fd  ?:(v.i.lines ~ (is-foot-def l.i.lines))
   ?^  fd
     $(lines t.lines, n +(n), foot (~(put by foot) id.u.fd [+(n) text.u.fd]))
   $(lines t.lines, kept [i.lines kept])
@@ -386,11 +492,21 @@
   ?:  =(0 ~(wyt by foot))  t
   |-  ^-  tape
   ?~  t  ""
+  ::  an escaped character and a code span pass as written, read as
+  ::  +ib-in reads them: a footnote mark in code is code
+  ?:  &(=('\\' i.t) ?=(^ t.t))  [i.t i.t.t $(t t.t.t)]
+  ?:  =('`' i.t)
+    =/  op=tape  ?:(&(?=(^ t.t) =('`' i.t.t)) "``" "`")
+    =/  aft=tape  (sl (lent op) t)
+    =/  close  (find-cap op aft scan-cap)
+    ?~  close  [i.t $(t t.t)]
+    =/  n=@ud  (add u.close (lent op))
+    :(weld op (sc n aft) $(t (sl n aft)))
   ?:  &(=('[' i.t) ?=(^ t.t) =('^' i.t.t))
     =/  aft=tape  (sl 2 t)
     ::  capped: a footnote id is short, and the uncapped find made 20KB of
     ::  "[^" spam quadratic on the unauthenticated render path.
-    =/  close  (find-cap "]" aft link-scan-cap)
+    =/  close  (find-stop ']' aft link-scan-cap "[")
     ?~  close  (weld "[^" $(t t.t.t))
     =/  id=tape  (sc u.close aft)
     =/  hit  (~(get by foot) id)
@@ -568,7 +684,12 @@
 ++  take-para
   |=  [lines=(list tape) refs=refm]
   ^-  [tape (list tape)]
-  =|  buf=(list tape)
+  ::  the first line is the paragraph's whatever it looks like. +rb sends
+  ::  it here because no other block took it, and a call that consumed
+  ::  nothing would hand +rb the same lines again, forever.
+  ?~  lines  ["" ~]
+  =/  buf=(list tape)  ~[i.lines]
+  =/  lines=(list tape)  t.lines
   |-  ^-  [tape (list tape)]
   ?:  ?&  ?=(^ lines)
           ?=(^ (trim i.lines))
@@ -577,14 +698,17 @@
     $(lines t.lines, buf [i.lines buf])
   =/  txt=tape  (join-para (flop buf))
   [:(weld "<p>" (ib txt refs) "</p>") lines]
-::  +join-para: join lines with a space. Two trailing spaces -> <br>.
+::  +join-para: join lines with a space. A line that ends in two spaces
+::  is joined with a line feed instead, which +ib-in draws as <br>. The
+::  tag itself cannot be written here: the inline pass escapes every tag
+::  in its input, so the break showed as the text "<br>".
 ++  join-para
   |=  ls=(list tape)
   ^-  tape
   ?~  ls  ""
   ?~  t.ls  (rtrm i.ls)
   =/  br=?  &((gte (lent i.ls) 2) =("  " (sl (sub (lent i.ls) 2) i.ls)))
-  :(weld (rtrm i.ls) ?:(br "<br>" " ") $(ls t.ls))
+  :(weld (rtrm i.ls) ?:(br "\0a" " ") $(ls t.ls))
 ::  +block-start: does the FIRST line begin a non-paragraph block?
 ++  block-start
   |=  lines=(list tape)
@@ -592,7 +716,7 @@
   ?~  lines  |
   =/  s=tape  (trim i.lines)
   ?~  s  &
-  ?:  =('#' i.s)  &
+  ?:  (gth (atx i.lines) 0)  &
   ?:  =('>' i.s)  &
   ?:  |((has "```" s) (has "~~~" s))  &
   ?:  |((allrun s "-" 3) (allrun s "*" 3) (allrun s "_" 3))  &
@@ -687,16 +811,19 @@
   ?:  |((allrun s "-" 3) (allrun s "*" 3) (allrun s "_" 3))
     (weld "<hr>" (rb t.lines refs))
   ::  atx heading
-  ?:  =('#' i.s)
-    =/  n=@ud  (lead-hash s)
-    ?:  &((gth n 0) (lte n 6))
-      =/  txt=tape  (trim (hash-strip (sl n s)))
-      =/  tag=tape  (weld "h" (a-co:co n))
-      (weld :(weld "<" tag ">" (ib txt refs) "</" tag ">") (rb t.lines refs))
-    =/  pr=[tape (list tape)]  (take-para lines refs)
-    (weld -.pr (rb +.pr refs))
-  ::  setext heading
-  ?:  &(?=(^ t.lines) (gth (setext-under (trim i.t.lines)) 0))
+  =/  n=@ud  (atx ln)
+  ?:  (gth n 0)
+    =/  aft=tape  (sl n s)
+    =/  txt=tape  (trim (hash-strip (sl (lead aft) aft)))
+    =/  tag=tape  (weld "h" (a-co:co n))
+    (weld :(weld "<" tag ">" (ib txt refs) "</" tag ">") (rb t.lines refs))
+  ::  setext heading. A quote or a list item over a line of dashes is
+  ::  that block and then a rule, not a heading made of its marker.
+  ?:  ?&  ?=(^ t.lines)
+          (gth (setext-under (trim i.t.lines)) 0)
+          !=('>' i.s)
+          ?=(~ (list-mark ln))
+      ==
     =/  lvl=@ud  (setext-under (trim i.t.lines))
     =/  tag=tape  ?:(=(1 lvl) "h1" "h2")
     (weld :(weld "<" tag ">" (ib s refs) "</" tag ">") (rb t.t.lines refs))
@@ -715,6 +842,20 @@
   ::  paragraph
   =/  pr=[tape (list tape)]  (take-para lines refs)
   (weld -.pr (rb +.pr refs))
+::  +atx: the level of the ATX heading the line `ln` is, 0 for none.
+::  +rb and +block-start both ask here, so they cannot disagree about
+::  which lines are headings. One to six hashes, then a space or a tab:
+::  the rule of the browser preview and its outline, so "#tag" and "#12"
+::  at the start of a line stay text on both sides.
+++  atx
+  |=  ln=tape
+  ^-  @ud
+  =/  s=tape  (ltrm ln)
+  =/  n=@ud  (lead-hash s)
+  ?.  &((gth n 0) (lte n 6))  0
+  =/  aft=tape  (sl n s)
+  ?:  &(?=(^ aft) |(=(' ' i.aft) =(`@tD`9 i.aft)))  n
+  0
 ++  lead-hash  |=(t=tape =|(n=@ud |-(^-(@ud ?~(t n ?:(=('#' i.t) $(t t.t, n +(n)) n))))))
 ++  hash-strip  |=(t=tape (rtrm (flop (ltrm-hash (flop (rtrm t))))))
 ++  ltrm-hash  |=(t=tape ^-(tape ?~(t t ?:(|(=('#' i.t) =(' ' i.t)) $(t t.t) t))))
@@ -913,13 +1054,26 @@
   =/  rest=tape  (slag (add ln 2) laft)
   =/  tail=tape  $(t rest, len (sub len :(add n ln 5)))
   :(weld "[" label "](" base name ")" tail)
+::  +strip-cr: a line without the CR that ends it, so a body with CRLF
+::  line ends renders as the same body with LF. Left in, the CR made
+::  every blank line a line of text and no rule or table row matched.
+++  strip-cr
+  |=  l=tape
+  ^-  tape
+  ?~  l  l
+  ?.  =('\0d' (rr l))  l
+  (sc (dec (lent l)) l)
 ++  render-md
   |=  body=@t
   ^-  tape
-  =/  lines0=(list tape)  (turn (turn (to-wain:format body) trip) cap-quote-depth)
-  =/  fn=[footm (list tape)]  (collect-footnotes lines0)
+  =/  lines0=(list tape)
+    %+  turn  (to-wain:format body)
+    |=(l=@t (cap-quote-depth (strip-cr (trip l))))
+  =/  fn=[footm (list [v=? l=tape])]  (collect-footnotes (mark-code lines0))
   =/  foot=footm  -.fn
-  =/  lines1=(list tape)  (turn +.fn |=(l=tape (sub-foot-refs l foot)))
+  =/  lines1=(list [v=? l=tape])
+    %+  turn  +.fn
+    |=([v=? l=tape] [v ?:(v l (sub-foot-refs l foot))])
   =/  cr=[refm (list tape)]  (collect-refs lines1)
   (weld (rb +.cr -.cr) (render-footnotes foot))
 --

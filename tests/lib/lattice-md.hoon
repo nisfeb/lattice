@@ -176,4 +176,206 @@
     (expect-eq !>("[[a/bc]] [[c/d]]") !>((rw "[[a/bc]] [[a/b]]")))
     (expect-eq !>("[[c/d") !>((rw "[[a/b")))
   ==
+::  a line of seven or more hashes is no heading. It is a paragraph, and
+::  the render ends
+++  test-seven-hashes
+  ;:  weld
+    (expect-eq !>("<p>#######</p>") !>((r '#######')))
+    (expect-eq !>("<p>####### x</p>") !>((r '####### x')))
+    (expect-eq !>("<p>a ####### x</p><p>b</p>") !>((r 'a\0a####### x\0a\0ab')))
+  ==
+::  the block loop always makes progress. Every character that can start
+::  a block, alone and repeated, bare and mixed with spaces, renders to
+::  an end, on one line and on two.
+++  test-hostile-lines-end
+  =/  cs=tape  "#>-*_+=|`~[]!<1.):\\ \09"
+  =/  ns=(list @ud)  ~[1 3 6 7 8]
+  =/  lines=(list tape)
+    %-  zing
+    ^-  (list (list tape))
+    %+  turn  cs
+    |=  c=@tD
+    ^-  (list tape)
+    %-  zing
+    ^-  (list (list tape))
+    %+  turn  ns
+    |=  n=@ud
+    ^-  (list tape)
+    =/  run=tape  (reap n c)
+    :~  run
+        (weld " " run)
+        (weld run " x")
+        (zing (reap n `tape`~[c ' ']))
+        (weld run "x")
+    ==
+  =/  ok=?
+    %+  levy  lines
+    |=  a=tape
+    ?&  (gte (lent (r (crip a))) 0)
+        (gte (lent (r (crip (weld a "\0a---")))) 0)
+        (gte (lent (r (crip (weld "x\0a" a)))) 0)
+    ==
+  (yes ok)
+::  a heading needs a space or a tab after its hashes, as the browser
+::  preview and the outline have it. A hashtag, an issue number or a
+::  shebang at the start of a line is text.
+++  test-heading-needs-space
+  ;:  weld
+    (expect-eq !>("<p>#tag line</p>") !>((r '#tag line')))
+    (expect-eq !>("<p>#123</p>") !>((r '#123')))
+    (expect-eq !>("<p>#!/bin/sh</p>") !>((r '#!/bin/sh')))
+    (expect-eq !>("<p>######x</p>") !>((r '######x')))
+    (expect-eq !>("<p>#</p>") !>((r '#')))
+    (expect-eq !>("<h1></h1>") !>((r '# ')))
+    (expect-eq !>("<h2>t</h2>") !>((r '##\09t')))
+    (expect-eq !>("<h3>t</h3>") !>((r '  ### t ###')))
+    ::  a line of text is not cut at a hashtag line under it
+    (expect-eq !>("<p>a #tag</p>") !>((r 'a\0a#tag')))
+    (expect-eq !>("<p>a</p><h1>h</h1>") !>((r 'a\0a# h')))
+  ==
+::  a body with CRLF line ends renders as the same body with LF
+++  test-crlf
+  ;:  weld
+    (expect-eq !>("<p>a</p><p>b</p>") !>((r 'a\0d\0a\0d\0ab')))
+    (expect-eq !>((r '| a |\0a|---|\0a| 1 |')) !>((r '| a |\0d\0a|---|\0d\0a| 1 |\0d\0a')))
+    (expect-eq !>("<hr>") !>((r '---\0d')))
+    (expect-eq !>("<h1>T</h1>") !>((r 'T\0d\0a===\0d')))
+    (expect-eq !>((r '- a\0a- b')) !>((r '- a\0d\0a- b\0d\0a')))
+    (expect-eq !>((r '```\0ax\0a```\0ay')) !>((r '```\0d\0ax\0d\0a```\0d\0ay\0d\0a')))
+    (expect-eq !>("<h2>h</h2>") !>((r '## h\0d')))
+    ::  only the one CR that ends a line goes
+    (expect-eq !>("<p>a\0db</p>") !>((r 'a\0db')))
+  ==
+::  two spaces at the end of a line are a line break, a real one. Text
+::  that spells a tag is still text.
+++  test-hard-break
+  ;:  weld
+    (expect-eq !>("<p>a<br>b</p>") !>((r 'a  \0ab')))
+    (expect-eq !>("<p>a<br>b c<br>d</p>") !>((r 'a  \0ab\0ac   \0ad')))
+    (expect-eq !>("<p>a b</p>") !>((r 'a\0ab')))
+    (expect-eq !>("<p>a b</p>") !>((r 'a \0ab')))
+    (expect-eq !>("<p>a</p>") !>((r 'a  ')))
+    (expect-eq !>("<p>a &lt;br&gt; b</p>") !>((r 'a <br> b')))
+    (expect-eq !>("<p><em>a<br>b</em></p>") !>((r '*a  \0ab*')))
+    (expect-eq !>("<p><a href=\"/u\" target=\"_blank\" rel=\"noopener noreferrer\">a<br>b</a></p>") !>((r '[a  \0ab](/u)')))
+    (expect-eq !>("<p>a\\<br>b</p>") !>((r 'a\\  \0ab')))
+  ==
+::  code is verbatim: a line inside a fence is never a reference or a
+::  footnote definition, and a footnote mark in code is not rewritten
+++  test-defs-not-in-code
+  =/  lnk=tape  "<a href=\"/u\""
+  ;:  weld
+    (expect-eq !>("<pre><code>[k]: v\0a</code></pre>") !>((r '```\0a[k]: v\0a```')))
+    (expect-eq !>("<pre><code>[^1]: note\0a</code></pre>") !>((r '~~~\0a[^1]: note\0a~~~')))
+    (yes (has "<code>[^a] in code\0a</code>" (r 'x[^a]\0a\0a```\0a[^a] in code\0a```\0a\0a[^a]: note')))
+    (yes (has "<sup" (r 'x[^a]\0a\0a```\0a[^a] in code\0a```\0a\0a[^a]: note')))
+    (yes (has "<code>[^a]</code> and <sup" (r 'see `[^a]` and [^a]\0a\0a[^a]: n')))
+    (yes (has "<code>[^a]</code> and <sup" (r 'see ``[^a]`` and [^a]\0a\0a[^a]: n')))
+    ::  a definition after a closed fence still counts
+    (yes (has lnk (r '```\0ax\0a```\0a[t][k]\0a\0a[k]: /u')))
+    ::  a fence in a quote: its lines are code, and it ends with the quote
+    (yes (has "[k]: v" (r '> ```\0a> [k]: v\0a> ```\0a\0a[t][k]\0a\0a[k]: /u')))
+    (yes (has lnk (r '> ```\0a> [k]: v\0a> ```\0a\0a[t][k]\0a\0a[k]: /u')))
+    (yes (has lnk (r '> ```\0a> code\0a\0a[t][k]\0a\0a[k]: /u')))
+    ::  a quoted fence line does not close a fence outside the quote
+    (yes (has "[k]: v" (r '```\0a> ```\0a[k]: v\0a```')))
+  ==
+::  a reference definition has a one-word destination and at most a
+::  quoted title. A line of prose that starts with a bracketed label
+::  is a paragraph.
+++  test-ref-def-shape
+  ;:  weld
+    (expect-eq !>("<p>[10:02]: called Bob</p>") !>((r '[10:02]: called Bob')))
+    (expect-eq !>("<p>[TODO]: fix the importer</p>") !>((r '[TODO]: fix the importer')))
+    (expect-eq !>("<p>[k]: /u trailing</p>") !>((r '[k]: /u trailing')))
+    (expect-eq !>("") !>((r '[k]: /u')))
+    (expect-eq !>("") !>((r '[k]: /u "T"')))
+    (expect-eq !>("") !>((r '[k]:   /u   "T"')))
+    (yes (has "href=\"/u\" title=\"T\"" (r '[t][k]\0a\0a[k]: /u "T"')))
+  ==
+::  an unclosed '[' before a link does not turn the link into text. The
+::  scan from the stray bracket fails only because the link's own ']'
+::  closed the link's '[', which says nothing about the rest.
+++  test-link-after-stray-bracket
+  =/  lnk=tape  "<a href=\"/u\" target=\"_blank\" rel=\"noopener noreferrer\">b</a>"
+  ;:  weld
+    (expect-eq !>(:(weld "<p>[ a " lnk "</p>")) !>((r '[ a [b](/u)')))
+    (expect-eq !>(:(weld "<p>range [0, 1) see " lnk "</p>")) !>((r 'range [0, 1) see [b](/u)')))
+    (expect-eq !>(:(weld "<p>[ a " lnk " and " lnk "</p>")) !>((r '[ a [b](/u) and [b](/u)')))
+    (yes (has "<img src=\"/x.png\"" (r '[ a ![i](/x.png)')))
+    (yes (has "<img src=\"/x.png\"" (r '![ a ![i](/x.png)')))
+    (yes (has "<td>[ a <a href=\"/u\"" (r '| h |\0a|---|\0a| [ a [b](/u) |')))
+    ::  with no ']' at all the text is unchanged
+    (expect-eq !>("<p>[ a [ b</p>") !>((r '[ a [ b')))
+  ==
+::  an underscore inside a word is an underscore
+++  test-underscore-in-word
+  ;:  weld
+    (expect-eq !>("<p>a_b_c</p>") !>((r 'a_b_c')))
+    (expect-eq !>("<p>set max_size and min_size</p>") !>((r 'set max_size and min_size')))
+    (expect-eq !>("<p>a__b__c</p>") !>((r 'a__b__c')))
+    (expect-eq !>("<p>x _a_b</p>") !>((r 'x _a_b')))
+    (expect-eq !>("<p>x __a__b</p>") !>((r 'x __a__b')))
+    (expect-eq !>("<p>_a_b_</p>") !>((r '_a_b_')))
+    (expect-eq !>("<p>9_a_</p>") !>((r '9_a_')))
+    ::  at a word boundary it is still emphasis
+    (expect-eq !>("<p>x <em>a</em> y</p>") !>((r 'x _a_ y')))
+    (expect-eq !>("<p>(<em>a</em>)</p>") !>((r '(_a_)')))
+    (expect-eq !>("<p><em>a b</em>.</p>") !>((r '_a b_.')))
+    (expect-eq !>("<p>x <strong>a</strong>, y</p>") !>((r 'x __a__, y')))
+    (expect-eq !>("<p><strong>a_b</strong></p>") !>((r '**a_b**')))
+    (expect-eq !>("<p><em>snake_case</em> here</p>") !>((r '*snake_case* here')))
+  ==
+::  a list item or a quote above a rule is not a heading
+++  test-setext-not-over-list-or-quote
+  ;:  weld
+    (expect-eq !>("<ul><li>item</li></ul><hr>") !>((r '- item\0a---')))
+    (expect-eq !>("<ol><li>item</li></ol><hr>") !>((r '1. item\0a---')))
+    (expect-eq !>("<blockquote><p>q</p></blockquote><hr>") !>((r '> q\0a---')))
+    (expect-eq !>("<h2>Title</h2>") !>((r 'Title\0a---')))
+  ==
+::  openers with no closer: "[a](" with no ')' and "[^" with no ']'
+::  each cost a full capped scan, minutes for a page a peer can send.
+::  The scan now stops at the next opener, and a real link or footnote
+::  among them still renders.
+++  test-open-parens-bounded
+  =/  o=tape  (zing (reap 30.000 "[a]("))
+  =/  h=tape  (r (crip :(weld o " [x](/u) " o)))
+  (yes (has "[a]( <a href=\"/u\"" h))
+++  test-open-footnotes-bounded
+  =/  o=tape  (zing (reap 30.000 "[^"))
+  =/  h=tape  (r (crip :(weld o "[^a] " o "\0a\0a[^a]: n")))
+  (yes (has "[^<sup class=\"fnref\">" h))
+::  a link's ( ) tail ends at the first ')'. The start of another link
+::  is not part of a destination.
+++  test-paren-stops-at-opener
+  ;:  weld
+    (expect-eq !>("<p>[a](x <a href=\"/u\" target=\"_blank\" rel=\"noopener noreferrer\">b</a></p>") !>((r '[a](x [b](/u)')))
+    (yes (has "<a href=\"/p?a[]=1\"" (r '[t](/p?a[]=1)')))
+    (yes (has "<a href=\"/p\" title=\"T\"" (r '[t](/p "T")')))
+    (yes (has "<img src=\"/i.png\"" (r '![a](x ![b](/i.png)')))
+  ==
+::  an image on this host with a query is a request to a route, made
+::  with the reader's session when the page is drawn. It is a link, not
+::  an <img>, with or without `outside`. A plain path and the raw view
+::  of a file (?data) still draw.
+++  test-image-no-route
+  =/  clip=@t  '![x](/apps/lattice/clip?url=https://evil.example/t?id=1)'
+  =/  o=tape  (r clip)
+  ;:  weld
+    (yes !(has "<img" o))
+    (yes (has "<a href=\"/apps/lattice/clip?url=https://evil.example/t?id=1\"" o))
+    (yes !(has "<img" (~(render-md md &) clip)))
+    (yes !(has "<img" (r '![x](clip?url=https://evil.example/)')))
+    (yes !(has "<img" (r '![x](/apps/lattice?url=urb://~zod/p)')))
+    (yes !(has "<img" (r '![x]( /apps/lattice/fetch?url=http://e.example)')))
+    (yes !(has "<img" (r '![x][k]\0a\0a[k]: /apps/lattice/share?text=http://e.example')))
+    (yes !(has "<img" (r '![x](/a.png?data&url=http://e.example)')))
+    (yes !(has "<img" (r '![x](/a.png?data=1)')))
+    (yes (has "<img src=\"/pic.png\"" (r '![x](/pic.png)')))
+    (yes (has "<img src=\"a/b.png\"" (r '![x](a/b.png)')))
+    (yes (has "<img src=\"/apps/lattice/x/~zod/p/pic.png?data\"" (r '![x](/apps/lattice/x/~zod/p/pic.png?data)')))
+    ::  a remote image the reader chose to load keeps its query
+    (yes (has "<img src=\"https://x.example/i.png?w=2\"" (~(render-md md &) '![a](https://x.example/i.png?w=2)')))
+  ==
 --

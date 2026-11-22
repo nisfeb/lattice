@@ -230,14 +230,21 @@
 ::  further down closes what is above it. The stack is capped at
 ::  +max-depth here too: +scan counts every close tag, so unmatched
 ::  closes (<a></z><a></z>...) would let the real nesting grow past its
-::  cap, and the +lien below would go quadratic. Over the cap it crashes,
-::  and the callers' +mule gives the note.
+::  cap. Over the cap it crashes, and the callers' +mule gives the note.
+::
+::  `opn` counts the open elements by name, and `dep` is the stack's
+::  length, both kept in step with the stack. A close tag asks `opn`
+::  whether it matches anything, and the depth after a close is counted
+::  by what was popped. Walking the stack for either cost 256 steps per
+::  close tag at the depth cap: about half a minute for a 2 MB page of
+::  close tags, measured.
 ++  tree
   |=  ts=(list token)
   ^-  (list node)
   =|  stk=(list frame)
   =|  top=(list node)
   =|  dep=@ud
+  =|  opn=(map @t @ud)
   |-  ^-  (list node)
   ?~  ts
     ?~  stk  (flop top)
@@ -253,26 +260,38 @@
       %open
     ?.  e.t
       ?:  (gte dep max-depth)  ~|(%fodt-too-deep !!)
-      $(ts t.ts, stk [[n.t a.t ~] stk], dep +(dep))
+      %=  $
+        ts   t.ts
+        stk  [[n.t a.t ~] stk]
+        dep  +(dep)
+        opn  (~(put by opn) n.t +((~(gut by opn) n.t 0)))
+      ==
     =/  el=node  [%e n.t a.t ~]
     ?~  stk  $(ts t.ts, top [el top])
     $(ts t.ts, stk [i.stk(k [el k.i.stk]) t.stk])
   ::
       %close
-    ?.  (lien stk |=(fr=frame =(n.fr n.t)))  $(ts t.ts)
-    =/  [s2=(list frame) t2=(list node)]  (pop-to n.t stk top)
-    $(ts t.ts, stk s2, top t2, dep (lent s2))
+    ?.  (~(has by opn) n.t)  $(ts t.ts)
+    =/  [s2=(list frame) t2=(list node) o2=(map @t @ud) k=@ud]
+      (pop-to n.t stk top opn)
+    $(ts t.ts, stk s2, top t2, opn o2, dep (sub dep k))
   ==
+::  +pop-to: close the innermost open element named `n` and all above
+::  it. The stack and the top-level nodes after, `opn` without the
+::  closed elements, and how many were closed.
 ++  pop-to
-  |=  [n=@t stk=(list frame) top=(list node)]
-  ^-  [(list frame) (list node)]
-  |-  ^-  [(list frame) (list node)]
-  ?~  stk  [~ top]
+  |=  [n=@t stk=(list frame) top=(list node) opn=(map @t @ud)]
+  ^-  [(list frame) (list node) (map @t @ud) @ud]
+  =|  k=@ud
+  |-  ^-  [(list frame) (list node) (map @t @ud) @ud]
+  ?~  stk  [~ top opn k]
   =/  el=node  [%e n.i.stk a.i.stk (flop k.i.stk)]
-  ?~  t.stk  [~ [el top]]
+  =/  c=@ud  (~(gut by opn) n.i.stk 1)
+  =.  opn  ?:((lte c 1) (~(del by opn) n.i.stk) (~(put by opn) n.i.stk (dec c)))
+  ?~  t.stk  [~ [el top] opn +(k)]
   =/  s2=(list frame)  [i.t.stk(k [el k.i.t.stk]) t.t.stk]
-  ?:  =(n n.i.stk)  [s2 top]
-  $(stk s2)
+  ?:  =(n n.i.stk)  [s2 top opn +(k)]
+  $(stk s2, k +(k))
 ::
 ::  helpers over nodes
 ++  ga

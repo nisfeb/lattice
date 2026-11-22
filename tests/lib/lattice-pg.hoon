@@ -212,4 +212,36 @@
     (expect-eq !>(`(unit *)``s) !>(dat.r))
     (expect-eq !>(`view-mode:pg`%scad) !>(show.r))
   ==
+::  +guestbook keeps every signature: the next submission is put before
+::  the ones already in the page's data
+++  test-guestbook-keeps-entries
+  =/  one  (guestbook:pg `'entry=Ann' ~ /g "G")
+  =/  two  (guestbook:pg `'entry=Bob' `(need dat.one) /g "G")
+  =/  thr  (guestbook:pg `'entry=Cy' `(need dat.two) /g "G")
+  =/  h=tape  (trip ;;(@t (need dat.thr)))
+  ;:  weld
+    (expect-eq !>(`(unit @ud)``0) !>((bind (find "<li>Cy</li><li>Bob</li><li>Ann</li>" h) |=(@ 0))))
+    ::  a render with no submission keeps them too
+    =/  idle  (guestbook:pg ~ `(need dat.thr) /g "G")
+    (expect-eq !>(3) !>((lent (fand "<li>" (trip ;;(@t (need dat.idle)))))))
+  ==
+::  a browser sends the form url-encoded: the signature is the decoded
+::  text of the entry field, escaped
+++  test-guestbook-decodes
+  =/  h  |=(c=@t (trip ;;(@t (need dat:(guestbook:pg `c ~ /g "G")))))
+  ;:  weld
+    (expect !>(?=(^ (find "<li>Bob was here!</li>" (h 'entry=Bob+was+here%21')))))
+    (expect !>(?=(^ (find "<li>a &amp; b &lt;i&gt;</li>" (h 'entry=a+%26+b+%3Ci%3E')))))
+    (expect !>(?=(^ (find "<li>caf\c3\a9</li>" (h 'entry=caf%C3%A9')))))
+    ::  another field is not part of the signature
+    (expect !>(?=(^ (find "<li>Ann</li>" (h 'entry=Ann&x=1')))))
+    ::  a stray percent sign is text
+    (expect !>(?=(^ (find "<li>100% sure</li>" (h 'entry=100%+sure')))))
+    ::  a control byte cannot break the list
+    (expect !>(?=(^ (find "<li>a b</li>" (h 'entry=a%0Ab')))))
+    ::  an encoded list tag is text, and the next signature still finds the list
+    =/  evil  (guestbook:pg `'entry=%3C%2Ful%3E%3Cul+class%3D%22guestbook%22%3E' ~ /g "G")
+    =/  nxt  (trip ;;(@t (need dat:(guestbook:pg `'entry=Zed' `(need dat.evil) /g "G"))))
+    (expect-eq !>(2) !>((lent (fand "<li>" nxt))))
+  ==
 --

@@ -178,20 +178,27 @@
   ^-  result
   ::  prior entries: the <li> run between our own last render's list markers.
   ::  The page's data IS its state. There is no store to keep in sync.
+  ::  `mark` is the list tag exactly as this arm writes it below. Looking
+  ::  for a bare "<ul>" found nothing in what it wrote, so each signature
+  ::  replaced the ones before it. An entry cannot forge the tag: every
+  ::  entry is escaped.
+  =/  mark=tape  "<ul class=\"guestbook\">"
   =/  prev=tape
     ?~  dat  ""
     =/  old=tape  (trip ;;(@t u.dat))
-    =/  a=(unit @ud)  (find "<ul>" old)
+    =/  a=(unit @ud)  (find mark old)
     ?~  a  ""
-    =/  rest=tape  (slag (add u.a 4) old)
+    =/  rest=tape  (slag (add u.a (lent mark)) old)
     =/  b=(unit @ud)  (find "</ul>" rest)
     ?~(b "" (scag u.b rest))
-  ::  a submission arrives as the form body, "entry=<text>"
+  ::  a submission arrives as the form body, "entry=<text>", url-encoded
+  ::  as a browser sends a form
   =/  entry=tape
     ?~  cmd  ""
     =/  raw=tape  (trip u.cmd)
     =/  eq=(unit @ud)  (find "=" raw)
-    ?~(eq raw (slag +(u.eq) raw))
+    ?~  eq  raw
+    (form-text (slag +(u.eq) raw))
   ::  esc EVERY submission. This is untrusted, unauthenticated public input
   =/  item=tape
     ?:  =("" entry)  ""
@@ -201,9 +208,34 @@
     ;:  weld
       "<div class=\"page\"><h1>"  title  "</h1>"
       (form-html rel "sign")
-      "<ul class=\"guestbook\">"  item  prev  "</ul></div>"
+      mark  item  prev  "</ul></div>"
     ==
   (html body)
+::  +form-text: one url-encoded form value as text. It ends at the next
+::  field, '+' is a space and %XX a byte. A stray '%' stays as written,
+::  and a control byte becomes a space.
+++  form-text
+  |=  v=tape
+  ^-  tape
+  =/  amp=(unit @ud)  (find "&" v)
+  =/  one=tape  ?~(amp v (scag u.amp v))
+  =/  hex
+    |=  c=@tD
+    ^-  (unit @ud)
+    ?:  &((gte c '0') (lte c '9'))  `(sub c '0')
+    ?:  &((gte c 'a') (lte c 'f'))  `(add 10 (sub c 'a'))
+    ?:  &((gte c 'A') (lte c 'F'))  `(add 10 (sub c 'A'))
+    ~
+  =/  out=tape
+    |-  ^-  tape
+    ?~  one  ~
+    ?:  =('+' i.one)  [' ' $(one t.one)]
+    ?.  &(=('%' i.one) ?=([@ @ *] t.one))  [i.one $(one t.one)]
+    =/  h=(unit @ud)  (hex i.t.one)
+    =/  l=(unit @ud)  (hex i.t.t.one)
+    ?.  &(?=(^ h) ?=(^ l))  [i.one $(one t.one)]
+    [`@tD`(add (mul 16 u.h) u.l) $(one t.t.t.one)]
+  (turn out |=(c=@tD ?:((lth c 32) ' ' c)))
 ::  +split-on: split a tape on a character. Small, but three page builders
 ::  wanted it and each had its own copy.
 ::
