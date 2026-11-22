@@ -888,6 +888,8 @@ struct App {
     save_for: Option<String>,
     /// Which half the save on its way is of: the memories (`true`) or the pages. None for a save of another ship's page, which is kept in neither.
     save_half: Option<bool>,
+    /// While a read of the tree is on its way: the pages whose save was answered since it was asked for. The read may have been made before such a save, and its text for that page is then the older one.
+    tree_behind: Option<std::collections::HashSet<String>>,
     /// What is kept on leaving an edit is not sent by this window: what comes next sends it.
     no_drain: bool,
     /// A page moved while it was being edited, until the tree says what revision it now has.
@@ -1370,6 +1372,7 @@ fn init() -> App {
         moved_changed: false,
         save_for: None,
         save_half: None,
+        tree_behind: None,
         no_drain: false,
         moved_wait: None,
         here_beat: 0.0,
@@ -2720,6 +2723,7 @@ fn listen(s: &mut App) {
 
 fn load_tree(s: &mut App) {
     if let Some(c) = s.conn.clone() {
+        s.tree_behind.get_or_insert_default();
         s.tree_req.request((c.clone(), s.since.clone()), |(c, since)| c.dump(&since));
         // the inbox's count rides along with every sync: it is cheap on the ship
         s.waiting_req.request(c, |c| c.waiting());
@@ -5714,6 +5718,9 @@ fn drained(s: &mut App, (did, out): Drained) {
                     if let Some(p) = pages.get_mut(&name) {
                         p.rev = rev;
                     }
+                    if let Some(behind) = &mut s.tree_behind {
+                        behind.insert(name.clone());
+                    }
                     if let Some(p) = s.open.as_mut().filter(|p| !s.memory && s.remote.is_none() && p.name == name) {
                         p.rev = rev;
                         // the ship has a new revision of the page in front: its history is read again
@@ -6334,6 +6341,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     if let Some(r) = s.tree_req.take() {
         changed = true;
+        let behind = s.tree_behind.take().unwrap_or_default();
         // the dump is the pages': while memories show, it lands on the other half
         let away = s.memory;
         if away {
@@ -6395,6 +6403,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 s.cache.retain(|name, _| live.contains(name.as_str()));
                 for n in nodes.iter().filter(|n| n.page) {
                     if let Some(body) = &n.body {
+                        // a read made before a save of this window's and answered after it has the page from before the save: what is held is newer, and stays. Only then: a lower revision is otherwise a page made again elsewhere, and is taken
+                        if behind.contains(&n.path) && s.cache.get(&n.path).is_some_and(|c| c.rev > n.rev) {
+                            continue;
+                        }
                         s.cache.insert(n.path.clone(), Page { name: n.path.clone(), body: body.clone(), kind: n.kind.clone(), rev: n.rev });
                     }
                 }
@@ -6792,6 +6804,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     if let Err(e) = change_waiting(s, |_, q| drop(q.remove(&waited_as))) {
                         s.note = format!("saved, but the list of what waits could not be written: {e}");
                     }
+                }
+                // a read of the tree on its way may have been made before this save
+                if let Some(behind) = s.tree_behind.as_mut().filter(|_| !memory) {
+                    behind.insert(p.name.clone());
                 }
                 landed(s, p);
             }

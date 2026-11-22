@@ -643,6 +643,32 @@ fn a_waiting_save_goes_with_its_page_when_the_page_is_renamed() {
 }
 
 #[test]
+fn an_answer_to_an_older_read_of_the_tree_does_not_put_back_the_text_before_a_save() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "first\n");
+    let mut r = Run::new(&ship);
+    r.open("notes/a");
+    start_edit(&mut r.s);
+    r.typ("more");
+    // the ship reads its tree before the save and answers after it
+    (ship.st().dump_early, ship.st().dump_slow) = (true, 0.6);
+    load_tree(&mut r.s);
+    std::thread::sleep(Duration::from_millis(200));
+    save(&mut r.s);
+    r.until("the save", |s| !s.save_req.is_pending() && !s.editing);
+    assert!(r.s.tree_req.is_pending(), "the older read is still on its way");
+    r.settle();
+    let held = |r: &Run| r.s.cache.get("notes/a").map(|p| (p.rev, p.body.clone()));
+    assert_eq!(held(&r), Some((2, "firstmore\n".to_owned())), "the kept copy is the page as saved");
+    // a page whose revision went back with no save of this window's in between was made again elsewhere: that is taken
+    (ship.st().dump_early, ship.st().dump_slow) = (false, 0.0);
+    ship.st().pages.insert("notes/a".into(), ("made again\n".into(), "md".into(), 1));
+    r.sync();
+    assert_eq!(held(&r), Some((1, "made again\n".to_owned())));
+}
+
+#[test]
 fn a_save_answered_after_going_to_the_memories_is_kept_among_the_pages() {
     let _one = one();
     let ship = Ship::start();
