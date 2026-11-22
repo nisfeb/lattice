@@ -641,8 +641,14 @@ fn leaves(path: &str) -> bool {
 /// opens whatever path it is given on this machine: the rule is that a
 /// page pulls in other lattice pages and nothing else.
 ///
-/// Every `include` and `use` that `resolve_ref` refuses is taken out:
-/// its keyword becomes a `;`, an empty statement, and the rest of it
+/// Every `include` and `use` that does not stand (`stands`) is taken
+/// out: one `resolve_ref` refuses, one whose page is not among the
+/// files written for the run (`has` says which are), and one OpenSCAD
+/// would not find there by the path as written. OpenSCAD looks for an
+/// include it does not find beside the file among its own libraries,
+/// by the path as written, and a `..` in it climbs from there to any
+/// file of this machine. So nothing is left for the libraries to find.
+/// Its keyword becomes a `;`, an empty statement, and the rest of it
 /// spaces. Spaces alone would not do: a bare `use` before it would then
 /// reach over them to a `<` after, and be a use of whatever stands
 /// there. One whose path does not end on its line, or has a tab or a
@@ -655,8 +661,10 @@ fn leaves(path: &str) -> bool {
 ///
 /// A string that names the file to `import`, `surface` and their kin
 /// (`READS`) is emptied when it could lead out of the page's folder
-/// (`leaves`): the first argument, or the one named `file`. Any other
-/// argument is left as it is. `dir` is the folder of the page the
+/// (`leaves`): an argument with no name, wherever it stands, since
+/// OpenSCAD gives it to the first argument not named, or the one named
+/// `file` or, as it once was, `filename`. An argument of any other
+/// name is left as it is. `dir` is the folder of the page the
 /// source is. Each note is the line of a string that was emptied, and
 /// what to say of it.
 ///
@@ -667,11 +675,11 @@ fn leaves(path: &str) -> bool {
 /// through a variable or a module's argument. No reading of the source
 /// can. Only a sandbox round the `openscad` program closes that.
 // ponytail: a name built at run time is not caught. Running openscad in a sandbox of its own is the whole answer
-pub fn tame(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
+pub fn tame_among(dir: &str, src: &str, has: &dyn Fn(&str) -> bool) -> (String, Vec<(usize, String)>) {
     // taking one thing out can leave another standing that was read as part of it, so it is done until nothing changes
-    let (mut text, mut notes) = tame_once(dir, src);
+    let (mut text, mut notes) = tame_once(dir, src, has);
     for _ in 0..TAME_MOST {
-        let (next, more) = tame_once(dir, &text);
+        let (next, more) = tame_once(dir, &text, has);
         if next == text {
             return (text, notes);
         }
@@ -686,7 +694,37 @@ pub fn tame(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
 /// The most times a model is gone over before it is given up.
 const TAME_MOST: usize = 8;
 
-fn tame_once(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
+/// `tame_among` with every page taken to be there.
+#[cfg(test)]
+fn tame(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
+    tame_among(dir, src, &|_| true)
+}
+
+/// Whether an include's path is written as OpenSCAD finds a page's file
+/// by, beside the file that includes it. A `..` after a folder's name
+/// needs that folder to be there, which it need not be among the pages
+/// and may be among OpenSCAD's libraries. A `/` at the end names a
+/// folder. Spaces at either end are part of the name to OpenSCAD and
+/// are not to `resolve_ref`.
+fn plain(path: &str) -> bool {
+    let mut named = false;
+    path == path.trim() && !path.ends_with('/') && path.split('/').all(|p| {
+        named |= !matches!(p, "" | "." | "..");
+        !(named && p == "..")
+    })
+}
+
+/// Whether an include in a file in `dir` is let stand: it names a page,
+/// that page's file is written for the run, and OpenSCAD finds it there.
+fn stands(dir: &str, path: &str, has: &dyn Fn(&str) -> bool) -> bool {
+    plain(path) && resolve_ref(dir, path).is_ok_and(|(_, file)| has(&file))
+}
+
+/// What is said of an include whose page is not there, and of one not written plainly.
+const NO_PAGE: &str = "no such page among yours, so nothing is included";
+const NOT_PLAIN: &str = "write the path plainly, with any `..` first and no space or `/` at its end, or OpenSCAD would look for it outside your pages. It is not included";
+
+fn tame_once(dir: &str, src: &str, has: &dyn Fn(&str) -> bool) -> (String, Vec<(usize, String)>) {
     let b = src.as_bytes();
     let mut out = b.to_vec();
     let mut notes = Vec::new();
@@ -705,11 +743,21 @@ fn tame_once(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
     let mut ends = Seek::default();
     // The include that opens at `p` with its path from `from`, in a stretch that ends at `bound`: taken
     // out when it is refused, and where the reading goes on. It goes on past the path of one let stand.
+    // Whether the stretch being read is a string. OpenSCAD reads no include in one, and a string is words the
+    // model shows, so a plain path there is let be though no page answers it. One that climbs is not
+    let quoted = std::cell::Cell::new(false);
     let mut include = |out: &mut Vec<u8>, p: usize, from: usize, bound: usize| -> usize {
         let end = ends.at(src, from, |t| t.find(['>', '\n', '\r', '\t', '<'])).filter(|e| b[*e] == b'>');
+        let has = |file: &str| has(file) || (quoted.get() && end.is_some_and(|e| !src[from..e].split('/').any(|p| p == "..")));
         match end {
             // one that may be a name after all is not read past: a reader of files may stand in what looked like its path
-            Some(e) if resolve_ref(dir, &src[from..e]).is_ok() => if after_figures(b, p) { from } else { e + 1 },
+            Some(e) if stands(dir, &src[from..e], &has) => if after_figures(b, p) { from } else { e + 1 },
+            // and one that may be a name, with what would be a page's path were it there: only its opening is
+            // taken out, and what follows is read as the code it may be
+            Some(e) if after_figures(b, p) && resolve_ref(dir, &src[from..e]).is_ok() => {
+                stop(out, p, from.min(bound));
+                from
+            }
             Some(e) if e < bound => {
                 stop(out, p, e + 1);
                 e + 1
@@ -759,7 +807,9 @@ fn tame_once(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
                     j += if b[j] == b'\\' { 2 } else { 1 };
                 }
                 let j = j.min(b.len());
+                quoted.set(true);
                 inside(&mut out, &mut include, i + 1, j);
+                quoted.set(false);
                 if paths > 0 && leaves(&src[i + 1..j]) {
                     notes.push((line, format!("{}: only files in your pages can be read, by a path that stays in the page's folder", src[i + 1..j].trim().chars().take(80).collect::<String>())));
                     out[i + 1..j].iter_mut().filter(|c| !matches!(**c, b'\n' | b'\r')).for_each(|c| *c = b' ');
@@ -794,8 +844,9 @@ fn tame_once(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
                     let after = end + b[end..].iter().take_while(|c| c.is_ascii_whitespace()).count();
                     let names = b.get(after) == Some(&b'=') && b.get(after + 1) != Some(&b'=');
                     if let Some(top) = open.last_mut().filter(|top| top.0 && names) {
-                        paths = paths + usize::from(name == "file") - usize::from(top.1);
-                        top.1 = name == "file";
+                        let file = matches!(name, "file" | "filename");
+                        paths = paths + usize::from(file) - usize::from(top.1);
+                        top.1 = file;
                     }
                     named = READS.contains(&name);
                     i = end.max(i + 1);
@@ -812,10 +863,10 @@ fn tame_once(dir: &str, src: &str) -> (String, Vec<(usize, String)>) {
                 (i, named) = (i + 1, false);
             }
             b',' => {
-                // the file's name is the first argument: after it, only one named `file` is
-                if let Some(top) = open.last_mut().filter(|top| top.0 && top.1) {
-                    top.1 = false;
-                    paths -= 1;
+                // the next argument may be the file's name until a name of its own says it is not: one with no name is the file's when the arguments before it were all named
+                if let Some(top) = open.last_mut().filter(|top| top.0 && !top.1) {
+                    top.1 = true;
+                    paths += 1;
                 }
                 (i, named) = (i + 1, false);
             }
@@ -857,21 +908,18 @@ pub fn resolve_ref(dir: &str, path: &str) -> Result<(String, String), String> {
 }
 
 /// A page and everything it includes: its own file's name, every file
-/// with its text made safe to run (`tame`), and notes on what was
+/// with its text made safe to run (`tame_among`), and notes on what was
 /// refused or capped. `read`
 /// answers a page's text, or nothing when there is no such page: that
-/// one is left out, and OpenSCAD says which include it could not open.
+/// one is left out, and its include is taken out of the text and noted,
+/// so that OpenSCAD does not go looking for it among its own libraries.
 pub fn collect(name: &str, text: &str, mut read: impl FnMut(&str) -> Option<String>) -> (String, Vec<(String, String)>, Vec<String>) {
     let (max_depth, max_files, max_bytes) = CAPS;
     let main = format!("{ROOT}{name}.scad");
-    // every file is handed on tamed: what it may not open is taken out of it (`tame`)
-    let mut notes = Vec::new();
-    let tamed = |page: &str, text: &str, notes: &mut Vec<String>| {
-        let (safe, said) = tame(page.rsplit_once('/').map_or("", |(d, _)| d), text);
-        notes.extend(said.into_iter().map(|(line, why)| format!("line {line} of {page}: {why}")));
-        safe
-    };
-    let mut files: Vec<(String, String)> = vec![(main.clone(), tamed(name, text, &mut notes))];
+    // every file as it was read, with the page it is. Each is tamed once all are known: an include stands only when its file is one of these
+    let mut found: Vec<(String, String, String)> = vec![(main.clone(), name.to_owned(), text.to_owned())];
+    // what is to be said, in order: a note, or the notes of taming the file at a place in `found`
+    let mut said: Vec<Result<String, usize>> = vec![Err(0)];
     let mut bytes = text.len();
     let mut queue: std::collections::VecDeque<(String, String, usize)> = [(name.to_owned(), text.to_owned(), 0)].into();
     let mut asked: std::collections::HashMap<String, Option<String>> = Default::default();
@@ -881,31 +929,51 @@ pub fn collect(name: &str, text: &str, mut read: impl FnMut(&str) -> Option<Stri
             let (p, file) = match resolve_ref(dir, &inc.path) {
                 Ok(r) => r,
                 Err(why) => {
-                    notes.push(format!("line {} of {page}: {why}", inc.line));
+                    said.push(Ok(format!("line {} of {page}: {why}", inc.line)));
                     continue;
                 }
             };
-            if files.iter().any(|(f, _)| *f == file) {
+            if !plain(&inc.path) {
+                said.push(Ok(format!("line {} of {page}: {}: {NOT_PLAIN}", inc.line, inc.path.trim())));
+            }
+            if found.iter().any(|(f, ..)| *f == file) {
                 continue;
             }
             if depth + 1 > max_depth {
-                notes.push(format!("{p}: includes nest deeper than {max_depth}, not read"));
+                said.push(Ok(format!("{p}: includes nest deeper than {max_depth}, not read")));
                 continue;
             }
-            if files.len() >= max_files {
-                notes.push(format!("more than {max_files} included files, the rest not read"));
+            if found.len() >= max_files {
+                said.push(Ok(format!("more than {max_files} included files, the rest not read")));
                 break 'all;
             }
-            let Some(body) = asked.entry(p.clone()).or_insert_with(|| read(&p)).clone() else { continue };
+            let Some(body) = asked.entry(p.clone()).or_insert_with(|| read(&p)).clone() else {
+                if plain(&inc.path) {
+                    said.push(Ok(format!("line {} of {page}: {}: {NO_PAGE}", inc.line, inc.path)));
+                }
+                continue;
+            };
             if bytes + body.len() > max_bytes {
-                notes.push(format!("{p}: the included files pass {} MB, not read", max_bytes >> 20));
+                said.push(Ok(format!("{p}: the included files pass {} MB, not read", max_bytes >> 20)));
                 continue;
             }
             bytes += body.len();
-            files.push((file, tamed(&p, &body, &mut notes)));
+            said.push(Err(found.len()));
+            found.push((file, p.clone(), body.clone()));
             queue.push_back((p, body, depth + 1));
         }
     }
+    // every file is handed on tamed: what it may not open, and what is not among these files, is taken out of it
+    let written: std::collections::HashSet<&str> = found.iter().map(|(f, ..)| f.as_str()).collect();
+    let mut tamed: Vec<Option<(String, Vec<(usize, String)>)>> = found.iter().map(|(_, page, text)| Some(tame_among(page.rsplit_once('/').map_or("", |(d, _)| d), text, &|f| written.contains(f)))).collect();
+    let mut notes = Vec::new();
+    for n in said {
+        match n {
+            Ok(note) => notes.push(note),
+            Err(at) => notes.extend(tamed[at].as_ref().map_or(&[][..], |t| &t.1[..]).iter().map(|(line, why)| format!("line {line} of {}: {why}", found[at].1))),
+        }
+    }
+    let files = found.iter().zip(&mut tamed).map(|((file, ..), t)| (file.clone(), t.take().map_or(String::new(), |t| t.0))).collect();
     (main, files, notes)
 }
 
@@ -932,6 +1000,9 @@ mod tests {
             let want: Vec<&str> = case["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
             assert_eq!(got, want, "{name}");
             let want: Vec<&str> = case["notes"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+            // the web client runs OpenSCAD with no libraries and no disk, and leaves an include of no page for it to
+            // say. Here such an include is taken out and said, and so is one OpenSCAD would not find as written
+            let notes: Vec<String> = notes.into_iter().filter(|n| !n.ends_with(NO_PAGE) && !n.ends_with(NOT_PLAIN)).collect();
             assert_eq!(notes, want, "{name}");
             let mut scanned: Vec<String> = scan_includes(pages[name].as_str().unwrap()).iter().map(|i| format!("{} {} {}", i.kind, i.line, i.path)).collect();
             let want: Vec<&str> = case["scan"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
@@ -1042,7 +1113,7 @@ mod tests {
 
     #[test]
     fn what_is_handed_to_openscad_opens_nothing_outside_the_pages() {
-        let run = |src: &str| collect("parts/box", src, |p| (p == "parts/lib").then(|| "cube(1);".to_owned()));
+        let run = |src: &str| collect("parts/box", src, |p| (p == "parts/lib" || p == "shared/util").then(|| "cube(1);".to_owned()));
         // each of these names a file of this machine in a way OpenSCAD would open
         for src in [
             "module m(){include </home/u/x.scad>}",
@@ -1098,6 +1169,187 @@ mod tests {
         for bad in ["", "import(", "import(\"", "import(\"\\", ")", "import(é\"é", "1.", ".5e", "include <", "use <\n>", "$", "import((((", "\"\\"] {
             let _ = tame("", bad);
         }
+    }
+
+    #[test]
+    fn a_files_name_is_checked_wherever_it_stands_among_the_arguments() {
+        let tamed = |src: &str| tame("parts", src);
+        // OpenSCAD gives a string with no name to the first argument not named, wherever it stands
+        for src in [
+            "import(convexity=2, \"/etc/passwd.stl\");",
+            "surface(center=true, \"/etc/x.png\");",
+            "x = import(center = true, \"../../secret.json\");",
+            "import(convexity = 2, center = true, \"/etc/passwd.stl\");",
+            "import(layer = \"a\", \"/etc/passwd.stl\", convexity = 2);",
+            "import(convexity = [1, 2], \"/etc/passwd.stl\");",
+            "import(convexity = f(1, 2), \"C:/secret.stl\");",
+            "import(convexity=2,\n\t\"~/secret.stl\");",
+            "import(convexity=2, /* file */ \"/etc/passwd.stl\");",
+            "import(convexity=2, str(\"/etc\", \"/passwd.stl\"));",
+            "import(\"a.stl\", \"/etc/passwd.stl\");",
+            "import(convexity=2, id = \"x\", \"a.stl\", \"/etc/passwd.stl\");",
+            "linear_extrude(height = 2, \"/etc/x.dxf\") square(1);",
+            "x = dxf_cross(layer = \"l\", \"/etc/x.dxf\");",
+            // the old name of the argument names the file too
+            "import(filename = \"/etc/passwd.stl\");",
+            "import(convexity = 2, filename=\"../../secret.stl\");",
+            "import(file = \"a.stl\", filename = \"/etc/passwd.stl\");",
+        ] {
+            let (safe, notes) = tamed(src);
+            assert!(!safe.contains("etc") && !safe.contains("secret") && !notes.is_empty(), "{src:?} is handed on as {safe:?}");
+            assert_eq!((safe.len(), safe.matches('\n').count()), (src.len(), src.matches('\n').count()), "{src:?}");
+            assert_eq!(tamed(&safe).0, safe, "what is tamed is tame");
+        }
+        // a named argument that is not the file's name is still left as it is, before a string with no name and after one
+        for kept in ["import(convexity = 2, \"a.stl\", id = \"/top\");", "import(id = \"../b\", \"sub/a.stl\");", "import(layer = \"/x\", convexity = 2, file = \"a.stl\");", "import(convexity=2, \"a.stl\"); echo(\"/b\", \"/c\");"] {
+            assert_eq!(tamed(kept), (kept.to_owned(), Vec::new()), "{kept}");
+        }
+    }
+
+    #[test]
+    fn an_include_is_let_stand_only_when_openscad_finds_it_among_the_pages() {
+        // OpenSCAD looks for a path it does not find beside the file among its own libraries, with the path as
+        // written: `..` there climbs out of the library's folder to any file of this machine
+        let pages = |p: &str| ["a/b/c/d/lib", "a/b/x", "a/top", "etc/passwd", "MCAD/shapes", "a/b/c/d/sub/y"].contains(&p).then(|| "cube(1);".to_owned());
+        let run = |src: &str| collect("a/b/c/d/page", src, pages);
+        let gone = |src: &str| {
+            let (_, files, notes) = run(src);
+            let safe = &files[0].1;
+            assert!(!safe.contains("include") && !safe.contains("use") && !safe.contains('<'), "{src:?} is handed on as {safe:?}");
+            assert_eq!((safe.len(), safe.matches('\n').count()), (src.len(), src.matches('\n').count()), "{src:?}");
+            assert_eq!(notes.len(), 1, "{src:?}: {notes:?}");
+            notes[0].clone()
+        };
+        // no such page: nothing is left for the libraries to answer
+        for src in ["include <../../../../home/u/x.scad>", "use <../../../../etc/shadow>", "include <MCAD/gears.scad>", "use <missing.scad>", "include <../missing>", "x = 1;include <../../../../etc/shadow>"] {
+            assert!(gone(src).contains("no such page"), "{src}");
+        }
+        // a page that is there, by a path OpenSCAD would not find it by beside the file: a `..` after a folder's
+        // name needs that folder to be there, a `/` at the end names a folder, and spaces are part of a name
+        for src in ["include <sub/../../../../../etc/shadow>", "include <MCAD/../../../../../etc/passwd>", "use <nowhere/../lib>", "include <./nowhere/../lib.scad>", "use <sub/../lib>", "include <../d/../d/lib>", "include <lib/>", "include <lib.scad//>", "use < lib>", "include <lib >", "use <../../x/./..//x>"] {
+            assert!(gone(src).contains("plainly"), "{src}");
+        }
+        // what is refused outright is still refused, and said as it was
+        assert!(gone("include </etc/passwd>").contains("only lattice pages"));
+        assert!(gone("include <../../../../../etc/passwd>").contains("above the top"));
+        // a page that is there, by a plain path, stands as it was written
+        for src in ["include <lib>", "include <lib.scad>", "use <./lib.scad>", "use <../../x>", "include <../../../top.scad>", "use <../../../../etc/passwd>", "include <../../../../MCAD/shapes.scad>", "use <sub/y>", "use <sub//y>", "include <./../../x>", "use <page.scad>"] {
+            let (_, files, notes) = run(src);
+            assert_eq!((files[0].1.as_str(), notes.len()), (src, 0), "{src}: {notes:?}");
+            assert_eq!(files.len(), if src.contains("page.scad") { 1 } else { 2 }, "{src}");
+        }
+        // a page left out because the run is full is not left to the libraries either
+        let chain = |p: &str| p.strip_prefix('d').and_then(|n| n.parse::<usize>().ok()).map(|n| format!("include <d{}>", n + 1));
+        let (_, files, _) = collect("d0", "include <d1>", chain);
+        assert_eq!(files.len(), CAPS.0 + 1);
+        assert!(!files.last().unwrap().1.contains("include"), "the deepest file read still includes one that was not: {:?}", files.last());
+        assert!(files[..files.len() - 1].iter().all(|(_, text)| text.contains("include")));
+        // in a string, which is words the model shows, a plain path is let be and one that climbs is not
+        let (_, files, _) = run("echo(\"use <b> or include <sub/c.scad>\"); t = \"use <../../../../etc/shadow>\"; u = \"use <MCAD/../x>\";");
+        assert_eq!(files[0].1, format!("echo(\"use <b> or include <sub/c.scad>\"); t = \";{}\"; u = \";{}\";", " ".repeat(27), " ".repeat(14)));
+        // an include that only a looser reading finds is not gathered, and so is taken out
+        let (_, files, _) = collect("p", "// use <q>\ncube(1);", |p| (p == "q").then(|| "cube(2);".to_owned()));
+        assert_eq!(files, [("/w/p.scad".to_owned(), "// ;      \ncube(1);".to_owned())]);
+    }
+
+    /// The includes and uses OpenSCAD's own lexer acts on in a source, each with the path it would open: a
+    /// model of its rules (`lexer.l`: the opener against a number or a name by the longest match, the path
+    /// read to its `>` with tabs and line ends passed over, strings and comments).
+    fn lexed(src: &str) -> Vec<String> {
+        let b = src.as_bytes();
+        let digits = |from: usize| b[from.min(b.len())..].iter().take_while(|c| c.is_ascii_digit()).count();
+        let power = |j: usize| {
+            let sign = usize::from(matches!(b.get(j + 1), Some(b'+' | b'-')));
+            if matches!(b.get(j), Some(b'e' | b'E')) && digits(j + 1 + sign) > 0 { 1 + sign + digits(j + 1 + sign) } else { 0 }
+        };
+        let number = |i: usize| {
+            let whole = digits(i);
+            let mut best = if whole > 0 { whole + power(i + whole) } else { 0 };
+            if b.get(i + whole) == Some(&b'.') {
+                let part = digits(i + whole + 1);
+                if part > 0 || whole > 0 {
+                    best = best.max(whole + 1 + part + power(i + whole + 1 + part));
+                }
+            }
+            best
+        };
+        let (mut out, mut i) = (Vec::new(), 0);
+        while i < b.len() {
+            let opener = ["include", "use"].into_iter().find_map(|kw| {
+                let after = i + kw.len() + b.get(i + kw.len()..)?.iter().take_while(|c| matches!(c, b' ' | b'\t' | b'\r' | b'\n')).count();
+                (src[i..].starts_with(kw) && b.get(after) == Some(&b'<')).then_some(after + 1)
+            });
+            let from = i + usize::from(b[i] == b'$');
+            let name = b[from..].iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'_').count();
+            let other = if name > 0 { from + name - i } else { 0 }.max(number(i));
+            if let Some(after) = opener.filter(|after| *after - i >= other) {
+                // the last piece of the path, between tabs and line ends, is the one opened
+                let (mut j, mut path, mut closed) = (after, String::new(), false);
+                while j < b.len() && !closed {
+                    match b[j] {
+                        b'>' => closed = true,
+                        b'\t' | b'\r' | b'\n' => {}
+                        _ => {
+                            let end = j + b[j..].iter().position(|c| matches!(c, b'\t' | b'\r' | b'\n' | b'>')).unwrap_or(b.len() - j);
+                            path = src[j..end].to_owned();
+                            j = end - 1;
+                        }
+                    }
+                    j += 1;
+                }
+                if closed {
+                    out.push(path);
+                }
+                i = j;
+            } else if other > 0 {
+                i += other;
+            } else {
+                i = match b[i] {
+                    b'"' => {
+                        let mut j = i + 1;
+                        while j < b.len() && b[j] != b'"' {
+                            j += if b[j] == b'\\' && matches!(b.get(j + 1), Some(b'\\' | b'"')) { 2 } else { 1 };
+                        }
+                        (j + 1).min(b.len())
+                    }
+                    b'/' if b.get(i + 1) == Some(&b'/') => src[i..].find('\n').map_or(b.len(), |e| i + e + 1),
+                    b'/' if b.get(i + 1) == Some(&b'*') => src[i + 2..].find("*/").map_or(b.len(), |e| i + e + 4),
+                    _ => i + src[i..].chars().next().map_or(1, char::len_utf8),
+                };
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_include_openscad_would_act_on_is_a_page_written_for_the_run() {
+        assert_eq!(lexed("include <a.scad>\nuse<b/c> x = \"use <d>\"; // use <e>\n/* include <f> */ 1.5use <g> q1use <h> use <i\n\tj>"), ["a.scad", "b/c", "g", "j"]);
+        let pieces = [
+            "use", "include", "use ", "include ", "use<", "include<", "use <", "include <", "<", ">", "\"", "/", "//", "/*", "*/", "\\", "\\\"", "\\\\", "\n", "\r", "\t", " ", ";", "=", "(", ")", ",", "{", "}", ".", "1", "9", "e", "+", "a", "_", "$", "q1", "1e3", "1.5", "1.", ".5", "1.5e+3",
+            "/etc/passwd", "../../../etc/passwd", "../x.scad", "../a.scad", "lib/a.scad", "a.scad", "a.scad", "C:/x", "file:///x", "~/x", "a/../../b", "lib/../a.scad", "..", "./", "a b", " a.scad", "a.scad ", "a.scad/", "MCAD/a.scad", "é", "import(", "file=", "u", "i", "se", "clude", "é<",
+            "include <a.scad>", "use <../a.scad>", "use <lib/a.scad>", "include <./a.scad>", "include <../../../etc/passwd>", "use <MCAD/a.scad>", "include <lib/../a.scad>", "use < a.scad>", "include <a.scad/>", "use </etc/passwd>", "include <b.scad>", "use <../../../../../a.scad>",
+        ];
+        // the pages written for the run: every `a.scad`, in any folder but MCAD
+        let has = |file: &str| file.ends_with("/a.scad") && !file.contains("MCAD");
+        let mut seed = 11u64;
+        let mut below = |n: usize| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as usize % n
+        };
+        let (mut acted, mut stood) = (0, 0);
+        for round in 0..120_000 {
+            let src: String = (0..1 + below(14)).map(|_| pieces[below(pieces.len())]).collect();
+            let dir = ["", "a", "a/b", "a/b/c/d/e"][below(4)];
+            let (safe, _) = tame_among(dir, &src, &has);
+            assert_eq!((safe.len(), safe.matches('\n').count()), (src.len(), src.matches('\n').count()), "{round} {src:?}");
+            assert_eq!(tame_among(dir, &safe, &has).0, safe, "{round}: {src:?} in {dir:?} tamed twice");
+            acted += lexed(&src).len();
+            for path in lexed(&safe) {
+                stood += 1;
+                assert!(stands(dir, &path, &has), "{round}: {src:?} in {dir:?} is handed on as {safe:?}, and OpenSCAD would open {path:?}");
+            }
+        }
+        assert!(acted > 20_000 && stood > 5_000, "{acted} includes to act on and {stood} let stand: the check checks little");
     }
 
     #[test]
