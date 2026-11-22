@@ -58,6 +58,8 @@ struct Stub {
     know_fail: u16,
     /// A status every delete and move is answered with, the ship answering all else.
     op_fail: u16,
+    /// Names whose page a page-only delete took, with pages left under them (`page-gone` on the ship).
+    gone: Vec<String>,
 }
 
 struct Ship {
@@ -153,9 +155,26 @@ fn answer(st: &Mutex<Stub>, method: &str, route: &str, q: &BTreeMap<String, Stri
             }
             let at = get(if route == "page-del" { "name" } else { "from" });
             let mut hit: Vec<String> = s.pages.keys().filter(|n| is_under(n, &at)).cloned().collect();
-            // a page is deleted alone and what is under it stays, unless tree=1 asks for all of it. A name with no page is a folder, and all of it goes (`+page-del-run`)
-            if route == "page-del" && !q.contains_key("tree") && s.pages.contains_key(&at) {
-                hit = vec![at.clone()];
+            if route == "page-del" {
+                // `tree` is 1 or true for yes, absent, 0 or false for no, and a 400 for anything else (`arg-flag`)
+                let tree = match q.get("tree").map(String::as_str) {
+                    None | Some("0") | Some("false") => false,
+                    Some("1") | Some("true") => true,
+                    Some(_) => return (400, "tree: 1 or 0".into()),
+                };
+                if !tree {
+                    // a repeat page-only delete of a name whose page is gone, with pages still under it, is refused (`+page-del-run`)
+                    if !s.pages.contains_key(&at) && s.gone.contains(&at) && !hit.is_empty() {
+                        return (409, format!("{at} is a folder: its page was deleted on its own, and the pages under it stay. tree=1 deletes them too"));
+                    }
+                    // a page is deleted alone and what is under it stays. A name with no page is a folder, and all of it goes
+                    if s.pages.contains_key(&at) {
+                        if hit.len() > 1 {
+                            s.gone.push(at.clone());
+                        }
+                        hit = vec![at.clone()];
+                    }
+                }
             }
             // a delete of nothing is answered as done, a move of nothing is refused
             if hit.is_empty() && route == "page-move" {
@@ -1391,4 +1410,38 @@ fn a_page_deleted_keeps_the_waiting_saves_of_the_pages_under_it_and_a_folder_doe
     r.sync();
     assert_eq!((ship.body("p"), ship.body("p/k"), ship.body("q/k"), ship.body("f/x")), ("<none>".into(), "kid edited\n".into(), "kid edited\n".into(), "<none>".into()));
     assert!(c.queue().is_empty() && c.ops().is_empty(), "{:?}", r.s.note);
+}
+
+#[test]
+fn a_folder_left_by_a_page_only_delete_is_deleted_with_tree_live_and_from_the_queue() {
+    let _one = one();
+    let ship = Ship::start();
+    for (name, body) in [("d", "page\n"), ("d/k", "kid\n"), ("e", "page\n"), ("e/k", "kid\n"), ("keep", "k\n")] {
+        ship.write(name, "md", body);
+    }
+    let c = ship.conn();
+    let mut r = Run::new(&ship);
+    r.settle();
+    // a page's Delete is page-only: the pages under it stay, and its name is left a folder
+    for n in ["d", "e"] {
+        r.s.prompt = Some(Prompt::Delete(n.into()));
+        confirm(&mut r.s);
+        r.settle();
+        assert_eq!(ship.body(n), "<none>");
+    }
+    assert_eq!((ship.body("d/k"), ship.body("e/k")), ("kid\n".to_owned(), "kid\n".to_owned()));
+    // the folder is not a page now. Its delete takes all in it, and a repeat page-only delete would be a 409
+    r.s.prompt = Some(Prompt::Delete("d".into()));
+    confirm(&mut r.s);
+    r.settle();
+    assert_eq!((ship.body("d/k"), ship.body("keep")), ("<none>".to_owned(), "k\n".to_owned()), "{:?}", r.s.note);
+    // the same folder's delete waiting in the queue (a delete put by as a folder's, or before a page went alone)
+    c.change_waiting(|ops, q| api::enqueue_op(ops, q, api::QueuedOp::Del("e".into()))).unwrap();
+    r.sync();
+    r.sync();
+    assert_eq!((ship.body("e/k"), ship.body("keep")), ("<none>".to_owned(), "k\n".to_owned()), "{:?}", r.s.note);
+    assert!(c.ops().is_empty(), "{:?}", c.ops());
+    // a page deleted by name alone goes alone
+    c.delete("keep").unwrap();
+    assert_eq!(ship.body("keep"), "<none>");
 }

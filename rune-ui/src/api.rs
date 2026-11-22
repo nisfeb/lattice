@@ -2653,7 +2653,8 @@ impl Conn {
     /// Sends one delete or move that waited, as it would have gone at the time.
     pub fn send_op(&self, op: &QueuedOp) -> Result<(), String> {
         match op {
-            QueuedOp::Del(name) | QueuedOp::DelPage(name) => self.delete(name),
+            QueuedOp::Del(name) => self.delete_tree(name),
+            QueuedOp::DelPage(name) => self.delete(name),
             QueuedOp::Move { from, to, dname, dnames } => self.rename_as(from, &RealName { name: to.clone(), dname: dname.clone(), dnames: dnames.clone() }),
         }
     }
@@ -4085,8 +4086,15 @@ impl Conn {
         self.call("POST", &format!("page-move?from={}&to={}{q}", enc(from), enc(&rn.name)), Some("")).map(drop)
     }
 
+    /// Deletes a page alone: the pages under it stay (`+page-del-run`, a page-del with no `tree`).
     pub fn delete(&self, name: &str) -> Result<(), String> {
         self.call("POST", &format!("page-del?name={}", enc(name)), Some("")).map(drop)
+    }
+
+    /// Deletes a folder with all in it. A page-only delete of a name whose page is gone is refused
+    /// (409), so a folder left by one is only deleted with `tree=1`.
+    pub fn delete_tree(&self, name: &str) -> Result<(), String> {
+        self.call("POST", &format!("page-del?name={}&tree=1", enc(name)), Some("")).map(drop)
     }
 }
 

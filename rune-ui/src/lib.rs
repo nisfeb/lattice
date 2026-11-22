@@ -2169,6 +2169,8 @@ fn confirm(s: &mut App) {
         s.note = "done on this device, to send when the ship answers".into();
         return;
     }
+    // a page goes alone, a folder (a name with no page) with all in it
+    let page = matches!(&op, Op::Deleted(n) if s.names.contains(n));
     match s.conn.clone() {
         Some(c) => s.op_req.request((c, op), move |(c, op)| {
             match &op {
@@ -2178,7 +2180,8 @@ fn confirm(s: &mut App) {
                 Op::Created(_) => c.create_as(&rn)?,
                 Op::FolderMade(_) => c.folder_new(&rn)?,
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
-                Op::Deleted(n) => c.delete(n)?,
+                Op::Deleted(n) if page => c.delete(n)?,
+                Op::Deleted(n) => c.delete_tree(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
                 Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Posted(..) | Op::SentRemote(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) | Op::Linked(..) | Op::Unlinked(..) | Op::Forgot(..) => {}
             }
