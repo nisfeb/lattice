@@ -874,6 +874,30 @@ pub fn put_cells(src: &str, sheet: usize, edits: &std::collections::BTreeMap<usi
     }
     let (table, rows, calcext) = sheet_rows(src, sheet)?;
     let null_date = null_date(src, &spreadsheet(src)?.0);
+    // A cell that an array formula spreads a result over is not typed into: the formula would still say it reaches
+    // that far, and LibreOffice puts its own result back over what was typed. The formula's own cell is another matter
+    if care != Care::Result && src[table.start..table.end].contains("number-matrix-") {
+        let mut top = 0usize;
+        for row in &rows {
+            let rep = count(src, row, ROWS);
+            let mut left = 0usize;
+            // only a row that has such a formula is read cell by cell
+            let cells = if src[row.start..row.end].contains("number-matrix-") { kids(src, row)? } else { Vec::new() };
+            for cell in &cells {
+                let (tall, wide) = (count(src, cell, MATRIX_ATTRS[1]), count(src, cell, MATRIX_ATTRS[0]));
+                if tall > 1 || wide > 1 {
+                    for at in top..top.saturating_add(rep.min(1024)) {
+                        let under = |(r, cells): (&usize, &Vec<(usize, Put)>)| cells.iter().any(|(c, _)| (left..left.saturating_add(wide)).contains(c) && (*r, *c) != (at, left));
+                        if edits.range(at..at.saturating_add(tall)).any(under) {
+                            return Err("that cell is part of an array formula".into());
+                        }
+                    }
+                }
+                left = left.saturating_add(count(src, cell, COLS));
+            }
+            top = top.saturating_add(rep);
+        }
+    }
     // a row with every one of its cells set, one after another, each on the row the one before made
     let row_of = |row: Option<&El>, pad: &str, cells: &[(usize, Put)]| -> Result<String, String> {
         let mut text: Option<String> = None;

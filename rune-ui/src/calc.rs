@@ -1917,6 +1917,61 @@ mod tests {
     }
 
     #[test]
+    fn nothing_is_put_in_taken_out_or_typed_through_the_cells_an_array_formula_spreads_over() {
+        let array = |src: String, from: &str, rows: usize, cols: usize| {
+            let out = src.replacen(&format!("table:formula=\"of:={from}"), &format!("table:number-matrix-columns-spanned=\"{cols}\" table:number-matrix-rows-spanned=\"{rows}\" table:formula=\"of:={from}"), 1);
+            assert_ne!(out, src);
+            out
+        };
+        const WHY: &str = "that would cut through an array formula";
+        // B2 is an array formula over B2:B3, with a cell above it, below it and beside it
+        let tall = array(doc(&[&["0", "top"], &["1", "=A2:A3*3|3", "x"], &["2", "6", "y"], &["5", "keep", "z"]]), "[.A2:.A3]", 2, 1);
+        // a row put in between its two cells, or a row of its two taken out and not the other
+        for (at, n) in [(2, 1), (2, 3), (2, -1), (1, -1), (2, -2), (0, -2)] {
+            assert_eq!(shift(&tall, 0, true, at, n).map(|e| e.body).unwrap_err(), WHY, "rows at {at}: {n}");
+        }
+        // above it, below it, and with the whole of it: those are no cut
+        for (at, n) in [(0, 1), (1, 1), (3, 1), (4, 2), (0, -1), (3, -1), (1, -2), (1, -3), (0, -4)] {
+            assert!(shift(&tall, 0, true, at, n).is_ok(), "rows at {at}: {n}");
+        }
+        // columns do not cut one that is a single column wide, wherever they go
+        for (at, n) in [(0, 1), (1, 1), (2, 1), (1, -1), (0, -2), (2, -1)] {
+            assert!(shift(&tall, 0, false, at, n).is_ok(), "columns at {at}: {n}");
+        }
+        // what is below it moves and it stays whole
+        let down = shift(&tall, 0, true, 1, 1).unwrap().body;
+        assert_eq!(grid(&down), [vec!["0", "top"], vec![], vec!["1", "3", "x"], vec!["2", "6", "y"], vec!["5", "keep", "z"]]);
+        assert_eq!(sheet::book(&down).unwrap().at(0, 2, 1).map(|c| (c.array, c.spill)), Some((true, (2, 1))));
+        // B2 over B2:C2, the same with columns
+        let wide = array(doc(&[&["0", "1", "2", "5"], &["top", "=B1:C1*3|3", "6", "keep"], &["", "x", "y", "z"]]), "[.B1:.C1]", 1, 2);
+        for (at, n) in [(2, 1), (2, 3), (2, -1), (1, -1), (2, -2), (0, -2)] {
+            assert_eq!(shift(&wide, 0, false, at, n).map(|e| e.body).unwrap_err(), WHY, "columns at {at}: {n}");
+        }
+        for (at, n) in [(0, 1), (1, 1), (3, 1), (0, -1), (3, -1), (1, -2), (1, -3)] {
+            assert!(shift(&wide, 0, false, at, n).is_ok(), "columns at {at}: {n}");
+        }
+        for (at, n) in [(0, 1), (1, 1), (2, 1), (1, -1), (0, -2)] {
+            assert!(shift(&wide, 0, true, at, n).is_ok(), "rows at {at}: {n}");
+        }
+        // an array on another sheet is not in the way, and a merged cell still says it is one
+        let merged = tall.replace("table:number-matrix-columns-spanned=\"1\" table:number-matrix-rows-spanned=\"2\"", "table:number-columns-spanned=\"1\" table:number-rows-spanned=\"2\"");
+        assert_eq!(shift(&merged, 0, true, 2, 1).map(|e| e.body).unwrap_err(), "that would cut through a merged cell");
+        // typing into a cell it spreads over is refused, a value or a formula, and the page is as it was
+        for typed in ["99", "text", "=A1+1", ""] {
+            assert_eq!(enter(&tall, 0, 2, 1, typed).map(|e| e.body).unwrap_err(), "that cell is part of an array formula", "{typed:?}");
+            assert_eq!(enter(&wide, 0, 1, 2, typed).map(|e| e.body).unwrap_err(), "that cell is part of an array formula", "{typed:?}");
+        }
+        assert_eq!(sheet::set_cell(&tall, 0, 2, 1, "99").unwrap_err(), "that cell is part of an array formula");
+        // the cells round it, and its own first cell, are typed into as any cell is
+        for (r, c) in [(0, 1), (3, 1), (1, 0), (2, 0), (1, 2), (2, 2), (1, 1), (4, 1), (2, 5)] {
+            assert!(enter(&tall, 0, r, c, "7").is_ok(), "row {r} column {c}");
+        }
+        // typed over, the array spreads no more, and the cell that was under it can be typed into
+        let over = enter(&tall, 0, 1, 1, "7").unwrap().body;
+        assert_eq!(grid(&enter(&over, 0, 2, 1, "99").unwrap().body)[2][1], "99");
+    }
+
+    #[test]
     fn rows_put_in_do_not_forget_what_was_stale_and_an_array_typed_over_frees_its_cells() {
         let array = |src: String, from: &str, rows: usize| {
             let out = src.replacen(&format!("table:formula=\"of:={from}"), &format!("table:number-matrix-columns-spanned=\"1\" table:number-matrix-rows-spanned=\"{rows}\" table:formula=\"of:={from}"), 1);
