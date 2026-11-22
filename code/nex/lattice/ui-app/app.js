@@ -4,7 +4,7 @@
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
 const WRITER_H = '0v3.nm6k7.4k7eg.i0bfe.baj4s.uumr7';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
-const SHEET_H = '0v4.ss3v7.otn1s.uuomc.m752d.n0bh3';
+const SHEET_H = '0v7.ub2d7.0vfe2.2s2a4.3362t.ps9ju';
 // and map.js's, the map view (26-writer.js)
 const MAP_H = '0v3tfmo.ugagm.96cua.h9nas.1ltae';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)

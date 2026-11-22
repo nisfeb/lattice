@@ -167,7 +167,10 @@ export function tokenize(text, mode) {
     if ((ch >= '0' && ch <= '9') || (ch === '.' && text[i + 1] >= '0' && text[i + 1] <= '9')) {
       const m = /^(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/.exec(text.slice(i));
       i += m[0].length;
-      out.push({ t: 'num', v: Number(m[0]), s, e: i });
+      //  a number no double holds is not turned into the name Infinity
+      const v = Number(m[0]);
+      if (!Number.isFinite(v)) bad(`${m[0]} is too large a number`);
+      out.push({ t: 'num', v, s, e: i });
       continue;
     }
     if (ch === '#') {

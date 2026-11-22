@@ -731,6 +731,10 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
     '#VALUE! Err:502 #VALUE! #VALUE! #VALUE! #VALUE! #VALUE! #VALUE!');
   check.eq('and one that does is its serial', ['="2026-02-28"+0', '="2024-02-29"+0', '="1900-03-01"+0', '="2026-04-30 24:00"+0', '="9999-12-31"+0'].map(asNum).join(' '), '46081 45351 61 46143 2958465');
   check('a year under 100 is not read as 19xx', asNum('="0050-06-15"+0') < -600000 && asNum('="0001-01-01"+0') < -690000);
+  //  a number too large to hold, in a formula, is kept as typed
+  const big = ['=1e999', '=2*1e400', '=SUM(1,5E1000)'].map((t) => { const e = b.enter(0, 7, 0, t); const c = b.cell(0, 7, 0); return `${c.f === null && c.v === t && /too large/.test(e.note || '')}|${b.input(0, 7, 0)}`; }).join(' ');
+  check.eq('a formula holding a number no double holds is kept as the text typed', big, 'true|=1e999 true|=2*1e400 true|=SUM(1,5E1000)');
+  check.eq('and the largest that fits is a number', (b.enter(0, 7, 0, '=1e308'), b.cell(0, 7, 0).f + ' ' + b.cell(0, 7, 0).v), 'of:=1E308 1e+308');
   check.eq('with a T, without seconds, and one that is not a time', ['2024-01-15T10:30:00', '2024-01-15 7:05', '2024-01-15 25:00', '2024-02-30 10:00', '2024-01-15 10:61'].map((t) => typed(t, 4) + '|' + b.input(0, 4, 0)).join(' '),
     'date:2024-01-15|2024-01-15 10:30:00 date:2024-01-15|2024-01-15 07:05:00 string:2024-01-15 25:00|2024-01-15 25:00 string:2024-02-30 10:00|2024-02-30 10:00 string:2024-01-15 10:61|2024-01-15 10:61');
   //  a cell a file gives a date and time format keeps both through an edit in the bar
