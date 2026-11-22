@@ -607,6 +607,42 @@ fn autosave_refused_on_one_page_is_not_held_on_the_next() {
 }
 
 #[test]
+fn a_waiting_save_goes_with_its_page_when_the_page_is_renamed() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "first\n");
+    ship.write("gone/x", "md", "x\n");
+    let mut r = Run::new(&ship);
+    // the ship takes no save for now, and answers all else
+    ship.st().save_fail = 503;
+    for (name, text) in [("notes/a", "more"), ("gone/x", "lost")] {
+        r.open(name);
+        start_edit(&mut r.s);
+        r.typ(text);
+        to_read(&mut r.s);
+        r.settle();
+    }
+    assert!(r.s.offline.is_none() && r.s.queue.contains_key("notes/a") && r.s.queue.contains_key("gone/x"), "both wait, with the ship not away: {:?}", r.s.note);
+    // a folder above the one is renamed, and the other is deleted
+    rename(&mut r, "notes", "kept");
+    r.until("the rename", |s| !s.op_req.is_pending());
+    r.settle();
+    r.s.prompt = Some(Prompt::Delete("gone/x".into()));
+    confirm(&mut r.s);
+    r.settle();
+    assert_eq!(ship.conn().queue().keys().collect::<Vec<_>>(), ["kept/a"], "the one waits under its new name, and the other waits no more");
+    assert_eq!(ship.conn().queue()["kept/a"].base, None, "it claims no revision: the moved page's is not the one it had");
+    // the ship takes saves again
+    ship.st().save_fail = 0;
+    r.sync();
+    assert!(ship.body("kept/a").contains("more"), "the edit reached the page under its new name: {:?}", r.s.note);
+    assert!(r.s.cache.get("kept/a").is_some_and(|p| p.body.contains("more")), "and the window shows it");
+    let pages: Vec<String> = ship.st().pages.keys().cloned().collect();
+    assert_eq!(pages, ["kept/a"], "nothing was kept aside, and the deleted page's save went with it");
+    assert!(ship.conn().queue().is_empty() && r.s.queue.is_empty());
+}
+
+#[test]
 fn a_save_answered_and_not_yet_looked_at_is_still_a_save_on_its_way() {
     let _one = one();
     let ship = Ship::start();

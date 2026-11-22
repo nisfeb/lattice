@@ -2195,6 +2195,20 @@ fn is_under(name: &str, path: &str) -> bool {
 
 /// A change landed: follow it here, then read the tree again.
 fn applied(s: &mut App, op: Op) {
+    // a save that waits for a page goes with the page: to its new name, where it claims no revision, and nowhere when the page is deleted. Left under the old name it would be refused there as a page that moved (`+move-guard` in app.hoon) and kept aside, with the page left at its text from before the edit. With the ship away this was settled when the change was put by, and nothing waits under the old name
+    if s.conn.is_some() && !s.memory {
+        let waits = |at: &str| s.queue.keys().any(|k| api::queued_know(k).is_none() && is_under(k, at));
+        let goes = match &op {
+            Op::Renamed(a, b) if a != b && waits(a) => Some(api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: String::new(), dnames: String::new() }),
+            Op::Deleted(n) if waits(n) => Some(api::QueuedOp::Del(n.clone())),
+            _ => None,
+        };
+        if let Some(goes) = goes {
+            // only the saves are changed: the ship has done the move or the delete already, and none is put by
+            // one that cannot be written stays under its old name, and is kept aside when it is sent
+            let _ = change_waiting(s, |_, saves| api::enqueue_op(&mut Vec::new(), saves, goes));
+        }
+    }
     match op {
         Op::Created(n) => {
             if s.conn.is_none() || s.memory {
