@@ -14835,11 +14835,15 @@
   =/  n=@ud  (lent old)
   ::  dir roads and file roads alike (a page grant is a file road on its
   ::  code grub, +share-file)
+  ::  with `own`, the page's own grubs only (+page-own-grubs): its dir is
+  ::  a folder now, and the roads on the folder's grubs (its index) stay
   =/  under
     |=  r=road:tarball
     ?+  r  |
       [%& %| *]  &(!own =(old (scag n p.p.r)))
-      [%& %& *]  ?:(own =(old path.p.p.r) =(old (scag n path.p.p.r)))
+        [%& %& *]
+      ?.  own  =(old (scag n path.p.p.r))
+      &(=(old path.p.p.r) (lien page-own-grubs |=(g=@ta =(g name.p.p.r))))
     ==
   =/  re
     |=  rs=(set road:tarball)
