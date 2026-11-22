@@ -49,6 +49,7 @@ export class Engine {
     //  of these is not computed from it either.
     this.cut = new Set();
     this.missed = new Set();      // entries a search cut short did not reach
+    this.deep = [];               // keys that ran out of stack, in the order met
     this.tainted = false;
     this.changed = [];
     this.steps = 0;
@@ -365,8 +366,18 @@ export class Engine {
     if (cut) ok = false;
     else {
       try { v = this.evaluate(e.f, e.s, e.r, e.c); } catch (x) {
-        //  too deep a chain of formulas is left to LibreOffice as well
-        if (!(x instanceof Unsupported) && !(x instanceof RangeError)) { this.busy.delete(k); this.tainted = was; throw x; }
+        //  out of stack, in a chain of formulas each reading the next.
+        //  There is no room to tidy up at this depth, so it unwinds to
+        //  the outermost formula. Every formula it was part way through
+        //  is left unanswered there, and kept for another go (+recalc).
+        if (x instanceof RangeError) {
+          if (!top) throw x;
+          for (const b of this.busy) {
+            if (b !== k) { this.stale.add(b); this.cut.add(b); this.pending.delete(b); }
+            this.deep.push(b);
+          }
+          this.busy.clear();
+        } else if (!(x instanceof Unsupported)) { this.busy.delete(k); this.tainted = was; throw x; }
         ok = false;
         cut = x instanceof Cut || x instanceof RangeError;
       }
@@ -467,7 +478,18 @@ export class Engine {
     //  next edit
     if (q < queue.length) for (const e of this.formulas) if (!hit.has(e.k)) { this.stale.add(e.k); this.cut.add(e.k); this.missed.add(e); }
     this.pending = new Map(hit);
-    for (const e of hit.values()) if (this.pending.has(key(e.s, e.r, e.c))) this.compute(e);
+    this.deep = [];
+    for (const e of hit.values()) if (this.pending.has(e.k)) this.compute(e);
+    //  formulas that ran out of stack were come to before the cells they
+    //  read. Taken from the far end they are come to after them, so a
+    //  long chain read from the bottom is computed link by link. What
+    //  still runs out stays marked.
+    for (let pass = 0; pass < 2 && this.deep.length; pass++) {
+      const again = this.deep;
+      this.deep = [];
+      for (const k of again) if (hit.has(k)) this.pending.set(k, hit.get(k));
+      for (let i = again.length - 1; i >= 0; i--) { const e = this.pending.get(again[i]); if (e) this.compute(e); }
+    }
     this.pending.clear();
     return this.changed;
   }

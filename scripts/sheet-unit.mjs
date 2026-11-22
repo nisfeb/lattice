@@ -542,6 +542,28 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   for (let i = 0; i < 400; i++) again.enter(0, 1, 0, i % 2 ? '=A1+1' : '=A1+2');
   again.enter(0, 0, 0, '101');
   check('a formula retyped 400 times is found once', again.engine.checks < 200 && again.cell(0, 49, 0).v === 150, `${again.engine.checks} checks, ${again.cell(0, 49, 0).v}`);
+  //  a chain read the other way round is computed deepest first. Where
+  //  that runs out of stack, what read the cell that failed is marked too.
+  const N = 30000;
+  let rows = '';
+  for (let i = 1; i < N; i++) rows += `<table:table-row><table:table-cell table:formula="of:=[.A${i + 1}]+1" office:value-type="float" office:value="${2 * N - i}"><text:p>x</text:p></table:table-cell></table:table-row>`;
+  rows += `<table:table-row><table:table-cell table:formula="of:=ROW()" office:value-type="float" office:value="${N}"><text:p>${N}</text:p></table:table-cell></table:table-row>`;
+  const up = new Book(HEAD + `<table:table table:name="S">${rows}</table:table>` + TAIL);
+  check('insert a row above a chain of 30,000 read from the bottom', up.shift(0, 'r', 0, 1).ok);
+  wrong = 0; stale = 0; right = 0;
+  for (let i = 1; i <= N; i++) { const ok = up.cell(0, i, 0).v === 2 * N - i + 1; if (up.stale(0, i, 0)) stale++; else if (ok) right++; else wrong++; }
+  check('every link is computed, taken from the far end', wrong === 0 && stale === 0 && right === N, `${right} right, ${stale} stale, ${wrong} wrong and unmarked`);
+  //  a chain that wanders up and down the column: link k is in row
+  //  (k * 7919) mod N, so no order of the rows is the order of the chain
+  const at = (k) => (k * 7919) % N;
+  const cells = new Array(N);
+  for (let k = 0; k < N - 1; k++) cells[at(k)] = `<table:table-cell table:formula="of:=[.A${at(k + 1) + 1}]+1" office:value-type="float" office:value="0"><text:p>0</text:p></table:table-cell>`;
+  cells[at(N - 1)] = '<table:table-cell table:formula="of:=ROW()*0+[.C1]" office:value-type="float" office:value="0"><text:p>0</text:p></table:table-cell>';
+  const wander = new Book(HEAD + `<table:table table:name="S">${cells.map((c, i) => `<table:table-row>${c}${i ? '' : '<table:table-cell/><table:table-cell office:value-type="float" office:value="5"><text:p>5</text:p></table:table-cell>'}</table:table-row>`).join('')}</table:table>` + TAIL);
+  check('insert a column beside a chain of 30,000 that wanders', wander.shift(0, 'c', 1, 1).ok);
+  wrong = 0; stale = 0; right = 0;
+  for (let k = 0; k < N; k++) { const ok = wander.cell(0, at(k), 0).v === 5 + (N - 1 - k); if (wander.stale(0, at(k), 0)) stale++; else if (ok) right++; else wrong++; }
+  check('each link is right or is marked stale, none wrong and unmarked', wrong === 0 && right + stale === N && right > 0, `${right} right, ${stale} stale, ${wrong} wrong and unmarked`);
 }
 {
   //  one typed formula must not hang the tab
@@ -588,6 +610,28 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   check.eq('criteria over empty cells past the used rows, as Calc counts them', got, T.map((x) => x[1]).join(' '));
   b.enter(0, 9, 4, 'far');
   check.eq('and the same once the sheet is used further down', T.map(([f]) => at(f)).join(' '), got);
+}
+{
+  //  a formula whose value depends on where things are is computed again after an insert
+  const b = new Book(corpus('05-sheets'));
+  const s3 = b.addSheet('P').sheet;
+  for (let r = 0; r < 6; r++) b.enter(s3, r, 0, String((r + 1) * 10));
+  const F = [[4, 2, '=ROW()'], [5, 2, '=INDEX(A1:A6,3)'], [6, 2, '=COLUMN()'], [7, 2, '=ROWS(A1:A6)'], [8, 2, '=VLOOKUP(30,A1:B6,1,0)'], [9, 2, '=MATCH(30,A1:A6,0)'],
+    [10, 2, '=INDEX(A:A,3)'], [11, 2, '=COLUMNS(A1:B1)'], [12, 2, '=ROW(A3)'], [13, 2, '=SUM(A1:A6)'], [0, 4, '=INDEX($A$1:$A$6,2)'], [0, 5, '=ROW()+COLUMN()']];
+  for (const [r, c, f] of F) b.enter(s3, r, c, f);
+  b.enter(0, 9, 3, '=ROWS(P.A1:A6)+INDEX(P.A1:A6,2)');
+  const vals = (cells) => cells.map(([r, c, s = s3]) => b.cell(s, r, c).v + (b.stale(s, r, c) ? ' stale' : '')).join();
+  check.eq('before the insert', vals(F.map(([r, c]) => [r, c])) + ' | ' + vals([[9, 3, 0]]), '5,30,3,6,30,3,30,2,3,210,20,7 | 26');
+  check('insert a row before row 2', b.shift(s3, 'r', 1, 1).ok);
+  //  the formulas at and below row 2 moved down one. E1 and F1 did not.
+  const moved = F.map(([r, c]) => [r >= 1 ? r + 1 : r, c]);
+  check.eq('ROW, INDEX, ROWS, MATCH and a whole-column INDEX give the values of the new layout', vals(moved), '6,20,3,7,30,4,20,2,4,210,0,7');
+  check.eq('and so does a formula on another sheet that reads this one', b.cell(0, 9, 3).f + ' ' + vals([[9, 3, 0]]), 'of:=ROWS([P.A1:.A7])+INDEX([P.A1:.A7];2) 7');
+  check('insert a column before A', b.shift(s3, 'c', 0, 1).ok);
+  check.eq('COLUMN and COLUMNS follow', vals(moved.map(([r, c]) => [r, c + 1])), '6,20,4,7,30,4,20,2,4,210,0,8');
+  const saved = new Book(b.text());
+  check.eq('and those are the values saved', [5, 6, 7, 8, 10].map((r) => saved.cell(s3, r, 3).v).join(), '6,20,4,7,4');
+  check('an insert on another sheet leaves these as they are', b.shift(0, 'r', 0, 1).ok && vals(moved.map(([r, c]) => [r, c + 1])) === '6,20,4,7,30,4,20,2,4,210,0,8');
 }
 {
   //  a rule's references move with the rows, as its base address does

@@ -10,7 +10,7 @@ import {
 } from './model.js';
 import { Engine } from './engine.js';
 import { Styles, fixed } from './styles.js';
-import { toOf, toUser, FormulaError, moveFormula, moveRefs, moveAddrs, offsetFormula, cutFormula, hasBadRef, bodyOf, quoteSheet, renameInFormula, parseAddrs } from './formula.js';
+import { toOf, toUser, FormulaError, moveFormula, moveRefs, moveAddrs, offsetFormula, cutFormula, bodyOf, quoteSheet, renameInFormula, parseAddrs } from './formula.js';
 import { general } from './funcs.js';
 import { attr, escAttr } from '../writer/xml.js';
 
@@ -442,10 +442,11 @@ export class Book {
     //    now points at nothing
     if (!this.reload()) return { error: this.error };
     this.touched = true;
-    //  a delete takes values out of ranges, so every formula is computed
-    //  again. An insert only adds empty cells: just what now points at
-    //  nothing.
-    const again = n < 0 ? this.engine.formulas : this.engine.formulas.filter((e) => hasBadRef(e.f));
+    //  every formula is computed again. A delete takes values out of
+    //  ranges. An insert moves cells, and a formula may depend on where
+    //  it or its cells are (ROW, COLUMN, ROWS, INDEX, MATCH) with no
+    //  change to its text, or to any value it reads.
+    const again = this.engine.formulas;
     if (again.length) this.engine.recalc(again.map((e) => [e.s, e.r, e.c]), again);
     return { ok: true };
   }
