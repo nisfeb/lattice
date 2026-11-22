@@ -4198,7 +4198,11 @@
     ?~  dpax  (send-err eyre-id 400 'bad name')
     ::  a page named here goes alone: what is under it stays, unless
     ::  ?tree=1 asks for all of it. A folder goes with all under it.
-    ;<  ~  bind:m  (page-del-run u.dpax (~(has by args) 'tree'))
+    ::  Only 1 or true is yes: tree=0 says no, and is no.
+    =/  tree=(unit ?)  (arg-flag args 'tree')
+    ?~  tree  (send-err eyre-id 400 'tree: 1 or 0')
+    ;<  no=(unit [code=@ud msg=@t])  bind:m  (page-del-run u.dpax u.tree)
+    ?^  no  (send-err eyre-id code.u.no msg.u.no)
     (send-ok eyre-id)
   ::  page-move: server-side move/rename of a page or a whole folder subtree.
   ::  Replaces the old client choreography (page-source + page-save + page-del
@@ -9253,7 +9257,8 @@
     ::  the page at pax alone. No page there (a folder, or nothing), or
     ::  a page with nothing under it: that is %del. Else what is under
     ::  it stays, each page with all it had, and only the page's own
-    ::  grubs go (+page-own-grubs), which leaves the name a folder.
+    ::  grubs go (+page-own-grubs), which leaves the name a folder,
+    ::  noted as one a page left (`page-gone`, +page-gone-kept).
     =/  pdir=path  (weld /page pax.act)
     ;<  ex=?  bind:m  (peek-exists:fio (rv up pdir))
     ?.  ex  $(act [%del pax.act])
@@ -9261,8 +9266,15 @@
     ?.  ?=([%ball *] dv)  $(act [%del pax.act])
     ;<  lex=?  bind:m  (peek-exists:fio (rv up (weld /links pax.act)))
     =/  fils  ?~(fil.ball.dv ~ contents.u.fil.ball.dv)
+    ::  this same delete, done already: the page is gone and what it left
+    ::  stays (+page-gone-kept). +page-del-run refuses one, so this is
+    ::  two of them at once.
+    ?^  (page-gone-kept ball.dv lex)  (pure:m ~)
     ?.  &((~(has by fils) %code) |(lex ?=(^ dir.ball.dv)))
       $(act [%del pax.act])
+    ::  the name is left a folder that was a page: noted first, so a
+    ::  delete cut short after the source goes still reads as this one
+    ;<  ~  bind:m  (put-file (rf up pdir %'page-gone') [/ %noun] now)
     ::  what a folder granted this page goes with it. The ball is cut
     ::  to the page's own grubs, so no page under it is counted.
     ;<  ~  bind:m  (revoke-folder-grants pax.act ball.dv(dir ~))
@@ -13024,22 +13036,71 @@
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
   ?.  (valid-name name)  (pure:m [400 'bad name'])
-  ;<  ~  bind:m  (page-del-run (pax-of name) tree)
+  ;<  no=(unit [code=@ud msg=@t])  bind:m  (page-del-run (pax-of name) tree)
+  ?^  no  (pure:m u.no)
   (pure:m [200 ''])
 ::  +page-del-run: POST /page-del and the lick %page-del. A folder goes
 ::  with everything under it. A page goes alone (%del-page): the pages,
 ::  folders and links under it stay, and its name is left a folder.
 ::  `tree` takes those too, for a caller that has told its user so.
+::  The answer is ~, or why nothing was deleted.
+::
+::  A delete without `tree` of a name whose page was deleted on its own,
+::  with the pages it left still under it (+page-gone-kept), is that
+::  same delete again: a retry, a replayed offline queue, a second
+::  click. It is refused, so it never turns into the folder's delete.
 ++  page-del-run
   |=  [pax=path tree=?]
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,(unit [code=@ud msg=@t]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
+  ;<  kept=(unit @ud)  bind:m
+    =/  n  (fiber:fiber:nexus ,(unit @ud))
+    ?:  tree  (pure:n ~)
+    ;<  ex=?  bind:n  (peek-exists:fio (rv up (weld /page pax)))
+    ?.  ex  (pure:n ~)
+    ;<  dv=view:nexus  bind:n  (peek:fio (rv up (weld /page pax)) ~)
+    ?.  ?=([%ball *] dv)  (pure:n ~)
+    ;<  lex=?  bind:n  (peek-exists:fio (rv up (weld /links pax)))
+    (pure:n (page-gone-kept ball.dv lex))
+  ?^  kept
+    %-  pure:m
+    :+  ~  409
+    %-  crip
+    ;:  weld  (slag 1 (spud pax))
+      " is a folder: its page was deleted on its own, and the "
+      (a-co:co u.kept)  ?:(=(1 u.kept) " page" " pages")
+      " under it stay. tree=1 deletes them too"
+    ==
   ;<  ~  bind:m  (poke-eval ?:(tree [%del pax] [%del-page pax]))
   ::  a name still there is a page that left what was under it: the
   ::  grants on that page's own grubs go, and the rest stay
   ;<  left=?  bind:m  (peek-exists:fio (rv up (weld /page pax)))
-  (move-grants-in pax ~ left)
+  ;<  ~  bind:m  (move-grants-in pax ~ left)
+  (pure:m ~)
+::  +page-gone-kept: how many pages are under a name whose page was
+::  deleted on its own (`page-gone`, written by %del-page), while that
+::  name holds no page and still has pages or links under it. ~ else.
+++  page-gone-kept
+  |=  [bl=ball:tarball lex=?]
+  ^-  (unit @ud)
+  =/  fils  ?~(fil.bl ~ contents.u.fil.bl)
+  ?:  (~(has by fils) %code)  ~
+  ?.  (~(has by fils) %'page-gone')  ~
+  =/  n=@ud  (lent (skim (collect-tree bl ~) |=([p=path page=?] page)))
+  ?:  &(=(0 n) !lex)  ~
+  `n
+::  +arg-flag: a yes-or-no query flag. Absent, 0 or false is no, 1 or
+::  true is yes, and ~ is any other value: guessing what it meant could
+::  delete what the caller wanted kept.
+++  arg-flag
+  |=  [args=(map @t @t) k=@t]
+  ^-  (unit ?)
+  =/  v=(unit @t)  (~(get by args) k)
+  ?~  v  `|
+  ?:  |(=('1' u.v) =('true' u.v))  `&
+  ?:  |(=('0' u.v) =('false' u.v))  `|
+  ~
 ::  +fs-move: move/rename a page or a folder subtree (POST /page-move + lick
 ::  %page-move), answering how many pages moved. Display names are the HTTP
 ::  route's own (?dname= / ?dnames=).
@@ -13194,7 +13255,9 @@
       %page-del
     =/  name=(unit @t)  (~(get by q) 'name')
     ?~  name  (pure:m [400 'missing name'])
-    (fs-del u.name (~(has by q) 'tree'))
+    =/  tree=(unit ?)  (arg-flag q 'tree')
+    ?~  tree  (pure:m [400 'tree: 1 or 0'])
+    (fs-del u.name u.tree)
       %beacon-rev
     ;<  t=@t  bind:m  beacon-token
     (pure:m [200 t])

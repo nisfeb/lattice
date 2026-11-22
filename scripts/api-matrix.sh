@@ -789,6 +789,31 @@ is "share with no such header arrives"  200 "$(sc "$B/share?text=hello")"
 is "clip as an image is refused"        403 "$(sc -H 'Sec-Fetch-Dest: image' "$B/clip")"
 is "clip as a navigation arrives"       400 "$(sc -H 'Sec-Fetch-Dest: document' "$B/clip")"
 
+echo "==> page-del: tree= is read for its value, and a delete sent again is that delete"
+E="$P-tree"
+for n in z0 z0/k zf zf/k zb zb/k tw tw/k tw/sub/deep; do
+  sc -X POST "$B/page-save?name=$E/$n&type=md&new=1" --data-binary "body $n" >/dev/null
+done
+is "tree=0 deletes the page alone"          200 "$(sc -X POST "$B/page-del?name=$E/z0&tree=0")"
+has "  the page under it stays"             'body z0/k' "$(G "$B/page-source?name=$E/z0/k")"
+is "tree=false deletes the page alone"      200 "$(sc -X POST "$B/page-del?name=$E/zf&tree=false")"
+has "  the page under it stays"             'body zf/k' "$(G "$B/page-source?name=$E/zf/k")"
+is "tree=yes is refused"                    400 "$(sc -X POST "$B/page-del?name=$E/zb&tree=yes")"
+is "an empty tree= is refused"              400 "$(sc -X POST "$B/page-del?name=$E/zb&tree=")"
+has "  and nothing went"                    'body zb' "$(G "$B/page-source?name=$E/zb")"
+is "a page with pages under it, alone"      200 "$(sc -X POST "$B/page-del?name=$E/tw")"
+is "  the same delete again is refused"     409 "$(sc -X POST "$B/page-del?name=$E/tw")"
+has "  and says how to take what is under it" 'tree=1' "$(G -X POST "$B/page-del?name=$E/tw")"
+has "  the page under it stays"             'body tw/k' "$(G "$B/page-source?name=$E/tw/k")"
+has "  and the one two down"                'body tw/sub/deep' "$(G "$B/page-source?name=$E/tw/sub/deep")"
+is "  tree=1 takes them"                    200 "$(sc -X POST "$B/page-del?name=$E/tw&tree=1")"
+is "  and they are gone"                    404 "$(sc "$B/page-source?name=$E/tw/k")"
+is "the page left under a deleted one goes" 200 "$(sc -X POST "$B/page-del?name=$E/z0/k")"
+is "  then the emptied name goes too"       200 "$(sc -X POST "$B/page-del?name=$E/z0")"
+is "  and is gone"                          "<missing>" "$(field page-tree "$E/z0" page)"
+is "a folder that was never a page goes whole" 200 "$(sc -X POST "$B/page-del?name=$E")"
+is "  with what a deleted page left in it"  "<missing>" "$(field page-tree "$E/zf/k" kind)"
+
 echo "==> recursive folder delete"
 is "page-del on folder" 200 "$(sc -X POST "$B/page-del?name=$P")"
 sleep 2
