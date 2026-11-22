@@ -8638,7 +8638,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     let r;
     try {
       await savesSettled();
-      r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
+      r = await mutate(api + '/page-del?name=' + encodeURIComponent(path) + '&tree=1');
     } finally { end(); }
     if (!r.ok) { st('delete failed' + await errText(r), false); return false; }
     dropTreeNodes(path);

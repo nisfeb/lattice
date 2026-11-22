@@ -42,7 +42,12 @@
       ::  overhead. Same per-page work, paid once.
       [%make-many pages=(list [pax=path src=@t])]
       [%cmd pax=path txt=@t bud=@ud]    ::  send a command (bud = poke budget)
-      [%del pax=path]                   ::  delete a page
+      ::  delete the page or folder at pax, and everything under it
+      [%del pax=path]
+      ::  delete the page at pax and leave what is under it, where +del
+      ::  takes that too. A folder, or a page with nothing under it,
+      ::  goes as +del.
+      [%del-page pax=path]
       ::  a move's last step: the source `from` goes, as %del, once every
       ::  page under it whose code is not the one the move copied (`seen`,
       ::  the sham of each page's code by its path under `from`) is copied

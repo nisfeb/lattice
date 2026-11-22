@@ -285,7 +285,9 @@
     let r;
     try {
       await savesSettled();
-      r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
+      //  tree=1: the pages under a page go with it, as the confirm said.
+      //  Without it the ship deletes a page alone and leaves those.
+      r = await mutate(api + '/page-del?name=' + encodeURIComponent(path) + '&tree=1');
     } finally { end(); }
     if (!r.ok) { st('delete failed' + await errText(r), false); return false; }
     dropTreeNodes(path);

@@ -213,6 +213,45 @@ is "a create at a taken name is still refused" 409 "$(sc -X POST "$B/page-save?n
 is "a plain save over it still lands" 200 "$(sc -X POST "$B/page-save?name=$P/race/n1&type=md" --data-binary 'plain')"
 has "  with its body" 'plain' "$(G "$B/page-source?name=$P/race/n1")"
 has "a lone create answers its rev" '"rev":0' "$(G -X POST "$B/page-save?name=$P/race/solo&type=md&new=1" --data-binary 'solo')"
+
+echo "==> page-del of a page leaves the pages under it"
+D="$P-del"
+revs() { G "$B/page-history?name=$1" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["revisions"]))'; }
+for n in top top/kid top/sub/deep bare bare/kid; do
+  sc -X POST "$B/page-save?name=$D/$n&type=md&new=1" --data-binary "first $n" >/dev/null
+done
+sc -X POST "$B/page-save?name=$D/top/kid&type=md" --data-binary "second top/kid" >/dev/null
+sc -X POST "$B/page-save?name=$D/top&type=md" --data-binary "second top" >/dev/null
+for n in top top/kid bare/kid; do sc -X POST "$B/page-share?name=$D/$n&mode=clearweb" >/dev/null; done
+sleep 3
+is "seeded: the parent is published"   200 "$(code "$B/c/$D/top")"
+is "seeded: the page under it too"     200 "$(code "$B/c/$D/top/kid")"
+is "delete a page that has pages under it" 200 "$(sc -X POST "$B/page-del?name=$D/top")"
+sleep 2
+is "  the page is gone"                404 "$(sc "$B/page-source?name=$D/top")"
+is "  and no longer published"         404 "$(code "$B/c/$D/top")"
+has "  the page under it is still there" 'second top/kid' "$(G "$B/page-source?name=$D/top/kid")"
+is "  with its history"                2 "$(revs "$D/top/kid")"
+is "  still published"                 200 "$(code "$B/c/$D/top/kid")"
+has "  and the page two levels down"   'first top/sub/deep' "$(G "$B/page-source?name=$D/top/sub/deep")"
+is "  the name is a folder now"        False "$(field page-tree "$D/top" page)"
+is "an unpublished parent goes alone too" 200 "$(sc -X POST "$B/page-del?name=$D/bare")"
+sleep 2
+is "  it is gone"                      404 "$(sc "$B/page-source?name=$D/bare")"
+is "  the published page under it stays published" 200 "$(code "$B/c/$D/bare/kid")"
+is "a new page at the freed name"      200 "$(sc -X POST "$B/page-save?name=$D/top&type=md&new=1" --data-binary 'top again')"
+has "  holds the new body"             'top again' "$(G "$B/page-source?name=$D/top")"
+is "  starts with no history of the old one" 1 "$(revs "$D/top")"
+is "  is private, as a new page is"    private "$(field page-tree "$D/top" share)"
+is "tree=1 takes the page and all under it" 200 "$(sc -X POST "$B/page-del?name=$D/top&tree=1")"
+sleep 2
+is "  the page under it is gone"       404 "$(sc "$B/page-source?name=$D/top/kid")"
+is "  and unpublished"                 404 "$(code "$B/c/$D/top/kid")"
+is "  the name is gone from the tree"  "<missing>" "$(field page-tree "$D/top" page)"
+is "a folder's delete takes all under it" 200 "$(sc -X POST "$B/page-del?name=$D")"
+sleep 2
+is "  nothing of it is left"           "<missing>" "$(field page-tree "$D/bare/kid" kind)"
+is "  and its page is unpublished"     404 "$(code "$B/c/$D/bare/kid")"
 is "page-move gated"       403 "$(code -X POST "$B/page-move?from=$P/mvdir2&to=$P/free")"
 
 echo "==> public forms: the unauthenticated write surface"
