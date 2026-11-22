@@ -293,4 +293,19 @@
     (expect-eq !>("") !>((r '[k]:   /u   "T"')))
     (yes (has "href=\"/u\" title=\"T\"" (r '[t][k]\0a\0a[k]: /u "T"')))
   ==
+::  an unclosed '[' before a link does not turn the link into text. The
+::  scan from the stray bracket fails only because the link's own ']'
+::  closed the link's '[', which says nothing about the rest.
+++  test-link-after-stray-bracket
+  =/  lnk=tape  "<a href=\"/u\" target=\"_blank\" rel=\"noopener noreferrer\">b</a>"
+  ;:  weld
+    (expect-eq !>(:(weld "<p>[ a " lnk "</p>")) !>((r '[ a [b](/u)')))
+    (expect-eq !>(:(weld "<p>range [0, 1) see " lnk "</p>")) !>((r 'range [0, 1) see [b](/u)')))
+    (expect-eq !>(:(weld "<p>[ a " lnk " and " lnk "</p>")) !>((r '[ a [b](/u) and [b](/u)')))
+    (yes (has "<img src=\"/x.png\"" (r '[ a ![i](/x.png)')))
+    (yes (has "<img src=\"/x.png\"" (r '![ a ![i](/x.png)')))
+    (yes (has "<td>[ a <a href=\"/u\"" (r '| h |\0a|---|\0a| [ a [b](/u) |')))
+    ::  with no ']' at all the text is unchanged
+    (expect-eq !>("<p>[ a [ b</p>") !>((r '[ a [ b')))
+  ==
 --

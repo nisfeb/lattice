@@ -150,20 +150,23 @@
   $(hay t.hay, i +(i))
 ::  +match-bracket: index of the ] that closes the [ at position 0 (t is after
 ::  the opening [), honoring one level of nested []. %| when there is none:
-::  %| %.n when the scan reached the end, which holds for every suffix too,
-::  and %| %.y when it gave up past +scan-cap characters or a second level
-::  of nesting, which says nothing about the rest. Uncapped and at any depth,
-::  a paragraph of nested brackets was rescanned at every '[' (security
-::  audit run-1). Now each scan stops at the cap or the second '[' after it.
+::  %| %.n when the scan reached the end and met no ']' on the way, which
+::  holds for every suffix too, and %| %.y when it gave up past +scan-cap
+::  characters or a second level of nesting, or met a ']' that closed a
+::  nested '[', which says nothing about the rest: in "[ a [b](/u)" the
+::  scan from the first '[' fails, and the rest still holds a ']' and a
+::  link. Uncapped and at any depth, a paragraph of nested brackets was
+::  rescanned at every '[' (security audit run-1). Now each scan stops at
+::  the cap or the second '[' after it.
 ++  match-bracket
   |=  t=tape
   ^-  (each @ud ?)
-  =|  [i=@ud d=@ud]
+  =|  [i=@ud d=@ud met=_|]
   |-  ^-  (each @ud ?)
   ?:  (gth i scan-cap)  [%| &]
-  ?~  t  [%| |]
+  ?~  t  [%| met]
   ?:  =('[' i.t)  ?:((gte d 1) [%| &] $(t t.t, i +(i), d +(d)))
-  ?:  =(']' i.t)  ?:(=(0 d) [%& i] $(t t.t, i +(i), d (dec d)))
+  ?:  =(']' i.t)  ?:(=(0 d) [%& i] $(t t.t, i +(i), d (dec d), met &))
   $(t t.t, i +(i))
 ::  +take-paren: parse (url "title") starting at t (after the [text]). Returns
 ::  [url title rest] where rest is after the closing ).
