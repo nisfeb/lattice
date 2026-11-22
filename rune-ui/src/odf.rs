@@ -169,12 +169,13 @@ pub(crate) fn elements(src: &str, from: usize, to: usize) -> Result<Vec<El>, Str
     Ok(out)
 }
 
-/// A tag's attributes: each name, and where its value sits in the tag.
-pub(crate) fn attrs(tag: &str) -> Vec<(&str, std::ops::Range<usize>)> {
-    let mut out = Vec::new();
+/// A tag's attributes, one after another: each name, and where its
+/// value sits in the tag, between quotes of either kind. Every reader
+/// of an attribute goes through this, so that a tag is read one way.
+pub(crate) fn each_attr(tag: &str) -> impl Iterator<Item = (&str, std::ops::Range<usize>)> + '_ {
     let b = tag.as_bytes();
     let mut i = tag.find(|c: char| c.is_whitespace()).unwrap_or(tag.len());
-    while i < b.len() {
+    std::iter::from_fn(move || {
         while i < b.len() && (b[i].is_ascii_whitespace() || b[i] == b'/' || b[i] == b'>') {
             i += 1;
         }
@@ -186,13 +187,24 @@ pub(crate) fn attrs(tag: &str) -> Vec<(&str, std::ops::Range<usize>)> {
         while i < b.len() && (b[i].is_ascii_whitespace() || b[i] == b'=') {
             i += 1;
         }
-        let Some(&q) = b.get(i).filter(|q| **q == b'"' || **q == b'\'') else { break };
+        let Some(&q) = b.get(i).filter(|q| **q == b'"' || **q == b'\'') else {
+            // nothing more is read of a tag that is not well formed
+            i = b.len();
+            return None;
+        };
         let from = i + 1;
-        let Some(len) = tag[from..].find(q as char) else { break };
-        out.push((name, from..from + len));
+        let Some(len) = tag[from..].find(q as char) else {
+            i = b.len();
+            return None;
+        };
         i = from + len + 1;
-    }
-    out
+        Some((name, from..from + len))
+    })
+}
+
+/// A tag's attributes: each name, and where its value sits in the tag.
+pub(crate) fn attrs(tag: &str) -> Vec<(&str, std::ops::Range<usize>)> {
+    each_attr(tag).collect()
 }
 
 fn attr<'a>(src: &'a str, el: &El, name: &str) -> Option<&'a str> {

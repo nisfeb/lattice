@@ -64,23 +64,12 @@ fn unescape(s: &str, out: &mut String) {
     out.push_str(rest);
 }
 
-/// An attribute's value in a tag's text, unescaped.
+/// An attribute's value in a tag's text, unescaped. `tag` starts at the element's name.
 pub(crate) fn attr(tag: &str, name: &str) -> Option<String> {
-    let mut from = 0;
-    while let Some(i) = tag[from..].find(name) {
-        let at = from + i;
-        let after = &tag[at + name.len()..];
-        // the name whole, not the tail of a longer one
-        let whole = tag[..at].ends_with(char::is_whitespace) && after.starts_with("=\"");
-        if whole {
-            let v = &after[2..];
-            let mut out = String::new();
-            unescape(&v[..v.find('"')?], &mut out);
-            return Some(out);
-        }
-        from = at + name.len();
-    }
-    None
+    let at = crate::odf::each_attr(tag).find(|a| a.0 == name)?.1;
+    let mut out = String::new();
+    unescape(&tag[at], &mut out);
+    Some(out)
 }
 
 fn repeat(tag: &str, name: &str) -> usize {
@@ -200,7 +189,8 @@ fn numeric(t: &str) -> bool {
         let mut parts = s.split(',');
         parts.next().is_some_and(|p| digits(p) && p.len() <= 3) && parts.clone().count() > 0 && parts.all(|p| digits(p) && p.len() == 3)
     };
-    (whole.is_empty() || digits(whole) || grouped(whole)) && frac.is_none_or(digits) && exp.is_none_or(|e| digits(e.strip_prefix(['+', '-']).unwrap_or(e))) && t.bytes().any(|b| b.is_ascii_digit())
+    // a figure before the exponent: `e4` is a word, however many figures follow its `e`
+    (whole.is_empty() || digits(whole) || grouped(whole)) && frac.is_none_or(digits) && exp.is_none_or(|e| digits(e.strip_prefix(['+', '-']).unwrap_or(e))) && mant.bytes().any(|b| b.is_ascii_digit())
 }
 
 /// What typed text becomes in a cell, with dates counted from the usual null date. See `typed_on`.
@@ -223,8 +213,8 @@ pub fn typed_on(text: &str, null_date: f64) -> Result<Typed, String> {
     if t.len() > 1 && t.starts_with('=') {
         return Err("formulas are not written here yet".into());
     }
-    if numeric(t) {
-        let n: f64 = t.replace(',', "").parse().map_err(|_| "that number cannot be read".to_owned())?;
+    // what does not read as a number after all is not refused: it is the text that was typed
+    if let Some(n) = numeric(t).then(|| t.replace(',', "").parse::<f64>().ok()).flatten() {
         // more than a number can hold is kept as the text it was typed as, never as a nought
         return Ok(if n.is_finite() { Typed::Number(n) } else { Typed::Text(text.to_owned()) });
     }
@@ -255,8 +245,9 @@ pub fn typed_on(text: &str, null_date: f64) -> Result<Typed, String> {
     }
     let d: Vec<&str> = t.split('-').collect();
     if d.len() == 3 && digits(d[0], 4, 4) && digits(d[1], 1, 2) && digits(d[2], 1, 2) {
-        let (m, day): (i64, i64) = (d[1].parse().unwrap_or(0), d[2].parse().unwrap_or(0));
-        if (1..=12).contains(&m) && (1..=31).contains(&day) {
+        let (y, m, day): (i64, i64, i64) = (d[0].parse().unwrap_or(0), d[1].parse().unwrap_or(0), d[2].parse().unwrap_or(0));
+        // only a day the calendar has: the 30th of February would run on into March, and is the text that was typed
+        if (1..=12).contains(&m) && day >= 1 && civil_from_days(days_from_civil(y, m, day)) == (y, m, day) {
             if let Some(v) = date_serial(&format!("{}-{m:02}-{day:02}", d[0]), null_date) {
                 return Ok(Typed::Special("date", v));
             }
@@ -281,6 +272,10 @@ pub fn general(n: f64) -> String {
     }
     if n == 0.0 {
         return "0".into();
+    }
+    // a whole number that a double holds exactly is written in full, all sixteen figures of a card's number
+    if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
+        return format!("{n:.0}");
     }
     let sci = format!("{n:.14e}");
     if n.abs() >= 1e16 || n.abs() < 1e-15 {
@@ -453,6 +448,18 @@ const FAR_DAY: i64 = FAR_YEAR * 366;
 /// 9999 after: the dates a page can hold and a person can mean.
 pub(crate) fn dated(n: f64, null_date: f64) -> bool {
     (n + null_date).abs() <= 4_400_000.0
+}
+
+/// A day number as its whole days and the seconds of the day past them, as LibreOffice
+/// reads a time of day from one. The seconds are rounded to as many decimals as the day
+/// number leaves room for, so that 09:30:15 held as a fraction of a day is not a hair
+/// under it, and no further: 23:59:59.9 stays under midnight.
+pub(crate) fn day_seconds(t: f64) -> (f64, f64) {
+    let whole = t.floor();
+    let room = if t.abs() >= 1.0 { (10 - t.abs().log10().ceil() as i32).clamp(2, 9) } else { 9 };
+    let to = 10f64.powi(room);
+    let secs = ((t - whole) * 86_400.0 * to).round() / to;
+    if secs >= 86_400.0 { (whole + 1.0, secs - 86_400.0) } else { (whole, secs) }
 }
 
 /// Days from 1970-01-01 to a day of the calendar, and back.
@@ -883,6 +890,30 @@ pub fn put_cells(src: &str, sheet: usize, edits: &std::collections::BTreeMap<usi
     }
     let (table, rows, calcext) = sheet_rows(src, sheet)?;
     let null_date = null_date(src, &spreadsheet(src)?.0);
+    // A cell that an array formula spreads a result over is not typed into: the formula would still say it reaches
+    // that far, and LibreOffice puts its own result back over what was typed. The formula's own cell is another matter
+    if care != Care::Result && src[table.start..table.end].contains("number-matrix-") {
+        let mut top = 0usize;
+        for row in &rows {
+            let rep = count(src, row, ROWS);
+            let mut left = 0usize;
+            // only a row that has such a formula is read cell by cell
+            let cells = if src[row.start..row.end].contains("number-matrix-") { kids(src, row)? } else { Vec::new() };
+            for cell in &cells {
+                let (tall, wide) = (count(src, cell, MATRIX_ATTRS[1]), count(src, cell, MATRIX_ATTRS[0]));
+                if tall > 1 || wide > 1 {
+                    for at in top..top.saturating_add(rep.min(1024)) {
+                        let under = |(r, cells): (&usize, &Vec<(usize, Put)>)| cells.iter().any(|(c, _)| (left..left.saturating_add(wide)).contains(c) && (*r, *c) != (at, left));
+                        if edits.range(at..at.saturating_add(tall)).any(under) {
+                            return Err("that cell is part of an array formula".into());
+                        }
+                    }
+                }
+                left = left.saturating_add(count(src, cell, COLS));
+            }
+            top = top.saturating_add(rep);
+        }
+    }
     // a row with every one of its cells set, one after another, each on the row the one before made
     let row_of = |row: Option<&El>, pad: &str, cells: &[(usize, Put)]| -> Result<String, String> {
         let mut text: Option<String> = None;
@@ -1202,6 +1233,56 @@ mod tests {
         assert!(add_sheet("not a sheet", "").is_err());
     }
 
+    #[test]
+    fn an_attribute_in_single_quotes_is_read_the_same_by_the_grid_and_the_model() {
+        // XML takes either quote. LibreOffice writes double ones, and other writers need not
+        let doc = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:o" xmlns:table="urn:t" xmlns:text="urn:x" xmlns:calcext="urn:c" office:mimetype="application/vnd.oasis.opendocument.spreadsheet">
+ <office:body><office:spreadsheet><table:table table:name='A "quoted" &amp; one'>
+  <table:table-row table:number-rows-repeated='2'>
+   <table:table-cell table:number-columns-repeated='3' office:value-type='float' office:value='1'><text:p>1</text:p></table:table-cell>
+   <table:table-cell office:value-type="float" office:value="2"><text:p>2</text:p></table:table-cell>
+   <table:table-cell office:value-type='string' table:note="it's"><text:p>three</text:p></table:table-cell>
+  </table:table-row>
+  <table:table-row>
+   <table:table-cell table:formula='of:=[.A1]+1' office:value-type='float' office:value='2' office:lookalike="table:formula='of:=9'"><text:p>2</text:p></table:table-cell>
+   <table:table-cell office:value-type = 'float'  office:value
+     ='7'><text:p>7</text:p></table:table-cell>
+  </table:table-row>
+ </table:table></office:spreadsheet></office:body>
+</office:document>"#;
+        let shown = parse(doc);
+        assert_eq!(shown[0].name, "A \"quoted\" & one");
+        let want = ["1", "1", "1", "2", "three"];
+        assert_eq!(shown[0].rows, [want.map(str::to_owned).to_vec(), want.map(str::to_owned).to_vec(), vec!["2".to_owned(), "7".to_owned()]]);
+        // the model holds the same cells at the same places, with their kinds and values
+        let model = book(doc).unwrap();
+        for (r, row) in shown[0].rows.iter().enumerate() {
+            for (c, text) in row.iter().enumerate() {
+                assert_eq!(&model.at(0, r, c).unwrap().text, text, "row {r} column {c}");
+            }
+        }
+        assert_eq!(model.sheets[0].name, shown[0].name);
+        // a formula in single quotes is a formula, and one that only stands in another attribute's value is not
+        assert_eq!(formula_at(doc, 0, 2, 0).as_deref(), Some("of:=[.A1]+1"));
+        assert_eq!(formula_at(doc, 0, 2, 1), None);
+        assert_eq!(attr("table:table-cell a='1' b=\"x a='2'\" c = '3'", "a").as_deref(), Some("1"));
+        assert_eq!(attr("table:table-cell b=\"x a='2'\" c = '3' d=\"&lt;'&quot;\"", "a"), None);
+        assert_eq!(attr("table:table-cell b=\"x a='2'\" c = '3' d=\"&lt;'&quot;\"", "c").as_deref(), Some("3"));
+        assert_eq!(attr("table:table-cell b=\"x a='2'\" c = '3' d=\"&lt;'&quot;\"/", "d").as_deref(), Some("<'\""));
+        assert_eq!(attr("table:table-cell xa='1' a.b='2'", "a"), None);
+        // typing where the grid shows a cell changes that cell
+        let typed = set_cell(doc, 0, 0, 4, "X").unwrap();
+        let after = parse(&typed);
+        assert_eq!(after[0].rows[0], ["1", "1", "1", "2", "X"]);
+        assert_eq!(after[0].rows[1], want);
+        // and typing over a cell written with single quotes, in a run of cells in a run of rows, changes it alone
+        let typed = set_cell(doc, 0, 1, 1, "5").unwrap();
+        let after = parse(&typed);
+        assert_eq!((after[0].rows[0].clone(), after[0].rows[1].clone(), after[0].rows[2].clone()), (want.map(str::to_owned).to_vec(), ["1", "5", "1", "2", "three"].map(str::to_owned).to_vec(), vec!["2".to_owned(), "7".to_owned()]));
+        assert_eq!(book(&typed).unwrap().at(0, 1, 1).map(|c| c.text.clone()).as_deref(), Some("5"));
+    }
+
     const BOOK: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document xmlns:office="urn:o" xmlns:table="urn:t" xmlns:text="urn:x" xmlns:calcext="urn:c" office:mimetype="application/vnd.oasis.opendocument.spreadsheet">
  <office:body>
@@ -1253,6 +1334,32 @@ mod tests {
         }
         assert_eq!(typed("=A1+1").unwrap_err(), "formulas are not written here yet");
         assert_eq!(typed("="), Ok(Typed::Text("=".into())));
+    }
+
+    #[test]
+    fn letters_and_figures_that_are_no_number_are_text_and_never_refused() {
+        // a chess move, a seat, a part number: an `e` with figures after it and none before is no number
+        for t in ["e4", "E5", "E100", "-e5", "+E3", "e-5", "e+5", ".e5", "-.e3", "e", "E", "1e", "ee5", "e4 e5", "1e+", ".", "-", "+", "1.2.3", "1,00", ",5", "1e5e5"] {
+            assert_eq!(typed(t), Ok(Typed::Text(t.into())), "{t}");
+        }
+        // and what is a number still is
+        for (t, n) in [("1e4", 1e4), ("1E-2", 0.01), (".5e1", 5.0), ("-.5", -0.5), ("+1,000.5e1", 10005.0), ("0e0", 0.0), ("5.0", 5.0)] {
+            assert_eq!(typed(t), Ok(Typed::Number(n)), "{t}");
+        }
+        // typed into a sheet, it is stored as the text it is
+        let after = crate::calc::enter(BOOK, 0, 5, 0, "e4").unwrap().body;
+        assert_eq!(book(&after).unwrap().at(0, 5, 0).map(|c| (c.vt.as_str(), c.text.as_str())), Some(("string", "e4")));
+    }
+
+    #[test]
+    fn a_typed_date_that_does_not_exist_is_text() {
+        for t in ["2024-02-30", "2023-02-29", "2024-04-31", "2024-2-30", "2024-06-31", "1900-02-29", "2024-00-10", "2024-13-01", "2024-01-00", "2024-01-32"] {
+            assert_eq!(typed(t), Ok(Typed::Text(t.into())), "{t}");
+        }
+        for t in ["2024-02-29", "2023-02-28", "2024-04-30", "2024-2-9", "2024-12-31", "2000-02-29", "2024-01-01"] {
+            assert!(matches!(typed(t), Ok(Typed::Special("date", _))), "{t}");
+        }
+        assert_eq!(typed("2024-02-29"), Ok(Typed::Special("date", 45351.0)));
     }
 
     #[test]
