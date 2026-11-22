@@ -574,6 +574,21 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   for (let c = 0; c < 200; c++) { if (many.stale(0, 1000, c)) { marked++; if (many.cell(0, 1000, c).v !== 7) off++; } else if (many.cell(0, 1000, c).v === 99999) done++; else off++; }
   check('past the budget of one recalculation the rest are marked, none left wrong', off === 0 && done > 0 && marked > 0 && done + marked === 200 && many.engine.total <= 2200000, `${done} done, ${marked} marked, ${off} wrong, ${many.engine.total} steps`);
 }
+{
+  //  the empty cells of a range past the used rows count as empty cells
+  const b = new Book(blankText);
+  b.enter(0, 0, 0, 'x'); b.enter(0, 1, 0, 'y');
+  b.enter(0, 0, 2, '10'); b.enter(0, 1, 2, '20'); b.enter(0, 2, 2, '30');
+  const at = (f) => { b.enter(0, 0, 5, f); const c = b.cell(0, 0, 5); return c.text + (b.stale(0, 0, 5) ? ' stale' : ''); };
+  const T = [['=COUNTIF(A1:A10,"")', '8'], ['=COUNTIF(A1:A10,"<>x")', '9'], ['=COUNTIF(A1:A10,"=")', '8'], ['=COUNTIF(A1:A10,"<>")', '2'], ['=COUNTIF(A1:A10,"x")', '1'],
+    ['=COUNTBLANK(A1:A10)', '8'], ['=SUMIF(A1:A10,"",C1:C10)', '30'], ['=SUMIF(A1:A10,"<>x",C1:C10)', '50'], ['=AVERAGEIF(A1:A10,"<>x",C1:C10)', '25'],
+    ['=COUNTIFS(A1:A10,"",B1:B10,"")', '8'], ['=COUNTIFS(A1:A10,"<>x")', '9'], ['=SUMIFS(C1:C10,A1:A10,"<>x")', '50'], ['=COUNTIF(A1:A1048576,"")', '1048574'], ['=COUNTIF(A:A,"<>x")', '1048575'],
+    ['=COUNTIF(A5:B9,"")', '10'], ['=COUNTIF(A5:B9,"<>q")', '10'], ['=COUNTIF(A5:B9,"q")', '0'], ['=SUMIF(A5:A9,"",C1:C5)', '60']];
+  const got = T.map(([f]) => at(f)).join(' ');
+  check.eq('criteria over empty cells past the used rows, as Calc counts them', got, T.map((x) => x[1]).join(' '));
+  b.enter(0, 9, 4, 'far');
+  check.eq('and the same once the sheet is used further down', T.map(([f]) => at(f)).join(' '), got);
+}
 
 console.log('==> hostile input');
 {
