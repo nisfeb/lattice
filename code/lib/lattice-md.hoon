@@ -136,8 +136,8 @@
   ^-  @
   (roll cs |=([c=@tD a=@] (con a (bex c))))
 ::  +ib-stop: every character that can start an inline construct in +ib-in
-::  (\ ` ! < [ * _ ~) or that +esc rewrites (& < > ").
-++  ib-stop  ^~((stop-mask "&<>\"\\`![*_~"))
+::  (\ ` ! < [ * _ ~ and the hard break) or that +esc rewrites (& < > ").
+++  ib-stop  ^~((stop-mask "&<>\"\\`![*_~\0a"))
 ::  +find-cap: (find nedl hay), giving up after +scan-cap characters.
 ++  find-cap
   |=  [nedl=tape hay=tape cap=@ud]
@@ -229,8 +229,11 @@
   =/  n=@ud  (stop-run t ib-stop)
   ?.  =(0 n)  (weld (sc n t) (ib-in (sl n t) refs no))
   =/  c=@tD  i.t
+  ::  a hard line break, as +join-para marks it. A line never holds a
+  ::  line feed of its own, so document text cannot spell one.
+  ?:  =('\0a' c)  (weld "<br>" (ib-in t.t refs no))
   ::  backslash escape
-  ?:  ?&(=('\\' c) ?=(^ t.t))
+  ?:  ?&(=('\\' c) ?=(^ t.t) !=('\0a' i.t.t))
     (weld (esc ~[i.t.t]) (ib-in t.t.t refs no))
   ::  code span (single or double backtick)
   ?:  =('`' c)
@@ -582,14 +585,17 @@
     $(lines t.lines, buf [i.lines buf])
   =/  txt=tape  (join-para (flop buf))
   [:(weld "<p>" (ib txt refs) "</p>") lines]
-::  +join-para: join lines with a space. Two trailing spaces -> <br>.
+::  +join-para: join lines with a space. A line that ends in two spaces
+::  is joined with a line feed instead, which +ib-in draws as <br>. The
+::  tag itself cannot be written here: the inline pass escapes every tag
+::  in its input, so the break showed as the text "<br>".
 ++  join-para
   |=  ls=(list tape)
   ^-  tape
   ?~  ls  ""
   ?~  t.ls  (rtrm i.ls)
   =/  br=?  &((gte (lent i.ls) 2) =("  " (sl (sub (lent i.ls) 2) i.ls)))
-  :(weld (rtrm i.ls) ?:(br "<br>" " ") $(ls t.ls))
+  :(weld (rtrm i.ls) ?:(br "\0a" " ") $(ls t.ls))
 ::  +block-start: does the FIRST line begin a non-paragraph block?
 ++  block-start
   |=  lines=(list tape)

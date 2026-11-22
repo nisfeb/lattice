@@ -246,4 +246,18 @@
     ::  only the one CR that ends a line goes
     (expect-eq !>("<p>a\0db</p>") !>((r 'a\0db')))
   ==
+::  two spaces at the end of a line are a line break, a real one. Text
+::  that spells a tag is still text.
+++  test-hard-break
+  ;:  weld
+    (expect-eq !>("<p>a<br>b</p>") !>((r 'a  \0ab')))
+    (expect-eq !>("<p>a<br>b c<br>d</p>") !>((r 'a  \0ab\0ac   \0ad')))
+    (expect-eq !>("<p>a b</p>") !>((r 'a\0ab')))
+    (expect-eq !>("<p>a b</p>") !>((r 'a \0ab')))
+    (expect-eq !>("<p>a</p>") !>((r 'a  ')))
+    (expect-eq !>("<p>a &lt;br&gt; b</p>") !>((r 'a <br> b')))
+    (expect-eq !>("<p><em>a<br>b</em></p>") !>((r '*a  \0ab*')))
+    (expect-eq !>("<p><a href=\"/u\" target=\"_blank\" rel=\"noopener noreferrer\">a<br>b</a></p>") !>((r '[a  \0ab](/u)')))
+    (expect-eq !>("<p>a\\<br>b</p>") !>((r 'a\\  \0ab')))
+  ==
 --
