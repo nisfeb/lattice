@@ -513,7 +513,16 @@ fn find_ci(hay: &str, needle: &str) -> Option<usize> {
     if n.is_empty() || h.len() < n.len() {
         return None;
     }
-    (0..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
+    let at = (0..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n));
+    #[cfg(test)]
+    READ.with(|r| r.set(r.get() + at.map_or(h.len(), |a| a + n.len())));
+    at
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many bytes the searches of a page have passed over, for the tests that hold them to one reading.
+    static READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The widest and tallest a picture may say it is and still be decoded.
@@ -605,12 +614,24 @@ pub fn tamed(html: &str) -> std::borrow::Cow<'_, str> {
 
 /// The next element that draws a picture in, `image` or `feImage` and no other name that begins so: where its tag starts, and how long the tag is.
 fn next_image(s: &str) -> Option<(usize, usize)> {
+    // by bytes: the letters after a name may be of more than one byte, and a slice of a set length would cut one in two
+    let b = s.as_bytes();
     let mut from = 0;
     loop {
-        let at = from + [find_ci(&s[from..], "<image"), find_ci(&s[from..], "<feimage")].into_iter().flatten().min()?;
-        // by bytes: the letters after the match may be of more than one byte, and a slice of a set length would cut one in two
-        let b = s.as_bytes();
-        let name_end = at + if b.len() >= at + 8 && b[at..at + 8].eq_ignore_ascii_case(b"<feimage") { 8 } else { 6 };
+        // the text is passed over once: each `<` is asked whether one of the two names follows it. A search for each name from where the last picture ended would read the rest of the page once for each picture
+        let lt = b[from..].iter().position(|c| *c == b'<');
+        #[cfg(test)]
+        READ.with(|r| r.set(r.get() + lt.map_or(b.len() - from, |l| l + 1)));
+        let at = from + lt?;
+        let named = |name: &[u8]| b.get(at + 1..at + 1 + name.len()).is_some_and(|n| n.eq_ignore_ascii_case(name));
+        let name_end = at + if named(b"feimage") {
+            8
+        } else if named(b"image") {
+            6
+        } else {
+            from = at + 1;
+            continue;
+        };
         let whole = b.get(name_end).is_none_or(|c| c.is_ascii_whitespace() || *c == b'/' || *c == b'>');
         if whole {
             // to the `>` that ends the tag: one inside a quoted value does not
@@ -624,6 +645,8 @@ fn next_image(s: &str) -> Option<(usize, usize)> {
                 }
                 i += 1;
             }
+            #[cfg(test)]
+            READ.with(|r| r.set(r.get() + i - name_end));
             return Some((at, (i + 1).min(b.len()) - at));
         }
         from = name_end;
@@ -985,6 +1008,29 @@ mod tests {
         with_wide_letters(doc, |page| {
             let _ = crate::scrub::doc_md(page);
         });
+    }
+
+    #[test]
+    fn a_page_of_many_pictures_is_read_through_a_set_number_of_times() {
+        // the work is counted in bytes passed over, and may be a few readings of the page, never one for each picture
+        let read = |f: &dyn Fn()| {
+            READ.with(|r| r.set(0));
+            f();
+            READ.with(|r| r.get())
+        };
+        for n in [1_000, 20_000] {
+            let held = format!("<svg>{}</svg>", "<image href='data:image/png;base64,AA'></image>".repeat(n));
+            assert!(read(&|| assert!(matches!(tamed(&held), std::borrow::Cow::Borrowed(_)))) <= 4 * held.len(), "{n} held pictures");
+            assert!(read(&|| assert!(fetched_ok(held.as_bytes()))) <= 4 * held.len(), "{n} held pictures, fetched");
+            // one that reads a file at the very end: the whole page is written out again
+            let last = format!("{held}<svg><image href='/dev/zero'/><feImage href='x'/></svg>");
+            assert!(read(&|| assert!(tamed(&last).ends_with("<svg><x-image href='/dev/zero'/><x-feImage href='x'/></svg>"))) <= 6 * last.len(), "{n} and one that reads a file");
+            // names that only begin the same, and brackets that open nothing
+            let near = format!("<svg>{}</svg>", "<images><imag <feimages> < <fe".repeat(n));
+            assert!(read(&|| assert!(matches!(tamed(&near), std::borrow::Cow::Borrowed(_)))) <= 4 * near.len(), "{n} near names");
+            let filters = format!("<svg>{}</svg>", "<feImage href='#a'/>".repeat(n));
+            assert!(read(&|| assert!(fetched_ok(filters.as_bytes()))) <= 4 * filters.len(), "{n} filters");
+        }
     }
 
     #[test]
