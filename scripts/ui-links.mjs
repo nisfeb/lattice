@@ -430,6 +430,10 @@ try {
   await drawer(m, 'l');
   const MV = SWROW('/x/doc/code') + ' + .swmv';
   await until(m, (s) => !!document.querySelector(s), MV);
+  //  the drawer lists the whole page tree above shared with me, so on a
+  //  ship with more pages the row starts below the fold. It is scrolled
+  //  to, as a user would, and must then be on screen and uncovered
+  await m.evaluate((s) => document.querySelector(s)?.scrollIntoView({ block: 'center' }), MV);
   check('phone: the row\'s Move into my pages is in the left drawer', await reach(m, MV));
   check('  ...a titled button, in the tab order', await m.evaluate((s) => {
     const b = document.querySelector(s);
