@@ -148,6 +148,23 @@
   ?~  hay  ~
   ?:  =(nedl (scag (lent nedl) `tape`hay))  `i
   $(hay t.hay, i +(i))
+::  +find-stop: where the first `c` in `hay` is, giving up after `cap`
+::  characters and at the first place `stop` starts. `stop` is the
+::  opener of the construct `c` closes, so a run of openers with no
+::  closer costs each scan the distance to the next opener, and the
+::  run as a whole one pass. With the cap alone each opener paid the
+::  whole cap: 1 MB of "[a](" was 262.000 scans of 512 characters.
+++  find-stop
+  |=  [c=@tD hay=tape cap=@ud stop=tape]
+  ^-  (unit @ud)
+  =|  i=@ud
+  ?>  ?=(^ stop)
+  |-  ^-  (unit @ud)
+  ?:  (gth i cap)  ~
+  ?~  hay  ~
+  ?:  =(c i.hay)  `i
+  ?:  &(=(i.stop i.hay) (has t.stop t.hay))  ~
+  $(hay t.hay, i +(i))
 ::  +match-bracket: index of the ] that closes the [ at position 0 (t is after
 ::  the opening [), honoring one level of nested []. %| when there is none:
 ::  %| %.n when the scan reached the end and met no ']' on the way, which
@@ -175,7 +192,8 @@
   ^-  (unit [url=tape title=tape rest=tape])
   ?~  t  ~
   ?.  =('(' i.t)  ~
-  =/  close  (find-cap ")" t.t link-scan-cap)
+  ::  a destination does not hold the start of another link
+  =/  close  (find-stop ')' t.t link-scan-cap "](")
   ?~  close  ~
   =/  guts=tape  (trim (sc u.close t.t))
   =/  rest=tape  (sl +(u.close) t.t)
@@ -474,7 +492,7 @@
     =/  aft=tape  (sl 2 t)
     ::  capped: a footnote id is short, and the uncapped find made 20KB of
     ::  "[^" spam quadratic on the unauthenticated render path.
-    =/  close  (find-cap "]" aft link-scan-cap)
+    =/  close  (find-stop ']' aft link-scan-cap "[")
     ?~  close  (weld "[^" $(t t.t.t))
     =/  id=tape  (sc u.close aft)
     =/  hit  (~(get by foot) id)

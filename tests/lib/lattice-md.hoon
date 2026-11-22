@@ -334,4 +334,25 @@
     (expect-eq !>("<blockquote><p>q</p></blockquote><hr>") !>((r '> q\0a---')))
     (expect-eq !>("<h2>Title</h2>") !>((r 'Title\0a---')))
   ==
+::  openers with no closer: "[a](" with no ')' and "[^" with no ']'
+::  each cost a full capped scan, minutes for a page a peer can send.
+::  The scan now stops at the next opener, and a real link or footnote
+::  among them still renders.
+++  test-open-parens-bounded
+  =/  o=tape  (zing (reap 30.000 "[a]("))
+  =/  h=tape  (r (crip :(weld o " [x](/u) " o)))
+  (yes (has "[a]( <a href=\"/u\"" h))
+++  test-open-footnotes-bounded
+  =/  o=tape  (zing (reap 30.000 "[^"))
+  =/  h=tape  (r (crip :(weld o "[^a] " o "\0a\0a[^a]: n")))
+  (yes (has "[^<sup class=\"fnref\">" h))
+::  a link's ( ) tail ends at the first ')'. The start of another link
+::  is not part of a destination.
+++  test-paren-stops-at-opener
+  ;:  weld
+    (expect-eq !>("<p>[a](x <a href=\"/u\" target=\"_blank\" rel=\"noopener noreferrer\">b</a></p>") !>((r '[a](x [b](/u)')))
+    (yes (has "<a href=\"/p?a[]=1\"" (r '[t](/p?a[]=1)')))
+    (yes (has "<a href=\"/p\" title=\"T\"" (r '[t](/p "T")')))
+    (yes (has "<img src=\"/i.png\"" (r '![a](x ![b](/i.png)')))
+  ==
 --
