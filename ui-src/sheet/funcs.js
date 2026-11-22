@@ -61,7 +61,15 @@ const CLOCK = /^\s*(\d+):(\d\d)(?::(\d\d(?:\.\d+)?))?\s*$/;
 function textNum(v) {
   if (NUMERIC.test(v)) return Number(v);
   let m = ISO_DATE.exec(v);
-  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000 + 25569 + (m[4] ? (+m[4] * 3600 + +m[5] * 60 + +(m[6] || 0)) / 86400 : 0);
+  if (m) {
+    //  only a date that exists, with a time that is one: the 31st of
+    //  February is not read as the 2nd of March. Year 1 is year 1.
+    const t = new Date(0);
+    t.setUTCFullYear(+m[1], +m[2] - 1, +m[3]);
+    if (+m[1] < 1 || t.getUTCMonth() !== +m[2] - 1 || t.getUTCDate() !== +m[3]) return E.value;
+    if (m[4] && (+m[4] > 24 || +m[5] > 59 || +(m[6] || 0) >= 60)) return E.value;
+    return t.getTime() / 86400000 + 25569 + (m[4] ? (+m[4] * 3600 + +m[5] * 60 + +(m[6] || 0)) / 86400 : 0);
+  }
   m = CLOCK.exec(v);
   if (m) return (+m[1] * 3600 + +m[2] * 60 + +(m[3] || 0)) / 86400;
   return E.value;

@@ -42,7 +42,7 @@ export function readTyped(text, nullDate) {
     const day = dateSerial(iso, nullDate);
     //  only a date that exists. The 31st of February would be read as the
     //  2nd of March: it stays the text typed, as in Calc.
-    if (day !== null && serialDate(day, nullDate) === iso) {
+    if (day !== null && +m[1] >= 1 && serialDate(day, nullDate) === iso) {
       return { vt: 'date', v: day + (m[4] === undefined ? 0 : (+m[4] * 3600 + +m[5] * 60 + +(m[6] || 0)) / 86400), kind: 'date' };
     }
   }
@@ -162,7 +162,7 @@ export class Book {
     }
     if (cell.vt === 'boolean') return cell.v ? 'TRUE' : 'FALSE';
     if (cell.vt === 'percentage') return general(Number((cell.v * 100).toPrecision(15))) + '%';
-    if (cell.vt === 'date') return this.styles.text(null, cell.v, 'date') + (cell.v % 1 ? ' ' + this.styles.text(null, cell.v % 1, 'time') : '');
+    if (cell.vt === 'date') return this.styles.text(null, cell.v, 'date') + (cell.v !== Math.floor(cell.v) ? ' ' + this.styles.text(null, cell.v - Math.floor(cell.v), 'time') : '');
     if (cell.vt === 'time') return this.styles.text(null, cell.v, 'time');
     return general(cell.v);
   }

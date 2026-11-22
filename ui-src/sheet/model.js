@@ -62,7 +62,10 @@ function cellText(src, ps) {
 export function dateSerial(iso, nullDate) {
   const m = /^(-?\d{4,})-(\d\d)-(\d\d)(?:T(\d\d):(\d\d):(\d\d(?:\.\d+)?))?/.exec(iso || '');
   if (!m) return null;
-  const day = Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000;
+  //  year 1 is year 1, not 1901
+  const d = new Date(0);
+  d.setUTCFullYear(+m[1], +m[2] - 1, +m[3]);
+  const day = d.getTime() / 86400000;
   const frac = m[4] ? (+m[4] * 3600 + +m[5] * 60 + +m[6]) / 86400 : 0;
   return day - nullDate + frac;
 }

@@ -717,6 +717,20 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   const was = dt.v;
   b.enter(0, 3, 0, b.input(0, 3, 0) + ' ');
   check('what the bar shows, typed back, is the same date and time', b.cell(0, 3, 0).vt === 'date' && b.cell(0, 3, 0).v === was);
+  //  before the null date the time of day is still a time of day
+  const early = ['1899-12-29 18:00', '1700-06-15 06:00', '1899-12-29 00:00:01'].map((t) => {
+    b.enter(0, 5, 0, t);
+    const v = b.cell(0, 5, 0).v, bar = b.input(0, 5, 0);
+    b.enter(0, 5, 0, bar + ' ');
+    return `${bar}|${b.cell(0, 5, 0).vt === 'date' && b.cell(0, 5, 0).v === v}`;
+  }).join(' ');
+  check.eq('a date and time before 1899-12-30 shows a time of day, and typed back is the same', early, '1899-12-29 18:00:00|true 1700-06-15 06:00:00|true 1899-12-29 00:00:01|true');
+  //  a date that does not exist is not read as the shifted one by a formula either, as in Calc
+  const asNum = (f) => { b.enter(0, 6, 0, f); const c = b.cell(0, 6, 0); return c.err ? c.text : c.v; };
+  check.eq('a text date that does not exist is an error in a formula', ['="2026-02-31"+0', '=VALUE("2026-02-31")', '="2026-04-31"+0', '="1900-02-29"+0', '="2026-13-01"+0', '="2026-00-10"+0', '="2026-04-30 12:60"+0', '="2026-04-30 12:30:60"+0'].map(asNum).join(' '),
+    '#VALUE! Err:502 #VALUE! #VALUE! #VALUE! #VALUE! #VALUE! #VALUE!');
+  check.eq('and one that does is its serial', ['="2026-02-28"+0', '="2024-02-29"+0', '="1900-03-01"+0', '="2026-04-30 24:00"+0', '="9999-12-31"+0'].map(asNum).join(' '), '46081 45351 61 46143 2958465');
+  check('a year under 100 is not read as 19xx', asNum('="0050-06-15"+0') < -600000 && asNum('="0001-01-01"+0') < -690000);
   check.eq('with a T, without seconds, and one that is not a time', ['2024-01-15T10:30:00', '2024-01-15 7:05', '2024-01-15 25:00', '2024-02-30 10:00', '2024-01-15 10:61'].map((t) => typed(t, 4) + '|' + b.input(0, 4, 0)).join(' '),
     'date:2024-01-15|2024-01-15 10:30:00 date:2024-01-15|2024-01-15 07:05:00 string:2024-01-15 25:00|2024-01-15 25:00 string:2024-02-30 10:00|2024-02-30 10:00 string:2024-01-15 10:61|2024-01-15 10:61');
   //  a cell a file gives a date and time format keeps both through an edit in the bar
