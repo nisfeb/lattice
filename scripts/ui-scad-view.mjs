@@ -226,6 +226,15 @@ check('a read-only pane draws the change', /^44 × 54 × 20 mm/.test(await dims(
 check('  and writes nothing', (await page.evaluate(() => window.edits.length)) === 0);
 await page.close();
 
+console.log('\na page and its child page, both included without .scad');
+{
+  page = await open('include <a>\ninclude <a/b>\ncube([x, 2, 1]);\n', { pages: { 'parts/a': 'x = 3;', 'parts/a/b': 'y = 4;' } });
+  s = await settled(page);
+  check('the render still runs', /rendered in/.test(s) && /^3 × 2 × 1 mm/.test(await dims(page)), s + ' ' + await dims(page));
+  check('  and the include left out is said', /a\/b: not read/.test(await con(page)), (await con(page)).slice(0, 200));
+  await page.close();
+}
+
 console.log('\nincludes, errors and hostile models');
 page = await open('include <lib/plate.scad>\nplate(30);\n', { pages: { 'parts/lib/plate': 'module plate(w) { cube([w, w, 2]); }\n' } });
 s = await settled(page);

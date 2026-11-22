@@ -40,7 +40,9 @@ self.onmessage = async (e) => {
         d += '/' + s;
         try { inst.FS.mkdir(d); } catch (x) {}
       }
-      inst.FS.writeFile(p, t);
+      //  one file that cannot be written is said, and the rest still go
+      try { inst.FS.writeFile(p, t); }
+      catch (x) { log.push([1, 'WARNING: could not write ' + p + ' for OpenSCAD: ' + ((x && x.message) || x)]); }
     }
     let rc = 0;
     try { rc = inst.callMain(args); }

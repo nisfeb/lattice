@@ -128,6 +128,13 @@ export async function collect(name, text, read, caps = CAPS) {
   const queue = [{ page: name, text, depth: 0 }];
   const asked = new Map();
   let looked = 0;
+  //  a file cannot also be a folder: `include <a>` is the file /w/a, so a
+  //  page under it, /w/a/b, has nowhere to go, and the other way round
+  const clash = (f) => {
+    for (let d = f.lastIndexOf('/'); d > ROOT.length; d = f.lastIndexOf('/', d - 1)) if (files.has(f.slice(0, d))) return f.slice(0, d);
+    for (const k of files.keys()) if (k.startsWith(f + '/')) return k;
+    return null;
+  };
   while (queue.length) {
     const { page, text: t, depth } = queue.shift();
     for (const inc of scanIncludes(t)) {
@@ -145,6 +152,8 @@ export async function collect(name, text, read, caps = CAPS) {
         asked.set(r.page, body);
       }
       if (typeof body !== 'string') continue;
+      const hit = clash(r.file);
+      if (hit) { notes.push(`${inc.ref}: not read, ${hit.slice(ROOT.length)} is in its way. Write the .scad on the include of the page above it`); continue; }
       if (bytes + body.length > caps.bytes) { notes.push(`${r.page}: the included files pass ${caps.bytes >> 20} MB, not read`); continue; }
       bytes += body.length;
       files.set(r.file, body);

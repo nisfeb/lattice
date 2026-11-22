@@ -154,6 +154,15 @@ console.log('\nincludes: a hostile source costs its length, and a few reads');
   check.eq('a page with a few missing includes still reads the real one', `${reads} ${some.files.length} ${some.notes.length}`, '41 2 0');
   const bad = await collect('b', Array.from({ length: 20000 }, () => 'include </etc/passwd>').join('\n'), async () => null);
   check('20,000 refused includes are not 20,000 notes', bad.notes.length <= CAPS.refs + 1 && bad.notes.some((x) => /include lines/.test(x)), `${bad.notes.length} notes`);
+  //  a page and a page under it, both named without .scad: one cannot be
+  //  a file and a folder, so the second is noted, and the rest still goes
+  const both = await collect('main', 'include <a>\ninclude <a/b>\ninclude <c.scad>', async (n) => ({ a: 'x=1;', 'a/b': 'y=2;', c: 'z=3;' }[n] ?? null));
+  check.eq('a page and its child page without .scad: the child is left out', both.files.map(([f]) => f).join(' '), '/w/main.scad /w/a /w/c.scad');
+  check('  and said', both.notes.some((x) => /a\/b/.test(x) && /\.scad/.test(x)), both.notes.join(' | '));
+  const other = await collect('main', 'include <a/b>\ninclude <a>', async (n) => ({ a: 'x=1;', 'a/b': 'y=2;' }[n] ?? null));
+  check.eq('  in the other order the parent is', other.files.map(([f]) => f).join(' ') + ' ' + other.notes.length, '/w/main.scad /w/a/b 1');
+  const fine = await collect('main', 'include <a.scad>\ninclude <a/b>', async (n) => ({ a: 'x=1;', 'a/b': 'y=2;' }[n] ?? null));
+  check.eq('  and with .scad on the parent both go', fine.files.map(([f]) => f).join(' ') + ' ' + fine.notes.length, '/w/main.scad /w/a.scad /w/a/b 0');
 }
 
 console.log('\nSTL: OpenSCAD\'s binary STL');
