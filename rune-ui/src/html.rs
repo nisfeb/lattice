@@ -534,8 +534,9 @@ const PICTURE_SIDE: u64 = 8192;
 /// decoded. A drawing (SVG) that draws other files in is refused too.
 /// That is a second guard, and it reads the text only as it is plainly
 /// written: a drawing that is zipped, or spelt with a prefix, passes
-/// it. What holds is that the crate that reads drawings resolves no
-/// address to a file (`vendor/usvg`).
+/// it. What holds is that neither crate that reads drawings resolves
+/// an address to a file (`vendor/usvg` for an HTML page's, and
+/// `vendor/usvg-0.45` for the pictures a Markdown page shows).
 /// What is not a picture this knows (a style sheet, a font) passes.
 // ponytail: PNG, GIF, JPEG, WebP and BMP are measured. A bomb in another format the decoder knows is not caught here. A size limit in the decoder itself is the fix
 pub fn fetched_ok(b: &[u8]) -> bool {
@@ -1261,24 +1262,25 @@ mod tests {
         assert!(deep(&format!("{}<svg><circle/></svg>", many("<div>"))) && deep(&format!("<svg><circle/></svg>{}", many("<div>"))));
     }
 
-    /// How many pictures a drawing holds, those of its filters too, once it is read as what draws a page reads it: by usvg, with the options it is given by default. `None` when it is no drawing.
+    /// A test that a drawing which names a file does not read it, for one of the two crates that read drawings: `usvg` reads those an HTML page holds (through Blitz) and `usvg_rune` those a Markdown page shows (through Rune's picture cache). Each is read as it is there, with the options the crate gives by default.
     #[cfg(not(target_arch = "wasm32"))]
-    fn pictures(bytes: &[u8]) -> Option<usize> {
-        fn count(g: &usvg::Group) -> usize {
-            let filtered: usize = g.filters().iter().flat_map(|f| f.primitives()).map(|p| if let usvg::filter::Kind::Image(i) = p.kind() { count(i.root()) } else { 0 }).sum();
-            filtered + g.children().iter().map(|n| match n { usvg::Node::Image(_) => 1, usvg::Node::Group(g) => count(g), _ => 0 }).sum::<usize>()
-        }
-        usvg::Tree::from_data(bytes, &usvg::Options::default()).ok().map(|t| count(t.root()))
-    }
-
+    macro_rules! reads_no_file {
+        ($test:ident, $usvg:ident) => {
     #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn a_drawing_that_names_a_file_does_not_read_it_however_it_is_spelt() {
+    fn $test() {
         use std::io::Write;
+        // how many pictures a drawing holds, those of its filters too. `None` when it is no drawing
+        fn pictures(bytes: &[u8]) -> Option<usize> {
+            fn count(g: &$usvg::Group) -> usize {
+                let filtered: usize = g.filters().iter().flat_map(|f| f.primitives()).map(|p| if let $usvg::filter::Kind::Image(i) = p.kind() { count(i.root()) } else { 0 }).sum();
+                filtered + g.children().iter().map(|n| match n { $usvg::Node::Image(_) => 1, $usvg::Node::Group(g) => count(g), _ => 0 }).sum::<usize>()
+            }
+            $usvg::Tree::from_data(bytes, &$usvg::Options::default()).ok().map(|t| count(t.root()))
+        }
         const SVG: &str = "http://www.w3.org/2000/svg";
         // a picture that is really there, so that a reading of it would show
         let png = [0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R', 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89];
-        let file = std::env::temp_dir().join(format!("lattice-drawing-test-{}.png", std::process::id()));
+        let file = std::env::temp_dir().join(format!("lattice-drawing-test-{}-{}.png", stringify!($usvg), std::process::id()));
         std::fs::write(&file, png).unwrap();
         let path = file.to_str().unwrap();
         let gz = |text: &str| {
@@ -1310,11 +1312,17 @@ mod tests {
         // a drawing held in a drawing reads no file either
         let inner = format!("<svg xmlns='{SVG}' width='10' height='10'><image href='{path}' width='10' height='10'/></svg>").replace('<', "%3C").replace('>', "%3E").replace('\'', "%27");
         let nested = format!("<svg xmlns='{SVG}' width='10' height='10'><image href=\"data:image/svg+xml,{inner}\" width='10' height='10'/></svg>");
-        if let Some(usvg::Node::Image(held)) = usvg::Tree::from_data(nested.as_bytes(), &usvg::Options::default()).unwrap().root().children().first() {
-            assert!(matches!(held.kind(), usvg::ImageKind::SVG(t) if t.root().children().is_empty()), "the inner drawing read the file");
+        if let Some($usvg::Node::Image(held)) = $usvg::Tree::from_data(nested.as_bytes(), &$usvg::Options::default()).unwrap().root().children().first() {
+            assert!(matches!(held.kind(), $usvg::ImageKind::SVG(t) if t.root().children().is_empty()), "the inner drawing read the file");
         }
         let _ = std::fs::remove_file(&file);
     }
+        };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    reads_no_file!(a_drawing_in_an_html_page_that_names_a_file_does_not_read_it, usvg);
+    #[cfg(not(target_arch = "wasm32"))]
+    reads_no_file!(a_drawing_a_markdown_page_shows_that_names_a_file_does_not_read_it, usvg_rune);
 
     #[test]
     fn broken_pages_do_not_panic_or_hang() {
