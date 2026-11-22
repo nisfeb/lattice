@@ -5552,6 +5552,14 @@ fn write(s: &mut App) {
     }
 }
 
+/// Whether a save the ship did not take says the ship itself is away. A
+/// 504 for a save through a link is the ship saying the link's host did
+/// not answer (`+link-write` in app.hoon): the ship is here, and takes
+/// every other save.
+fn ship_away(why: &str, link: bool) -> bool {
+    api::gone(why) && !(link && why.starts_with("504"))
+}
+
 /// Changes what waits for the ship in the files that keep it, and holds
 /// the lists from then on as the files do: another window on this ship
 /// may have put a save by there, or sent one.
@@ -5562,8 +5570,9 @@ fn change_waiting(s: &mut App, change: impl FnOnce(&mut Vec<api::QueuedOp>, &mut
 }
 
 /// Sends the saves that wait, now that the ship answers: the pages made
-/// here first, then the edits, one request each, stopping at the first
-/// the ship does not take or refuse outright.
+/// here first, then the edits, one request each. A ship that stops
+/// answering, or a session it has ended, ends the sending. A save it
+/// refuses for now is passed, and the ones after it still go.
 // ponytail: one request for each page. The ship's batch route is for when a queue of hundreds shows up
 fn drain(s: &mut App) {
     bg_taken(s);
@@ -5577,7 +5586,8 @@ fn drain(s: &mut App) {
         return;
     }
     s.note = format!("sending {} saved on this device\u{2026}", s.queue.len() + s.ops.len());
-    s.drain_req.request(c, |c| {
+    let links: std::collections::HashSet<String> = s.links.keys().cloned().collect();
+    s.drain_req.request((c, links), |(c, links)| {
         // one sender at a time, in this window and across them: the watcher of the ships not in front, a signing out, or another window may be part way through this ship's list
         let _held = api::send_lock();
         let _file = c.sending_lock();
@@ -5604,7 +5614,8 @@ fn drain(s: &mut App) {
             }
             let sent = c.send_queued(&name, &q);
             let stop = match &sent {
-                api::Sent::Stop(_) => true,
+                // a ship that is away, or a session it has ended, takes none of the rest either. Any other refusal is of this one save
+                api::Sent::Stop(why) => ship_away(why, links.contains(&name)) || why.starts_with("401"),
                 _ => {
                     let _ = c.change_waiting(|_, w| api::drop_sent(w, &name, &q));
                     false
@@ -5686,7 +5697,7 @@ fn drained(s: &mut App, (did, out): Drained) {
         match sent {
             api::Sent::Stop(why) => {
                 stopped = true;
-                if api::gone(&why) {
+                if ship_away(&why, s.links.contains_key(&name)) {
                     s.offline.get_or_insert_with(String::new);
                 } else {
                     said.push(format!("{name} is still waiting: {why}"));
@@ -6772,8 +6783,15 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             // the ship did not answer: the save waits here for it
             Err(e) if api::gone(&e) && sent.is_some() => {
                 let (p, base, memory) = sent.expect("just checked");
-                s.offline.get_or_insert_with(String::new);
+                // a link's host that did not answer is not the ship being away: the save waits for the host, and every other save goes on
+                let away_ship = ship_away(&e, !memory && s.links.contains_key(&p.name));
+                if away_ship {
+                    s.offline.get_or_insert_with(String::new);
+                }
                 queue_save(s, p, base, memory);
+                if !away_ship && s.note.starts_with("saved on this device") {
+                    s.note = format!("saved on this device, to send when its ship answers ({e})");
+                }
             }
             Err(e) => {
                 s.save_again = false;
@@ -15227,7 +15245,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         save(s);
         return true;
     }
-    if ev.is_command('e') && !s.editing && !page_hidden(s) && s.remote.as_ref().is_none_or(Shared::editable) {
+    if ev.is_command('e') && !s.editing && !page_hidden(s) && usable(s, "edit") {
         start_edit(s);
         tx.focus_when_shown(FIELD, false);
         return true;

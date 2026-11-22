@@ -1726,6 +1726,13 @@ pub fn drop_sent(q: &mut Queue, name: &str, sent: &Queued) {
     }
 }
 
+/// Whether a waiting save that was not taken means none of the rest will be either: the ship did
+/// not answer, or it has ended the session. Any other refusal is of that one save.
+#[cfg(not(target_arch = "wasm32"))]
+fn stops_all(why: &str) -> bool {
+    gone(why) || why.starts_with("401")
+}
+
 /// A file locked until it is dropped, made if it is not there: whoever else asks for it, in this
 /// program or in another window's, waits until then. `None` where
 /// it cannot be made or locked (a folder that cannot be written, a file system with no locks): the
@@ -2357,7 +2364,8 @@ impl Conn {
                     Err(e) => Sent::Stop(format!("the ship's answer was not read: {e}")),
                 }
             }
-            Err(e) if !replay_drop(&e) => return Sent::Stop(e),
+            // a 403 is the ship refusing this page for good (a link shared to read) unless the session itself is turned away. The two are told apart below: the text is kept aside only if the ship takes that save, and a session turned away is refused that too, so the save stays waiting
+            Err(e) if !replay_drop(&e) && !e.starts_with("403") => return Sent::Stop(e),
             Err(e) => e,
         };
         // the name taken by this very text is an earlier try of this save that landed after all
@@ -2669,7 +2677,9 @@ impl Conn {
             let _file = self.sending_lock();
             let Some(item) = self.queue().get(&name).cloned() else { continue };
             match self.send_queued(&name, &item) {
-                Sent::Stop(_) => break,
+                // a ship that is away, or a session it has ended, takes none of the rest either. Any other refusal is of this one save, and the rest go. A 504 for a link is the ship saying the link's host did not answer (`+link-write` in app.hoon): the ship itself is here
+                Sent::Stop(why) if stops_all(&why) && !(why.starts_with("504") && self.kept_link(&name)) => break,
+                Sent::Stop(_) => {}
                 sent => {
                     if self.change_waiting(|_, q| drop_sent(q, &name, &item)).is_err() {
                         break;
@@ -2709,6 +2719,12 @@ impl Conn {
     /// sent the last, across windows: two that sent at once would each send every save.
     pub fn sending_lock(&self) -> Option<std::fs::File> {
         file_lock(&queue_path(&self.url)?.with_extension("sending"))
+    }
+
+    /// Whether the tree last kept for this ship has a link to another ship's page at `name`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn kept_link(&self, name: &str) -> bool {
+        self.kept_tree().is_some_and(|(d, _)| d.nodes.iter().any(|n| n.path == name && n.link.is_some()))
     }
 
     /// Keeps the saves that wait. They are nowhere else, so a failure here is one to say.

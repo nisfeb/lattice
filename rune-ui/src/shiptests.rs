@@ -675,6 +675,69 @@ fn a_save_answered_and_not_yet_looked_at_is_still_a_save_on_its_way() {
 }
 
 #[test]
+fn a_save_the_ship_will_never_take_does_not_stand_in_the_way_of_the_rest() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("z-last", "md", "z\n");
+    ship.link("m-ro", "read", "theirs\n");
+    let mut r = Run::new(&ship);
+    r.open("m-ro");
+    // Ctrl+E does not open an editor where Edit is not offered
+    assert!(!usable(&r.s, "edit"));
+    ctrl_e(&mut r);
+    assert!(!r.s.editing, "Ctrl+E opened an editor on a link shared to read");
+    // a save of it that waits all the same, as when the link was made read-only after the edit
+    start_edit(&mut r.s);
+    r.typ("mine");
+    to_read(&mut r.s);
+    r.settle();
+    r.open("z-last");
+    start_edit(&mut r.s);
+    r.typ(" more z");
+    to_read(&mut r.s);
+    r.settle();
+    r.sync();
+    assert!(ship.body("z-last").contains("more z"), "the save behind it was sent: {:?}", r.s.note);
+    // the refused text is kept as a page of its own and waits no longer
+    assert_eq!(ship.saves_of("m-ro").len(), 1, "it is not sent again and again");
+    assert!(ship.st().pages.iter().any(|(n, p)| n.starts_with("conflicts/offline-edit-m~dro-") && p.0.contains("mine")), "{:?}", ship.st().pages.keys().collect::<Vec<_>>());
+    assert!(r.s.queue.is_empty() && ship.conn().queue().is_empty());
+}
+
+#[test]
+fn a_save_the_ship_refuses_for_now_lets_the_ones_after_it_go() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("a-first", "md", "a\n");
+    ship.write("z-last", "md", "z\n");
+    ship.link("m-link", "edit", "theirs\n");
+    let mut r = Run::new(&ship);
+    // the link's host is away: the ship says 504 for that page alone
+    ship.st().link_fail = 504;
+    r.open("m-link");
+    start_edit(&mut r.s);
+    r.typ("mine");
+    save(&mut r.s);
+    r.settle();
+    assert!(r.s.offline.is_none(), "the ship is not taken to be away: {:?}", r.s.note);
+    assert!(r.s.queue.contains_key("m-link") && !r.s.editing, "the link's save waits for its host");
+    for (name, text) in [("a-first", " more a"), ("z-last", " more z")] {
+        r.open(name);
+        start_edit(&mut r.s);
+        r.typ(text);
+        to_read(&mut r.s);
+        r.settle();
+        assert!(r.s.offline.is_none(), "{:?}", r.s.note);
+    }
+    assert!(ship.body("a-first").contains("more a") && ship.body("z-last").contains("more z"), "this ship's own pages are saved all along: {:?}", r.s.note);
+    // the host is back: the link's save goes at the next read of the tree
+    ship.st().link_fail = 0;
+    r.sync();
+    assert_eq!(ship.st().links["m-link"].1, "theirsmine\n");
+    assert!(r.s.queue.is_empty());
+}
+
+#[test]
 fn a_ship_that_does_not_answer_a_save_is_still_taken_to_be_away() {
     let _one = one();
     let ship = Ship::start();
@@ -727,6 +790,43 @@ fn two_windows_on_one_ship_keep_each_others_waiting_saves() {
     assert!(ship.body("notes/a").contains("window one") && ship.body("notes/b").contains("window two"), "{:?}", w2.s.note);
     assert!(c.queue().is_empty() && w2.s.queue.is_empty());
     assert_eq!(ship.saves().len() - before, 2, "each was sent once");
+}
+
+#[test]
+fn a_links_host_away_does_not_end_the_sending_for_a_ship_not_in_front() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("z-last", "md", "z\n");
+    ship.link("m-link", "edit", "theirs\n");
+    ship.st().link_fail = 504;
+    let c = ship.conn();
+    // the tree as it was last kept says which pages are links
+    let link = api::LinkTo { host: "~sampel-palnet".into(), path: "/m-link".into(), mode: "edit".into() };
+    c.keep_tree(vec![Node { path: "m-link".into(), page: true, link: Some(link), ..Node::default() }, Node { path: "z-last".into(), page: true, ..Node::default() }]).expect("kept");
+    let page = |name: &str, body: &str| Page { name: name.into(), body: body.into(), kind: "md".into(), rev: 0 };
+    c.change_waiting(|_, q| {
+        api::enqueue(q, &page("m-link", "theirs mine\n"), Some(4), false, 0);
+        api::enqueue(q, &page("z-last", "z more\n"), Some(1), false, 0);
+    })
+    .expect("put by");
+    let go = std::sync::atomic::AtomicBool::new(false);
+    c.send_waiting(&go);
+    assert_eq!(ship.body("z-last"), "z more\n", "the save after the link's was sent");
+    assert_eq!(c.queue().keys().collect::<Vec<_>>(), ["m-link"], "and the link's waits for its host");
+    ship.st().link_fail = 0;
+    c.send_waiting(&go);
+    assert!(c.queue().is_empty() && ship.st().links["m-link"].1 == "theirs mine\n");
+    // a 504 for a page that is no link is still the ship not answering: nothing after it is tried
+    ship.write("a-first", "md", "a\n");
+    c.change_waiting(|_, q| {
+        api::enqueue(q, &page("a-first", "a more\n"), Some(1), false, 0);
+        api::enqueue(q, &page("z-last", "z again\n"), Some(2), false, 0);
+    })
+    .expect("put by");
+    ship.st().fail = 504;
+    let before = ship.saves().len();
+    c.send_waiting(&go);
+    assert_eq!((ship.saves().len() - before, c.queue().len()), (1, 2), "the first is tried, and both still wait");
 }
 
 #[test]
