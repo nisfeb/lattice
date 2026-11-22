@@ -281,6 +281,12 @@ export function eachPos(g, fn) {
   if (g.type === 'GeometryCollection') { for (const h of g.geometries) eachPos(h, fn); return; }
   if (Array.isArray(g.coordinates)) walk(g.coordinates);
 }
+//  a ring's corners, each once. A ring should end where it starts, and
+//  one that does not is taken as closed: its last position is a corner.
+export const ringPts = (r) => {
+  const z = r[r.length - 1];
+  return r.length > 1 && r[0][0] === z[0] && r[0][1] === z[1] ? r.slice(0, -1) : r;
+};
 //  [w, s, e, n] of some features, or null when they have no positions
 export function bounds(features) {
   let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;

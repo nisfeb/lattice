@@ -7,7 +7,7 @@
 //  touch and mouse take the same path (pointer events). Every finished
 //  edit goes through the view's write(), which writes the whole body.
 
-import { props } from './core.js';
+import { props, bounds, eachPos, ringPts } from './core.js';
 
 const TOL = 10;          // px: how near a click must be to hit a shape
 const HANDLE_TOL = 12;   // px: to grab a vertex
@@ -15,7 +15,8 @@ const DRAG_MIN = 5;      // px: a press that moves less is a tap, not a drag
 const MAX_HANDLES = 1000;
 
 const wrapLon = (x) => ((((x + 180) % 360) + 360) % 360) - 180;
-const clampLat = (y) => Math.max(-89.9999999, Math.min(89.9999999, y));
+const MAX_LAT = 89.9999999;
+const clampLat = (y) => Math.max(-MAX_LAT, Math.min(MAX_LAT, y));
 const pos = (latlng) => { const w = latlng.wrap(); return [w.lng, clampLat(w.lat)]; };
 
 function segDist(p, a, b) {
@@ -33,6 +34,53 @@ function inside(p, ring) {
 }
 //  a deep copy of a geometry's coordinates
 const copyGeom = (g) => JSON.parse(JSON.stringify(g));
+
+
+//  the smallest fn(member) of a list, Infinity for none. A loop, since
+//  Math.min(...list) passes one argument per member and a geometry of
+//  125,000 members overflows the stack.
+export function nearest(list, fn) {
+  let best = Infinity;
+  for (const m of list) { const d = fn(m); if (d < best) best = d; }
+  return best;
+}
+
+//  where the vertex handles of a geometry go: [{ path, c }]
+export function vertexPaths(g) {
+  const out = [];
+  const add = (c, path) => out.push({ path, c });
+  if (!g) return out;
+  switch (g.type) {
+    case 'LineString': g.coordinates.forEach((c, i) => add(c, [i])); break;
+    case 'MultiLineString': g.coordinates.forEach((l, j) => l.forEach((c, i) => add(c, [j, i]))); break;
+    case 'Polygon': g.coordinates.forEach((r, j) => ringPts(r).forEach((c, i) => add(c, [j, i]))); break;
+    case 'MultiPolygon': g.coordinates.forEach((pg, k) => pg.forEach((r, j) => ringPts(r).forEach((c, i) => add(c, [k, j, i])))); break;
+    default:
+  }
+  return out;
+}
+//  move the vertex at `path` to [lon, lat]. Only the place changes: an
+//  altitude after it stays. The first corner of a closed ring is also its
+//  last position, and both move.
+export function setVertex(g, path, c) {
+  let list = g.coordinates;
+  for (let i = 0; i < path.length - 1; i++) list = list[path[i]];
+  const k = path[path.length - 1];
+  const shut = (g.type === 'Polygon' || g.type === 'MultiPolygon') && ringPts(list) !== list;
+  const next = [c[0], c[1], ...list[k].slice(2)];
+  list[k] = next;
+  if (shut && k === 0) list[list.length - 1] = next;
+}
+//  move a whole geometry. It moves as one: where its edge meets the
+//  antimeridian or a pole the move is cut short for every position alike.
+//  Cutting each position short on its own would flatten the shape there.
+export function shiftGeom(g, dlon, dlat) {
+  const b = bounds([{ geometry: g }]);
+  if (!b) return;
+  const cut = (d, lo, hi, max) => Math.max(Math.min(d, Math.max(0, max - hi)), Math.min(0, -max - lo));
+  const dx = cut(dlon, b[0], b[2], 180), dy = cut(dlat, b[1], b[3], MAX_LAT);
+  eachPos(g, (c) => { c[0] += dx; c[1] += dy; });
+}
 
 export function attachDraw(x) {
   const { L, map, mapEl, over, tools } = x;
@@ -105,21 +153,21 @@ export function attachDraw(x) {
         const dc = Math.hypot(c.x - p.x, c.y - p.y);
         return Math.min(d, dc <= r ? TOL * 0.8 : Math.abs(dc - r));
       }
-      case 'MultiPoint': return Math.min(...g.coordinates.map((c) => distOf({ type: 'Point', coordinates: c }, p, radius)));
+      case 'MultiPoint': return nearest(g.coordinates, (c) => distOf({ type: 'Point', coordinates: c }, p, radius));
       case 'LineString': {
         let best = Infinity, prev = null;
         for (const c of g.coordinates) { const q = proj(c); if (prev) best = Math.min(best, segDist(p, prev, q)); prev = q; }
         return best;
       }
-      case 'MultiLineString': return Math.min(...g.coordinates.map((l) => distOf({ type: 'LineString', coordinates: l }, p)));
+      case 'MultiLineString': return nearest(g.coordinates, (l) => distOf({ type: 'LineString', coordinates: l }, p));
       case 'Polygon': {
         const rings = g.coordinates.map((r) => r.map(proj));
         let inn = false, best = Infinity;
         rings.forEach((r) => { if (inside(p, r)) inn = !inn; for (let i = 1; i < r.length; i++) best = Math.min(best, segDist(p, r[i - 1], r[i])); });
         return inn ? Math.min(best, TOL * 0.9) : best;
       }
-      case 'MultiPolygon': return Math.min(...g.coordinates.map((c) => distOf({ type: 'Polygon', coordinates: c }, p)));
-      case 'GeometryCollection': return Math.min(Infinity, ...g.geometries.map((h) => distOf(h, p, radius)));
+      case 'MultiPolygon': return nearest(g.coordinates, (c) => distOf({ type: 'Polygon', coordinates: c }, p));
+      case 'GeometryCollection': return nearest(g.geometries, (h) => distOf(h, p, radius));
       default: return Infinity;
     }
   }
@@ -144,19 +192,6 @@ export function attachDraw(x) {
   }
 
   // ── handles of the selected shape ──────────────────────────────────────
-  function handlePaths(g) {
-    const out = [];
-    const add = (c, path) => out.push({ path, c });
-    if (!g) return out;
-    switch (g.type) {
-      case 'LineString': g.coordinates.forEach((c, i) => add(c, [i])); break;
-      case 'MultiLineString': g.coordinates.forEach((l, j) => l.forEach((c, i) => add(c, [j, i]))); break;
-      case 'Polygon': g.coordinates.forEach((r, j) => r.slice(0, -1).forEach((c, i) => add(c, [j, i]))); break;
-      case 'MultiPolygon': g.coordinates.forEach((pg, k) => pg.forEach((r, j) => r.slice(0, -1).forEach((c, i) => add(c, [k, j, i])))); break;
-      default:
-    }
-    return out.length > MAX_HANDLES ? [] : out;
-  }
   function paintHandles() {
     for (const h of handles) over.removeLayer(h.layer);
     handles = [];
@@ -164,39 +199,14 @@ export function attachDraw(x) {
     const i = x.sel();
     if (!editable || tool !== 'select' || i < 0 || x.locked()) return;
     const g = x.doc().features[i].geometry;
-    for (const h of handlePaths(g)) {
+    const hs = vertexPaths(g);
+    for (const h of hs.length > MAX_HANDLES ? [] : hs) {
       const layer = L.circleMarker([h.c[1], h.c[0]], { radius: 5, color: '#111', weight: 1.5, fillColor: '#fff', fillOpacity: 1, interactive: false }).addTo(over);
       handles.push({ ...h, layer });
     }
   }
 
   // ── dragging: a vertex, or the whole selected feature ──────────────────
-  function setAt(g, path, c) {
-    const t = g.type;
-    if (t === 'LineString') g.coordinates[path[0]] = c;
-    else if (t === 'MultiLineString') g.coordinates[path[0]][path[1]] = c;
-    else if (t === 'Polygon') {
-      const r = g.coordinates[path[0]];
-      r[path[1]] = c;
-      if (path[1] === 0) r[r.length - 1] = c;
-    } else if (t === 'MultiPolygon') {
-      const r = g.coordinates[path[0]][path[1]];
-      r[path[2]] = c;
-      if (path[2] === 0) r[r.length - 1] = c;
-    }
-  }
-  function shift(g, dlon, dlat) {
-    const walk = (c) => {
-      if (typeof c[0] === 'number') {
-        c[0] = Math.max(-180, Math.min(180, c[0] + dlon));
-        c[1] = clampLat(c[1] + dlat);
-        return;
-      }
-      for (const y of c) walk(y);
-    };
-    if (g.type === 'GeometryCollection') for (const h of g.geometries) shift(h, dlon, dlat);
-    else walk(g.coordinates);
-  }
   mapEl.addEventListener('pointerdown', (e) => {
     justDragged = false;
     if (!editable || x.locked() || tool !== 'select' || e.button > 0) return;
@@ -228,8 +238,8 @@ export function attachDraw(x) {
     const at = map.containerPointToLatLng(p);
     const f = x.doc().features[drag.i];
     const g = copyGeom(drag.orig);
-    if (drag.vh) setAt(g, drag.vh.path, pos(at));
-    else shift(g, at.lng - drag.start.lng, at.lat - drag.start.lat);
+    if (drag.vh) setVertex(g, drag.vh.path, pos(at));
+    else shiftGeom(g, at.lng - drag.start.lng, at.lat - drag.start.lat);
     x.doc().features[drag.i] = { ...f, geometry: g };
     drag.moved = true;
     if (!drag.raf) drag.raf = requestAnimationFrame(() => { if (drag) { drag.raf = 0; x.drawOne(drag.i); paintHandles(); } });

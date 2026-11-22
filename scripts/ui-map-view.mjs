@@ -693,7 +693,7 @@ console.log('==> a detail field in use is saved, and kept');
   await m.close();
 }
 
-console.log('==> a longitude no map has');
+console.log('==> shapes at the edges, and very large ones');
 {
   //  a longitude no map has is refused at once, on open and on import
   const m = await open(body([pt(-71, 42, { name: 'a' })]));
@@ -704,6 +704,31 @@ console.log('==> a longitude no map has');
   const imp = await m.page.evaluate(() => window.ctl.importFiles([new File(['{"type":"Feature","geometry":{"type":"LineString","coordinates":[[0,0],[1e30,0]]},"properties":{}}'], 'far.geojson')]));
   check('a file with one imports nothing, and says why', imp === false && before === await m.page.evaluate(() => window.buf) && /longitude/.test(await m.note()), await m.note());
   await m.close();
+  //  a box by the antimeridian, dragged east past it
+  const ring = [[170, 0], [178, 0], [178, 5], [170, 5], [170, 0]];
+  const a = await open(body([{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring] }, properties: { name: 'box' } }]));
+  await a.click(174, 2.5);
+  check.eq('the box selects', await a.sel(), 0);
+  const [x, y] = await a.at(174, 2.5);
+  const [xe] = await a.at(178, 2.5);
+  const far = Math.round((xe - x) * 1.2);     // 4.8 degrees east: 2.8 past the edge
+  await a.page.mouse.move(x, y); await a.page.mouse.down();
+  await a.page.mouse.move(x + far, y, { steps: 6 }); await a.page.mouse.up();
+  await sleep(40);
+  const moved = (await a.doc()).features[0].geometry.coordinates[0];
+  check('dragged past the antimeridian, the box stops at it with its shape whole',
+    moved[1][0] === 180 && Math.abs(moved[0][0] - 172) < 1e-6 && Math.abs(moved[3][0] - 172) < 1e-6 && moved[2][0] === 180 && Math.abs(moved[2][1] - moved[1][1] - 5) < 1e-6, JSON.stringify(moved));
+  await a.close();
+  //  one feature of 150,000 points, and a click on the map
+  const pts = Array.from({ length: 150000 }, (_, i) => [(i % 1000) / 100, Math.floor(i / 1000) / 100]);
+  const c = await open(body([{ type: 'Feature', geometry: { type: 'MultiPoint', coordinates: pts }, properties: { name: 'cloud' } }, pt(12, 0.5, { name: 'p' })]), { editable: false });
+  const n0 = errors.length;
+  await c.click(12, 0.5);
+  check.eq('a click beside 150,000 points selects what is under it', await c.sel(), 1);
+  await c.click(5, 0.75);
+  check.eq('and a click in the cloud selects the cloud', await c.sel(), 0);
+  check('with no error thrown', errors.length === n0, errors.slice(n0, n0 + 2).join(' | '));
+  await c.close();
 }
 
 check('no page errors', errors.length === 0, errors.slice(0, 5).join(' | '));

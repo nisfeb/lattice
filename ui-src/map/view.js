@@ -18,7 +18,7 @@ import * as L from 'leaflet/dist/leaflet-src.esm.js';
 import leafletCss from 'leaflet/dist/leaflet.css';
 import { forward as toMgrs } from 'mgrs';
 import {
-  parse, serialize, props, view as readView, sourceLink, bounds, firstPos, fmtPos,
+  parse, serialize, props, view as readView, sourceLink, bounds, firstPos, fmtPos, ringPts,
   colorOf, kindColor, ICONS, iconOf, orreryLink, gridStep, STYLES,
 } from './core.js';
 import { attachDraw } from './draw.js';
@@ -268,8 +268,8 @@ export function mount(host, opts = {}) {
       case 'MultiPoint': for (const c of g.coordinates) out.push(...layersOf({ type: 'Point', coordinates: c }, p, selOn, rend, dim)); break;
       case 'LineString': out.push(L.polyline(g.coordinates.map(ll), o)); break;
       case 'MultiLineString': out.push(L.polyline(g.coordinates.map((l) => l.map(ll)), o)); break;
-      case 'Polygon': out.push(L.polygon(g.coordinates.map((r) => r.slice(0, -1).map(ll)), { ...o, fillOpacity: dim ? 0.08 : 0.2 })); break;
-      case 'MultiPolygon': out.push(L.polygon(g.coordinates.map((pg) => pg.map((r) => r.slice(0, -1).map(ll))), { ...o, fillOpacity: dim ? 0.08 : 0.2 })); break;
+      case 'Polygon': out.push(L.polygon(g.coordinates.map((r) => ringPts(r).map(ll)), { ...o, fillOpacity: dim ? 0.08 : 0.2 })); break;
+      case 'MultiPolygon': out.push(L.polygon(g.coordinates.map((pg) => pg.map((r) => ringPts(r).map(ll))), { ...o, fillOpacity: dim ? 0.08 : 0.2 })); break;
       case 'GeometryCollection': for (const h of g.geometries) out.push(...layersOf(h, p, selOn, rend, dim)); break;
       default:
     }
