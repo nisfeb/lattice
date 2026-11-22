@@ -330,4 +330,17 @@
     (expect-eq !>(|) !>((save-moved:lu 504 | ~s10 ~s10 old)))
     (expect-eq !>(|) !>((save-moved:lu 504 | ~s11 ~s10 new)))
   ==
+::  +subresource: Fetch Metadata names what a request is for. Only a
+::  document (a navigation) or a client that sends no such header passes.
+++  test-subresource
+  ;:  weld
+    (expect-eq !>(|) !>((subresource:lu ~)))
+    (expect-eq !>(|) !>((subresource:lu `'document')))
+    (expect-eq !>(|) !>((subresource:lu `'Document')))
+    (expect-eq !>(&) !>((subresource:lu `'image')))
+    (expect-eq !>(&) !>((subresource:lu `'iframe')))
+    (expect-eq !>(&) !>((subresource:lu `'empty')))
+    (expect-eq !>(&) !>((subresource:lu `'style')))
+    (expect-eq !>(&) !>((subresource:lu `'')))
+  ==
 --

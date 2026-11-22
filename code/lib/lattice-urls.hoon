@@ -261,6 +261,21 @@
   =/  plain=(unit @ud)  (rush t dim:ag)
   ?^  plain  plain
   (slaw %ud t)
+::  +subresource: is this request a load a page makes on its own (an
+::  image, a frame, a script's fetch), going by Sec-Fetch-Dest?
+::
+::    A GET that changes state is meant for a navigation: the owner's
+::    bookmarklet, a share from the phone, a typed address. All of those
+::    say "document". An <img> in a page the owner only reads says
+::    "image", and it carries the session when the page is on this
+::    host. A client that sends no such header (curl, an old browser) is
+::    not refused, as with +cross-site.
+::
+++  subresource
+  |=  dest=(unit @t)
+  ^-  ?
+  ?~  dest  |
+  !=("document" (cass (trip u.dest)))
 ::  +cross-site: did another site send this request?
 ::
 ::    The owner's eyre cookie carries no SameSite, so a page on another site

@@ -4800,13 +4800,21 @@
   ::  GET, not POST, because the whole point is that a bookmarklet reaches it
   ::  by top-level navigation. eyre's session cookie carries no SameSite
   ::  attribute, so a navigation sends it where a cross-site POST would not.
-  ::  That does leave it CSRF-reachable (an <img src=…/clip?url=> on a hostile
-  ::  page would archive a page of the attacker's choosing), which is noise in
-  ::  the owner's own tree, not disclosure. The fetched body never travels
-  ::  back to the attacker. +http-url and +fetchable:lcl are the real
-  ::  boundary. They keep `file:` and friends, and loopback, private and
-  ::  local hosts, away from iris on the initial url and every redirect.
+  ::  That does leave it reachable by a navigation another site starts,
+  ::  which archives a page of that site's choosing: noise in the owner's
+  ::  own tree, not disclosure. The fetched body never travels back to the
+  ::  attacker. +http-url and +fetchable:lcl are the real boundary. They
+  ::  keep `file:` and friends, and loopback, private and local hosts, away
+  ::  from iris on the initial url and every redirect.
+  ::
+  ::  A subresource load is refused (+subresource:lu). An image in a page
+  ::  the owner only reads, a peer's or a clipped one drawn on this host,
+  ::  is sent with the session: it made the ship fetch a url of the
+  ::  author's choosing, which told them when the page was read, and filed
+  ::  a page each time. The bookmarklet navigates, so it still arrives.
       [%'GET' %clip]
+    ?:  (subresource:lu (get-header:http 'sec-fetch-dest' header-list.request.req))
+      (send-err eyre-id 403 'open this address as a page')
     =/  url=(unit @t)  (~(get by args) 'url')
     ?~  url  (send-err eyre-id 400 'missing url')
     (clip-page eyre-id u.url)

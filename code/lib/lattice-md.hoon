@@ -89,12 +89,26 @@
   ^-  ?
   =/  l=tape  (cass (lstrip u))
   |((has "http://" l) (has "https://" l))
-::  +safe-img: +safe-url, and no remote source unless `outside`
+::  +route-url: does `u` carry a query other than the bare `data` of a
+::  file's raw view? On this host that is a request to a route.
+++  route-url
+  |=  u=tape
+  ^-  ?
+  =/  q  (find "?" u)
+  ?~  q  |
+  !=("data" (sl +(u.q) u))
+::  +safe-img: +safe-url, no remote source unless `outside`, and no
+::  source on this host that calls a route. The browser loads an <img>
+::  as the page is drawn, with the reader's session, and the text may
+::  be a peer's or a clipped page's: "/apps/lattice/clip?url=.." as an
+::  image made the reader's ship fetch that url and file a page.
+::  `outside` does not lift this. Such an image renders as a link.
 ++  safe-img
   |=  u=tape
   ^-  ?
   ?&  (safe-url u)
       |(outside !(remote-url u))
+      |((remote-url u) !(route-url u))
   ==
 ++  img-html
   |=  [alt=tape url=tape title=tape]

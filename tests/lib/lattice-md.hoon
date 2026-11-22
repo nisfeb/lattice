@@ -355,4 +355,27 @@
     (yes (has "<a href=\"/p\" title=\"T\"" (r '[t](/p "T")')))
     (yes (has "<img src=\"/i.png\"" (r '![a](x ![b](/i.png)')))
   ==
+::  an image on this host with a query is a request to a route, made
+::  with the reader's session when the page is drawn. It is a link, not
+::  an <img>, with or without `outside`. A plain path and the raw view
+::  of a file (?data) still draw.
+++  test-image-no-route
+  =/  clip=@t  '![x](/apps/lattice/clip?url=https://evil.example/t?id=1)'
+  =/  o=tape  (r clip)
+  ;:  weld
+    (yes !(has "<img" o))
+    (yes (has "<a href=\"/apps/lattice/clip?url=https://evil.example/t?id=1\"" o))
+    (yes !(has "<img" (~(render-md md &) clip)))
+    (yes !(has "<img" (r '![x](clip?url=https://evil.example/)')))
+    (yes !(has "<img" (r '![x](/apps/lattice?url=urb://~zod/p)')))
+    (yes !(has "<img" (r '![x]( /apps/lattice/fetch?url=http://e.example)')))
+    (yes !(has "<img" (r '![x][k]\0a\0a[k]: /apps/lattice/share?text=http://e.example')))
+    (yes !(has "<img" (r '![x](/a.png?data&url=http://e.example)')))
+    (yes !(has "<img" (r '![x](/a.png?data=1)')))
+    (yes (has "<img src=\"/pic.png\"" (r '![x](/pic.png)')))
+    (yes (has "<img src=\"a/b.png\"" (r '![x](a/b.png)')))
+    (yes (has "<img src=\"/apps/lattice/x/~zod/p/pic.png?data\"" (r '![x](/apps/lattice/x/~zod/p/pic.png?data)')))
+    ::  a remote image the reader chose to load keeps its query
+    (yes (has "<img src=\"https://x.example/i.png?w=2\"" (~(render-md md &) '![a](https://x.example/i.png?w=2)')))
+  ==
 --
