@@ -72,9 +72,11 @@
     %+  skip  cur
     |=(e=entry &(=(host.e host.new) =(pax.e pax.new)))
   (scag cap all)
-::  +host-cap: how many entries one host may hold in the list. The global
-::  +cap alone let one ship evict every other host's entries by sending
-::  +cap notices; with this, one host fills at most its own share.
+::  +host-cap: how many entries one host's family may hold in the list
+::  (+family: a planet with its moons, or every comet). The global +cap
+::  alone let one ship evict every other host's entries by sending +cap
+::  notices. With this, one family fills at most its own share, however
+::  many moons or comets it sends from.
 ++  host-cap  ^-(@ud 500)
 ::  +pax-segs, +pax-bytes: the longest notice path the inbox keeps. A page
 ::  path is a base, /page, the page's rel and a grub name, so these are
@@ -89,17 +91,18 @@
       (lte (roll p |=([s=@ta n=@ud] :(add n 1 (met 3 s)))) pax-bytes)
       (levy p |=(s=@ta &(!=(%$ s) ((sane %ta) s))))
   ==
-::  +host-full: may `host` not add the entry `pax`: it holds +host-cap
-::  entries and this is not one of them (a re-share of one it holds only
-::  updates it)
+::  +host-full: may `host` not add the entry `pax`: its family holds
+::  +host-cap entries and this is not one `host` itself holds (a re-share
+::  of one it holds only updates it)
 ++  host-full
   |=  [cur=shared host=@p pax=path]
   ^-  ?
+  =/  fam=@  (family host)
   =/  n=@ud  0
   |-  ^-  ?
   ?~  cur  (gte n host-cap)
-  ?.  =(host host.i.cur)  $(cur t.cur)
-  ?:  =(pax pax.i.cur)  |
+  ?.  =(fam (family host.i.cur))  $(cur t.cur)
+  ?:  &(=(host host.i.cur) =(pax pax.i.cur))  |
   $(cur t.cur, n +(n))
 ::  +dir-touch: is a folder notice `pax` at `mode` nothing new, given the
 ::  entry `hit` (+dir-cover) that covers it? The folder's own entry at the

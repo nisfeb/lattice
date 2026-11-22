@@ -896,6 +896,38 @@
     (expect-eq !>(|) !>((host-full:ls many ~bus /apps/new)))
     (expect-eq !>(|) !>((host-full:ls (slag 1 many) ~nec /apps/new)))
   ==
+::  the cap is per family: a planet's moons fill one budget between them,
+::  and so do all comets, so no family can evict every other host
+++  test-host-full-family
+  =/  moons=(list @p)
+    ~[~doznec-wicdev-wisryt ~marnec-wicdev-wisryt ~binnec-wicdev-wisryt ~litnec-wicdev-wisryt]
+  =/  comet-a=@p  ~doznec--dozzod-dozzod-dozzod-doznec--dozzod-dozzod-dozzod-dozzod
+  =/  comet-b=@p  ~marnec--dozzod-dozzod-dozzod-doznec--dozzod-dozzod-dozzod-dozzod
+  ::  the four moons hold +host-cap entries between them
+  =/  many=shared:ls
+    %+  turn  (gulf 1 host-cap:ls)
+    |=(i=@ud `entry:ls`[(snag (mod i 4) moons) /apps/(scot %ud i) 'read' ~2024.1.1])
+  =/  comets=shared:ls
+    %+  turn  (gulf 1 host-cap:ls)
+    |=(i=@ud `entry:ls`[comet-a /apps/(scot %ud i) 'read' ~2024.1.1])
+  ;:  weld
+    ::  every moon is full, a fifth one too, and so is their planet
+    (expect-eq !>(&) !>((host-full:ls many (snag 0 moons) /apps/new)))
+    (expect-eq !>(&) !>((host-full:ls many ~signec-wicdev-wisryt /apps/new)))
+    (expect-eq !>(&) !>((host-full:ls many ~wicdev-wisryt /apps/new)))
+    ::  a re-share of an entry the moon itself holds still lands
+    (expect-eq !>(|) !>((host-full:ls many (snag 0 moons) /apps/'4')))
+    ::  but not a path only a sibling moon holds: that is a new entry
+    (expect-eq !>(&) !>((host-full:ls many (snag 0 moons) /apps/'1')))
+    ::  another planet, and another planet's moon, are not full
+    (expect-eq !>(|) !>((host-full:ls many ~sampel-palnet /apps/new)))
+    (expect-eq !>(|) !>((host-full:ls many ~doznec-sampel-palnet /apps/new)))
+    ::  one under the cap is not full
+    (expect-eq !>(|) !>((host-full:ls (slag 1 many) (snag 0 moons) /apps/new)))
+    ::  all comets share one budget
+    (expect-eq !>(&) !>((host-full:ls comets comet-b /apps/new)))
+    (expect-eq !>(|) !>((host-full:ls comets ~nec /apps/new)))
+  ==
 ++  test-pax-ok
   ;:  weld
     (expect-eq !>(&) !>((pax-ok:ls /apps/lattice/page/a/code)))
