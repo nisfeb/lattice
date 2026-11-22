@@ -335,24 +335,69 @@
   =/  key=tape  (sc u.close t.s)
   =/  rest=tape  (trim (sl (add u.close 2) t.s))
   ?~  rest  ~
-  =/  q  (find " \"" rest)
-  ?~  q  [~ (cass key) rest ""]
-  =/  url=tape  (sc u.q rest)
-  =/  ti=tape  (sl (add u.q 2) rest)
-  =/  q2  (find "\"" ti)
-  [~ (cass key) url ?~(q2 ti (sc u.q2 ti))]
+  ::  the destination is one word, then nothing or a quoted title. Any
+  ::  other line is prose that starts with a bracketed label ("[10:02]:
+  ::  called Bob"), and taking it as a definition deleted it from the page.
+  =/  sp  (find " " rest)
+  ?~  sp  [~ (cass key) rest ""]
+  =/  url=tape  (sc u.sp rest)
+  =/  ti=tape  (ltrm (sl u.sp rest))
+  ?.  &(?=(^ ti) =('"' i.ti))  ~
+  =/  q2  (find "\"" t.ti)
+  [~ (cass key) url ?~(q2 t.ti (sc u.q2 t.ti))]
+::  +unquote: the line `l` under `n` blockquote markers, ~ if it has fewer
+++  unquote
+  |=  [n=@ud l=tape]
+  ^-  (unit tape)
+  =/  w=tape  (ltrm l)
+  ?:  =(0 n)  `w
+  ?.  &(?=(^ w) =('>' i.w))  ~
+  $(n (dec n), l t.w)
+::  +quote-strip: how many blockquote markers `l` starts with, and the
+::  line under them
+++  quote-strip
+  |=  l=tape
+  ^-  [d=@ud s=tape]
+  =|  d=@ud
+  |-  ^-  [d=@ud s=tape]
+  =/  w=tape  (ltrm l)
+  ?:  &(?=(^ w) =('>' i.w))  $(l t.w, d +(d))
+  [d w]
+::  +mark-code: each line with `v`, true when it is a fence line or
+::  inside a fenced block. Such a line is code and passes verbatim: the
+::  passes that run before +rb must not read a definition out of it or
+::  rewrite a footnote mark in it. A fence opened inside a blockquote
+::  closes on a line at the same quote depth, and ends where the quote
+::  ends (a line with fewer markers), as +take-quote and +take-fence
+::  have it.
+++  mark-code
+  |=  lines=(list tape)
+  ^-  (list [v=? l=tape])
+  =|  open=(unit [d=@ud f=tape])
+  =|  out=(list [v=? l=tape])
+  |-  ^-  (list [v=? l=tape])
+  ?~  lines  (flop out)
+  ?^  open
+    =/  u=(unit tape)  (unquote d.u.open i.lines)
+    ?~  u  $(open ~)
+    ?:  (has f.u.open u.u)  $(lines t.lines, open ~, out [[& i.lines] out])
+    $(lines t.lines, out [[& i.lines] out])
+  =/  qs  (quote-strip i.lines)
+  ?:  |((has "```" s.qs) (has "~~~" s.qs))
+    $(lines t.lines, open `[d.qs (sc 3 s.qs)], out [[& i.lines] out])
+  $(lines t.lines, out [[| i.lines] out])
 ::  +collect-refs: pull every reference-definition line out. Return [refs kept].
 ++  collect-refs
-  |=  lines=(list tape)
+  |=  lines=(list [v=? l=tape])
   ^-  [refm (list tape)]
   =|  refs=refm
   =|  kept=(list tape)
   |-  ^-  [refm (list tape)]
   ?~  lines  [refs (flop kept)]
-  =/  rd  (is-ref-def i.lines)
+  =/  rd  ?:(v.i.lines ~ (is-ref-def l.i.lines))
   ?^  rd
     $(lines t.lines, refs (~(put by refs) key.u.rd [url.u.rd title.u.rd]))
-  $(lines t.lines, kept [i.lines kept])
+  $(lines t.lines, kept [l.i.lines kept])
 ::  ── footnotes ─────────────────────────────────────────────────────────────
 ::  +is-foot-def: a `[^id]: text` footnote definition line -> [id text].
 ++  is-foot-def
@@ -368,14 +413,14 @@
 ::  +collect-footnotes: pull `[^id]: text` definitions out and number them (in
 ::  order). The refs themselves are rewritten to links by +sub-foot-refs.
 ++  collect-footnotes
-  |=  lines=(list tape)
-  ^-  [footm (list tape)]
+  |=  lines=(list [v=? l=tape])
+  ^-  [footm (list [v=? l=tape])]
   =|  foot=footm
-  =|  kept=(list tape)
+  =|  kept=(list [v=? l=tape])
   =/  n=@ud  0
-  |-  ^-  [footm (list tape)]
+  |-  ^-  [footm (list [v=? l=tape])]
   ?~  lines  [foot (flop kept)]
-  =/  fd  (is-foot-def i.lines)
+  =/  fd  ?:(v.i.lines ~ (is-foot-def l.i.lines))
   ?^  fd
     $(lines t.lines, n +(n), foot (~(put by foot) id.u.fd [+(n) text.u.fd]))
   $(lines t.lines, kept [i.lines kept])
@@ -389,6 +434,16 @@
   ?:  =(0 ~(wyt by foot))  t
   |-  ^-  tape
   ?~  t  ""
+  ::  an escaped character and a code span pass as written, read as
+  ::  +ib-in reads them: a footnote mark in code is code
+  ?:  &(=('\\' i.t) ?=(^ t.t))  [i.t i.t.t $(t t.t.t)]
+  ?:  =('`' i.t)
+    =/  op=tape  ?:(&(?=(^ t.t) =('`' i.t.t)) "``" "`")
+    =/  aft=tape  (sl (lent op) t)
+    =/  close  (find-cap op aft scan-cap)
+    ?~  close  [i.t $(t t.t)]
+    =/  n=@ud  (add u.close (lent op))
+    :(weld op (sc n aft) $(t (sl n aft)))
   ?:  &(=('[' i.t) ?=(^ t.t) =('^' i.t.t))
     =/  aft=tape  (sl 2 t)
     ::  capped: a footnote id is short, and the uncapped find made 20KB of
@@ -951,9 +1006,11 @@
   =/  lines0=(list tape)
     %+  turn  (to-wain:format body)
     |=(l=@t (cap-quote-depth (strip-cr (trip l))))
-  =/  fn=[footm (list tape)]  (collect-footnotes lines0)
+  =/  fn=[footm (list [v=? l=tape])]  (collect-footnotes (mark-code lines0))
   =/  foot=footm  -.fn
-  =/  lines1=(list tape)  (turn +.fn |=(l=tape (sub-foot-refs l foot)))
+  =/  lines1=(list [v=? l=tape])
+    %+  turn  +.fn
+    |=([v=? l=tape] [v ?:(v l (sub-foot-refs l foot))])
   =/  cr=[refm (list tape)]  (collect-refs lines1)
   (weld (rb +.cr -.cr) (render-footnotes foot))
 --

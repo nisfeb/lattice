@@ -260,4 +260,37 @@
     (expect-eq !>("<p><a href=\"/u\" target=\"_blank\" rel=\"noopener noreferrer\">a<br>b</a></p>") !>((r '[a  \0ab](/u)')))
     (expect-eq !>("<p>a\\<br>b</p>") !>((r 'a\\  \0ab')))
   ==
+::  code is verbatim: a line inside a fence is never a reference or a
+::  footnote definition, and a footnote mark in code is not rewritten
+++  test-defs-not-in-code
+  =/  lnk=tape  "<a href=\"/u\""
+  ;:  weld
+    (expect-eq !>("<pre><code>[k]: v\0a</code></pre>") !>((r '```\0a[k]: v\0a```')))
+    (expect-eq !>("<pre><code>[^1]: note\0a</code></pre>") !>((r '~~~\0a[^1]: note\0a~~~')))
+    (yes (has "<code>[^a] in code\0a</code>" (r 'x[^a]\0a\0a```\0a[^a] in code\0a```\0a\0a[^a]: note')))
+    (yes (has "<sup" (r 'x[^a]\0a\0a```\0a[^a] in code\0a```\0a\0a[^a]: note')))
+    (yes (has "<code>[^a]</code> and <sup" (r 'see `[^a]` and [^a]\0a\0a[^a]: n')))
+    (yes (has "<code>[^a]</code> and <sup" (r 'see ``[^a]`` and [^a]\0a\0a[^a]: n')))
+    ::  a definition after a closed fence still counts
+    (yes (has lnk (r '```\0ax\0a```\0a[t][k]\0a\0a[k]: /u')))
+    ::  a fence in a quote: its lines are code, and it ends with the quote
+    (yes (has "[k]: v" (r '> ```\0a> [k]: v\0a> ```\0a\0a[t][k]\0a\0a[k]: /u')))
+    (yes (has lnk (r '> ```\0a> [k]: v\0a> ```\0a\0a[t][k]\0a\0a[k]: /u')))
+    (yes (has lnk (r '> ```\0a> code\0a\0a[t][k]\0a\0a[k]: /u')))
+    ::  a quoted fence line does not close a fence outside the quote
+    (yes (has "[k]: v" (r '```\0a> ```\0a[k]: v\0a```')))
+  ==
+::  a reference definition has a one-word destination and at most a
+::  quoted title. A line of prose that starts with a bracketed label
+::  is a paragraph.
+++  test-ref-def-shape
+  ;:  weld
+    (expect-eq !>("<p>[10:02]: called Bob</p>") !>((r '[10:02]: called Bob')))
+    (expect-eq !>("<p>[TODO]: fix the importer</p>") !>((r '[TODO]: fix the importer')))
+    (expect-eq !>("<p>[k]: /u trailing</p>") !>((r '[k]: /u trailing')))
+    (expect-eq !>("") !>((r '[k]: /u')))
+    (expect-eq !>("") !>((r '[k]: /u "T"')))
+    (expect-eq !>("") !>((r '[k]:   /u   "T"')))
+    (yes (has "href=\"/u\" title=\"T\"" (r '[t][k]\0a\0a[k]: /u "T"')))
+  ==
 --
