@@ -7531,7 +7531,9 @@
     [%| 400 'source must be user or agent']
   ?:  (save-plain key args)
     [%& [%save (spat ko) bod] (pairs:enjs:format ~[['ok' b+&]])]
-  =/  prose=@t  rest:(front:lk bod)
+  ::  the stamp writes the front matter. A block the body brought that
+  ::  holds anything else is kept as text (+prose-of:lk), not dropped.
+  =/  prose=@t  (prose-of:lk bod old)
   ?:  =('' prose)  [%| 400 'empty body']
   ?:  &(?=(^ old) !(may-see key u.old))
     [%| 403 'that key is not available to this agent key']

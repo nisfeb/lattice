@@ -582,7 +582,8 @@
   ;:  weld
     (expect-eq !>([`(list [k=@t v=@t])`~[['author' 'a'] ['sensitive' 'yes']] 'x']) !>((front '---\0d\0aAuthor: a\0d\0asensitive:\09yes\0d\0a---\0d\0ax')))
     (expect-eq !>(`(unit @t)``'/a') !>((meta-get meta:(front '---\0aSuperseded-By: /a\0a---\0ax') 'superseded-by')))
-    (expect-eq !>([`(list [k=@t v=@t])`~ 'x']) !>((front '---\0a---\0ax')))
+    ::  a rule under a rule is no empty block: the rule under it is text
+    (expect-eq !>([`(list [k=@t v=@t])`~ '---\0a---\0ax']) !>((front '---\0a---\0ax')))
     ::  two rules with prose between them are body, not front matter
     (expect-eq !>([`(list [k=@t v=@t])`~ '---\0aIntro line\0a---\0arest']) !>((front '---\0aIntro line\0a---\0arest')))
     ::  a list, a comment and a continued value do not stop a block
@@ -604,7 +605,7 @@
     !>((front-set '---\0d\0aa: 1\0d\0a---\0d\0ax\0d\0a' 'verified' 'd'))
     (expect-eq !>('---\0averified: d\0a---\0aplain') !>((front-set 'plain' 'verified' 'd')))
     (expect-eq !>('plain') !>((front-set 'plain' 'superseded-by' '')))
-    (expect-eq !>('---\0averified: d\0a---\0ax') !>((front-set '---\0a---\0ax' 'verified' 'd')))
+    (expect-eq !>('---\0averified: d\0a---\0a---\0a---\0ax') !>((front-set '---\0a---\0ax' 'verified' 'd')))
     %+  expect-eq  !>('---\0averified: d\0a---\0a---\0aIntro line\0a---\0arest')
     !>((front-set '---\0aIntro line\0a---\0arest' 'verified' 'd'))
     ::  a value cannot add a line
@@ -681,5 +682,87 @@
     (expect-eq !>(0) !>((mod (sub (lent s) 3) 3)))
     (expect-eq !>("ab") !>((flop (drop-high (flop ~['a' 'b' `@tD`0xe6 `@tD`0x97])))))
     (expect-eq !>("日") !>((flop (drop-high (flop (weld "日" ~[`@tD`0xe6 `@tD`0x97]))))))
+  ==
+::  a block with a stray line in it is still front matter, as it was
+::  before CRLF support: the odd line is skipped and the fields are read.
+::  So an entry stays superseded, and a save keeps its fields.
+++  test-front-odd-line
+  =/  olds=(list @t)
+    :~  '---\0acreated: 2025-01-01\0asource: user\0asuperseded-by: /new/key\0atags: [\0a  a\0a]\0a---\0aold prose'
+        '---\0acreated: 2025-01-01\0asource: user\0asuperseded-by: /new/key\0asummary: a long value\0acontinued on the next line\0a---\0aold prose'
+        '---\0acreated: 2025-01-01\0asource: user\0asuperseded-by: /new/key\0adraft\0a---\0aold prose'
+    ==
+  ^-  tang
+  %-  zing
+  ^-  (list tang)
+  %+  turn  olds
+  |=  b=@t
+  =/  e=know-entry  [b ~2026.1.1 ~ ~]
+  =/  st=@t  (stamp `e 'new prose' 'key1' 'agent' ~2026.11.22 |)
+  ;:  weld
+    (expect-eq !>(`(unit @t)``'/new/key') !>((superseded e)))
+    (expect-eq !>('user') !>((source-of e)))
+    (expect-eq !>('old prose') !>(rest:(front b)))
+    (expect-eq !>(`(unit @t)``'/new/key') !>((superseded [st ~2026.1.1 ~ ~])))
+    (expect-eq !>(`(unit @t)``'2025-01-01') !>((meta-get meta:(front st) 'created')))
+    (expect-eq !>('new prose') !>(rest:(front st)))
+  ==
+::  a save over an entry passes its block through, every byte of it but
+::  the lines of the fields the save sets
+++  test-stamp-keeps-block
+  =/  old=know-entry
+    ['---\0acreated: 2025-01-02\0atags:\0a  - a\0a  - b\0a# note\0aauthor: someone\0a---\0aold fact' ~2026.1.1 ~ ~]
+  =/  st=@t  (stamp `old 'new fact' 'k' 'agent' ~2026.10.4 |)
+  ;:  weld
+    %+  expect-eq
+      !>('---\0acreated: 2025-01-02\0atags:\0a  - a\0a  - b\0a# note\0aauthor: k\0asource: agent\0averified: 2026-10-04\0averified-by: k\0a---\0anew fact')
+    !>(st)
+    ::  a closing fence at the very end gets its line end
+    %+  expect-eq  !>('---\0aa: 1\0acreated: 2026-01-01\0averified: 2026-10-04\0a---\0anew')
+    !>((stamp `['---\0aa: 1\0a---' ~2026.1.1 ~ ~] 'new' '' '' ~2026.10.4 |))
+    ::  CRLF stays CRLF
+    %+  expect-eq  !>('---\0d\0aa: 1\0d\0acreated: 2026-01-01\0d\0averified: 2026-10-04\0d\0a---\0d\0anew')
+    !>((stamp `['---\0d\0aa: 1\0d\0a---\0d\0aold' ~2026.1.1 ~ ~] 'new' '' '' ~2026.10.4 |))
+    ::  an entry with no front matter gets a block, as before
+    %+  expect-eq  !>('---\0acreated: 2026-01-01\0averified: 2026-10-04\0a---\0anew')
+    !>((stamp `['old' ~2026.1.1 ~ ~] 'new' '' '' ~2026.10.4 |))
+  ==
+::  prose that opens with a rule is not front matter, colon or not, and a
+::  save keeps any block of its own that holds what the stamp cannot
+++  test-front-prose-colon
+  =/  sent=@t  '---\0aNote: intro\0a---\0arest'
+  ;:  weld
+    (expect-eq !>([`(list [k=@t v=@t])`~ '---\0asee http://x for it\0a---\0abody']) !>((front '---\0asee http://x for it\0a---\0abody')))
+    (expect-eq !>([`(list [k=@t v=@t])`~ '---\0aIntro line\0a---\0arest']) !>((front '---\0aIntro line\0a---\0arest')))
+    ::  a block of its own is kept whole when it names a field the
+    ::  stamp does not write and the entry did not have
+    (expect-eq !>(sent) !>((prose-of sent ~)))
+    (expect !>(?=(^ (find "Note: intro" (trip (stamp ~ (prose-of sent ~) 'k' 'agent' ~2026.10.4 |))))))
+    ::  one of the stamp's own fields only, or the entry's block sent
+    ::  back as it was read, is the stamp's to write
+    (expect-eq !>('rest') !>((prose-of '---\0aauthor: me\0averified: x\0a---\0arest' ~)))
+    =/  old=know-entry  ['---\0atags:\0a  - a\0acreated: 2025-01-01\0a---\0aold' ~2026.1.1 ~ ~]
+    (expect-eq !>('new') !>((prose-of '---\0atags:\0a  - a\0acreated: 2025-01-01\0a---\0anew' `old)))
+    (expect-eq !>('plain') !>((prose-of 'plain' ~)))
+  ==
+::  a rule right under the opening one does not close the block: the
+::  reader before CRLF support read on, and the mark it saw still counts
+++  test-sensitive-line-two
+  =/  s  |=(b=@t (sensitive [b ~2026.1.1 ~ ~]))
+  ;:  weld
+    (expect !>((s '---\0a---\0asensitive: yes\0a---\0abody')))
+    (expect !>((s '---\0a--- \0asensitive: yes\0a---\0abody')))
+    (expect !>((s '---\0a---\09\0asensitive: yes\0a---\0abody')))
+    (expect !>((s (front-set '---\0a---\0asensitive: yes\0a---\0abody' 'verified' 'd'))))
+    (expect-eq !>(`(unit @t)``'/x') !>((superseded ['---\0a---\0asuperseded-by: /x\0a---\0abody' ~2026.1.1 ~ ~])))
+  ==
+::  an entry the reader before CRLF support read as superseded still is
+::  (a block it closed at a line of four dashes)
+++  test-superseded-like-before
+  ;:  weld
+    (expect-eq !>(`(unit @t)``'/x') !>((superseded ['---\0asuperseded-by: /x\0a----\0abody' ~2026.1.1 ~ ~])))
+    (expect-eq !>(`(unit @t)``'/x') !>((superseded ['---\0asuperseded-by: /x\0a---x\0abody' ~2026.1.1 ~ ~])))
+    (expect-eq !>(`(unit @t)`~) !>((superseded ['---\0asuperseded-by: /x\0abody, never closed' ~2026.1.1 ~ ~])))
+    (expect-eq !>(`(unit @t)`~) !>((superseded ['x\0a---\0asuperseded-by: /x\0a---' ~2026.1.1 ~ ~])))
   ==
 --
