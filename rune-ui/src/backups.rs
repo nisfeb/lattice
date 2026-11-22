@@ -215,6 +215,15 @@ pub fn verify_bytes(data: &[u8]) -> Report {
             }
         }
     }
+    // read as a restore reads it: a file under pages/ that it would leave out is not a page that reads clean
+    if let Ok(a) = crate::vault::read(data) {
+        if a.skip_ext > 0 {
+            r.problems.push(format!("a restore would leave out {} file(s) of a kind that is no page's", a.skip_ext));
+        }
+        if a.skip_name > 0 {
+            r.problems.push(format!("a restore would leave out {} page(s) whose name the ship does not take", a.skip_name));
+        }
+    }
     if r.pages == 0 {
         r.problems.push("no pages in the archive".into());
     }
@@ -356,6 +365,13 @@ mod tests {
         assert_eq!(short.problems, ["the manifest expects 3 page(s) but the archive holds 1", "the export could not read 2 item(s): gone, the memories", "no share.json: a restore would bring every page back private", "no know.json: a restore would bring back no memories"]);
         assert!(short.says().starts_with("\u{2717} 1 page(s), NO share.json, NO know.json"));
         assert!(verify_bytes(&archive(&[("README.txt", "hi")])).problems.contains(&"no pages in the archive".to_owned()));
+        // every kind of page an export writes is one a restore puts back, and is counted clean
+        let kinds = archive(&[("pages/a.md", "a"), ("pages/s.fods", "<s/>"), ("pages/d.fodt", "<d/>"), ("pages/m.geojson", "{}"), ("pages/c.scad", "cube();"), ("know.json", "{}"), ("share.json", "{}"), ("manifest.json", "{\"pages\":5,\"missing\":[]}")]);
+        assert_eq!(verify_bytes(&kinds).problems, Vec::<String>::new());
+        assert_eq!(crate::vault::read(&kinds).unwrap().pages.iter().map(|p| format!("{}:{}", p.name, p.kind)).collect::<Vec<_>>(), ["a:md", "s:fods", "d:fodt", "m:geojson", "c:scad"]);
+        // a file a restore would leave out is said, not counted as a page that reads clean
+        let odd = verify_bytes(&archive(&[("pages/a.md", "a"), ("pages/pic.svg", "<svg/>"), ("pages/Bad Name.md", "x"), ("know.json", "{}"), ("share.json", "{}"), ("manifest.json", "{\"pages\":3,\"missing\":[]}")]));
+        assert_eq!(odd.problems, ["a restore would leave out 1 file(s) of a kind that is no page's", "a restore would leave out 1 page(s) whose name the ship does not take"]);
 
         let d = tmpdir("verify");
         let s = sched("daily", 24, 7, &d);

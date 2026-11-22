@@ -220,19 +220,10 @@ pub fn build(dump: &Value, know: Option<&Value>, scopes: Option<&Value>, source:
 }
 
 /// The kind a file's extension puts a page back as, or none for one that
-/// is not a page's.
+/// is not a page's. One table with an upload's, and the web client's
+/// (`KMAP` in `ui-app/vault.js`): every kind an export writes comes back.
 pub fn ext_kind(ext: &str) -> Option<&'static str> {
-    Some(match ext.to_ascii_lowercase().as_str() {
-        "md" => "md",
-        "gmi" => "gmi",
-        "html" | "htm" => "html",
-        "txt" | "text" => "text",
-        "js" => "js",
-        "css" => "css",
-        "hoon" => "hoon",
-        "tex" | "latex" => "tex",
-        _ => return None,
-    })
+    crate::upload::ext_kind(ext)
 }
 
 /// A name the ship takes: parts of lowercase letters, digits and `._~-`,
