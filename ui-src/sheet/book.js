@@ -6,13 +6,14 @@
 //  engine in step, and gives back the flat ODS text.
 
 import {
-  parseFods, serializeFods, cellAt, setCell, setStyle, ownRow, extent, rowCount, MAX_ROWS, MAX_COLS, dateSerial,
+  parseFods, serializeFods, cellAt, setCell, setStyle, ownRow, bumpRows, extent, rowCount, MAX_ROWS, MAX_COLS, dateSerial, serialDate,
+  attrText,
 } from './model.js';
 import { Engine } from './engine.js';
 import { Styles, fixed } from './styles.js';
-import { toOf, toUser, FormulaError, moveFormula, moveAddrs, offsetFormula, hasBadRef, bodyOf, quoteSheet, renameInFormula, parseAddrs } from './formula.js';
+import { toOf, toUser, FormulaError, moveFormula, moveRefs, moveAddrs, offsetFormula, cutFormula, bodyOf, quoteSheet, renameInFormula, parseAddrs } from './formula.js';
 import { general } from './funcs.js';
-import { attr, escAttr } from '../writer/xml.js';
+import { attr } from '../writer/xml.js';
 
 const HISTORY_CHARS = 24 * 1024 * 1024;
 
@@ -23,16 +24,27 @@ export function readTyped(text, nullDate) {
   const t = text.trim();
   if (t === '') return { vt: null, v: null, kind: null };
   if (text[0] === "'") return { vt: 'string', v: text.slice(1), kind: null };
-  if (/\d/.test(t) && NUM.test(t)) return { vt: 'float', v: Number(t.replace(/,/g, '')), kind: null };
+  if (/\d/.test(t) && NUM.test(t)) {
+    //  a number no double holds (1e999) is the text typed, not 0
+    const v = Number(t.replace(/,/g, ''));
+    if (Number.isFinite(v)) return { vt: 'float', v, kind: null };
+  }
   let m = /^([+-]?(?:\d+\.?\d*|\.\d+))\s*%$/.exec(t);
   if (m) return { vt: 'percentage', v: Number(m[1]) / 100, kind: 'percent' };
   m = /^(-)?\$\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)$/.exec(t);
   if (m) return { vt: 'currency', v: Number(m[2].replace(/,/g, '')) * (m[1] ? -1 : 1), kind: 'currency', cur: 'USD' };
   if (/^true$/i.test(t)) return { vt: 'boolean', v: true, kind: null };
   if (/^false$/i.test(t)) return { vt: 'boolean', v: false, kind: null };
-  m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t);
-  if (m && +m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31) {
-    return { vt: 'date', v: dateSerial(`${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`, nullDate), kind: 'date' };
+  //  a date, or a date and a time of day as the bar shows one
+  m = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(t);
+  if (m && (m[4] === undefined || (+m[4] < 24 && +m[5] < 60 && +(m[6] || 0) < 60))) {
+    const iso = `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    const day = dateSerial(iso, nullDate);
+    //  only a date that exists. The 31st of February would be read as the
+    //  2nd of March: it stays the text typed, as in Calc.
+    if (day !== null && serialDate(day, nullDate) === iso) {
+      return { vt: 'date', v: day + (m[4] === undefined ? 0 : (+m[4] * 3600 + +m[5] * 60 + +(m[6] || 0)) / 86400), kind: 'date' };
+    }
   }
   m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(t);
   if (m && +m[2] < 60 && +(m[3] || 0) < 60) return { vt: 'time', v: (+m[1] * 3600 + +m[2] * 60 + +(m[3] || 0)) / 86400, kind: 'time' };
@@ -144,6 +156,7 @@ export class Book {
     if (!cell.vt) return '';
     if (cell.vt === 'string') {
       const t = cell.v ?? cell.text;
+      if (cell.bad) return t;
       const as = readTyped(t, this.doc.nullDate);
       return as.vt !== 'string' || t[0] === '=' || t[0] === "'" ? "'" + t : t;
     }
@@ -170,8 +183,16 @@ export class Book {
     if (typed.length > 1 && typed[0] === '=') {
       let f;
       try { f = toOf(typed); } catch (e) {
-        if (e instanceof FormulaError) return { error: 'that formula cannot be read: ' + e.message };
-        throw e;
+        //  RangeError: nested or chained too deep to parse
+        if (!(e instanceof FormulaError) && !(e instanceof RangeError)) throw e;
+        //  what was typed is never thrown away. A formula that cannot be
+        //  read is kept as the text typed, marked so the grid draws it as
+        //  an error and the bar shows it as typed, to be put right.
+        setCell(sheet, r, c, { vt: 'string', v: typed, f: null, text: typed, bad: true });
+        this.engine.setFormula(s, r, c, null);
+        const changed = this.engine.recalc([[s, r, c]]);
+        const why = e instanceof FormulaError ? e.message : 'it is too long';
+        return { changed: [[s, r, c], ...changed], note: `that formula cannot be read: ${why}. It is kept as text.` };
       }
       return this.putFormula(s, r, c, f);
     }
@@ -218,6 +239,7 @@ export class Book {
       const own = setStyle(sheet, r, c, st2);
       own.vt = KIND_VT[kind];
       own.text = this.styles.text(st2, own.v, own.vt);
+      own.ps = null;
     }
     return { changed: [[s, r, c], ...changed] };
   }
@@ -234,6 +256,16 @@ export class Book {
     setCell(sheet, r, c, { vt: from.vt, v: from.v, f: null, text: from.text, err: false, cur: from.cur });
     this.engine.setFormula(s, r, c, null);
     return { changed: [[s, r, c], ...this.engine.recalc([[s, r, c]])] };
+  }
+
+  //  +moveCell: one cell of a cut block pasted at its new place. `block`
+  //  is { sheet, r1, c1, r2, c2 }, where the block was cut from. Unlike a
+  //  copy, a moved formula goes on reading the cells it read.
+  moveCell(from, block, s, r, c) {
+    const src = this.doc.sheets[block.sheet];
+    if (!from.f || !src) return this.copyCell({ ...from, f: null }, s, r, c);
+    const f = cutFormula(from.f, block, r - from.r, c - from.c, src.name, this.doc.sheets[s].name);
+    return this.putFormula(s, r, c, f ?? from.f);
   }
 
   //  +format: a formatting change over a rectangle. change is { bold,
@@ -256,6 +288,7 @@ export class Book {
           own.vt = KIND_VT[kind] || 'float';
           if (own.vt === 'currency') own.cur = own.cur || 'USD'; else delete own.cur;
           own.text = this.styles.text(st, own.v, own.vt);
+          own.ps = null;
         }
         out.push([s, r, c]);
       }
@@ -307,6 +340,15 @@ export class Book {
         for (const [a] of k.attrs) {
           if (RANGEISH.test(a) && !known.some(([x]) => x === a) && a !== 'table:end-cell-address') {
             why = `this spreadsheet has a ${k.name.replace(/^[a-z]+:/, '').replace(/-/g, ' ')} lattice cannot keep in step`;
+            return;
+          }
+        }
+        //  a rule or a name whose references cannot all be read cannot be
+        //  moved, and must not be left behind while its cells move
+        for (const [a, kind] of known) {
+          const val = kind === 'expr' ? attr(k, a) : null;
+          if (val && val.includes('[') && moveRefs(val, '', { sheet: sheet.name, dim, at, n }) === null) {
+            why = `a ${k.name.replace(/^[a-z]+:/, '').replace(/-/g, ' ')} here holds a reference lattice cannot read, so it cannot be moved safely`;
             return;
           }
         }
@@ -389,18 +431,13 @@ export class Book {
           const val = attr(k, a);
           let next;
           if (kind === 'addr') next = moveAddrs(val, op, home);
-          else if (!val.includes('[')) next = val;
-          else {
-            const head = bodyOf(val) === null ? 'of:=' : '';
-            const moved = moveFormula(head + val, home, op);
-            next = moved === null ? null : moved.slice(head.length);
-          }
+          else next = val.includes('[') ? moveRefs(val, home, op) : val;
           if (next === null || next === val) continue;
           const open = text.slice(k.start, k.openEnd);
           const at0 = open.indexOf(` ${a}="${raw[1]}"`);
           if (at0 < 0) continue;
           const vs = k.start + at0 + a.length + 3;
-          edits.push([vs, vs + raw[1].length, escAttr(next)]);
+          edits.push([vs, vs + raw[1].length, attrText(next)]);
         }
         if (k.name !== 'table:table-row') fix(k, table);
       }
@@ -411,15 +448,17 @@ export class Book {
     // 2. the rows or columns themselves
     if (dim === 'r') this.shiftRows(sheet, at, n, cnt);
     else this.shiftCols(sheet, at, n, cnt);
+    bumpRows(sheet);
 
     // 3. spans moved: start again from the new text, then recompute what
     //    now points at nothing
     if (!this.reload()) return { error: this.error };
     this.touched = true;
-    //  a delete takes values out of ranges, so every formula is computed
-    //  again. An insert only adds empty cells: just what now points at
-    //  nothing.
-    const again = n < 0 ? this.engine.formulas : this.engine.formulas.filter((e) => hasBadRef(e.f));
+    //  every formula is computed again. A delete takes values out of
+    //  ranges. An insert moves cells, and a formula may depend on where
+    //  it or its cells are (ROW, COLUMN, ROWS, INDEX, MATCH) with no
+    //  change to its text, or to any value it reads.
+    const again = this.engine.formulas;
     if (again.length) this.engine.recalc(again.map((e) => [e.s, e.r, e.c]), again);
     return { ok: true };
   }
@@ -487,11 +526,16 @@ export class Book {
       const i = splitAt(row.cells, at, cloneCell);
       if (i < 0) continue;
       row.dirty = true;
-      for (const c of row.cells) c.dirty = true;
       if (n > 0) {
         //  the new cells take the look of the column to their left
         const left = row.cells[i - 1];
         row.cells.splice(i, 0, blank(cnt, left && !left.covered ? left.st : null));
+        //  cells pushed past the last column fall off, as the columns do
+        let over = row.cells.reduce((a, c) => a + c.rep, 0) - MAX_COLS;
+        while (over > 0 && row.cells.length) {
+          const last = row.cells[row.cells.length - 1];
+          if (last.rep > over) { last.rep -= over; last.dirty = true; over = 0; } else { over -= last.rep; row.cells.pop(); }
+        }
       } else {
         let j = splitAt(row.cells, at + cnt, cloneCell);
         if (j < 0) j = row.cells.length;

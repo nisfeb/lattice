@@ -659,6 +659,78 @@ console.log('==> a field keeps the cursor when the shell says editable again');
   await m.close();
 }
 
+console.log('==> a detail field in use is saved, and kept');
+{
+  const m = await open(body([pt(-71, 42, { name: 'a' }), pt(-70, 42, { name: 'b' })]));
+  await m.click(-71, 42);
+  await m.page.focus('.lm-detail textarea');
+  await m.page.keyboard.type('an important note');
+  check('typed text is not in the body before the field is left', !(await m.page.evaluate(() => window.buf)).includes('an important note'));
+  const ok = await m.page.evaluate(() => window.ctl.sync());
+  check('sync() puts the text of the field in use into the body', ok === true && (await m.doc()).features[0].properties.note === 'an important note');
+  check('and leaves the field as it was, with the cursor in it', await m.page.evaluate(() => { const t = document.querySelector('.lm-detail textarea'); return document.activeElement === t && t.value === 'an important note'; }));
+  await m.page.focus('.lm-detail [data-k="kind"]');
+  await m.page.keyboard.type('pla');
+  check('sync() from a field that repaints the pane leaves the cursor in that field', await m.page.evaluate(() => window.ctl.sync()) === true
+    && (await m.doc()).features[0].properties.kind === 'pla'
+    && await m.page.evaluate(() => { const a = document.activeElement; return a.dataset.k === 'kind' && a.value === 'pla' && a.selectionStart === 3; }));
+  await m.page.keyboard.type('ce');
+  await m.page.evaluate(() => window.ctl.sync());
+  check.eq('typing goes on, and the next sync has it', (await m.doc()).features[0].properties.kind, 'place');
+  await m.page.focus('.lm-detail [data-k="time"]');
+  await m.page.keyboard.type('not a date');
+  check('sync() says no for a field it cannot save', await m.page.evaluate(() => window.ctl.sync()) === false && (await m.note()).includes('not a date') && !(await m.doc()).features[0].properties.time);
+  await m.page.$eval('.lm-detail [data-k="time"]', (e) => { e.value = ''; });
+  check('with no field in use sync() is yes', await m.page.evaluate(() => { document.activeElement.blur(); return window.ctl.sync(); }) === true);
+  //  an outside text arrives while a field holds unsaved typing
+  await m.page.focus('.lm-detail [data-k="name"]');
+  await m.page.keyboard.type(' renamed');
+  const outside = body([pt(-71, 42, { name: 'a', kind: 'place', note: 'an important note' }), pt(-70, 42, { name: 'b' }), pt(-69, 42, { name: 'c' })]);
+  check('update() takes the outside text', await m.page.evaluate((t) => { window.buf = t; return window.ctl.update(t); }, outside) && (await m.list()).length === 3);
+  check('and the field in use keeps its typing and the cursor', await m.page.evaluate(() => { const i = document.querySelector('.lm-detail [data-k="name"]'); return document.activeElement === i && i.value === 'a renamed'; }));
+  await m.page.evaluate(() => window.ctl.sync());
+  check.eq('which the next sync saves over the outside text', JSON.stringify((await m.doc()).features.map((f) => f.properties.name)), '["a renamed","b","c"]');
+  await m.close();
+}
+
+console.log('==> shapes at the edges, and very large ones');
+{
+  //  a longitude no map has is refused at once, on open and on import
+  const m = await open(body([pt(-71, 42, { name: 'a' })]));
+  const bad = await m.page.evaluate((t) => { const h = document.createElement('div'); document.body.append(h); const t0 = performance.now(); const c = window.LatMap.mount(h, { text: t, cur: () => t }); h.remove(); return { error: c.error || '', ms: performance.now() - t0 }; },
+    body([pt(1e20, 0, { name: 'far' })]));
+  check('a page with a longitude of 1e20 is refused, not hung on', /longitude/.test(bad.error), JSON.stringify(bad));
+  const before = await m.page.evaluate(() => window.buf);
+  const imp = await m.page.evaluate(() => window.ctl.importFiles([new File(['{"type":"Feature","geometry":{"type":"LineString","coordinates":[[0,0],[1e30,0]]},"properties":{}}'], 'far.geojson')]));
+  check('a file with one imports nothing, and says why', imp === false && before === await m.page.evaluate(() => window.buf) && /longitude/.test(await m.note()), await m.note());
+  await m.close();
+  //  a box by the antimeridian, dragged east past it
+  const ring = [[170, 0], [178, 0], [178, 5], [170, 5], [170, 0]];
+  const a = await open(body([{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring] }, properties: { name: 'box' } }]));
+  await a.click(174, 2.5);
+  check.eq('the box selects', await a.sel(), 0);
+  const [x, y] = await a.at(174, 2.5);
+  const [xe] = await a.at(178, 2.5);
+  const far = Math.round((xe - x) * 1.2);     // 4.8 degrees east: 2.8 past the edge
+  await a.page.mouse.move(x, y); await a.page.mouse.down();
+  await a.page.mouse.move(x + far, y, { steps: 6 }); await a.page.mouse.up();
+  await sleep(40);
+  const moved = (await a.doc()).features[0].geometry.coordinates[0];
+  check('dragged past the antimeridian, the box stops at it with its shape whole',
+    moved[1][0] === 180 && Math.abs(moved[0][0] - 172) < 1e-6 && Math.abs(moved[3][0] - 172) < 1e-6 && moved[2][0] === 180 && Math.abs(moved[2][1] - moved[1][1] - 5) < 1e-6, JSON.stringify(moved));
+  await a.close();
+  //  one feature of 150,000 points, and a click on the map
+  const pts = Array.from({ length: 150000 }, (_, i) => [(i % 1000) / 100, Math.floor(i / 1000) / 100]);
+  const c = await open(body([{ type: 'Feature', geometry: { type: 'MultiPoint', coordinates: pts }, properties: { name: 'cloud' } }, pt(12, 0.5, { name: 'p' })]), { editable: false });
+  const n0 = errors.length;
+  await c.click(12, 0.5);
+  check.eq('a click beside 150,000 points selects what is under it', await c.sel(), 1);
+  await c.click(5, 0.75);
+  check.eq('and a click in the cloud selects the cloud', await c.sel(), 0);
+  check('with no error thrown', errors.length === n0, errors.slice(n0, n0 + 2).join(' | '));
+  await c.close();
+}
+
 check('no page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
 await browser.close();
 check.done();

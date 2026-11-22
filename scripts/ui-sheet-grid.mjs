@@ -126,7 +126,8 @@ console.log('==> typing and recalculation');
   await g.click(2, 4);
   await g.page.keyboard.type('=SUM(A2:A5');
   await g.press('Enter');
-  check('a formula that cannot be read is refused with a note', /cannot be read/.test(await g.note()) && (await g.cell(0, 2, 4)).f === null);
+  check('a formula that cannot be read is said so in a note', /cannot be read/.test(await g.note()) && (await g.cell(0, 2, 4)).f === null);
+  check.eq('and is kept as the text typed', (await g.cell(0, 2, 4)).v, '=SUM(A2:A5');
   await g.click(3, 4);
   await g.page.keyboard.type('=IF(AND(A2>1,B2<10),"yes","no")');
   await g.press('Tab');
@@ -177,6 +178,148 @@ console.log('==> keyboard, ranges, clipboard');
   await g.chord('Control', 'Home');
   check.eq('Ctrl+Home goes home', await g.addr(), 'A1');
   await g.page.close();
+}
+
+console.log('==> the formula bar and the cell editor are one edit');
+{
+  const g = await open(corpus('02-formulas'));
+  const edOpen = () => g.page.$eval('.ls-ed', (e) => !e.classList.contains('ls-idle'));
+  await g.click(4, 4);
+  await g.page.keyboard.type('abc');
+  await g.page.click('.ls-fx input');
+  await g.page.keyboard.type('def');
+  check.eq('typing goes on in the bar after starting in the cell', await g.bar(), 'abcdef');
+  check.eq('and the cell editor shows the same text', await g.page.$eval('.ls-ed', (e) => e.value), 'abcdef');
+  await g.click(6, 4);
+  check.eq('a click elsewhere commits what the bar shows', (await g.cell(0, 4, 4)).v, 'abcdef');
+  await g.click(5, 4);
+  await g.page.keyboard.type('=1+');
+  await g.page.click('.ls-fx input');
+  await g.page.keyboard.type('41');
+  const ok = await g.page.evaluate(() => window.ctl.sync());
+  check('a save commits a formula finished in the bar', ok === true && (await g.cell(0, 5, 4)).f === 'of:=1+41' && (await g.cell(0, 5, 4)).v === 42);
+  check('and it is in the page buffer', (await g.page.evaluate(() => window.buf)).includes('table:formula="of:=1+41"'));
+  await g.click(6, 4);
+  await g.page.keyboard.type('gone');
+  await g.page.click('.ls-fx input');
+  await g.page.keyboard.type('!');
+  await g.press('Escape');
+  check('Escape in the bar abandons the edit and closes the cell editor', (await g.cell(0, 6, 4)).vt === null && !(await edOpen()) && await g.bar() === '');
+  await g.click(7, 4);
+  await g.page.keyboard.type('one');
+  await g.page.click('.ls-fx input');
+  await g.page.keyboard.type(' two');
+  await g.page.click('.ls-ed');
+  await g.press('End');
+  await g.page.keyboard.type(' three');
+  check('going back into the cell editor keeps it open with the whole text', await edOpen() && await g.bar() === 'one two three');
+  await g.press('Enter');
+  check.eq('and Enter commits all of it', (await g.cell(0, 7, 4)).v, 'one two three');
+  await g.click(8, 4);
+  await g.page.keyboard.type('x');
+  await g.page.click('.ls-fx input');
+  await g.page.keyboard.type('y');
+  await g.tool('Bold');
+  check('a toolbar button commits what the bar shows', (await g.cell(0, 8, 4)).v === 'xy');
+  await g.page.close();
+}
+
+console.log('==> a formula that cannot be read is never dropped');
+{
+  const g = await open(corpus('02-formulas'));
+  const typo = '=IF(SUM(B1:B9)>10,AVERAGE(B1:B9),MAX(B1:B9)';
+  await g.click(4, 4);
+  await g.page.keyboard.type('kept');
+  await g.press('Enter');
+  await g.click(4, 4);
+  await g.press('F2');
+  await g.page.$eval('.ls-ed', (e) => e.select());
+  await g.page.keyboard.type(typo);
+  await g.press('Enter');
+  check.eq('Enter on a formula one bracket short keeps the text typed', (await g.cell(0, 4, 4)).v, typo);
+  check('with no formula stored, and a note saying why', (await g.cell(0, 4, 4)).f === null && /bracket/.test(await g.note()));
+  await g.click(4, 4);
+  check.eq('the bar shows it as typed, to be put right', await g.bar(), typo);
+  check('and the cell is drawn as an error', await g.page.$eval('.ls-c[data-r="4"][data-c="4"]', (e) => e.classList.contains('ls-err') && e.textContent.startsWith('=IF(')));
+  await g.page.click('.ls-fx input');
+  await g.press('End');
+  await g.page.keyboard.type(')');
+  await g.press('Enter');
+  check.eq('closing the bracket in the bar makes it the formula', (await g.cell(0, 4, 4)).f, 'of:=IF(SUM([.B1:.B9])>10;AVERAGE([.B1:.B9]);MAX([.B1:.B9]))');
+  await g.click(6, 4);
+  await g.page.keyboard.type('=A2+');
+  const r = await g.page.evaluate(() => { const ok = window.ctl.sync(); return { ok, buf: window.buf }; });
+  check('a save with such text in the open editor reports success only with the text in the buffer', r.ok === true && r.buf.includes('<text:p>=A2+</text:p>'));
+  check.eq('and the cell holds it', (await g.cell(0, 6, 4)).v, '=A2+');
+  const again = await g.page.evaluate(() => { const b = new window.LatSheet.core.Book(window.buf); return b.cell(0, 6, 4).v + '|' + b.cell(0, 4, 4).f; });
+  check.eq('the saved text reads back with both', again, '=A2+|of:=IF(SUM([.B1:.B9])>10;AVERAGE([.B1:.B9]);MAX([.B1:.B9]))');
+  //  a commit the book refuses leaves the editor open, and the save is told
+  await g.click(8, 4);
+  await g.page.keyboard.type('held');
+  const held = await g.page.evaluate(() => {
+    const b = window.ctl.book, real = b.enter;
+    b.enter = () => ({ error: 'refused for the test' });
+    const ok = window.ctl.sync();
+    b.enter = real;
+    const e = document.querySelector('.ls-ed');
+    return { ok, open: !e.classList.contains('ls-idle'), text: e.value };
+  });
+  check('a refused commit keeps the editor open with its text, and the save is told', held.ok === false && held.open && held.text === 'held', JSON.stringify(held));
+  await g.press('Enter');
+  check.eq('and it commits once the book takes it', (await g.cell(0, 8, 4)).v, 'held');
+  await g.page.close();
+}
+
+console.log('==> cut and paste is a move');
+{
+  const g = await open(corpus('02-formulas'));
+  const cut = () => g.page.evaluate(() => {
+    const dt = new DataTransfer();
+    document.activeElement.dispatchEvent(new ClipboardEvent('cut', { clipboardData: dt, bubbles: true, cancelable: true }));
+    return dt.getData('text/plain');
+  });
+  const type = async (r, c, t) => { await g.page.evaluate((a, b) => window.ctl.select(0, a, b), r, c); await g.page.keyboard.type(t); await g.press('Enter'); };
+  await g.click(1, 0);
+  //  G41 reads outside the block, relative, mixed, absolute and on another sheet. H41 reads G41.
+  await type(40, 6, '=A2+$A3+A$4+$A$5');
+  await type(40, 7, '=G41*2');
+  const want = (await g.cell(0, 40, 6)).v;
+  await g.page.evaluate(() => window.ctl.select(0, 40, 6));
+  await g.page.keyboard.down('Shift'); await g.press('ArrowRight'); await g.page.keyboard.up('Shift');
+  const tsv = await cut();
+  check('cut empties the cells', (await g.cell(0, 40, 6)).f === null && (await g.cell(0, 40, 7)).f === null);
+  await g.page.evaluate(() => window.ctl.select(0, 44, 8));
+  await g.paste(tsv);
+  check.eq('a moved formula still reads the cells it read', (await g.cell(0, 44, 8)).f + ' ' + (await g.cell(0, 44, 8)).v, 'of:=[.A2]+[.$A3]+[.A$4]+[.$A$5] ' + want);
+  check.eq('and one that read a cell moved with it follows that cell', (await g.cell(0, 44, 9)).f + ' ' + (await g.cell(0, 44, 9)).v, 'of:=[.I45]*2 ' + want * 2);
+  await g.page.evaluate(() => window.ctl.select(0, 48, 8));
+  await g.paste(tsv);
+  check('a second paste of the same cut is plain text, not the formula again', (await g.cell(0, 48, 8)).f === null);
+  //  a copy still moves its relative references
+  await g.page.evaluate(() => window.ctl.select(0, 44, 8));
+  const copied = await g.copy();
+  await g.page.evaluate(() => window.ctl.select(0, 45, 8));
+  await g.paste(copied);
+  check.eq('a copy still moves relative references', (await g.cell(0, 45, 8)).f, 'of:=[.A3]+[.$A4]+[.A$4]+[.$A$5]');
+  await g.page.close();
+  //  a cut on one sheet pasted on another keeps reading the first sheet
+  const s = await open(corpus('05-sheets'));
+  await s.click(1, 0);
+  await s.page.evaluate(() => window.ctl.select(0, 9, 3));
+  await s.page.keyboard.type('=A2+E10');
+  await s.press('Enter');
+  await s.page.evaluate(() => window.ctl.select(0, 9, 3));
+  await s.page.keyboard.down('Shift'); await s.press('ArrowRight'); await s.page.keyboard.up('Shift');
+  const t2 = await s.page.evaluate(() => {
+    const dt = new DataTransfer();
+    document.activeElement.dispatchEvent(new ClipboardEvent('cut', { clipboardData: dt, bubbles: true, cancelable: true }));
+    return dt.getData('text/plain');
+  });
+  await s.page.evaluate(() => document.querySelectorAll('.ls-tabs button')[1].click());
+  await s.page.evaluate(() => window.ctl.select(1, 5, 0));
+  await s.paste(t2);
+  check.eq('moved to another sheet, it names the sheet it read, and follows the cell moved with it', (await s.cell(1, 5, 0)).f, 'of:=[$Data.A2]+[.B6]');
+  await s.page.close();
 }
 
 console.log('==> the toolbar');

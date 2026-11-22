@@ -193,29 +193,52 @@ function criterion(c) {
   };
 }
 
-//  the cells of a range and, beside each, the cell at the same offset in
-//  another range (SUMIF's sum range). Walks the whole rectangle, clamped
-//  to what the sheet holds.
-function pairs(test, other, fn) {
-  const [rows, cols] = test.eng.used(test.s);
-  const r2 = Math.min(test.r2, Math.max(rows - 1, test.r1));
-  const c2 = Math.min(test.c2, Math.max(cols - 1, test.c1));
-  for (let r = test.r1; r <= r2; r++) {
-    for (let c = test.c1; c <= c2; c++) {
-      const v = test.eng.value(test.s, r, c);
-      fn(v, other ? other.eng.value(other.s, other.r1 + (r - test.r1), other.c1 + (c - test.c1)) : v);
+//  how much of a rectangle of `shape`'s size, laid at the corner of each
+//  of `ranges`, can hold anything: [rows, cols]. Past that every cell of
+//  every one of them is empty, so nothing there needs to be read.
+function reach(shape, ranges) {
+  let rows = 0, cols = 0;
+  for (const g of ranges) {
+    const [ur, uc] = g.eng.used(g.s);
+    rows = Math.max(rows, Math.min(shape.rows, ur - g.r1));
+    cols = Math.max(cols, Math.min(shape.cols, uc - g.c1));
+  }
+  return [rows, cols];
+}
+//  fn(w) for each cell of `test` that passes `ok`, w being the cell at the
+//  same offset in `other` (SUMIF's sum range), or the cell itself with no
+//  other. Returns how many more cells pass that were not read: the empty
+//  ones past what the sheets hold, when the criterion takes an empty cell.
+//  A range does not end where the sheet's used rows happen to.
+function pairs(test, other, ok, fn) {
+  const [rows, cols] = reach(test, other ? [test, other] : [test]);
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      const v = test.at(i, j);
+      if (ok(v)) fn(other ? other.eng.value(other.s, other.r1 + i, other.c1 + j) : v);
     }
   }
+  return ok(null) ? test.rows * test.cols - rows * cols : 0;
 }
 
+//  n to d decimal places, half away from zero, or away from zero ('up')
+//  or toward it ('down'), as Calc rounds
 const round = (n, d, mode) => {
   const f = 10 ** d;
-  const x = n * f;
-  let y;
-  if (mode === 'up') y = n < 0 ? -Math.ceil(-x - 1e-9) : Math.ceil(x - 1e-9);
-  else if (mode === 'down') y = n < 0 ? -Math.floor(-x + 1e-9) : Math.floor(x + 1e-9);
-  else y = n < 0 ? -Math.round(-x + 1e-9) : Math.round(x + 1e-9);
-  return y / f;
+  //  more places than a number can have: there is nothing to round
+  if (!Number.isFinite(f)) return n;
+  //  fewer than it has digits: nothing is left
+  if (f === 0) return 0;
+  const x = Math.abs(n) * f;
+  //  too large to have a fraction at this place
+  if (!(x < 4503599627370496)) return n;
+  //  a product a hair off a whole number through binary arithmetic is
+  //  that number: 0.29*100 is 29. The allowance is relative, about the
+  //  last of a double's digits, as in styles.js +fixed. An absolute one
+  //  rounded 1.4999999999 up.
+  const fuzz = x * 4 * Number.EPSILON;
+  const y = mode === 'up' ? Math.ceil(x - fuzz) : mode === 'down' ? Math.floor(x + fuzz) : Math.round(x + fuzz);
+  return (n < 0 ? -y : y) / f;
 };
 
 const num1 = (f) => (a) => { const n = toNum(scalar(a)); return isErr(n) ? n : f(n); };
@@ -349,26 +372,26 @@ export const FUNCS = {
     const other = a[2] instanceof Range ? a[2] : null;
     const ns = [];
     let err = null;
-    pairs(a[0], other, (v, w) => { if (ok(v)) { if (isErr(w)) err = w; else if (typeof w === 'number') ns.push(w); else if (typeof w === 'boolean') ns.push(w ? 1 : 0); } });
+    pairs(a[0], other, ok, (w) => { if (isErr(w)) err = w; else if (typeof w === 'number') ns.push(w); else if (typeof w === 'boolean') ns.push(w ? 1 : 0); });
     return err || ksum(ns);
   },
   COUNTIF: (a) => {
     if (!(a[0] instanceof Range)) return E.value;
     const ok = criterion(a[1]);
     let n = 0;
-    pairs(a[0], null, (v) => { if (ok(v)) n++; });
-    return n;
+    const more = pairs(a[0], null, ok, () => { n++; });
+    return n + more;
   },
   AVERAGEIF: (a) => {
     if (!(a[0] instanceof Range)) return E.value;
     const ok = criterion(a[1]);
     const other = a[2] instanceof Range ? a[2] : null;
     const ns = [];
-    pairs(a[0], other, (v, w) => { if (ok(v) && typeof w === 'number') ns.push(w); });
+    pairs(a[0], other, ok, (w) => { if (typeof w === 'number') ns.push(w); });
     return ns.length ? ksum(ns) / ns.length : E.div0;
   },
   SUMIFS: (a) => ifs(a, 1, (acc, w) => (typeof w === 'number' ? acc + w : acc), 0),
-  COUNTIFS: (a) => ifs([null, ...a], 1, (acc) => acc + 1, 0),
+  COUNTIFS: (a) => ifs([null, ...a], 1, (acc) => acc + 1, 0, true),
   SUMPRODUCT: (a) => {
     if (!a.length || !a.every((x) => x instanceof Range)) return E.value;
     const [f] = a;
@@ -417,10 +440,12 @@ export const FUNCS = {
   RADIANS: (a) => num1((n) => n * Math.PI / 180)(a[0]),
   EVEN: (a) => num1((n) => { const s = n < 0 ? -1 : 1; return s * 2 * Math.ceil(Math.abs(n) / 2 - 1e-12); })(a[0]),
   ODD: (a) => num1((n) => { const s = n < 0 ? -1 : 1; const m = Math.ceil(Math.abs(n) - 1e-12); return s * (m % 2 ? m : m + 1); })(a[0]),
-  FACT: (a) => num1((n) => { if (n < 0) return E.arg; let f = 1; for (let i = 2; i <= Math.floor(n); i++) f *= i; return fin(f); })(a[0]),
+  //  170! is the largest a number holds: past it Calc answers #VALUE!, and
+  //  the loop must not run on to 1E15
+  FACT: (a) => num1((n) => { if (n < 0) return E.illegal; if (!(n < 171)) return E.value; let f = 1; for (let i = 2; i <= Math.floor(n); i++) f *= i; return f; })(a[0]),
   CEILING: (a) => num2((n, s) => (s === 0 ? 0 : n < 0 && s < 0 ? Math.floor(n / s + 1e-12) * s : Math.ceil(n / s - 1e-12) * s))(a[0], a[1] ?? 1),
   FLOOR: (a) => num2((n, s) => (s === 0 ? E.div0 : n < 0 && s < 0 ? Math.ceil(n / s - 1e-12) * s : Math.floor(n / s + 1e-12) * s))(a[0], a[1] ?? 1),
-  MROUND: (a) => num2((n, s) => (s === 0 ? 0 : Math.round(n / s) * s))(a[0], a[1]),
+  MROUND: (a) => num2((n, s) => (s === 0 ? 0 : round(n / s, 0) * s))(a[0], a[1]),
   GCD: (a) => stat(a, (ns) => ns.map((n) => Math.floor(Math.abs(n))).reduce((x, y) => { while (y) [x, y] = [y, x % y]; return x; }, 0)),
   LCM: (a) => stat(a, (ns) => ns.map((n) => Math.floor(Math.abs(n))).reduce((x, y) => { if (!x || !y) return 0; let g = x, h = y; while (h) [g, h] = [h, g % h]; return x / g * y; }, 1)),
   RAND: () => Math.random(),
@@ -485,19 +510,24 @@ export const FUNCS = {
     const s = scalar(a[0]), from = scalar(a[1]), to = scalar(a[2]);
     for (const x of [s, from, to]) if (isErr(x)) return x;
     const S = toStr(s), F = toStr(from), T = toStr(to);
-    if (!F) return S;
-    if (a[3] === undefined) return S.split(F).join(T);
-    const n = toNum(scalar(a[3]));
+    const n = a[3] === undefined ? null : toNum(scalar(a[3]));
     if (isErr(n)) return n;
+    //  which occurrence: the first is 1, and a fraction is cut off
+    if (n !== null && n < 1) return E.illegal;
+    if (!F) return S;
+    if (n === null) return S.split(F).join(T);
     let at = -1;
-    for (let i = 0; i < n; i++) { at = S.indexOf(F, at + 1); if (at < 0) return S; }
+    for (let i = 0; i < Math.floor(n); i++) { at = S.indexOf(F, at + 1); if (at < 0) return S; }
     return S.slice(0, at) + T + S.slice(at + F.length);
   },
   REPLACE: (a) => {
     const s = scalar(a[0]), st = toNum(scalar(a[1])), n = toNum(scalar(a[2])), w = scalar(a[3]);
     for (const x of [s, st, n, w]) if (isErr(x)) return x;
+    //  the first character is 1, and a count is not negative
+    if (st < 1 || n < 0) return E.illegal;
     const ch = [...toStr(s)];
-    return ch.slice(0, st - 1).join('') + toStr(w) + ch.slice(st - 1 + n).join('');
+    const from = Math.floor(st) - 1;
+    return ch.slice(0, from).join('') + toStr(w) + ch.slice(from + Math.floor(n)).join('');
   },
   VALUE: (a) => { const v = scalar(a[0]); const n = typeof v === 'string' ? toNum(v.replace(/,/g, '')) : toNum(v); return n === E.value ? E.illegal : n; },
   CHAR: (a) => num1((n) => (n < 1 || n > 255 ? E.arg : String.fromCharCode(n)))(a[0]),
@@ -602,7 +632,9 @@ export const FUNCS = {
   NOW: (a, eng) => { const d = new Date(); return serialOf(eng, d.getFullYear(), d.getMonth(), d.getDate()) + (d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds()) / 86400; },
 };
 
-function ifs(a, first, step, init) {
+//  `count`: the result is a count, so the empty cells past what the
+//  sheets hold are added when every criterion takes an empty cell
+function ifs(a, first, step, init, count) {
   const sum = a[0];
   const tests = [];
   for (let i = first; i + 1 < a.length; i += 2) {
@@ -611,13 +643,14 @@ function ifs(a, first, step, init) {
   }
   if (!tests.length) return E.arg;
   const f = tests[0][0];
-  const [rows, cols] = f.eng.used(f.s);
+  const [rows, cols] = reach(f, tests.map((t) => t[0]).concat(sum instanceof Range ? [sum] : []));
   let acc = init;
-  for (let i = 0; i < Math.min(f.rows, Math.max(rows - f.r1, 0)); i++) {
-    for (let j = 0; j < Math.min(f.cols, Math.max(cols - f.c1, 0)); j++) {
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
       if (tests.every(([rg, ok]) => ok(rg.at(i, j)))) acc = step(acc, sum instanceof Range ? sum.at(i, j) : null);
     }
   }
+  if (count && tests.every(([, ok]) => ok(null))) acc += f.rows * f.cols - rows * cols;
   return acc;
 }
 function textCut(a, f) {

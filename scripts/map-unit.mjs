@@ -21,9 +21,10 @@ import { build } from 'esbuild';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { makeCheck } from './lib/check.mjs';
+import { shiftGeom, setVertex, vertexPaths, nearest } from '../ui-src/map/draw.js';
 import {
   parse, serialize, props, view, title, text, outline, render, renderBody, dp, simplify,
-  sourceLink, iconOf, orreryLink, gridStep, depthOf, BLANK, BIG, MAX_FEATURES, MAX_POSITIONS, MAX_DEPTH, RENDER_MAX,
+  sourceLink, iconOf, orreryLink, gridStep, depthOf, BLANK, BIG, MAX_LON, MAX_FEATURES, MAX_POSITIONS, MAX_DEPTH, RENDER_MAX,
 } from '../ui-src/map/core.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -91,6 +92,17 @@ console.log('2. refusals');
   refuses('a collection in a collection', fc([{ type: 'Feature', geometry: { type: 'GeometryCollection', geometries: [{ type: 'GeometryCollection', geometries: [] }] } }]), /inside another/);
   refuses('properties that are a list', fc([{ type: 'Feature', geometry: null, properties: [1] }]), /properties/);
   refuses('a lattice member that is a list', fc([], { lattice: [] }), /lattice member/);
+  //  a longitude no map has: Leaflet's tile loops never end on one
+  const G = (g) => fc([{ type: 'Feature', geometry: g, properties: {} }]);
+  refuses('a longitude of 1e20', G({ type: 'Point', coordinates: [1e20, 0] }), /longitude/);
+  refuses('a longitude of 1e300', G({ type: 'Point', coordinates: [1e300, 0] }), /longitude/);
+  refuses('a longitude of -1e20', G({ type: 'Point', coordinates: [-1e20, 0] }), /longitude/);
+  refuses('a longitude just past the limit', G({ type: 'Point', coordinates: [MAX_LON + 0.001, 0] }), /longitude/);
+  refuses('a line that ends at one', G({ type: 'LineString', coordinates: [[0, 0], [1e300, 0]] }), /longitude/);
+  refuses('one inside a ring', G({ type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1e20, 1], [0, 0]]] }), /longitude/);
+  refuses('one inside a collection', G({ type: 'GeometryCollection', geometries: [{ type: 'MultiPoint', coordinates: [[1, 1], [-1e30, 1]] }] }), /longitude/);
+  check('a longitude a few turns round still opens', !parse(G({ type: 'LineString', coordinates: [[720, 10], [-MAX_LON, 0], [MAX_LON, 0]] })).error);
+  check.eq('an imported file with one is refused', io.importText('geojson', JSON.stringify({ type: 'Feature', geometry: { type: 'Point', coordinates: [1e30, 0] }, properties: {} })).error, 'a longitude is out of range');
   check('a null geometry is allowed', !parse(fc([{ type: 'Feature', geometry: null, properties: null }])).error);
   //  what the ship saves, the editor opens: its check (+gj-check) asks
   //  for no geometry member and no range, and these are its caps
@@ -269,6 +281,51 @@ console.log('7. files');
       gf({ type: 'MultiPolygon', coordinates: [[], [[[0, 0], [1, 0], [1, 1], [0, 0]]]] })] }, 'm');
   } catch (e) { threw = String(e); }
   check('GPX export writes what it can around what it skips', !threw && (y.match(/<wpt /g) || []).length === 1 && (y.match(/<trk>/g) || []).length === 1, threw || y);
+}
+
+console.log('8. moving shapes and vertices');
+{
+  const lons = (g) => { const out = []; const w = (c) => { if (typeof c[0] === 'number') out.push(c[0]); else c.forEach(w); }; w(g.coordinates); return out.join(); };
+  const lats = (g) => { const out = []; const w = (c) => { if (typeof c[0] === 'number') out.push(Math.round(c[1] * 1e7) / 1e7); else c.forEach(w); }; w(g.coordinates); return out.join(); };
+  const box = () => ({ type: 'Polygon', coordinates: [[[170, 0], [178, 0], [178, 5], [170, 5], [170, 0]]] });
+  let g = box(); shiftGeom(g, 1, 1);
+  check.eq('a shape moved inside the world moves by what was asked', lons(g) + ' ' + lats(g), '171,179,179,171,171 1,1,6,6,1');
+  g = box(); shiftGeom(g, 11, 0);
+  check.eq('moved past the antimeridian it stops there whole, not flattened', lons(g), '172,180,180,172,172');
+  g = box(); shiftGeom(g, -400, 0);
+  check.eq('and the same going west', lons(g), '-180,-172,-172,-180,-180');
+  g = box(); shiftGeom(g, 0, 200);
+  check.eq('moved past the pole it stops there whole', lats(g), '84.9999999,84.9999999,89.9999999,89.9999999,84.9999999');
+  g = box(); shiftGeom(g, 0, -200);
+  check.eq('and at the south pole', lats(g), '-89.9999999,-89.9999999,-84.9999999,-84.9999999,-89.9999999');
+  g = { type: 'LineString', coordinates: [[185, 0], [190, 0]] }; shiftGeom(g, 5, 0);
+  check.eq('a shape already past the edge does not go further', lons(g), '185,190');
+  shiftGeom(g, -5, 0);
+  check.eq('but comes back', lons(g), '180,185');
+  g = { type: 'Point', coordinates: [179, 0, 50] }; shiftGeom(g, 5, 0);
+  check.eq('a point stops at the edge, and keeps its altitude', JSON.stringify(g.coordinates), '[180,0,50]');
+  const gc = { type: 'GeometryCollection', geometries: [{ type: 'Point', coordinates: [100, 0] }, { type: 'Point', coordinates: [178, 0] }] };
+  shiftGeom(gc, 10, 0);
+  check.eq('a collection moves as one', gc.geometries.map((h) => h.coordinates[0]).join(), '102,180');
+  const line = { type: 'LineString', coordinates: [[5, 1, 100], [5.2, 1, 200], [5.4, 1, 300]] };
+  setVertex(line, [1], [5.3, 0.9]);
+  check.eq('a dragged vertex keeps its altitude', JSON.stringify(line.coordinates), '[[5,1,100],[5.3,0.9,200],[5.4,1,300]]');
+  const ring = { type: 'Polygon', coordinates: [[[5, 1, 7], [5.2, 1], [5.2, 1.2], [5, 1, 7]]] };
+  setVertex(ring, [0, 0], [4.9, 1]);
+  check.eq('the first vertex of a closed ring moves both ends', JSON.stringify(ring.coordinates[0]), '[[4.9,1,7],[5.2,1],[5.2,1.2],[4.9,1,7]]');
+  const open = { type: 'Polygon', coordinates: [[[5, 1], [5.2, 1], [5.2, 1.2], [5, 1.2]]] };
+  check.eq('a ring that does not close has a handle on every vertex', vertexPaths(open).length + ' ' + vertexPaths({ type: 'Polygon', coordinates: [[[5, 1], [5.2, 1], [5.2, 1.2], [5, 1]]] }).length, '4 3');
+  setVertex(open, [0, 0], [4.9, 1]);
+  check.eq('and dragging its first vertex leaves its last one alone', JSON.stringify(open.coordinates[0]), '[[4.9,1],[5.2,1],[5.2,1.2],[5,1.2]]');
+  const mp = { type: 'MultiPolygon', coordinates: [[[[0, 0], [1, 0], [1, 1], [0, 1]]]] };
+  setVertex(mp, [0, 0, 0], [-1, 0]);
+  check.eq('the same in a multipolygon', JSON.stringify(mp.coordinates[0][0]) + ' ' + vertexPaths(mp).length, '[[-1,0],[1,0],[1,1],[0,1]] 4');
+  //  the nearest of many, with no argument per member
+  const many = Array.from({ length: 300000 }, (_, i) => i);
+  let got = null, threw = '';
+  try { got = nearest(many, (n) => Math.abs(n - 123456)); } catch (e) { threw = String(e); }
+  check.eq('the nearest of 300,000 members is found, not spread onto the stack', threw || got, 0);
+  check.eq('and of none is no hit', nearest([], () => 1), Infinity);
 }
 
 check.done();

@@ -24,7 +24,7 @@ import { makeCheck } from './lib/check.mjs';
 import { parseFods, serializeFods, cellAt, extent, rowCount, serialDate } from '../ui-src/sheet/model.js';
 import { Engine, cellValue } from '../ui-src/sheet/engine.js';
 import { Err, Unsupported, general } from '../ui-src/sheet/funcs.js';
-import { toUser, toOf, moveFormula, moveAddrs, offsetFormula, parseAddrs, colName, colIndex } from '../ui-src/sheet/formula.js';
+import { toUser, toOf, moveFormula, moveRefs, moveAddrs, offsetFormula, cutFormula, parseAddrs, colName, colIndex } from '../ui-src/sheet/formula.js';
 import { Book, readTyped } from '../ui-src/sheet/book.js';
 import { fixed } from '../ui-src/sheet/styles.js';
 
@@ -141,6 +141,18 @@ check.eq('moveAddrs', moveAddrs('$S.$B$2:.$B$5 S.A1:S.C9', op('r', 3, 1)), '$S.$
 check.eq("moveAddrs: another sheet's addresses stay", moveAddrs("'My Sheet'.A1:'My Sheet'.C5", op('r', 0, 1)), "'My Sheet'.A1:'My Sheet'.C5");
 check('parseAddrs refuses what is not an address', parseAddrs('hello') === null);
 check.eq('offsetFormula moves relative parts only', offsetFormula('of:=[.A1]+[.$A1]+[.A$1]+[.$A$1]', 2, 3), 'of:=[.D3]+[.$A3]+[.D$1]+[.$A$1]');
+{
+  //  a move: block C3:D4 on S, two rows down and one column right
+  const blk = { r1: 2, c1: 2, r2: 3, c2: 3 };
+  const cut = (f, to = 'S', dr = 2, dc = 1) => cutFormula(f, blk, dr, dc, 'S', to);
+  check.eq('cutFormula leaves references outside the block as written', cut('of:=[.A1]+[.$A2]+[.A$3]+[.$A$4]+SUM([.A1:.B9])'), 'of:=[.A1]+[.$A2]+[.A$3]+[.$A$4]+SUM([.A1:.B9])');
+  check.eq('cutFormula moves references into the block, absolute ones too', cut('of:=[.C3]+[.$D$4]+SUM([.C3:.D4])'), 'of:=[.D5]+[.$E$6]+SUM([.D5:.E6])');
+  check.eq('a range that straddles the edge of the block stays', cut('of:=SUM([.B3:.D4])+SUM([.C3:.C9])'), 'of:=SUM([.B3:.D4])+SUM([.C3:.C9])');
+  check.eq('another sheet is left alone, and a whole column', cut('of:=[$T.C3]+SUM([.C:.C])'), 'of:=[$T.C3]+SUM([.C:.C])');
+  check.eq('moved to another sheet, outside references name the old sheet', cut('of:=[.A1]+SUM([.A1:.B2])+SUM([.A:.A])+[$S.A1]+[$T.A1]+[.C3]+[$S.D4]', 'T'), 'of:=[$S.A1]+SUM([$S.A1:.B2])+SUM([$S.A:.A])+[$S.A1]+[$T.A1]+[.D5]+[$T.E6]');
+  check.eq('moved off the edge, an inside reference is #REF!', cut('of:=[.C3]+[.A1]', 'S', -3, 0), 'of:=#REF!+[.A1]');
+  check('an unreadable formula is not guessed at', cut('of:={1;2}+[.C3]') === null);
+}
 check.eq('offsetFormula off the edge is #REF!', offsetFormula('of:=[.A1]', -1, 0), 'of:=#REF!');
 
 console.log('==> numbers as text');
@@ -174,7 +186,16 @@ console.log('==> edits');
   check.eq('and so does a formula that reads that formula', b.cell(0, 29, 3).v, 23 + b.cell(0, 2, 3).v * b.cell(0, 3, 3).v);
   check('the unknown function is reported stale, its cached value kept', b.cell(0, 37, 3).text === '#NAME?');
   const e = b.enter(0, 2, 2, '=A2+');
-  check('a formula that cannot be read is refused', !!e.error && b.cell(0, 2, 2).text === 'a-b', e.error);
+  check('a formula that cannot be read is kept as the text typed, and says why', !e.error && /cannot be read/.test(e.note || '') && b.cell(0, 2, 2).v === '=A2+' && b.cell(0, 2, 2).f === null, JSON.stringify(e));
+  check.eq('the bar shows it as typed, with no apostrophe put before it', b.input(0, 2, 2), '=A2+');
+  check('it is saved as a text cell', b.text().includes('office:value-type="string" calcext:value-type="string">\n      <text:p>=A2+</text:p>'));
+  check.eq('and reads back as that text', new Book(b.text()).cell(0, 2, 2).v, '=A2+');
+  b.enter(0, 2, 2, '=A2+1');
+  check('typed again with the fault put right, it is a formula', b.cell(0, 2, 2).f === 'of:=[.A2]+1' && b.cell(0, 2, 2).v === 21 && !b.cell(0, 2, 2).bad);
+  b.enter(0, 2, 2, 'a-b');
+  const deep = b.enter(0, 60, 0, '=' + '-'.repeat(200000) + '1');
+  check('a formula too long to read is kept as text too, not thrown', !deep.error && b.cell(0, 60, 0).v.length === 200002 && /too long/.test(deep.note || ''), JSON.stringify(deep).slice(0, 90));
+  b.enter(0, 60, 0, '');
   b.enter(0, 40, 0, '=SUM(A2:A10)&" total"');
   check.eq('a new formula is computed', b.cell(0, 40, 0).text, '100 total');
   b.enter(0, 41, 0, '=NOSUCH(1)');
@@ -413,6 +434,364 @@ check.eq('toOf: and what toUser shows types back', toOf(toUser('of:=SUM([.2:.5])
 check.eq('serialDate carries into the next day', [serialDate(46023.999999, 25569 - 25569), serialDate(1.5, 0), serialDate(2, 0), serialDate(0.9999999, 0)].join(' '), [serialDate(46024, 0), '1970-01-02T12:00:00', '1970-01-03', '1970-01-02'].join(' '));
 check('and never writes hour 24', !/T24/.test(serialDate(46023.999999, 0)));
 
+console.log('==> the review of release 145');
+const HEAD = '<?xml version="1.0"?>\n<office:document xmlns:office="o" xmlns:table="t" xmlns:text="x" xmlns:xlink="l" xmlns:calcext="c" office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet>';
+const TAIL = '</office:spreadsheet></office:body></office:document>';
+const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods'), 'utf8');
+{
+  //  a cell whose content was not edited keeps its paragraphs: links,
+  //  spans and paragraph attributes
+  const A = '<table:table-cell office:value-type="string"><text:p>see <text:a xlink:href="https://example.org/doc" xlink:type="simple">the doc</text:a></text:p></table:table-cell>';
+  const C = '<table:table-cell office:value-type="string"><text:p text:style-name="P1">a <text:span text:style-name="T1">bold</text:span> word</text:p><text:p>second</text:p></table:table-cell>';
+  const row = (n) => `<table:table-row${n}>${A}<table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell>${C}</table:table-row>`;
+  const src = HEAD + `<table:table table:name="S">${row('')}${row(' table:number-rows-repeated="3"')}</table:table>` + TAIL;
+  const LINK = '<text:p>see <text:a xlink:href="https://example.org/doc" xlink:type="simple">the doc</text:a></text:p>';
+  const SPAN = '<text:p text:style-name="P1">a <text:span text:style-name="T1">bold</text:span> word</text:p>';
+  //  how many of the sheet's rows still hold the link and the span, each row counted as often as it repeats
+  const kept = (b) => {
+    const d = parseFods(b.text());
+    let links = 0, spans = 0;
+    for (const r of d.sheets[0].rows) {
+      const t = d.text.slice(r.src[0], r.src[1]);
+      if (t.includes(LINK)) links += r.rep;
+      if (t.includes(SPAN) && t.includes('<text:p>second</text:p>')) spans += r.rep;
+    }
+    return links + ',' + spans;
+  };
+  const after = (fn) => { const b = new Book(src); fn(b); return b; };
+  check.eq('the fixture: four rows with a link and a span each', kept(new Book(src)), '4,4');
+  check.eq('a column insert keeps every link and span', kept(after((b) => b.shift(0, 'c', 1, 1))), '4,4');
+  check.eq('a column insert before them too', kept(after((b) => b.shift(0, 'c', 0, 2))), '4,4');
+  check.eq('a column delete keeps them', kept(after((b) => b.shift(0, 'c', 1, -1))), '4,4');
+  check('and copies the untouched cells byte for byte', (() => { const t = after((b) => b.shift(0, 'c', 1, 1)).text(); return t.split(A).length === 3 && t.split(C).length === 3; })());
+  check.eq('typing into a row of a repeated run keeps them', kept(after((b) => b.enter(0, 2, 1, '5'))), '4,4');
+  check.eq('a row insert inside a repeated run keeps them', kept(after((b) => b.shift(0, 'r', 2, 1))), '4,4');
+  check.eq('a row delete inside a repeated run keeps the rest', kept(after((b) => b.shift(0, 'r', 2, -1))), '3,3');
+  check.eq('bold on a linked cell keeps its link', kept(after((b) => b.format(0, 0, 0, 0, 2, { bold: true }))), '4,4');
+  check.eq('a number format over text cells keeps them', kept(after((b) => b.format(0, 0, 0, 3, 2, { number: 'percent' }))), '4,4');
+  check.eq('a row height keeps them', kept(after((b) => b.resize(0, 'r', 0, 40))), '4,4');
+  const typed = after((b) => b.enter(0, 0, 0, 'new text'));
+  check.eq('typing over a linked cell replaces it, and only it', kept(typed) + ' ' + typed.cell(0, 0, 0).text, '3,4 new text');
+  const twice = after((b) => { b.shift(0, 'c', 1, 1); b.format(0, 1, 0, 1, 0, { italic: true }); b.shift(0, 'r', 0, 1); b.shift(0, 'c', 0, -1); });
+  check.eq('several edits in a row, each from the text of the last', (() => { const d = parseFods(twice.text()); let n = 0; for (const r of d.sheets[0].rows) if (d.text.slice(r.src[0], r.src[1]).includes(SPAN)) n += r.rep; return n; })(), 4);
+  const num = after((b) => b.format(0, 0, 1, 0, 1, { number: 'percent' }));
+  check.eq('a number format still rewrites the shown text of a number', num.cell(0, 0, 1).text, '100.00%');
+  check('and the saved cell holds the new text', num.text().includes('<text:p>100.00%</text:p>'));
+}
+
+{
+  //  how the work grows. Counted, not timed: every read of a row run goes
+  //  through a counting proxy.
+  const num = (v) => `<table:table-cell office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  const fx = (f) => `<table:table-cell table:formula="${f}" office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell>`;
+  const sheetOf = (N, f) => {
+    let rows = '';
+    for (let i = 1; i <= N; i++) rows += `<table:table-row>${num(i)}${num(i * 2)}${fx(f(i, N))}</table:table-row>`;
+    return new Book(HEAD + `<table:table table:name="S">${rows}</table:table>` + TAIL);
+  };
+  const reads = (N, f) => {
+    const b = sheetOf(N, f);
+    const sh = b.sheets[0];
+    let n = 0;
+    sh.rows = new Proxy(sh.rows, { get(t, k, r) { if (typeof k === 'string' && k.charCodeAt(0) < 58) n++; return Reflect.get(t, k, r); } });
+    b.enter(0, 0, 0, '7');
+    return [n, b];
+  };
+  const grows = (label, f, right) => {
+    const [a] = reads(150, f), [z, b] = reads(300, f);
+    //  twice the rows is four times the cells read. Eight times is a
+    //  scan of the rows for every cell.
+    check(`${label}: twice the rows is about four times the work, not eight`, z / a < 5.5, `${a} then ${z}, ${(z / a).toFixed(1)} times`);
+    check.eq(`${label}: and the results are right`, [0, 6, 299].map((r) => b.cell(0, r, 2).v + (b.stale(0, r, 2) ? ' stale' : '')).join(), right);
+  };
+  grows('COUNTIF down a column', (i, N) => `of:=COUNTIF([.$A$1:.$A$${N}];[.A${i}])`, '2,2,1');
+  grows('VLOOKUP down a column', (i, N) => `of:=VLOOKUP([.A${i}];[.$A$1:.$B$${N}];2;0)`, '2,2,600');
+  grows('SUMIFS down a column', (i, N) => `of:=SUMIFS([.$B$1:.$B$${N}];[.$A$1:.$A$${N}];[.A${i}])`, '16,16,600');
+  grows('SUMPRODUCT down a column', (i, N) => `of:=SUMPRODUCT([.$A$1:.$A$${N}];[.$B$1:.$B$${N}])-[.A${i}]`, '18090105,18090105,18089812');
+  grows('MATCH down a column', (i, N) => `of:=MATCH([.A${i}];[.$A$1:.$A$${N}];0)`, '1,1,300');
+  grows('SUM down a column', (i, N) => `of:=SUM([.$A$1:.$A$${N}])+[.A${i}]`, '45163,45163,45456');
+}
+{
+  //  a chain of formulas, each reading the one above
+  const chain = (N) => {
+    let rows = '<table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>';
+    for (let i = 2; i <= N; i++) rows += `<table:table-row><table:table-cell table:formula="of:=[.A${i - 1}]+1" office:value-type="float" office:value="${i}"><text:p>${i}</text:p></table:table-cell></table:table-row>`;
+    return new Book(HEAD + `<table:table table:name="S">${rows}</table:table>` + TAIL);
+  };
+  const b2 = chain(2000), b4 = chain(4000);
+  b2.enter(0, 0, 0, '101');
+  b4.enter(0, 0, 0, '101');
+  check('finding what an edit reaches: twice the chain is about twice the checks', b4.engine.checks / b2.engine.checks < 2.5, `${b2.engine.checks} then ${b4.engine.checks}`);
+  check.eq('a chain of 4,000 follows its first cell', b4.cell(0, 3999, 0).v, 4100);
+  const big = chain(12000);
+  const r = big.enter(0, 0, 0, '101');
+  check.eq('a chain of 12,000 is followed to its end', big.cell(0, 11999, 0).v + ' ' + big.cell(0, 10001, 0).v + ' ' + big.stale(0, 11999, 0), '12100 10102 false');
+  check.eq('and every link changed', r.changed.length, 12000);
+  //  past the bound on that search, what was not reached is marked, never left looking right
+  const cut = chain(3000);
+  cut.engine.maxChecks = 500;
+  cut.enter(0, 0, 0, '101');
+  let wrong = 0, stale = 0, right = 0;
+  for (let i = 1; i < 3000; i++) { const ok = cut.cell(0, i, 0).v === i + 101; if (cut.stale(0, i, 0)) stale++; else if (ok) right++; else wrong++; }
+  check('past the bound on that search, a cell is right or is marked stale', wrong === 0 && stale > 0 && right > 0, `${right} right, ${stale} stale, ${wrong} wrong and unmarked`);
+  cut.engine.maxChecks = 20000000;
+  cut.enter(0, 0, 0, '201');
+  check('and a later edit within the bound clears the marks', !cut.stale(0, 2999, 0) && cut.cell(0, 2999, 0).v === 3200);
+  //  a formula typed over and over leaves nothing behind for the search to wade through
+  const again = chain(50);
+  for (let i = 0; i < 400; i++) again.enter(0, 1, 0, i % 2 ? '=A1+1' : '=A1+2');
+  again.enter(0, 0, 0, '101');
+  check('a formula retyped 400 times is found once', again.engine.checks < 200 && again.cell(0, 49, 0).v === 150, `${again.engine.checks} checks, ${again.cell(0, 49, 0).v}`);
+  //  a chain read the other way round is computed deepest first. Where
+  //  that runs out of stack, what read the cell that failed is marked too.
+  const N = 30000;
+  let rows = '';
+  for (let i = 1; i < N; i++) rows += `<table:table-row><table:table-cell table:formula="of:=[.A${i + 1}]+1" office:value-type="float" office:value="${2 * N - i}"><text:p>x</text:p></table:table-cell></table:table-row>`;
+  rows += `<table:table-row><table:table-cell table:formula="of:=ROW()" office:value-type="float" office:value="${N}"><text:p>${N}</text:p></table:table-cell></table:table-row>`;
+  const up = new Book(HEAD + `<table:table table:name="S">${rows}</table:table>` + TAIL);
+  check('insert a row above a chain of 30,000 read from the bottom', up.shift(0, 'r', 0, 1).ok);
+  wrong = 0; stale = 0; right = 0;
+  for (let i = 1; i <= N; i++) { const ok = up.cell(0, i, 0).v === 2 * N - i + 1; if (up.stale(0, i, 0)) stale++; else if (ok) right++; else wrong++; }
+  check('every link is computed, taken from the far end', wrong === 0 && stale === 0 && right === N, `${right} right, ${stale} stale, ${wrong} wrong and unmarked`);
+  //  a chain that wanders up and down the column: link k is in row
+  //  (k * 7919) mod N, so no order of the rows is the order of the chain
+  const at = (k) => (k * 7919) % N;
+  const cells = new Array(N);
+  for (let k = 0; k < N - 1; k++) cells[at(k)] = `<table:table-cell table:formula="of:=[.A${at(k + 1) + 1}]+1" office:value-type="float" office:value="0"><text:p>0</text:p></table:table-cell>`;
+  cells[at(N - 1)] = '<table:table-cell table:formula="of:=ROW()*0+[.C1]" office:value-type="float" office:value="0"><text:p>0</text:p></table:table-cell>';
+  const wander = new Book(HEAD + `<table:table table:name="S">${cells.map((c, i) => `<table:table-row>${c}${i ? '' : '<table:table-cell/><table:table-cell office:value-type="float" office:value="5"><text:p>5</text:p></table:table-cell>'}</table:table-row>`).join('')}</table:table>` + TAIL);
+  check('insert a column beside a chain of 30,000 that wanders', wander.shift(0, 'c', 1, 1).ok);
+  wrong = 0; stale = 0; right = 0;
+  for (let k = 0; k < N; k++) { const ok = wander.cell(0, at(k), 0).v === 5 + (N - 1 - k); if (wander.stale(0, at(k), 0)) stale++; else if (ok) right++; else wrong++; }
+  check('each link is right or is marked stale, none wrong and unmarked', wrong === 0 && right + stale === N && right > 0, `${right} right, ${stale} stale, ${wrong} wrong and unmarked`);
+}
+{
+  //  one typed formula must not hang the tab
+  const b = new Book(blankText);
+  b.enter(0, 0, 0, '=FACT(1E15)');
+  check.eq('FACT of a huge number is an error at once, as in Calc', b.cell(0, 0, 0).text, '#VALUE!');
+  b.enter(0, 0, 1, '1E300');
+  b.enter(0, 0, 2, '=FACT(B1)');
+  const vals = ['=FACT(170)/1E306', '=FACT(171)', '=FACT(170.9)/1E306', '=FACT(0)', '=FACT(5)', '=FACT(-1)'].map((f) => { b.enter(0, 1, 0, f); return b.cell(0, 1, 0).text; });
+  check.eq('FACT at its edges', b.cell(0, 0, 2).text + ' ' + vals.join(' '), '#VALUE! 7.25741561530799 #VALUE! 7.25741561530799 1 120 Err:502');
+}
+{
+  //  a few hundred bytes of file, and formulas over all of it: each stops
+  //  at the walk budget, keeps its cached value and is marked
+  const bomb = (f) => new Book(HEAD + '<table:table table:name="B"><table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="16384" office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>'
+    + `<table:table-row><table:table-cell table:formula="${f}" office:value-type="float" office:value="7"><text:p>7</text:p></table:table-cell></table:table-row></table:table>` + TAIL);
+  for (const f of ['of:=COUNTIF([.A1:.XFD1000];1)', 'of:=SUMPRODUCT([.A1:.XFD1000];[.A1:.XFD1000])', 'of:=COUNTIFS([.A1:.XFD1000];1)', 'of:=COM.MICROSOFT.TEXTJOIN(&quot;&quot;;1;[.A1:.XFD1000])', 'of:=SUMIF([.A1:.XFD1000];1)', 'of:=VLOOKUP(2;[.A1:.XFD1000];1;0)+SUM([.A1:.XFD1000])']) {
+    const b = bomb(f);
+    b.enter(0, 0, 0, '5');
+    check(`${f.slice(4, 14)} over 16 million cells stops at the budget, marked, its value kept`, b.cell(0, 1000, 0).v === 7 && b.stale(0, 1000, 0) && b.engine.steps <= 5000001, `${b.cell(0, 1000, 0).v} ${b.stale(0, 1000, 0)} ${b.engine.steps}`);
+  }
+  //  many such formulas: the whole recalculation has a budget too
+  let cells = '';
+  for (let i = 0; i < 200; i++) cells += '<table:table-cell table:formula="of:=COUNTIF([.A1:.CV1000];1)" office:value-type="float" office:value="7"><text:p>7</text:p></table:table-cell>';
+  const many = new Book(HEAD + '<table:table table:name="B"><table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="100" office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>'
+    + `<table:table-row>${cells}</table:table-row></table:table>` + TAIL);
+  many.engine.maxTotal = 2000000;
+  many.enter(0, 0, 0, '5');
+  let done = 0, marked = 0, off = 0;
+  for (let c = 0; c < 200; c++) { if (many.stale(0, 1000, c)) { marked++; if (many.cell(0, 1000, c).v !== 7) off++; } else if (many.cell(0, 1000, c).v === 99999) done++; else off++; }
+  check('past the budget of one recalculation the rest are marked, none left wrong', off === 0 && done > 0 && marked > 0 && done + marked === 200 && many.engine.total <= 2200000, `${done} done, ${marked} marked, ${off} wrong, ${many.engine.total} steps`);
+}
+{
+  //  the empty cells of a range past the used rows count as empty cells
+  const b = new Book(blankText);
+  b.enter(0, 0, 0, 'x'); b.enter(0, 1, 0, 'y');
+  b.enter(0, 0, 2, '10'); b.enter(0, 1, 2, '20'); b.enter(0, 2, 2, '30');
+  const at = (f) => { b.enter(0, 0, 5, f); const c = b.cell(0, 0, 5); return c.text + (b.stale(0, 0, 5) ? ' stale' : ''); };
+  const T = [['=COUNTIF(A1:A10,"")', '8'], ['=COUNTIF(A1:A10,"<>x")', '9'], ['=COUNTIF(A1:A10,"=")', '8'], ['=COUNTIF(A1:A10,"<>")', '2'], ['=COUNTIF(A1:A10,"x")', '1'],
+    ['=COUNTBLANK(A1:A10)', '8'], ['=SUMIF(A1:A10,"",C1:C10)', '30'], ['=SUMIF(A1:A10,"<>x",C1:C10)', '50'], ['=AVERAGEIF(A1:A10,"<>x",C1:C10)', '25'],
+    ['=COUNTIFS(A1:A10,"",B1:B10,"")', '8'], ['=COUNTIFS(A1:A10,"<>x")', '9'], ['=SUMIFS(C1:C10,A1:A10,"<>x")', '50'], ['=COUNTIF(A1:A1048576,"")', '1048574'], ['=COUNTIF(A:A,"<>x")', '1048575'],
+    ['=COUNTIF(A5:B9,"")', '10'], ['=COUNTIF(A5:B9,"<>q")', '10'], ['=COUNTIF(A5:B9,"q")', '0'], ['=SUMIF(A5:A9,"",C1:C5)', '60']];
+  const got = T.map(([f]) => at(f)).join(' ');
+  check.eq('criteria over empty cells past the used rows, as Calc counts them', got, T.map((x) => x[1]).join(' '));
+  b.enter(0, 9, 4, 'far');
+  check.eq('and the same once the sheet is used further down', T.map(([f]) => at(f)).join(' '), got);
+}
+{
+  //  a formula whose value depends on where things are is computed again after an insert
+  const b = new Book(corpus('05-sheets'));
+  const s3 = b.addSheet('P').sheet;
+  for (let r = 0; r < 6; r++) b.enter(s3, r, 0, String((r + 1) * 10));
+  const F = [[4, 2, '=ROW()'], [5, 2, '=INDEX(A1:A6,3)'], [6, 2, '=COLUMN()'], [7, 2, '=ROWS(A1:A6)'], [8, 2, '=VLOOKUP(30,A1:B6,1,0)'], [9, 2, '=MATCH(30,A1:A6,0)'],
+    [10, 2, '=INDEX(A:A,3)'], [11, 2, '=COLUMNS(A1:B1)'], [12, 2, '=ROW(A3)'], [13, 2, '=SUM(A1:A6)'], [0, 4, '=INDEX($A$1:$A$6,2)'], [0, 5, '=ROW()+COLUMN()']];
+  for (const [r, c, f] of F) b.enter(s3, r, c, f);
+  b.enter(0, 9, 3, '=ROWS(P.A1:A6)+INDEX(P.A1:A6,2)');
+  const vals = (cells) => cells.map(([r, c, s = s3]) => b.cell(s, r, c).v + (b.stale(s, r, c) ? ' stale' : '')).join();
+  check.eq('before the insert', vals(F.map(([r, c]) => [r, c])) + ' | ' + vals([[9, 3, 0]]), '5,30,3,6,30,3,30,2,3,210,20,7 | 26');
+  check('insert a row before row 2', b.shift(s3, 'r', 1, 1).ok);
+  //  the formulas at and below row 2 moved down one. E1 and F1 did not.
+  const moved = F.map(([r, c]) => [r >= 1 ? r + 1 : r, c]);
+  check.eq('ROW, INDEX, ROWS, MATCH and a whole-column INDEX give the values of the new layout', vals(moved), '6,20,3,7,30,4,20,2,4,210,0,7');
+  check.eq('and so does a formula on another sheet that reads this one', b.cell(0, 9, 3).f + ' ' + vals([[9, 3, 0]]), 'of:=ROWS([P.A1:.A7])+INDEX([P.A1:.A7];2) 7');
+  check('insert a column before A', b.shift(s3, 'c', 0, 1).ok);
+  check.eq('COLUMN and COLUMNS follow', vals(moved.map(([r, c]) => [r, c + 1])), '6,20,4,7,30,4,20,2,4,210,0,8');
+  const saved = new Book(b.text());
+  check.eq('and those are the values saved', [5, 6, 7, 8, 10].map((r) => saved.cell(s3, r, 3).v).join(), '6,20,4,7,4');
+  check('an insert on another sheet leaves these as they are', b.shift(0, 'r', 0, 1).ok && vals(moved.map(([r, c]) => [r, c + 1])) === '6,20,4,7,30,4,20,2,4,210,0,8');
+}
+{
+  //  a rule's references move with the rows, as its base address does
+  const cv = (rules) => '<table:content-validations>' + rules.map(([n, cond, base]) => `<table:content-validation table:name="${n}" table:condition="${cond}" table:allow-empty-cell="true" table:base-cell-address="${base}"/>`).join('') + '</table:content-validations>';
+  const withRules = (name, rules, cf = '') => {
+    const src = corpus(name);
+    const i = src.indexOf('<table:table ');
+    let t = src.slice(0, i) + cv(rules) + src.slice(i);
+    if (cf) { const j = t.indexOf('</table:table>'); t = t.slice(0, j) + cf + t.slice(j); }
+    return t;
+  };
+  const cond = (b, n) => { const m = new RegExp(`table:name="${n}" table:condition="([^"]*)"[^>]*table:base-cell-address="([^"]*)"`).exec(b.text()); return m ? m[1] + ' @ ' + m[2] : 'gone'; };
+  const rules = [
+    ['list', 'of:cell-content-is-in-list([$Ranges.$E$2:.$E$4])', 'Ranges.A2'],
+    ['between', 'of:cell-content-is-between([.B2];[.B3])', 'Ranges.A2'],
+    ['mixed', 'of:cell-content-is-in-list([.$E2:.E$4])', 'Ranges.A2'],
+    ['text', 'of:cell-content-is-in-list(&quot;[.A5]&quot;;&quot;b &quot;&quot;[.A6]&quot;&quot;&quot;)', 'Ranges.A2'],
+    ['and', 'of:cell-content-is-decimal-number() and cell-content-is-between([.B2];[$Ranges.B9])', 'Ranges.A2'],
+    ['whole', 'of:cell-content-is-in-list([$Ranges.$E:.$E])', 'Ranges.A2'],
+  ];
+  const cf = '<calcext:conditional-formats><calcext:conditional-format calcext:target-range-address="Ranges.C2:Ranges.C5">'
+    + '<calcext:condition calcext:apply-style-name="Default" calcext:value="between([.A2],[.B2])" calcext:base-cell-address="Ranges.C2"/></calcext:conditional-format></calcext:conditional-formats>';
+  const text = withRules('07-ranges', rules, cf);
+  const top = new Book(text);
+  check('a sheet with validation rules opens, and its rows can move', !top.error && top.blocked(0, 'r', 0, 1) === null, top.error || top.blocked(0, 'r', 0, 1));
+  check('insert a row at the top', top.shift(0, 'r', 0, 1).ok);
+  check.eq('a list from a cell range moves with its cells', cond(top, 'list'), 'of:cell-content-is-in-list([$Ranges.$E$3:.$E$5]) @ Ranges.A3');
+  check.eq('the limits of a between rule move', cond(top, 'between'), 'of:cell-content-is-between([.B3];[.B4]) @ Ranges.A3');
+  check.eq('mixed references move', cond(top, 'mixed'), 'of:cell-content-is-in-list([.$E3:.E$5]) @ Ranges.A3');
+  check.eq('text that looks like a reference is left alone', cond(top, 'text'), 'of:cell-content-is-in-list(&quot;[.A5]&quot;;&quot;b &quot;&quot;[.A6]&quot;&quot;&quot;) @ Ranges.A3');
+  check.eq('a rule of two parts moves in both', cond(top, 'and'), 'of:cell-content-is-decimal-number() and cell-content-is-between([.B3];[$Ranges.B10]) @ Ranges.A3');
+  check.eq('a whole column does not move with rows', cond(top, 'whole'), 'of:cell-content-is-in-list([$Ranges.$E:.$E]) @ Ranges.A3');
+  check('a conditional format written with a comma moves', top.text().includes('calcext:value="between([.A3],[.B3])" calcext:base-cell-address="Ranges.C3"'));
+  const mid = new Book(text);
+  check('insert a row inside the list', mid.shift(0, 'r', 2, 1).ok);
+  check.eq('a list that straddles the insert grows', cond(mid, 'list'), 'of:cell-content-is-in-list([$Ranges.$E$2:.$E$5]) @ Ranges.A2');
+  check.eq('and a limit below it moves while the one above stays', cond(mid, 'between'), 'of:cell-content-is-between([.B2];[.B4]) @ Ranges.A2');
+  const col = new Book(text);
+  check('insert a column before E', col.shift(0, 'c', 4, 1).ok);
+  check.eq('the list moves a column right', cond(col, 'list') + ' | ' + cond(col, 'whole'), 'of:cell-content-is-in-list([$Ranges.$F$2:.$F$4]) @ Ranges.A2 | of:cell-content-is-in-list([$Ranges.$F:.$F]) @ Ranges.A2');
+  const del = new Book(text);
+  check('delete the rows of the list', del.shift(0, 'r', 1, -3).ok);
+  check('a list whose cells are all gone says so', cond(del, 'list').startsWith('of:cell-content-is-in-list(#REF!)'), cond(del, 'list'));
+  const cut = new Book(text);
+  check('delete one row of the list', cut.shift(0, 'r', 2, -1).ok);
+  check.eq('a list cut by a delete shrinks', cond(cut, 'list'), 'of:cell-content-is-in-list([$Ranges.$E$2:.$E$3]) @ Ranges.A2');
+  //  rules that read another sheet
+  const two = withRules('05-sheets', [['here', 'of:cell-content-is-in-list([$Data.$A$2:.$A$4])', 'Data.B2'], ['there', "of:cell-content-is-in-list([$&apos;My Sheet&apos;.$A$2:.$A$4])", 'Data.B2'], ['rel', 'of:cell-content-is-between([.A2];[.A3])', "&apos;My Sheet&apos;.B2"]]);
+  const a = new Book(two);
+  check('insert a row on the first sheet of two', a.shift(0, 'r', 0, 1).ok);
+  check.eq('a list on this sheet moves', cond(a, 'here'), 'of:cell-content-is-in-list([$Data.$A$3:.$A$5]) @ Data.B3');
+  check.eq('a list on the other sheet stays, its base cell moves', cond(a, 'there'), "of:cell-content-is-in-list([$&apos;My Sheet&apos;.$A$2:.$A$4]) @ Data.B3");
+  check.eq('a rule based on the other sheet stays whole', cond(a, 'rel'), "of:cell-content-is-between([.A2];[.A3]) @ &apos;My Sheet&apos;.B2");
+  const z = new Book(two);
+  check('insert a row on the second sheet', z.shift(1, 'r', 0, 1).ok);
+  check.eq('then the other sheet\'s list moves, and this one stays', cond(z, 'there') + ' | ' + cond(z, 'here'), "of:cell-content-is-in-list([$&apos;My Sheet&apos;.$A$3:.$A$5]) @ Data.B2 | of:cell-content-is-in-list([$Data.$A$2:.$A$4]) @ Data.B2");
+  check.eq('and the rule based there moves', cond(z, 'rel'), "of:cell-content-is-between([.A3];[.A4]) @ &apos;My Sheet&apos;.B3");
+  //  a reference lattice cannot read stops the move, as in a formula
+  const ext = new Book(withRules('07-ranges', [['far', 'of:cell-content-is-in-list([&apos;file:///other.ods&apos;#$Sheet1.A1:.A5])', 'Ranges.A2']]));
+  const why = ext.shift(0, 'r', 0, 1);
+  check('a rule that reads another file refuses the move, and says why', /cannot read/.test(why.error || ''), JSON.stringify(why));
+  check('and nothing changed', ext.text() === withRules('07-ranges', [['far', 'of:cell-content-is-in-list([&apos;file:///other.ods&apos;#$Sheet1.A1:.A5])', 'Ranges.A2']]));
+  check.eq('moveRefs: only the bracketed references are respelled', moveRefs('x is-between([.A5] , "[.A5]") and [.$B$7]', 'S', { sheet: 'S', dim: 'r', at: 0, n: 2 }), 'x is-between([.A7] , "[.A5]") and [.$B$9]');
+  check('moveRefs: nothing moved gives the same string, an open bracket gives null', moveRefs('a([.A1])', 'S', { sheet: 'S', dim: 'r', at: 5, n: 1 }) === 'a([.A1])' && moveRefs('a([.A1)', 'S', { sheet: 'S', dim: 'r', at: 0, n: 1 }) === null);
+}
+{
+  //  what is typed is the date typed, or it is text
+  const b = new Book(blankText);
+  const typed = (t, r = 0) => { b.enter(0, r, 0, t); const c = b.cell(0, r, 0); return c.vt + ':' + c.text; };
+  check.eq('a date that does not exist is kept as the text typed', ['2024-02-31', '2023-02-29', '2024-04-31', '0000-01-01', '2024-13-01', '2024-00-10'].map((t) => typed(t)).join(' '),
+    'string:2024-02-31 string:2023-02-29 string:2024-04-31 string:0000-01-01 string:2024-13-01 string:2024-00-10');
+  check.eq('a date that does exist is a date', ['2024-02-29', '2023-02-28', '2024-4-30', '1999-12-31', '2024-1-5'].map((t) => typed(t)).join(' '),
+    'date:2024-02-29 date:2023-02-28 date:2024-04-30 date:1999-12-31 date:2024-01-05');
+  check('and nothing of a refused date is written as a date', (() => { b.enter(0, 1, 0, '2024-02-31'); return !b.text().includes('office:date-value="2024-03-02"') && b.text().includes('<text:p>2024-02-31</text:p>'); })());
+  check.eq('the bar shows the text as typed', b.input(0, 1, 0), '2024-02-31');
+  //  a number no double holds is the text typed, not 0
+  check.eq('a number too large is kept as text', ['1e999', '5E1000', '-1e400'].map((t) => typed(t, 2)).join(' ') + ' ' + ['1e308', '1E-400'].map((t) => typed(t, 2)).join(' '), 'string:1e999 string:5E1000 string:-1e400 float:1E+308 float:0');
+  check('and saved as text', (() => { b.enter(0, 2, 0, '5E1000'); const t = b.text(); return t.includes('<text:p>5E1000</text:p>') && !/office:value="0"[^>]*>\s*<text:p>#NUM!/.test(t); })());
+  //  a date with a time of day: the bar's own spelling reads back
+  b.enter(0, 3, 0, '2024-01-15 10:30:00');
+  const dt = b.cell(0, 3, 0);
+  check.eq('a date and time typed is a date with a time', dt.vt + ' ' + b.input(0, 3, 0) + ' ' + serialDate(dt.v, b.doc.nullDate), 'date 2024-01-15 10:30:00 2024-01-15T10:30:00');
+  const was = dt.v;
+  b.enter(0, 3, 0, b.input(0, 3, 0) + ' ');
+  check('what the bar shows, typed back, is the same date and time', b.cell(0, 3, 0).vt === 'date' && b.cell(0, 3, 0).v === was);
+  check.eq('with a T, without seconds, and one that is not a time', ['2024-01-15T10:30:00', '2024-01-15 7:05', '2024-01-15 25:00', '2024-02-30 10:00', '2024-01-15 10:61'].map((t) => typed(t, 4) + '|' + b.input(0, 4, 0)).join(' '),
+    'date:2024-01-15|2024-01-15 10:30:00 date:2024-01-15|2024-01-15 07:05:00 string:2024-01-15 25:00|2024-01-15 25:00 string:2024-02-30 10:00|2024-02-30 10:00 string:2024-01-15 10:61|2024-01-15 10:61');
+  //  a cell a file gives a date and time format keeps both through an edit in the bar
+  const style = '<number:date-style style:name="NDT"><number:year number:style="long"/><number:text>-</number:text><number:month number:style="long"/><number:text>-</number:text><number:day number:style="long"/><number:text> </number:text>'
+    + '<number:hours number:style="long"/><number:text>:</number:text><number:minutes number:style="long"/><number:text>:</number:text><number:seconds number:style="long"/></number:date-style>'
+    + '<style:style style:name="ceDT" style:family="table-cell" style:parent-style-name="Default" style:data-style-name="NDT"/>';
+  const cellDT = '<table:table-row><table:table-cell table:style-name="ceDT" office:value-type="date" office:date-value="2024-01-15T10:30:00" calcext:value-type="date"><text:p>2024-01-15 10:30:00</text:p></table:table-cell></table:table-row>';
+  const src = corpus('01-values');
+  const lo = new Book(src.replace('</office:automatic-styles>', style + '</office:automatic-styles>').replace('</table:table>', cellDT + '</table:table>'));
+  const at = lo.error ? -1 : lo.extent(0)[0] - 1;
+  check.eq('the fixture holds a date and time cell, shown in the bar', lo.error || lo.cell(0, at, 0).vt + ' ' + lo.input(0, at, 0), 'date 2024-01-15 10:30:00');
+  if (!lo.error) {
+    lo.enter(0, at, 0, '2024-01-15 10:45:00');
+    const after = lo.cell(0, at, 0);
+    check.eq('a minute changed in the bar: still a date and time, in the cell\'s own format', after.vt + ' ' + after.text + ' ' + serialDate(after.v, lo.doc.nullDate), 'date 2024-01-15 10:45:00 2024-01-15T10:45:00');
+    check('and saved as one', lo.text().includes('office:date-value="2024-01-15T10:45:00"'));
+  }
+}
+{
+  //  a line break inside a formula's text is written as a character reference
+  const b = new Book(blankText);
+  b.enter(0, 0, 0, '="a\nb\tc"&"\r"');
+  const t = b.text();
+  check('a line break, a tab and a return in a formula are written as references', t.includes('table:formula="of:=&quot;a&#10;b&#9;c&quot;&amp;&quot;&#13;&quot;"') && t.includes('office:string-value="a&#10;b&#9;c&#13;"'), (/table:formula="[^"]*"/.exec(t) || [''])[0]);
+  check('no attribute holds a raw line break', !/="[^"]*[\n\r\t][^"]*"/.test(t.slice(t.indexOf('<office:body'))));
+  const back = new Book(t);
+  check.eq('and read back as they were', JSON.stringify([back.cell(0, 0, 0).f, back.cell(0, 0, 0).v]), JSON.stringify(['of:="a\nb\tc"&"\r"', 'a\nb\tc\r']));
+  check('the text read back serializes to the same bytes', back.text() === t);
+  //  and in a rule moved by a row insert
+  const src = corpus('07-ranges');
+  const i = src.indexOf('<table:table ');
+  const rule = '<table:content-validations><table:content-validation table:name="v" table:condition="of:cell-content-is-in-list(&quot;a&#10;b&quot;;[.B2])" table:base-cell-address="Ranges.A2"/></table:content-validations>';
+  const m = new Book(src.slice(0, i) + rule + src.slice(i));
+  m.shift(0, 'r', 0, 1);
+  check('a moved rule keeps the line break in its text as a reference', m.text().includes('table:condition="of:cell-content-is-in-list(&quot;a&#10;b&quot;;[.B3])"'), (/table:condition="[^"]*"/.exec(m.text()) || [''])[0]);
+}
+{
+  //  a column insert into a row already as long as the sheet
+  const full = HEAD + '<table:table table:name="S"><table:table-column table:number-columns-repeated="16384"/>'
+    + '<table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell><table:table-cell table:style-name="ce1" table:number-columns-repeated="16383"/></table:table-row>'
+    + '<table:table-row><table:table-cell table:number-columns-repeated="16383"/><table:table-cell office:value-type="string"><text:p>last</text:p></table:table-cell></table:table-row>'
+    + '<table:table-row><table:table-cell table:number-columns-repeated="16384"/></table:table-row></table:table>' + TAIL;
+  const b = new Book(full);
+  check('insert two columns into rows that reach the last column', b.shift(0, 'c', 1, 2).ok, b.error);
+  const d = parseFods(b.text());
+  check.eq('no row is longer than the sheet', d.sheets[0].rows.map((r) => r.cells.reduce((n, c) => n + c.rep, 0)).join(), '16384,16384,16384');
+  check.eq('nor the column list', d.sheets[0].cols.reduce((n, c) => n + c.rep, 0), 16384);
+  check.eq('the cell pushed off the edge is gone, and the first is where it was', cellAt(d.sheets[0], 1, 16383).text + '|' + cellAt(d.sheets[0], 0, 0).v, '|1');
+  const one = new Book(full);
+  one.shift(0, 'c', 16383, 1);
+  check.eq('an insert before the last column pushes that cell off', new Book(one.text()).cell(0, 1, 16383).text + '|' + parseFods(one.text()).sheets[0].rows.map((r) => r.cells.reduce((n, c) => n + c.rep, 0)).join(), '|16384,16384,16384');
+}
+{
+  //  results Calc gives, each run in LibreOffice
+  const b = new Book(blankText);
+  const at = (f) => { b.enter(0, 0, 0, f); return b.cell(0, 0, 0).text; };
+  const T = [['=MROUND(-7.5,5)', '-10'], ['=MROUND(-2.5,1)', '-3'], ['=MROUND(7.5,5)', '10'], ['=MROUND(2.5,-1)', '3'], ['=MROUND(-7,5)', '-5'], ['=MROUND(7.5,-5)', '10'], ['=MROUND(0,5)', '0'], ['=MROUND(5,0)', '0'],
+    ['=MROUND(1.25,0.5)', '1.5'], ['=MROUND(-1.25,0.5)', '-1.5'], ['=MROUND(7,5)', '5'], ['=MROUND(8,5)', '10'],
+    ['=ROUND(1.4999999999,0)', '1'], ['=TRUNC(0.9999999995)', '0'], ['=ROUNDDOWN(1.9999999999,0)', '1'], ['=ROUNDUP(1.0000000001,0)', '2'],
+    ['=ROUND(-1.4999999999,0)', '-1'], ['=ROUNDUP(-1.0000000001,0)', '-2'], ['=ROUNDDOWN(-1.9999999999,0)', '-1'], ['=TRUNC(-0.29*100)', '-29'],
+    ['=ROUND(2.675,2)', '2.68'], ['=ROUND(1.005,2)', '1.01'], ['=ROUND(0.5,0)', '1'], ['=ROUND(-0.5,0)', '-1'], ['=ROUND(-2.5,0)', '-3'], ['=ROUND(123456789.125,2)', '123456789.13'],
+    ['=ROUNDUP(2.0000000000000004,0)', '2'], ['=ROUNDDOWN(0.3*10,0)', '3'], ['=ROUNDUP(0.1*3*10,0)', '3'], ['=TRUNC(0.29*100)', '29'],
+    ['=ROUND(0.285,2)', '0.29'], ['=ROUND(1.15,1)', '1.2'], ['=ROUND(8.345,2)', '8.35'], ['=ROUNDUP(1.1,1)', '1.1'], ['=ROUNDUP(0.3,1)', '0.3'], ['=ROUNDDOWN(0.7,1)', '0.7'],
+    ['=ROUNDUP(3.3*3,1)', '9.9'], ['=ROUNDDOWN(4.35*100,0)', '435'], ['=TRUNC(1.005*1000)', '1005'], ['=ROUND(5.015,2)', '5.02'], ['=ROUND(1.0049999999999999,2)', '1.01'],
+    ['=ROUND(1234.5678,-2)', '1200'], ['=ROUNDUP(1234.5678,-2)', '1300'], ['=ROUNDDOWN(-1234.5678,-2)', '-1200'],
+    ['=ROUND(2.5,400)', '2.5'], ['=ROUND(-2.5,400)', '-2.5'], ['=ROUNDUP(2.5,400)', '2.5'], ['=ROUNDDOWN(2.5,400)', '2.5'], ['=TRUNC(2.5,400)', '2.5'], ['=ROUND(123.456,300)', '123.456'],
+    ['=ROUND(2.5,-400)', '0'], ['=ROUND(-2.5,-400)', '0'], ['=ROUNDUP(2.5,-400)', '0'], ['=ROUNDDOWN(2.5,-400)', '0'], ['=TRUNC(2.5,-400)', '0'], ['=ROUND(1E300,-300)', '1E+300'], ['=ROUND(1E300,2)', '1E+300'],
+    ['=SUBSTITUTE("hello","l","X",0)', 'Err:502'], ['=SUBSTITUTE("hello","l","X",-1)', 'Err:502'], ['=SUBSTITUTE("hello","l","X",0.5)', 'Err:502'], ['=SUBSTITUTE("hello","","X",0)', 'Err:502'],
+    ['=SUBSTITUTE("hello","l","X",1)', 'heXlo'], ['=SUBSTITUTE("hello","l","X",2.9)', 'helXo'], ['=SUBSTITUTE("hello","l","X",3)', 'hello'], ['=SUBSTITUTE("hello","l","X")', 'heXXo'],
+    ['=REPLACE("abc",0,1,"x")', 'Err:502'], ['=REPLACE("abc",-1,1,"x")', 'Err:502'], ['=REPLACE("abc",1,-1,"x")', 'Err:502'], ['=REPLACE("abc",0.5,1,"x")', 'Err:502'],
+    ['=REPLACE("abc",1,0,"x")', 'xabc'], ['=REPLACE("abc",5,1,"x")', 'abcx'], ['=REPLACE("abc",1.9,1,"x")', 'xbc'], ['=REPLACE("abc",1.9,1.9,"x")', 'xbc'], ['=REPLACE("abc",2,100,"x")', 'ax']];
+  const off = T.filter(([f, want]) => at(f) !== want).map(([f, want]) => `${f} gave ${at(f)}, Calc ${want}`);
+  check(`${T.length} rounding and text results are Calc's`, off.length === 0, off.join(' | '));
+}
+
 console.log('==> hostile input');
 {
   const head = '<?xml version="1.0"?>\n<office:document xmlns:office="o" xmlns:table="t" xmlns:text="x" office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet>';
@@ -434,6 +813,14 @@ console.log('==> hostile input');
   const deep = head + '<table:table table:name="B"><table:table-row><table:table-cell table:formula="of:=' + '('.repeat(500) + '1' + ')'.repeat(500) + '"/></table:table-row></table:table>' + tail;
   const bd = new Book(deep);
   check('a formula nested 500 deep is left alone, not crashed on', !bd.error && bd.enter(0, 0, 1, '1').changed.length === 1);
+  const long = head + '<table:table table:name="B"><table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell><table:table-cell table:formula="of:=[.A1]' + '+1'.repeat(20000) + '" office:value-type="float" office:value="20001"><text:p>20001</text:p></table:table-cell></table:table-row></table:table>' + tail;
+  const bl = new Book(long);
+  check('a file with a formula of 20,000 terms opens', !bl.error, bl.error);
+  if (!bl.error) {
+    bl.enter(0, 0, 0, '5');
+    check('its formula is left to LibreOffice: the cached value kept, and marked', bl.cell(0, 0, 1).v === 20001 && bl.stale(0, 0, 1) && bl.text().includes('+1+1+1'));
+    check('and the cell beside it took the edit', bl.cell(0, 0, 0).v === 5);
+  }
   const names = head + '<table:table table:name="A&amp;&lt;b&gt;&quot;"><table:table-row><table:table-cell office:value-type="string"><text:p>&lt;script&gt;alert(1)&lt;/script&gt;</text:p></table:table-cell></table:table-row></table:table>' + tail;
   const bn = new Book(names);
   check.eq('markup in a name and a cell is text', bn.sheets[0].name + ' ' + bn.cell(0, 0, 0).text, 'A&<b>" <script>alert(1)</script>');
