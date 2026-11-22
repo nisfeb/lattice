@@ -163,7 +163,7 @@
     Promise.all([writerReady(k), k === 'geojson' ? tileStatus() : null]).then(([LW, tiles]) => {
       if (my !== wrSeq || src.value !== body || richHere() !== k || writerSourceOn()) return;
       const opts = { text: body, editable: ed, name: current, cur: () => src.value, onChange: writerChanged,
-        onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => { wrSaid = true; st('not saved: ' + e, false); } };
+        onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => { wrSaid = true; wrWhy = 'not saved: ' + e; st(wrWhy, false); } };
       if (k === 'geojson') Object.assign(opts, { onText: mapWrite, undo: () => mapUndo(false), redo: () => mapUndo(true),
         tiles, layer: mapLayer, md: (t) => mdToHtml(String(t)), openSettings: () => latOpenSettings('maps'),
         openPage: (n) => openPage(String(n)) });
@@ -181,7 +181,7 @@
   // would send it must not: a save of it would say "saved" over an edit
   // that is not in it. The user is told here, once for every caller,
   // unless the editor said why itself (onRefuse).
-  let wrSaid = false;
+  let wrSaid = false, wrWhy = '';
   //  Only while the buffer is still the view's document. A tab change puts
   //  the next page's text in src.value before the view is let go, and a
   //  view writing then would put its own text over that page.
@@ -190,7 +190,10 @@
     if (!wrLive()) return true;
     wrSaid = false;
     if (wr.sync() !== false) return true;
-    if (!wrSaid) st('not saved: the edit in progress could not be written. Finish or undo it, then save', false);
+    if (!wrSaid) {
+      wrWhy = 'not saved: the edit in progress could not be written. Finish or undo it, then save';
+      st(wrWhy, false);
+    }
     return false;
   }
   function writerDrop() {

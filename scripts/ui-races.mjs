@@ -12,7 +12,9 @@
 //    a queued edit with no rev to claim still gets their text kept
 //    text typed before the fresh read lands is on the device when hidden
 //    vim mode never splits a two-unit character (not a race: see the case)
-//    a map whose field in use cannot be written is not saved without it
+//    a map whose field in use cannot be written: what is written still
+//      goes out, and the page stays unsaved
+//    a rich tab closed with text in a field puts it on its own page
 //
 //  No ship: lib/stub-ship.mjs stands in for the routes the editor uses and
 //  serves the built app.js, and holds answers back to force the order.
@@ -310,8 +312,10 @@ cases.hidden = async () => {
 //  to write the field in use before every save (sync), and the map says
 //  no when it cannot: here a time that is no date. A save sent after
 //  that no would put the page on the ship without the edit and say
-//  "saved". No road may send it: Ctrl+S, the autosave, a hidden page, a
-//  tab switch. Each says so instead, and the edit stays in its field.
+//  "saved". Ctrl+S and a tab switch send nothing then. The autosave and
+//  a hidden page still put what is written already on the ship or in the
+//  queue, and the page stays unsaved. Each says so, and the edit stays in
+//  its field.
 cases.syncRefused = async () => {
   const MAP = '{"type":"FeatureCollection","lattice":{},"features":[\n'
     + '{"type":"Feature","geometry":{"type":"Point","coordinates":[-71,42]},"properties":{"name":"a"}}\n]}\n';
@@ -341,8 +345,9 @@ cases.syncRefused = async () => {
   check.eq('Ctrl+S sends nothing when the map could not write the field', sent() - n, 0);
   check('and says it is not saved', /not saved/.test(await status(p)), await status(p));
   check.eq('the field keeps what was typed', await field('time'), 'not a date');
-  //  the autosave: a written edit waits for it, and a field that cannot
-  //  be written is in use when it fires
+  //  the autosave: a written edit is already in the buffer, and a field
+  //  that cannot be written is in use when it fires. What is written goes
+  //  out without the field, and the page stays unsaved with the reason
   await p.$eval(F('time'), (e) => { e.value = ''; });
   await p.focus(F('name'));
   await p.keyboard.type(' two');
@@ -351,22 +356,33 @@ cases.syncRefused = async () => {
   await p.focus(F('time'));
   await p.keyboard.type('not a date');
   n = sent();
-  await sleep(4000);
-  check.eq('the autosave sends nothing either', sent() - n, 0);
+  await waitFor(() => (body(x, 'm/map') || '').includes('"a one two"'), 8000, 100);
+  check('the autosave sends what is written already', (body(x, 'm/map') || '').includes('"a one two"'), body(x, 'm/map'));
+  check('without the field that could not be written', !(body(x, 'm/map') || '').includes('not a date'), body(x, 'm/map'));
+  await sleep(500);
   check('and says it is not saved', /not saved/.test(await status(p)), await status(p));
-  //  the page is hidden
+  check.eq('the field keeps what was typed', await field('time'), 'not a date');
+  //  the page is hidden with the ship away: the written text is queued
+  x.S.down = true;
+  await p.focus(F('name'));
+  await p.keyboard.type(' three');
+  await p.keyboard.press('Tab');
+  await waitFor(() => p.$(F('time')), 5000, 100);
+  await p.focus(F('time'));
   await p.evaluate(() => {
     Object.defineProperty(document, 'hidden', { get: () => true, configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
     window.dispatchEvent(new Event('pagehide'));
   });
-  await sleep(1500);
-  check.eq('nor does hiding the page', sent() - n, 0);
-  check('and nothing is queued in its place', !(await queued(p, 'm/map')), JSON.stringify(await queued(p, 'm/map')));
+  const q = await waitFor(async () => { const r = await queued(p, 'm/map'); return r && r.body.includes('"a one two three"') ? r : null; }, 8000, 100);
+  check('hiding the page queues the written text', !!q, JSON.stringify(await queued(p, 'm/map')));
+  check('without the field that could not be written', !!q && !q.body.includes('not a date'), q && q.body.slice(-90));
   await p.evaluate(() => {
     Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
   });
+  await comeBack(x);
+  n = sent();
   //  another page is opened over it: the question comes first, and
   //  staying keeps the map in front with the field as typed. In place it
   //  is the question for any unsaved text. For a new tab the buffer would
@@ -384,7 +400,7 @@ cases.syncRefused = async () => {
     check.eq('and nothing was sent', sent() - n, 0);
     await p.click('#dlgcancel');
     await sleep(800);
-    check('staying keeps the map in front', !!(await p.$(F('time'))) && (await ed(p)).includes('"a one two"'), await status(p));
+    check('staying keeps the map in front', !!(await p.$(F('time'))) && (await ed(p)).includes('"a one two three"'), await status(p));
     check.eq('with the field as typed', await p.$(F('time')) && await field('time'), 'not a date');
     check.eq('one tab, as before', await p.evaluate(() => window.latTabs.groups().reduce((k, g) => k + g.tabs.length, 0)), 1);
   }
@@ -396,7 +412,7 @@ cases.syncRefused = async () => {
   await ctrlS();
   await waitFor(() => (body(x, 'm/map') || '').includes('2026-01-02T03:04:05Z'), 8000, 100);
   const b = body(x, 'm/map') || '';
-  check('once the field can be written the save carries every edit', b.includes('"a one two"') && b.includes('2026-01-02T03:04:05Z'), b);
+  check('once the field can be written the save carries every edit', b.includes('"a one two three"') && b.includes('2026-01-02T03:04:05Z'), b);
   await x.done();
 };
 

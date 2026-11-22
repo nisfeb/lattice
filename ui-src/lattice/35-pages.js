@@ -1242,8 +1242,11 @@
     // The 2s debounce still fires. It just reports instead of writing, so the
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
-    //  refused: nothing is sent or stashed, hidden or not (see save())
-    if (!writerSync()) return;
+    //  Refused: the buffer lacks the edit in progress, but holds every edit
+    //  already written, and those must not wait on a field that is in use
+    //  (a phone may end the tab). So it goes out, or into the queue, as it
+    //  stands, and the page stays unsaved with the reason shown (`whole`).
+    const whole = writerSync();
     if (curFolder || !dirty || viewingRev !== null) return;
     if (!current && mode === 'know') return;
     // a move in flight may be carrying this page away: the save goes to
@@ -1333,7 +1336,7 @@
         flushPending();
         return;
       }
-      if (here() && src.value === sent) dirty = false;
+      if (here() && src.value === sent) { if (whole) dirty = false; else st(wrWhy, false); }
       else tabLanded(tk, target, sent);
       flushPending();
       return;
@@ -1354,13 +1357,14 @@
     if (!here()) tabLanded(tk, target, sent, vr && vr.rev);
     // live-editor state only if the editor is still on the doc we autosaved
     if (here()) {
-      if (src.value === sent) dirty = false;   // typed during the request? stay dirty
+      if (src.value === sent && whole) dirty = false;   // typed during the request? stay dirty
       if (!know && vr && isRev(vr.rev)) curRev = vr.rev;
       // the conflict verdict must be the LAST word, not clobbered by the
       // ordinary confirmation a line later
       if (vr && vr.conflicted)
         st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
-      else st('autosaved');
+      else if (whole) st('autosaved');
+      else st(wrWhy, false);
       if (!know && !CONTENT()) setTimeout(checkErrors, 800);
     }
     flushPending();
