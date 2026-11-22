@@ -225,6 +225,39 @@ struct Page {
     view: f32,
 }
 
+/// The deepest a page's elements may stand one in another, as the parser that draws it reads them, and be
+/// drawn. Style, layout and paint go down a level at a time on the thread's own stack (64 MiB), and a table
+/// or a list costs several times what a plain element does: 8,000 nested elements end the app in a debug build.
+/// No page written by a person nests a tenth of this.
+pub const DEEPEST: usize = 1024;
+
+/// What a page nested past `DEEPEST` is drawn as.
+const TOO_DEEP: &str = "<html><body><p>This page is nested too deeply to draw.</p></body></html>";
+
+/// How deep the elements of a parsed page stand one in another, counted without recursion.
+pub fn tree_depth(doc: &HtmlDocument) -> usize {
+    let (mut most, mut left) = (0, vec![(doc.root_node().id, 0usize)]);
+    while let Some((id, above)) = left.pop() {
+        let Some(node) = doc.get_node(id) else { continue };
+        let depth = above + usize::from(node.element_data().is_some());
+        most = most.max(depth);
+        left.extend(node.children.iter().map(|c| (*c, depth)));
+    }
+    most
+}
+
+/// A page parsed. The depth is that of the tree the parser made, so no spelling of nesting passes (a closing
+/// tag that closes nothing, a table inside a cell, a list inside an item). One nested past `DEEPEST` is not
+/// laid out: the page that says so is parsed in its place. `config` is asked for once for each parse.
+fn document(html: &str, config: impl Fn() -> DocumentConfig) -> HtmlDocument {
+    let doc = HtmlDocument::from_html(html, config());
+    if tree_depth(&doc) <= DEEPEST {
+        return doc;
+    }
+    drop(doc);
+    HtmlDocument::from_html(TOO_DEEP, config())
+}
+
 fn viewport(ask: &Ask, view: f32) -> Viewport {
     let px = |v: f32| (v * ask.scale).round().max(1.0) as u32;
     Viewport::new(px(ask.width), px(view.max(BAND)), ask.scale, if ask.dark { ColorScheme::Dark } else { ColorScheme::Light })
@@ -343,7 +376,7 @@ fn serve(rx: &Receiver<Cmd>, own: &Sender<Cmd>, out: &Arc<Mutex<Vec<Out>>>, wake
                     // a new page: nothing of it is under the pointer yet
                     (seen.0, hot) = (0.0, false);
                     let net = Arc::new(Net { tx: Mutex::new(own.clone()), outside: ask.outside, left: FETCHES.into(), held: 0.into() });
-                    let doc = HtmlDocument::from_html(&html, DocumentConfig { viewport: Some(viewport(&ask, seen.1)), net_provider: Some(net.clone()), ..Default::default() });
+                    let doc = document(&html, || DocumentConfig { viewport: Some(viewport(&ask, seen.1)), net_provider: Some(net.clone()), ..Default::default() });
                     let mut p = Page { ask, doc, net, height: 1.0, have: BTreeSet::new(), view: seen.1 };
                     lay(&mut p);
                     page = Some(p);
@@ -420,54 +453,67 @@ mod tests {
         }
     }
 
-    /// How deep a page's elements stand one in another, as the parser that draws it reads them.
-    fn real_depth(html: &str) -> usize {
-        let doc = HtmlDocument::from_html(html, DocumentConfig::default());
-        let (mut most, mut left) = (0, vec![(doc.root_node().id, 0usize)]);
-        while let Some((id, above)) = left.pop() {
-            let node = doc.get_node(id).expect("a node the tree names");
-            let depth = above + usize::from(node.element_data().is_some());
-            most = most.max(depth);
-            left.extend(node.children.iter().map(|c| (*c, depth)));
+    #[test]
+    fn a_page_nested_past_the_limit_in_the_trees_own_count_is_not_laid_out() {
+        let config = DocumentConfig::default;
+        // what the old count of tags let through and overflowed the stack on: tables and lists, closing tags that close
+        // nothing, and the plain nesting of elements. Each is measured on the tree, whatever way it is spelt
+        let closex = format!("{}x", format!("{}{}", "<div>".repeat(4000), "</x>".repeat(4000)).repeat(2));
+        let pages = [
+            ("table", format!("{}x", "<table><tr><td>".repeat(2000))),
+            ("list", format!("{}x", "<ul><li>".repeat(3000))),
+            ("closex", closex),
+            ("div", format!("{}x", "<div>".repeat(DEEPEST + 10))),
+            ("svg", format!("<svg>{}</svg>", "<g>".repeat(DEEPEST + 10))),
+            ("a stray end tag in a drawing", format!("<svg></x></svg><div>{}</div>", "<div>".repeat(DEEPEST))),
+        ];
+        for (what, page) in &pages {
+            let seen = HtmlDocument::from_html(page, config());
+            assert!(tree_depth(&seen) > DEEPEST, "{what}: the parser has it {} deep", tree_depth(&seen));
+            let drawn = document(page, config);
+            assert!(tree_depth(&drawn) <= 8, "{what}: laid out {} deep", tree_depth(&drawn));
         }
-        most
+        // a page of the depth the limit lets by is drawn as it is
+        for page in [format!("{}x", "<div>".repeat(DEEPEST - 10)), format!("{}x", "<ul><li>".repeat(100)), "<p>a</p>".repeat(100_000)] {
+            let drawn = document(&page, config);
+            assert_eq!(tree_depth(&drawn), tree_depth(&HtmlDocument::from_html(&page, config())));
+            assert!(tree_depth(&drawn) > 2);
+        }
+        // pages that were wrongly refused as deep, harmless to the parser, are drawn: a script and a list of choices after a stray end tag in a drawing
+        for page in [
+            format!("<svg><path d='M0 0'/></path></svg><script>var e=0;{}</script><p>x</p>", "if(e<t)e++;".repeat(5000)),
+            format!("<svg><g></g></g></svg><select>{}</select>", "<option>a".repeat(5000)),
+            format!("<form><svg></x></svg>{}", "<input name=a>".repeat(5000)),
+            format!("<svg></x></svg><style>{}</style>", "a<b{}".repeat(5000)),
+        ] {
+            let (drawn, parsed) = (document(&page, config), tree_depth(&HtmlDocument::from_html(&page, config())));
+            assert_eq!(tree_depth(&drawn), parsed);
+            assert!((3..10).contains(&parsed), "{parsed}");
+        }
     }
 
     #[test]
-    fn a_page_counted_as_shallow_is_shallow_to_the_parser_that_draws_it() {
-        // tags that close themselves, in the spellings that do and do not, set by the dozen among what starts, ends and hides a drawing.
-        // Wherever the count lets such a run by as opening nothing, the parser must not have stood them one in another
-        let runs = ["<circle/>", "<circle r=\"1\"/>", "<circle r=1/>", "<circle r= />", "<path d='M0 0' />", "<div/>", "<span/>", "<x y/>", "<x \"/>", "<x y='a>b'/>", "<g/>", "<mi/>", "<title/>", "<svg/>", "<p/>", "<td/>", "<circle / >", "<br/>", "<X:y/>", "<a-b/>"];
-        let bits = [
-            "<svg>", "<svg>", "<svg>", "<SVG viewBox='0 0 1 1'>", "<math>", "<svg\n>", "<svg/x>", "<svg-x>", "<g>", "<g>", "<defs>", "<text>", "t", "<title>", "<desc>", "<foreignObject>", "<mi>", "<mtext>", "<annotation-xml>", "<div>", "<p>", "<b>", "<font>", "<font color=red>", "<td>", "<li>", "<table>", "<select>", "<option>", "<textarea>", "<xmp>", "<iframe>", "<noscript>", "<template>", "<script>", "<style>", "<plaintext>", "<a title=\"<svg>\">", "<a title='", "<a title=\"", "<x =\"", "'>", "\">", ">", "/>", "<", "</", "<!", "<?", "<!-- ", " -->", "--!>", "<!-->", "<!--->", "<!--!>", "<!----!>", "<![CDATA[", "]]>", "<!doctype html>", "</ x>", "</>",
-            "</svg>", "</svg>", "</math>", "</g>", "</title>", "</desc>", "</foreignObject>", "</mi>", "</div>", "</p>", "</br>", "</font>", "</select>", "</textarea>", "</textareax>", "</script>", "</scriptx>", "</style>", "</xmp>", "</iframe>", "</template>", "</x>", "</table>", "</td>",
+    fn pages_that_overflowed_the_drawing_threads_stack_are_refused_before_they_are_laid_out() {
+        // each was counted as shallow by the count of tags, and ended the app when laid out on this thread
+        let h = Html::start(Arc::new(|| {}));
+        let pages = [
+            format!("{}x", "<table><tr><td>".repeat(2000)),
+            format!("{}x", "<ul><li>".repeat(3000)),
+            format!("{}x", format!("{}{}", "<div>".repeat(4000), "</x>".repeat(4000)).repeat(2)),
         ];
-        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
-        let mut next = |n: usize| {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            (seed >> 33) as usize % n
-        };
-        let (mut let_by, mut wrong) = (0, Vec::new());
-        for round in 0..2000 {
-            let (mut page, pieces) = (String::new(), 2 + next(12));
-            for _ in 0..pieces {
-                if next(4) == 0 {
-                    page.push_str(&runs[next(runs.len())].repeat(80));
-                } else {
-                    page.push_str(bits[next(bits.len())]);
+        for (n, page) in pages.into_iter().enumerate() {
+            h.show(Ask { key: Key { name: format!("deep{n}"), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some(page));
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let height = loop {
+                if let Some(Out::Laid { height, .. }) = h.take().into_iter().find(|o| matches!(o, Out::Laid { .. })) {
+                    break height;
                 }
-            }
-            // no more than `pieces` elements are opened outside the runs, and the parser adds a page's three of its own
-            if !crate::html::deeper_than(&page, pieces) {
-                let real = real_depth(&page);
-                if real > 2 * pieces + 3 {
-                    wrong.push(format!("round {round}: counted as no deeper than {pieces}, and {real} deep: {}", runs.iter().fold(page.clone(), |p, r| p.replace(&r.repeat(80), &format!("[{r} x80]")))));
-                }
-                let_by += usize::from(page.len() > 800);
-            }
+                assert!(std::time::Instant::now() < end, "page {n} was not laid out");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            // the line that says it is too deep, and not the page
+            assert!(height < 400.0, "page {n} is {height} high");
         }
-        assert!(wrong.is_empty(), "{} pages: {}", wrong.len(), wrong[..wrong.len().min(40)].join("\n"));
-        assert!(let_by > 50, "the runs were let by in {let_by} pages only: the check checks little");
     }
 
     #[test]
