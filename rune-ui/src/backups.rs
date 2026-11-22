@@ -9,12 +9,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// One recurring backup: how often, where, and how many to keep. Several
-/// may share a folder: each prunes only its own archives.
+/// One recurring backup of one ship: how often, where, and how many to
+/// keep. Several may share a folder: each prunes only its own archives.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct Schedule {
     pub id: String,
-    /// The owner's name for it, and the archive's: `lattice-<label>-<stamp>.tar`.
+    /// The owner's name for it, and the archive's: `lattice-<label>-<ship>-<stamp>.tar`.
     pub label: String,
     /// 24 daily, 168 weekly, 720 every thirty days.
     pub every_hours: u64,
@@ -26,6 +26,13 @@ pub struct Schedule {
     pub last_run: u64,
     #[serde(default)]
     pub enabled: bool,
+    /// The ship it backs up: its name and its address. It runs against that ship alone, and its
+    /// archives carry the ship's name, so two ships signed in never share a run of archives.
+    /// Empty in a schedule made before schedules named a ship, until it is given one (`runs_for`).
+    #[serde(default)]
+    pub ship: String,
+    #[serde(default)]
+    pub url: String,
 }
 
 pub fn now() -> u64 {
@@ -77,16 +84,33 @@ pub fn stamp(secs: u64) -> String {
     format!("{y:04}{m:02}{d:02}-{:02}{:02}{:02}", r / 3600, r % 3600 / 60, r % 60)
 }
 
+/// What every archive of a schedule is named before its stamp: its label, then its ship's name.
+/// A schedule from before schedules named a ship has the label alone, as its archives on disk do.
+/// A ship's name is letters and dashes and a stamp starts with eight digits, so one schedule's
+/// archives are never read as another's whose name begins the same.
+fn prefix(s: &Schedule) -> String {
+    let ship: String = s.ship.trim_start_matches('~').chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    if ship.is_empty() { format!("lattice-{}-", slug(&s.label)) } else { format!("lattice-{}-{ship}-", slug(&s.label)) }
+}
+
 pub fn archive_name(s: &Schedule, at: u64, complete: bool) -> String {
     // an incomplete one's name is never `is_ours`: it is not counted, pruned or verified as a good backup
-    format!("lattice-{}-{}{}.tar", slug(&s.label), stamp(at), if complete { "" } else { "-INCOMPLETE" })
+    format!("{}{}{}.tar", prefix(s), stamp(at), if complete { "" } else { "-INCOMPLETE" })
+}
+
+/// Whether a schedule is to run against the ship in front, named `ship` at `url`. Its own ship
+/// alone. One that names no ship yet, from before schedules did, runs unasked only when `alone`
+/// says one ship is signed in: with several, which of them it was meant for cannot be told.
+pub fn runs_for(s: &Schedule, url: &str, ship: &str, alone: bool) -> bool {
+    if s.ship.is_empty() { alone } else { s.ship == ship && s.url == url }
 }
 
 /// Strict, because the answer decides what is deleted: only
-/// `lattice-<slug>-<8 digits>-<6 digits>.tar`.
+/// `lattice-<slug>-<ship>-<8 digits>-<6 digits>.tar`, with no ship's name
+/// for a schedule that names none.
 pub fn is_ours(s: &Schedule, fname: &str) -> bool {
     let digits = |t: &str, n: usize| t.len() == n && t.bytes().all(|b| b.is_ascii_digit());
-    fname.strip_prefix(&format!("lattice-{}-", slug(&s.label))).and_then(|r| r.strip_suffix(".tar")).and_then(|r| r.split_once('-')).is_some_and(|(d, t)| digits(d, 8) && digits(t, 6))
+    fname.strip_prefix(&prefix(s)).and_then(|r| r.strip_suffix(".tar")).and_then(|r| r.split_once('-')).is_some_and(|(d, t)| digits(d, 8) && digits(t, 6))
 }
 
 #[cfg(unix)]
@@ -153,7 +177,7 @@ pub fn write_archive(s: &Schedule, bytes: &[u8], at: u64, complete: bool) -> Res
         prune(s, &dir);
     } else {
         // only the newest incomplete one is kept: each is the whole store, and a page that cannot be read makes one at every try
-        let mine = format!("lattice-{}-", slug(&s.label));
+        let mine = prefix(s);
         for old in std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()) {
             let name = old.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
             // this schedule's own, by the date that follows its name: another schedule's name may begin with this one's
@@ -242,17 +266,18 @@ pub fn verify_newest(s: &Schedule) -> Result<Report, String> {
     Ok(verify_bytes(&std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?))
 }
 
-/// A schedule from what was typed, or why not.
-pub fn new_schedule(list: &[Schedule], label: &str, dir: &str, every_hours: u64, keep: &str, id: String) -> Result<Schedule, String> {
+/// A schedule from what was typed, for the ship named `ship` at `url`, or why not.
+pub fn new_schedule(list: &[Schedule], label: &str, dir: &str, every_hours: u64, keep: &str, id: String, ship: &str, url: &str) -> Result<Schedule, String> {
     let (label, dir) = (label.trim(), dir.trim());
     if label.is_empty() || dir.is_empty() {
         return Err("a name and a folder are both needed".into());
     }
-    // two with one slug would prune each other's archives
-    if list.iter().any(|b| slug(&b.label) == slug(label)) {
-        return Err(format!("there is already a schedule called {label}"));
+    let new = Schedule { id, label: label.to_owned(), every_hours, keep: keep.trim().parse().unwrap_or(0).min(999), dir: dir.to_owned(), last_run: 0, enabled: true, ship: ship.to_owned(), url: url.to_owned() };
+    // two whose archives are named alike would prune each other's. The same label for another ship is another run of names
+    if list.iter().any(|b| prefix(b) == prefix(&new)) {
+        return Err(format!("there is already a schedule called {label}{}", if ship.is_empty() { String::new() } else { format!(" for {ship}") }));
     }
-    Ok(Schedule { id, label: label.to_owned(), every_hours, keep: keep.trim().parse().unwrap_or(0).min(999), dir: dir.to_owned(), last_run: 0, enabled: true })
+    Ok(new)
 }
 
 fn list_path() -> Option<PathBuf> {
@@ -273,7 +298,7 @@ mod tests {
     use crate::vault::{File, tar};
 
     fn sched(label: &str, hours: u64, keep: u32, dir: &Path) -> Schedule {
-        Schedule { id: label.into(), label: label.into(), every_hours: hours, keep, dir: dir.display().to_string(), last_run: 0, enabled: true }
+        Schedule { id: label.into(), label: label.into(), every_hours: hours, keep, dir: dir.display().to_string(), last_run: 0, enabled: true, ..Schedule::default() }
     }
 
     fn tmpdir(tag: &str) -> PathBuf {
@@ -345,6 +370,33 @@ mod tests {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
+    #[test]
+    fn a_schedule_writes_and_prunes_one_ships_archives_and_no_others() {
+        let d = tmpdir("ships");
+        let of = |ship: &str, url: &str| Schedule { ship: ship.into(), url: url.into(), ..sched("daily", 24, 2, &d) };
+        let (zod, bus, before) = (of("~zod", "http://a"), of("~bus", "http://b"), sched("daily", 24, 2, &d));
+        let t0 = now() - 10 * 86400;
+        // archives written before schedules named a ship are on disk
+        let old: Vec<PathBuf> = (0..2).map(|i| write_archive(&before, b"of whichever ship was in front", t0 + i * 3600, true).unwrap()).collect();
+        // one run for ~zod, then more for ~bus than are kept
+        let first = write_archive(&zod, b"the pages of ~zod", t0 + 86400, true).unwrap();
+        for i in 2..6 {
+            write_archive(&bus, b"the pages of ~bus", t0 + i * 86400, true).unwrap();
+        }
+        assert_eq!(first.file_name().unwrap().to_string_lossy(), format!("lattice-daily-zod-{}.tar", stamp(t0 + 86400)), "the name says whose it is");
+        assert!(first.exists(), "~zod's archive is not pruned by ~bus's runs");
+        assert_eq!((existing(&zod, &d), existing(&bus, &d).len()), (vec![first.clone()], 2));
+        assert!(existing(&bus, &d).iter().all(|p| std::fs::read(p).unwrap() == b"the pages of ~bus"));
+        // and none of those from before is counted, verified or deleted as either ship's
+        assert!(old.iter().all(|p| p.exists()) && existing(&before, &d) == old);
+        assert!(!is_ours(&zod, &archive_name(&before, t0, true)) && !is_ours(&before, &archive_name(&zod, t0, true)) && !is_ours(&zod, &archive_name(&bus, t0, true)));
+        // an incomplete one of one ship does not take another ship's incomplete one away
+        let (iz, ib) = (write_archive(&zod, b"x", t0 + 7 * 86400, false).unwrap(), write_archive(&bus, b"x", t0 + 7 * 86400, false).unwrap());
+        let ib2 = write_archive(&bus, b"x", t0 + 8 * 86400, false).unwrap();
+        assert!(iz.exists() && !ib.exists() && ib2.exists());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
     fn archive(files: &[(&str, &str)]) -> Vec<u8> {
         tar(&files.iter().map(|(n, b)| File { name: (*n).into(), body: (*b).into(), mtime: 1 }).collect::<Vec<_>>())
     }
@@ -384,10 +436,22 @@ mod tests {
 
     #[test]
     fn a_schedule_is_made_from_what_was_typed() {
-        let one = new_schedule(&[], " Daily ", " /tmp/b ", 24, "7", "a".into()).unwrap();
-        assert_eq!(one, Schedule { id: "a".into(), label: "Daily".into(), every_hours: 24, keep: 7, dir: "/tmp/b".into(), last_run: 0, enabled: true });
-        assert_eq!(new_schedule(&[], "", "/tmp", 24, "7", "b".into()).unwrap_err(), "a name and a folder are both needed");
-        assert_eq!(new_schedule(&[one.clone()], "daily", "/x", 24, "7", "b".into()).unwrap_err(), "there is already a schedule called daily");
-        assert_eq!(new_schedule(&[one], "weekly", "/x", 168, "lots", "b".into()).unwrap().keep, 0);
+        let one = new_schedule(&[], " Daily ", " /tmp/b ", 24, "7", "a".into(), "~zod", "http://a").unwrap();
+        assert_eq!(one, Schedule { id: "a".into(), label: "Daily".into(), every_hours: 24, keep: 7, dir: "/tmp/b".into(), last_run: 0, enabled: true, ship: "~zod".into(), url: "http://a".into() });
+        assert_eq!(new_schedule(&[], "", "/tmp", 24, "7", "b".into(), "~zod", "http://a").unwrap_err(), "a name and a folder are both needed");
+        assert_eq!(new_schedule(&[one.clone()], "daily", "/x", 24, "7", "b".into(), "~zod", "http://a").unwrap_err(), "there is already a schedule called daily for ~zod");
+        assert_eq!(new_schedule(&[one.clone()], "weekly", "/x", 168, "lots", "b".into(), "~zod", "http://a").unwrap().keep, 0);
+        // the same label for another ship is its own run of archives. The same ship at another address is not: its archives would be named alike
+        assert!(new_schedule(&[one.clone()], "daily", "/x", 24, "7", "b".into(), "~bus", "http://a").is_ok());
+        assert!(new_schedule(&[one.clone()], "daily", "/x", 24, "7", "b".into(), "~zod", "http://elsewhere").is_err());
+        // nor may a label be made to look like another schedule's label and ship
+        assert!(new_schedule(&[one.clone()], "daily-zod", "/x", 24, "7", "b".into(), "", "").is_err());
+        assert!(new_schedule(&[one.clone()], "daily", "/x", 24, "7", "b".into(), "", "").is_ok());
+        // a schedule runs against its own ship at its own address, whichever is in front
+        assert!(runs_for(&one, "http://a", "~zod", false) && !runs_for(&one, "http://a", "~bus", true) && !runs_for(&one, "http://b", "~zod", true));
+        // one from before schedules named a ship reads with none, and is given the ship in front only when that is the only ship
+        let before: Schedule = serde_json::from_str(r#"{"id":"x","label":"daily","every_hours":24,"keep":2,"dir":"/b","last_run":5,"enabled":true}"#).unwrap();
+        assert_eq!((before.ship.as_str(), before.url.as_str()), ("", ""));
+        assert!(runs_for(&before, "http://a", "~zod", true) && !runs_for(&before, "http://a", "~zod", false));
     }
 }

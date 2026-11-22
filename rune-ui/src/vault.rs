@@ -171,7 +171,9 @@ impl Built {
 /// The archive of a store: `dump` is what `page-dump` answered, `know` what
 /// `know-all` did and `scopes` what `page-scopes` did, each none when it
 /// could not be read. `source` reads the body of a page the dump left out.
-pub fn build(dump: &Value, know: Option<&Value>, scopes: Option<&Value>, source: &dyn Fn(&str) -> Option<String>, now: u64) -> Built {
+/// `ship` is the name of the ship whose store it is, written into the
+/// manifest so the file says whose it is. Empty leaves it out.
+pub fn build(dump: &Value, know: Option<&Value>, scopes: Option<&Value>, source: &dyn Fn(&str) -> Option<String>, now: u64, ship: &str) -> Built {
     let empty = Vec::new();
     let nodes = dump["nodes"].as_array().unwrap_or(&empty);
     let s = |v: &Value| v.as_str().unwrap_or_default().to_owned();
@@ -213,7 +215,10 @@ pub fn build(dump: &Value, know: Option<&Value>, scopes: Option<&Value>, source:
     if !names.is_empty() {
         files.push(file("names.json".into(), pretty(&Value::Object(names)), now));
     }
-    let manifest = serde_json::json!({ "pages": pages, "memories": know.map(|_| memories), "missing": missing });
+    let mut manifest = serde_json::json!({ "pages": pages, "memories": know.map(|_| memories), "missing": missing });
+    if !ship.is_empty() {
+        manifest["ship"] = Value::String(ship.to_owned());
+    }
     files.push(file("manifest.json".into(), pretty(&manifest), now));
     files.push(file("README.txt".into(), README.as_bytes().to_vec(), now));
     Built { bytes: tar(&files), pages, memories, missing, excluded }
@@ -410,7 +415,7 @@ mod tests {
         let know = json!({"items": [{"key": "/project/x", "body": "fact", "tags": ["t"], "updated": "~2026.11.17..20.36.35"}]});
         let scopes = json!({"items": [{"path": "notes/a", "scope": "clearweb"}, {"path": "notes/t", "scope": "private"}]});
         let source = |p: &str| (p == "notes/t").then(|| "plain".to_owned());
-        let b = build(&dump, Some(&know), Some(&scopes), &source, 100);
+        let b = build(&dump, Some(&know), Some(&scopes), &source, 100, "~zod");
         assert_eq!((b.pages, b.memories, b.excluded), (3, 1, 1));
         assert_eq!(b.missing, ["gone"]);
         assert!(b.says("/tmp/v.tar").contains("could NOT read: gone"));
@@ -424,16 +429,17 @@ mod tests {
         let know_back: Value = serde_json::from_str(get("know.json").unwrap()).unwrap();
         assert_eq!(know_back, know);
         let man: Value = serde_json::from_str(get("manifest.json").unwrap()).unwrap();
-        assert_eq!(man, json!({"pages": 3, "memories": 1, "missing": ["gone"]}));
+        assert_eq!(man, json!({"pages": 3, "memories": 1, "missing": ["gone"], "ship": "~zod"}), "the archive says whose store it is");
         // the page's date is the file's
         assert_eq!(&b.bytes[136..148], format!("{:011o}\0", 1_794_947_795u64).as_bytes());
 
         // nothing read of the memories or the share modes is said, not hidden
-        let b = build(&json!({"nodes": [{"path": "a", "page": true, "kind": "md", "body": "x"}]}), None, None, &|_| None, 100);
+        let b = build(&json!({"nodes": [{"path": "a", "page": true, "kind": "md", "body": "x"}]}), None, None, &|_| None, 100, "");
         assert_eq!(b.missing, ["the memories", "the share modes"]);
         let man: Value = serde_json::from_str(&untar(&b.bytes).unwrap().into_iter().find(|(n, _)| n == "manifest.json").unwrap().1).unwrap();
         assert_eq!(man["memories"], Value::Null);
-        let clean = build(&dump, Some(&know), Some(&scopes), &|_| Some("b".into()), 100);
+        assert_eq!(man.get("ship"), None, "with no ship known none is named");
+        let clean = build(&dump, Some(&know), Some(&scopes), &|_| Some("b".into()), 100, "");
         assert_eq!(clean.says("/tmp/v.tar"), "exported 3 page(s) and 1 memories to /tmp/v.tar (1 generated folder index not included, they rebuild themselves)");
     }
 

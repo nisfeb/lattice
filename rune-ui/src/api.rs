@@ -3008,7 +3008,7 @@ impl Conn {
         let json = |path: &str| self.call_in(120, "GET", path, None).ok().and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
         let dump = json("page-dump").ok_or("export failed: could not read the page tree")?;
         let source = |name: &str| self.page(name).ok().map(|p| p.body);
-        Ok(crate::vault::build(&dump, json("know-all").as_ref(), json("page-scopes").as_ref(), &source, now))
+        Ok(crate::vault::build(&dump, json("know-all").as_ref(), json("page-scopes").as_ref(), &source, now, self.ship()))
     }
 
     /// Puts an archive back, as the web client does: the folders, the pages
