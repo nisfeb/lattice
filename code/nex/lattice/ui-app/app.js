@@ -6916,13 +6916,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }, creating);
       return 'queued';
     }
-    saving = true;
     st('saving…');
     let sent = fixed ? fixed.body : src.value;
     const kind = fixed ? fixed.kind : kindOverride || curKind || pkind.value;
     const rn = realName(name);
     if (!rn) {
-      saving = false;
       st('bad name — use at least one letter or digit', false);
       return;
     }
@@ -6939,8 +6937,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
       flushPending();
     };
-    if (!fixed && editLocked()) { saving = false; st(LOCK_NOTE, false); return failed(); }
-    if (tooBig(sent)) { saving = false; st(TOO_BIG, false); return failed(); }
+    if (!fixed && editLocked()) { st(LOCK_NOTE, false); return failed(); }
+    if (tooBig(sent)) { st(TOO_BIG, false); return failed(); }
     const base = creating ? null : baseFor(name, curRev);
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1&by=' + winId : casQ(name, base)) + dnameQ(rnc)
@@ -6949,6 +6947,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const sentSeq = offSeq();
     casHold.delete(name);       // a save on purpose tries again
     paintCas();
+    saving = true;
     try {
       if (!(jobWait && !creating && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -7241,7 +7240,6 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (mode !== 'know' && (editLocked() || casHold.has(current))) return;
     if (tooBig(src.value)) { st(TOO_BIG, false); return; }
     if (saving) { if (!savePending) savePending = true; return; }
-    saving = true;
     const target = current;
     const sent = src.value;
     const know = mode === 'know';
@@ -7254,6 +7252,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         '&type=' + tkind + linkBase(target) + casQ(target, trev);
     let w = { gone: true };
     const sentSeq = offSeq();
+    saving = true;     // at the send, as in save(): nothing awaits before it
     try {
       if (!(jobWait && !know && !linkOf(target)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -7309,7 +7308,6 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     await savesSettled(false);
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
     if (t.snap !== s || !s.dirty || !allTabs().includes(t)) return;
-    saving = true;
     const name = t.key;
     const sent = s.body;
     const kind = s.kind || s.pkind;
@@ -7319,6 +7317,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         + (linkOf(name) && isRev(s.rev) ? '&base=' + s.rev : '') + casQ(name, s.rev);
     let w = { gone: true };
     const sentSeq = offSeq();
+    saving = true;
     try {
       if (!(jobWait && !know && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });

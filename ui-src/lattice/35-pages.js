@@ -768,7 +768,10 @@
       }, creating);
       return 'queued';
     }
-    saving = true;
+    //  From here to the send nothing awaits, so no other save can start.
+    //  `saving` is set at the send itself, where a finally clears it: set
+    //  here, a return or a throw on the way there left it set for good,
+    //  and no save left the window again.
     st('saving…');
     // capture the exact body being sent: keystrokes landing during the round-trip
     // must NOT be marked clean, or the next refresh swaps the stale server copy
@@ -783,7 +786,6 @@
     // from the other merges.
     const rn = realName(name);
     if (!rn) {
-      saving = false;
       st('bad name — use at least one letter or digit', false);
       return;
     }
@@ -810,8 +812,8 @@
       }
       flushPending();
     };
-    if (!fixed && editLocked()) { saving = false; st(LOCK_NOTE, false); return failed(); }
-    if (tooBig(sent)) { saving = false; st(TOO_BIG, false); return failed(); }
+    if (!fixed && editLocked()) { st(LOCK_NOTE, false); return failed(); }
+    if (tooBig(sent)) { st(TOO_BIG, false); return failed(); }
     const base = creating ? null : baseFor(name, curRev);
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1&by=' + winId : casQ(name, base)) + dnameQ(rnc)
@@ -822,6 +824,7 @@
     const sentSeq = offSeq();
     casHold.delete(name);       // a save on purpose tries again
     paintCas();
+    saving = true;
     try {
       if (!(jobWait && !creating && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -1229,7 +1232,6 @@
     // behind it. Coalesce to one trailing save instead.
     //  never over an explicit save already waiting: that one names its kind
     if (saving) { if (!savePending) savePending = true; return; }
-    saving = true;
     // the document this autosave owns. If the user navigates mid-flight,
     // `current` moves; everything below acts on `target`, not the new current.
     //  and what it is: a group coming to the front (28-splits.js) can
@@ -1246,6 +1248,7 @@
         '&type=' + tkind + linkBase(target) + casQ(target, trev);
     let w = { gone: true };
     const sentSeq = offSeq();
+    saving = true;     // at the send, as in save(): nothing awaits before it
     try {
       if (!(jobWait && !know && !linkOf(target)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -1327,7 +1330,6 @@
     await savesSettled(false);
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
     if (t.snap !== s || !s.dirty || !allTabs().includes(t)) return;
-    saving = true;
     const name = t.key;
     const sent = s.body;
     const kind = s.kind || s.pkind;
@@ -1339,6 +1341,9 @@
     //  behind a folder job a page's save queues instead of going out, as
     //  the live editor's does (jobWait, 08-offline.js)
     const sentSeq = offSeq();
+    //  set at the send, as in save(). Set above the stand-down for a held
+    //  or oversized page, that return left it set for good.
+    saving = true;
     try {
       if (!(jobWait && !know && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
