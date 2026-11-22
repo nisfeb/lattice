@@ -25,7 +25,8 @@ export function stubShip(seed = {}) {
     S.hist.get(name).push({ rev: p.rev, body: p.body });
     return p;
   };
-  for (const [n, b] of Object.entries(seed)) S.put(n, b);
+  //  a seed is a body, or [body, kind] for a page that is not markdown
+  for (const [n, b] of Object.entries(seed)) S.put(n, ...[].concat(b));
   S.saves = () => S.log.filter((e) => /^page-save/.test(e.path));
   const dump = () => {
     const nodes = [], dirs = new Set();

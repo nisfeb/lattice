@@ -163,7 +163,7 @@
     Promise.all([writerReady(k), k === 'geojson' ? tileStatus() : null]).then(([LW, tiles]) => {
       if (my !== wrSeq || src.value !== body || richHere() !== k || writerSourceOn()) return;
       const opts = { text: body, editable: ed, name: current, cur: () => src.value, onChange: writerChanged,
-        onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => st('not saved: ' + e, false) };
+        onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => { wrSaid = true; st('not saved: ' + e, false); } };
       if (k === 'geojson') Object.assign(opts, { onText: mapWrite, undo: () => mapUndo(false), redo: () => mapUndo(true),
         tiles, layer: mapLayer, md: (t) => mdToHtml(String(t)), openSettings: () => latOpenSettings('maps'),
         openPage: (n) => openPage(String(n)) });
@@ -175,8 +175,20 @@
     dirty = everTyped = true;
     clearTimeout(autoTimer);
   }
-  // false: it refused (a broken marker pair), the last good text stays
-  function writerSync() { return !wr || wr.sync(); }
+  // false: the editor holds an edit it could not write into src.value (a
+  // broken marker pair, a cell or a map field in use that was refused).
+  // The text there is then the page without that edit, so a caller that
+  // would send it must not: a save of it would say "saved" over an edit
+  // that is not in it. The user is told here, once for every caller,
+  // unless the editor said why itself (onRefuse).
+  let wrSaid = false;
+  function writerSync() {
+    if (!wr) return true;
+    wrSaid = false;
+    if (wr.sync() !== false) return true;
+    if (!wrSaid) st('not saved: the edit in progress could not be written. Finish or undo it, then save', false);
+    return false;
+  }
   function writerDrop() {
     wrSeq++;
     if (wr) wr.destroy();

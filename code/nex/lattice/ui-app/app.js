@@ -6,7 +6,7 @@ const WRITER_H = '0v3.nm6k7.4k7eg.i0bfe.baj4s.uumr7';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
 const SHEET_H = '0v6.jhub6.b91c6.7sudv.c4oga.jnvv8';
 // and map.js's, the map view (26-writer.js)
-const MAP_H = '0v1.3jgkh.ff5dq.hmq77.odpec.jvndj';
+const MAP_H = '0v3tfmo.ugagm.96cua.h9nas.1ltae';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)
 const SCAD_H = '0v3.83q9u.qhgj4.1bo0q.2nelf.nbkkr';
 // and pdf.js's (78-pdf.js)
@@ -1757,6 +1757,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (dirty && !mine &&
         !(await askConfirm('discard unsaved changes to ' + label + '?', 'discard')))
       return false;
+    if (mine && !writerSync() &&
+        !(await askConfirm('the last edit to ' + label + ' could not be written. discard it?', 'discard')))
+      return false;
     t.snap = mine ? snapNow() : null;
     if (mine) gGhostKeep(t);
     dirty = false;
@@ -1978,6 +1981,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (dirty && !mine) return false;
     if (saving && !t.key) return false;
     if (dirty && mine && !t.key && t.kind === 'page') return false;
+    if (mine && !writerSync()) return false;
     if (mine) { t.snap = snapNow(); gGhostKeep(t); }
     dirty = false;
     clearTimeout(autoTimer);
@@ -3994,7 +3998,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     Promise.all([writerReady(k), k === 'geojson' ? tileStatus() : null]).then(([LW, tiles]) => {
       if (my !== wrSeq || src.value !== body || richHere() !== k || writerSourceOn()) return;
       const opts = { text: body, editable: ed, name: current, cur: () => src.value, onChange: writerChanged,
-        onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => st('not saved: ' + e, false) };
+        onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => { wrSaid = true; st('not saved: ' + e, false); } };
       if (k === 'geojson') Object.assign(opts, { onText: mapWrite, undo: () => mapUndo(false), redo: () => mapUndo(true),
         tiles, layer: mapLayer, md: (t) => mdToHtml(String(t)), openSettings: () => latOpenSettings('maps'),
         openPage: (n) => openPage(String(n)) });
@@ -4006,7 +4010,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     dirty = everTyped = true;
     clearTimeout(autoTimer);
   }
-  function writerSync() { return !wr || wr.sync(); }
+  let wrSaid = false;
+  function writerSync() {
+    if (!wr) return true;
+    wrSaid = false;
+    if (wr.sync() !== false) return true;
+    if (!wrSaid) st('not saved: the edit in progress could not be written. Finish or undo it, then save', false);
+    return false;
+  }
   function writerDrop() {
     wrSeq++;
     if (wr) wr.destroy();
@@ -6929,7 +6940,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return !!rn && nodes.some((n) => n.page && n.path === rn.name && !n.pending);
   };
   async function save(kindOverride, fixed, drawn = 0, auto = false) {
-    if (!fixed) writerSync();     // a Writer page's text into src.value
+    if (!fixed && !writerSync()) return;
     if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
     if (!fixed && viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     const typed = pname.value.trim();
@@ -7295,7 +7306,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   });
   async function autosave(hiding) {
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
-    writerSync();
+    if (!writerSync()) return;
     if (curFolder || !dirty || viewingRev !== null) return;
     if (!current && mode === 'know') return;
     if (moving) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 1000); return; }

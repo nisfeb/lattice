@@ -709,7 +709,9 @@
   //  `drawn`: how many Inbox names this create has drawn so far (below).
   //  `auto`: autosave asked (the table at autosave() says what that changes).
   async function save(kindOverride, fixed, drawn = 0, auto = false) {
-    if (!fixed) writerSync();     // a Writer page's text into src.value
+    //  a rich page's text into src.value. Refused, src.value lacks the
+    //  edit in progress and nothing is sent (writerSync has said so)
+    if (!fixed && !writerSync()) return;
     if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
     if (!fixed && viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     //  a field holding only a folder (a new page started in one) names
@@ -1240,7 +1242,8 @@
     // The 2s debounce still fires. It just reports instead of writing, so the
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
-    writerSync();
+    //  refused: nothing is sent or stashed, hidden or not (see save())
+    if (!writerSync()) return;
     if (curFolder || !dirty || viewingRev !== null) return;
     if (!current && mode === 'know') return;
     // a move in flight may be carrying this page away: the save goes to

@@ -12,6 +12,7 @@
 //    a queued edit with no rev to claim still gets their text kept
 //    text typed before the fresh read lands is on the device when hidden
 //    vim mode never splits a two-unit character (not a race: see the case)
+//    a map whose field in use cannot be written is not saved without it
 //
 //  No ship: lib/stub-ship.mjs stands in for the routes the editor uses and
 //  serves the built app.js, and holds answers back to force the order.
@@ -301,6 +302,100 @@ cases.hidden = async () => {
   check('the queued copy is gone', !(await queue(p)).length, JSON.stringify(await queue(p)));
   check('and nothing was made a conflict', !kept(x), [...x.S.pages.keys()].join(' '));
   check('or written twice', x.S.saves().length === 1, x.S.saves().map((e) => e.path + ' ' + JSON.stringify(e.body)).join(' '));
+  await x.done();
+};
+
+//  A map's detail field writes when it is left. The shell asks the map
+//  to write the field in use before every save (sync), and the map says
+//  no when it cannot: here a time that is no date. A save sent after
+//  that no would put the page on the ship without the edit and say
+//  "saved". No road may send it: Ctrl+S, the autosave, a hidden page, a
+//  tab switch. Each says so instead, and the edit stays in its field.
+cases.syncRefused = async () => {
+  const MAP = '{"type":"FeatureCollection","lattice":{},"features":[\n'
+    + '{"type":"Feature","geometry":{"type":"Point","coordinates":[-71,42]},"properties":{"name":"a"}}\n]}\n';
+  const x = await up({ 'm/map': [MAP, 'geojson'], 'n/b': 'beta\n' }, '?name=m/map');
+  const p = x.page;
+  const M = 'lat-map:not([hidden]) ', F = (k) => M + '.lm-detail [data-k="' + k + '"]';
+  await waitFor(() => p.$(M + '.lm-list [role=listitem]'), 20000, 100);
+  await p.click(M + '.lm-list [role=listitem]');
+  await waitFor(() => p.$(F('name')), 5000, 100);
+  const ctrlS = async () => { await p.keyboard.down('Control'); await p.keyboard.press('s'); await p.keyboard.up('Control'); };
+  const sent = () => x.S.saves().length;
+  const field = (k) => p.$eval(F(k), (e) => e.value);
+  const dlg = () => p.evaluate(() => { const d = document.getElementById('dlg'); return d && !d.hidden ? document.getElementById('dlgmsg').textContent : ''; });
+  //  the neighbour: a field in use that can be written goes out with the save
+  await p.focus(F('name'));
+  await p.keyboard.type(' one');
+  await ctrlS();
+  await waitFor(() => (body(x, 'm/map') || '').includes('"a one"'), 8000, 100);
+  check('Ctrl+S saves the field in use when the map can write it', (body(x, 'm/map') || '').includes('"a one"'), body(x, 'm/map'));
+  //  Ctrl+S with a field the map cannot write
+  await waitFor(() => p.$(F('time')), 5000, 100);
+  await p.focus(F('time'));
+  await p.keyboard.type('not a date');
+  let n = sent();
+  await ctrlS();
+  await sleep(1500);
+  check.eq('Ctrl+S sends nothing when the map could not write the field', sent() - n, 0);
+  check('and says it is not saved', /not saved/.test(await status(p)), await status(p));
+  check.eq('the field keeps what was typed', await field('time'), 'not a date');
+  //  the autosave: a written edit waits for it, and a field that cannot
+  //  be written is in use when it fires
+  await p.$eval(F('time'), (e) => { e.value = ''; });
+  await p.focus(F('name'));
+  await p.keyboard.type(' two');
+  await p.keyboard.press('Tab');
+  await waitFor(() => p.$(F('time')), 5000, 100);
+  await p.focus(F('time'));
+  await p.keyboard.type('not a date');
+  n = sent();
+  await sleep(4000);
+  check.eq('the autosave sends nothing either', sent() - n, 0);
+  check('and says it is not saved', /not saved/.test(await status(p)), await status(p));
+  //  the page is hidden
+  await p.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { get: () => true, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('pagehide'));
+  });
+  await sleep(1500);
+  check.eq('nor does hiding the page', sent() - n, 0);
+  check('and nothing is queued in its place', !(await queued(p, 'm/map')), JSON.stringify(await queued(p, 'm/map')));
+  await p.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  //  another page is opened over it: the question comes first, and
+  //  staying keeps the map in front with the field as typed. In place it
+  //  is the question for any unsaved text. For a new tab the buffer would
+  //  be parked as it is, without the edit, so that road asks too.
+  const onTop = () => p.$eval('#dlgcancel', (e) => {
+    const r = e.getBoundingClientRect();
+    return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === e;
+  });
+  for (const [road, o, q] of [['in place', {}, /discard/], ['in a new tab', { newTab: true }, /could not be written/]]) {
+    await p.focus(F('time'));
+    p.evaluate((o) => window.latTabs.openIn('page', 'n/b', o), o).catch(() => {});
+    await waitFor(async () => !!(await dlg()), 8000, 100);
+    check('another page opened ' + road + ' asks before the edit is dropped', q.test(await dlg()), await dlg());
+    check('the question is over the map, not under it', await onTop());
+    check.eq('and nothing was sent', sent() - n, 0);
+    await p.click('#dlgcancel');
+    await sleep(800);
+    check('staying keeps the map in front', !!(await p.$(F('time'))) && (await ed(p)).includes('"a one two"'), await status(p));
+    check.eq('with the field as typed', await p.$(F('time')) && await field('time'), 'not a date');
+    check.eq('one tab, as before', await p.evaluate(() => window.latTabs.groups().reduce((k, g) => k + g.tabs.length, 0)), 1);
+  }
+  check.eq('and still nothing sent', sent() - n, 0);
+  //  put right, it saves whole
+  await p.$eval(F('time'), (e) => { e.value = ''; });
+  await p.focus(F('time'));
+  await p.keyboard.type('2026-01-02T03:04:05Z');
+  await ctrlS();
+  await waitFor(() => (body(x, 'm/map') || '').includes('2026-01-02T03:04:05Z'), 8000, 100);
+  const b = body(x, 'm/map') || '';
+  check('once the field can be written the save carries every edit', b.includes('"a one two"') && b.includes('2026-01-02T03:04:05Z'), b);
   await x.done();
 };
 

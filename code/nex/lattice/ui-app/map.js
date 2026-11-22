@@ -85,7 +85,7 @@ Permission is hereby granted, free of charge, to any person obtaining a
 .lm-pop .lm-kv{font-size:12px;word-break:break-word}
 .lm-pop .lm-md{font-size:12.5px;margin-top:4px;max-height:120px;overflow:auto;word-break:break-word}
 .lm-pop a{color:#1a6fb0}
-lat-map{display:flex;flex-direction:column;min-height:0;height:100%;overflow:hidden;font-size:13px;position:relative}
+lat-map{display:flex;flex-direction:column;min-height:0;height:100%;overflow:hidden;font-size:13px;position:relative;isolation:isolate}
 .lm-bar{display:flex;flex-wrap:wrap;gap:2px;align-items:center;padding:4px 6px;border-bottom:1px solid var(--border,#8884);flex:none}
 .lm-bar button,.lm-bar select{font:inherit;font-size:13px;min-width:28px;height:28px;padding:0 8px;border:1px solid transparent;border-radius:4px;background:none;color:inherit;cursor:pointer}
 .lm-bar select{border-color:var(--border,#8884)}
