@@ -568,7 +568,12 @@
 ++  take-para
   |=  [lines=(list tape) refs=refm]
   ^-  [tape (list tape)]
-  =|  buf=(list tape)
+  ::  the first line is the paragraph's whatever it looks like. +rb sends
+  ::  it here because no other block took it, and a call that consumed
+  ::  nothing would hand +rb the same lines again, forever.
+  ?~  lines  ["" ~]
+  =/  buf=(list tape)  ~[i.lines]
+  =/  lines=(list tape)  t.lines
   |-  ^-  [tape (list tape)]
   ?:  ?&  ?=(^ lines)
           ?=(^ (trim i.lines))
@@ -592,7 +597,7 @@
   ?~  lines  |
   =/  s=tape  (trim i.lines)
   ?~  s  &
-  ?:  =('#' i.s)  &
+  ?:  (gth (atx s) 0)  &
   ?:  =('>' i.s)  &
   ?:  |((has "```" s) (has "~~~" s))  &
   ?:  |((allrun s "-" 3) (allrun s "*" 3) (allrun s "_" 3))  &
@@ -687,14 +692,11 @@
   ?:  |((allrun s "-" 3) (allrun s "*" 3) (allrun s "_" 3))
     (weld "<hr>" (rb t.lines refs))
   ::  atx heading
-  ?:  =('#' i.s)
-    =/  n=@ud  (lead-hash s)
-    ?:  &((gth n 0) (lte n 6))
-      =/  txt=tape  (trim (hash-strip (sl n s)))
-      =/  tag=tape  (weld "h" (a-co:co n))
-      (weld :(weld "<" tag ">" (ib txt refs) "</" tag ">") (rb t.lines refs))
-    =/  pr=[tape (list tape)]  (take-para lines refs)
-    (weld -.pr (rb +.pr refs))
+  =/  n=@ud  (atx s)
+  ?:  (gth n 0)
+    =/  txt=tape  (trim (hash-strip (sl n s)))
+    =/  tag=tape  (weld "h" (a-co:co n))
+    (weld :(weld "<" tag ">" (ib txt refs) "</" tag ">") (rb t.lines refs))
   ::  setext heading
   ?:  &(?=(^ t.lines) (gth (setext-under (trim i.t.lines)) 0))
     =/  lvl=@ud  (setext-under (trim i.t.lines))
@@ -715,6 +717,14 @@
   ::  paragraph
   =/  pr=[tape (list tape)]  (take-para lines refs)
   (weld -.pr (rb +.pr refs))
+::  +atx: the level of the ATX heading the trimmed line `s` is, 0 for
+::  none. +rb and +block-start both ask here, so they cannot disagree
+::  about which lines are headings.
+++  atx
+  |=  s=tape
+  ^-  @ud
+  =/  n=@ud  (lead-hash s)
+  ?:(&((gth n 0) (lte n 6)) n 0)
 ++  lead-hash  |=(t=tape =|(n=@ud |-(^-(@ud ?~(t n ?:(=('#' i.t) $(t t.t, n +(n)) n))))))
 ++  hash-strip  |=(t=tape (rtrm (flop (ltrm-hash (flop (rtrm t))))))
 ++  ltrm-hash  |=(t=tape ^-(tape ?~(t t ?:(|(=('#' i.t) =(' ' i.t)) $(t t.t) t))))

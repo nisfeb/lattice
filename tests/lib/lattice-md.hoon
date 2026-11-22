@@ -176,4 +176,44 @@
     (expect-eq !>("[[a/bc]] [[c/d]]") !>((rw "[[a/bc]] [[a/b]]")))
     (expect-eq !>("[[c/d") !>((rw "[[a/b")))
   ==
+::  a line of seven or more hashes is no heading. It is a paragraph, and
+::  the render ends
+++  test-seven-hashes
+  ;:  weld
+    (expect-eq !>("<p>#######</p>") !>((r '#######')))
+    (expect-eq !>("<p>####### x</p>") !>((r '####### x')))
+    (expect-eq !>("<p>a ####### x</p><p>b</p>") !>((r 'a\0a####### x\0a\0ab')))
+  ==
+::  the block loop always makes progress. Every character that can start
+::  a block, alone and repeated, bare and mixed with spaces, renders to
+::  an end, on one line and on two.
+++  test-hostile-lines-end
+  =/  cs=tape  "#>-*_+=|`~[]!<1.):\\ \09"
+  =/  ns=(list @ud)  ~[1 3 6 7 8]
+  =/  lines=(list tape)
+    %-  zing
+    ^-  (list (list tape))
+    %+  turn  cs
+    |=  c=@tD
+    ^-  (list tape)
+    %-  zing
+    ^-  (list (list tape))
+    %+  turn  ns
+    |=  n=@ud
+    ^-  (list tape)
+    =/  run=tape  (reap n c)
+    :~  run
+        (weld " " run)
+        (weld run " x")
+        (zing (reap n `tape`~[c ' ']))
+        (weld run "x")
+    ==
+  =/  ok=?
+    %+  levy  lines
+    |=  a=tape
+    ?&  (gte (lent (r (crip a))) 0)
+        (gte (lent (r (crip (weld a "\0a---")))) 0)
+        (gte (lent (r (crip (weld "x\0a" a)))) 0)
+    ==
+  (yes ok)
 --
