@@ -70,6 +70,16 @@ for (const f of files) {
   const back = await importOdt(ab(z));
   check(`${stem} export imports again`, back.text && !parseFodt(back.text).error, back.error);
 }
+{
+  //  root attributes a producer wrote in single quotes, one holding a
+  //  double quote: the export and the import write them in double quotes
+  const src = readFileSync(join(corpus, '01-paragraphs.fodt'), 'utf8')
+    .replace('<office:document ', `<office:document xmlns:q='u"v&amp;w' `).replace(/office:version="([^"]*)"/, "office:version='$1'");
+  const e = exportOdt(src);
+  const back = e.blob ? await importOdt(ab(await blobBytes(e.blob))) : e;
+  check('a single-quoted root attribute holding a double quote exports and imports again', !!back.text && !parseFodt(back.text).error, back.error);
+  check('  with its value', (back.text || '').includes('xmlns:q="u&quot;v&amp;w"'), (back.text || '').slice(0, 300));
+}
 
 // ---------------------------------------------------------------- 4
 {

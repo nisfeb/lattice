@@ -440,6 +440,72 @@ console.log('# copy and paste within Writer');
   check('one it does not define goes', para('No_20_Such') === 0);
 }
 
+console.log('# attribute values, however the file quoted them');
+{
+  const wrap = (body, styles = '') => `<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="o" xmlns:text="t" xmlns:style="s" xmlns:table="tb" xmlns:xlink="x" office:mimetype="application/vnd.oasis.opendocument.text">
+ <office:styles>${styles}</office:styles>
+ <office:body>
+  <office:text>
+${body}
+  </office:text>
+ </office:body>
+</office:document>
+`;
+  //  the first element of that name in the saved text, as the tokenizer reads it
+  const first = (text, name) => { let hit = null; const walk = (e) => { for (const k of e.kids) if (k.name) { if (!hit && k.name === name) hit = k; walk(k); } }; const x = core.parseXml(text); if (x.error) return { error: x.error }; walk(x.root); return hit; };
+  const edit = (t, find = 'hello') => serializeFodt(applyEdit(parseFodt(t), { op: 'insertText', find, at: 'end', text: 'Z' }), t);
+  const attrsOf = (el) => el.attrs.map(([k]) => k + '=' + core.attr(el, k)).join(' | ');
+  //  values a producer may put in single quotes: a double quote, one that
+  //  reads as a second attribute, an ampersand, angle brackets, both quotes
+  for (const [what, tag, want] of [
+    ['a double quote', `text:style-name='a"b'`, 'text:style-name=a"b'],
+    ['what reads as a second attribute', `text:style-name="S" text:x='1" evil="2'`, 'text:style-name=S | text:x=1" evil="2'],
+    ['ampersands and brackets', `text:x='a &amp; b &lt;c&gt; > "d" &quot;e&quot; &#34;'`, 'text:x=a & b <c> > "d" "e" "'],
+    ['an apostrophe in double quotes', `text:x="it's &apos;so&apos;"`, "text:x=it's 'so'"],
+    ['spaces around the equals sign', `text:x = 'q"q'`, 'text:x=q"q'],
+  ]) {
+    const t = wrap(`   <text:p ${tag}>hello</text:p>`);
+    const o = edit(t);
+    const el = o.text ? first(o.text, 'text:p') : o;
+    check(`a paragraph with ${what} is rewritten well-formed`, !el.error && !!el.attrs, el.error || o.error);
+    check.eq('  with the same attributes and values', el.attrs ? attrsOf(el) : '', want);
+    check('  and opens again with the edit', !parseFodt(o.text || '').error && (o.text || '').includes('helloZ'));
+    check('  and unedited it is byte-identical', serializeFodt(parseFodt(t), t).text === t);
+  }
+  for (const [what, body, name, want] of [
+    ['link', `<text:p>hello <text:a xlink:href='h?a=1&amp;b="2"' office:name='a"b'>l</text:a></text:p>`, 'text:a', 'xlink:href=h?a=1&b="2" | office:name=a"b'],
+    ['span', `<text:p>hello <text:span text:style-name='N"o' text:x='"'>s</text:span></text:p>`, 'text:span', 'text:style-name=N"o | text:x="'],
+    ['list', `<text:list text:style-name='L"1' xml:id='i"d'><text:list-item><text:p>hello</text:p></text:list-item></text:list>`, 'text:list', 'text:style-name=L"1 | xml:id=i"d'],
+    ['section', `<text:section text:name='s"1'><text:p>hello</text:p></text:section>`, 'text:section', 'text:name=s"1'],
+    ['table cell', `<table:table table:name='t"1'><table:table-column/><table:table-row><table:table-cell table:style-name='c"1'><text:p>hello</text:p></table:table-cell></table:table-row></table:table>`, 'table:table-cell', 'table:style-name=c"1'],
+  ]) {
+    const o = edit(wrap('   ' + body));
+    const el = o.text ? first(o.text, name) : o;
+    check.eq(`a rewritten ${what} keeps single-quoted values`, el && el.attrs ? attrsOf(el) : (el && el.error) || o.error, want);
+  }
+  //  a list style whose name needs escaping, from the toolbar's command
+  const { TextSelection } = await import('prosemirror-state');
+  const keys = await importWriter('keys.js');
+  for (const raw of ['A&amp;B&quot;x', 'A&lt;B&gt;&apos;c']) {
+    const t = wrap('   <text:p>hello</text:p>', `<text:list-style style:name="${raw}"><text:list-level-style-bullet text:level="1" text:bullet-char="•"/></text:list-style>`);
+    const p = parseFodt(t);
+    const name = core.listStyleFor(p.styles, 'bullet');
+    let st = EditorState.create({ doc: p.doc, selection: TextSelection.create(p.doc, 2) });
+    keys.toList(name)(st, (tr) => { st = st.apply(tr); });
+    const o = serializeFodt({ ...p, doc: st.doc }, t);
+    const el = o.text ? first(o.text, 'text:list') : o;
+    check.eq(`a new list in the style ${JSON.stringify(name)} names it`, el && el.attrs ? core.attr(el, 'text:style-name') : (el && el.error) || o.error, name);
+    const dom = schema.nodes.list.spec.toDOM(st.doc.firstChild);
+    check.eq('  and shows under its decoded name, which a copy reads back', dom[1]['data-ls'] + ' ' + core.decode(schema.nodes.list.spec.parseDOM[0].getAttrs({ hasAttribute: () => true, getAttribute: () => dom[1]['data-ls'] }).xattrs[0][1]), name + ' ' + name);
+  }
+  //  a paired marker with its name in single quotes is still a pair
+  const pair = parseFodt(wrap(`   <text:p>hello <text:bookmark-start text:name='b"1'/>in<text:bookmark-end text:name = 'b"1'/> out</text:p>`));
+  const half = pair.doc.firstChild.copy(Fragment.from(pair.doc.firstChild.content.content.filter((n) => n.attrs.name !== 'text:bookmark-end')));
+  check.eq('a marker named in single quotes is paired', [...core.unbalanced(pair.doc)].join(), '');
+  check.eq('  and missing its other half is seen', [...core.unbalanced(pair.doc.copy(Fragment.from(half)))].join(), 'text:bookmark "b"1"');
+}
+
 console.log('# a table keeps its shape');
 {
   //  the editor's guard (view.js) over the editor's own keymap: a replace

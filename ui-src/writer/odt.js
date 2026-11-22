@@ -173,7 +173,7 @@ export async function importPackage(buf, kind) {
     const ver = attr(c.r, 'office:version');
     let head = '<?xml version="1.0" encoding="UTF-8"?>\n\n<office:document';
     for (const [k, v] of ns) head += ' ' + k + '="' + v + '"';
-    if (ver != null) head += ' office:version="' + ver + '"';
+    if (ver != null) head += ' office:version="' + escAttr(ver) + '"';
     head += ' office:mimetype="' + kind.mime + '">\n ';
     //  styles.xml's automatic names content.xml also uses get a new name
     let sAuto = s ? s.get('office:automatic-styles') : '', sMaster = s ? s.get('office:master-styles') : '';
@@ -284,7 +284,7 @@ export function exportPackage(text, kind) {
   const doc = !x.error && elements(x.root).find((k) => k.name === 'office:document');
   if (!doc) return { error: 'This ' + kind.doc + ' cannot be exported: ' + (x.error || 'it is not ' + kind.flat) + '.' };
   const get = (n) => { const k = child(doc, n); return k ? linksOut(text.slice(k.start, k.end)) : ''; };
-  const ver = attr(doc, 'office:version') || '1.3';
+  const ver = escAttr(attr(doc, 'office:version') || '1.3');
   let at = '';
   for (const [k, v] of doc.attrs) if (k !== 'office:mimetype') at += ' ' + k + '="' + v + '"';
   //  automatic styles as LibreOffice splits them: styles.xml gets the page

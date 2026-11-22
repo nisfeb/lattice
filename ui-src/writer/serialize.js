@@ -376,10 +376,11 @@ export function unbalanced(doc) {
     for (const m of n.attrs.raw.matchAll(PAIR)) {
       const el = m[1];
       const an = NAME[el] || 'text:name';
-      const v = new RegExp(`\\s${an}="([^"]*)"`).exec(m[2]);
+      //  the raw XML is as the file wrote it, in either kind of quote
+      const v = new RegExp(`\\s${an}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(m[2]);
       if (!v) continue;
       const kind = el.replace(/-(start|end)$/, '');
-      const k = kind + ' "' + decode(v[1]) + '"';
+      const k = kind + ' "' + decode(v[1] ?? v[2]) + '"';
       count.set(k, (count.get(k) || 0) + (el.endsWith('-end') ? -1 : 1));
     }
     return false;

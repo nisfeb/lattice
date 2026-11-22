@@ -12,6 +12,7 @@
 //  whole and never edited inside.
 import { Schema } from 'prosemirror-model';
 import { css } from './styles.js';
+import { decode, escAttr } from './xml.js';
 
 //  the DOM of a text block: its style by name (the view's style sheet
 //  matches on it), a page break and a quote as classes. Paste and copy
@@ -67,11 +68,11 @@ export const schema = new Schema({
       //  data-ls, and a pasted ul or ol gets the document's own (paste.js)
       //  a list copied from a Writer document names its list style, which
       //  paste.js keeps when this document has one of that name
-      parseDOM: [{ tag: 'ul', getAttrs: (el) => ({ kind: 'bullet', xattrs: el.hasAttribute('data-ls') ? [['text:style-name', el.getAttribute('data-ls')]] : [] }) },
+      parseDOM: [{ tag: 'ul', getAttrs: (el) => ({ kind: 'bullet', xattrs: el.hasAttribute('data-ls') ? [['text:style-name', escAttr(el.getAttribute('data-ls'))]] : [] }) },
         { tag: 'ol', getAttrs: () => ({ kind: 'number' }) }],
       toDOM: (n) => {
         const s = n.attrs.xattrs.find(([k]) => k === 'text:style-name');
-        return ['ul', s ? { 'data-ls': s[1] } : {}, 0];
+        return ['ul', s ? { 'data-ls': decode(s[1]) } : {}, 0];
       },
     },
     list_item: {

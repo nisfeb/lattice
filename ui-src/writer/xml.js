@@ -11,7 +11,8 @@
 //
 //  It keeps what DOMParser throws away: every element's span in the
 //  source, its attributes in source order with their raw (undecoded)
-//  values, and the text between elements as spans. The minimal-diff
+//  values as they read between double quotes, and the text between
+//  elements as spans. The minimal-diff
 //  serializer copies untouched bytes from those spans.
 //
 //  "Byte" spans are JS string offsets (UTF-16 code units): the body is a
@@ -151,7 +152,10 @@ function tree(s, lim) {
       if (q !== 34 && q !== 39) refuse('not well-formed');
       const e = s.indexOf(q === 34 ? '"' : "'", j + 1);
       if (e < 0) refuse('not well-formed');
-      const raw = s.slice(j + 1, e);
+      //  a raw value is always as it reads between double quotes, so every
+      //  writer can put it back in them: one the file had in single quotes
+      //  may hold a double quote, which becomes its entity here
+      const raw = q === 39 ? s.slice(j + 1, e).replace(/"/g, '&quot;') : s.slice(j + 1, e);
       if (raw.indexOf('<') >= 0) refuse('not well-formed');
       attrs.push([an, raw]);
       j = e + 1;

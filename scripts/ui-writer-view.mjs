@@ -244,6 +244,25 @@ console.log('==> cut, copy and paste inside one document');
   }
 }
 
+console.log('==> a list style whose name needs escaping');
+{
+  //  the numbered list style of the corpus, under a name with an entity
+  const t = corpus('04-lists').replaceAll('"L2"', '"L&amp;&quot;2"');
+  const page = await open(t);
+  const r = await page.evaluate(() => {
+    const v = window.ctl.view; let at = -1, n = 0;
+    v.state.doc.descendants((node, pos) => { if (node.type.name === 'list' && at < 0 && node.attrs.xattrs.some((a) => a[1].includes('&amp;'))) at = pos; return at < 0; });
+    v.dispatch(v.state.tr.setSelection(window.LatWriter.pm.state.TextSelection.near(v.state.doc.resolve(at + 3))));
+    v.focus();
+    const on = (title) => [...document.querySelectorAll('.lw-bar button')].find((b) => b.title === title).classList.contains('on');
+    const ul = [...document.querySelectorAll('lat-writer ul[data-ls]')].find((u) => u.getAttribute('data-ls').includes('&'));
+    return { numbers: on('Numbered list'), bullets: on('Bullet list'), ls: ul && ul.getAttribute('data-ls'), type: ul && getComputedStyle(ul).listStyleType };
+  });
+  check('the toolbar knows the list at the caret is numbered', r.numbers && !r.bullets, JSON.stringify(r));
+  check('the list shows as its style says, matched by its decoded name', r.ls === 'L&"2' && r.type === 'decimal', JSON.stringify(r));
+  await page.close();
+}
+
 console.log('==> sync() and a refused document');
 {
   const page = await open(corpus('01-paragraphs'));
