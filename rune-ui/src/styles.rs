@@ -353,18 +353,19 @@ impl Format {
         // a length of time that runs past a day is written by its size, with the sign before it: -9:36:00
         let span = self.kind == "number:time-style" && self.long_hours;
         let t = if span { v.abs() } else { v };
-        let mut whole = t.floor();
         // The seconds of the day, as LibreOffice reads them. A time of day is cut to the second it is in, never
-        // rounded up to the next: 23:59:59.9 is 23:59:59. Before the cut the seconds are rounded to as many
-        // decimals as the day number leaves room for, so that 09:30:15 held as a fraction is not 09:30:14.
-        // A length of time is rounded to the nearest second, or to the decimals of a second it shows
+        // rounded up to the next: 23:59:59.9 is 23:59:59 (`sheet::day_seconds`). A length of time is rounded
+        // to the nearest second, or to the decimals of a second it shows
         let shown = self.parts.iter().find_map(|p| if let Part::Seconds(_, places) = p { Some(*places) } else { None }).unwrap_or(0);
-        let room = if t.abs() >= 1.0 { (10 - t.abs().log10().ceil() as i32).clamp(2, 9) } else { 9 };
-        let to = 10f64.powi(if span { (shown as i32).min(room) } else { room });
-        let mut secs = if timed { ((t - whole) * 86_400.0 * to).round() / to } else { 0.0 };
-        if secs >= 86_400.0 {
-            (secs, whole) = (secs - 86_400.0, whole + 1.0);
-        }
+        let (whole, secs) = if !timed {
+            (t.floor(), 0.0)
+        } else if span {
+            let to = 10f64.powi(shown as i32);
+            let secs = ((t - t.floor()) * 86_400.0 * to).round() / to;
+            if secs >= 86_400.0 { (t.floor() + 1.0, secs - 86_400.0) } else { (t.floor(), secs) }
+        } else {
+            sheet::day_seconds(t)
+        };
         let (y, m, d) = sheet::civil_from_days(day(whole) + null_date as i64);
         // 1970 began on a Thursday
         let dow = (day(whole) + null_date as i64 + 4).rem_euclid(7) as usize;

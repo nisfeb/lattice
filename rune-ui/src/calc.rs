@@ -305,6 +305,29 @@ pub fn to_str(v: &V) -> String {
     }
 }
 
+/// Whether two numbers are one number to Calc: the same, or apart by no more than what
+/// binary arithmetic leaves, about one part in 2^48 of their size. 0.1+0.2 is 0.3 so. A
+/// nought is only itself, and two whole numbers that differ are two numbers.
+pub fn approx_eq(a: f64, b: f64) -> bool {
+    const E48: f64 = 1.0 / (16_777_216.0 * 16_777_216.0);
+    if a == b {
+        return true;
+    }
+    let d = (a - b).abs();
+    if a == 0.0 || b == 0.0 || !d.is_finite() || (d >= 1.0 && d < 9_007_199_254_740_992.0 && a.fract() == 0.0 && b.fract() == 0.0) {
+        return false;
+    }
+    d < a.abs() * E48 && d < b.abs() * E48
+}
+
+/// The whole number at or below a number, as Calc takes it: one a hair below a whole
+/// number, through binary arithmetic, is that whole number. 0.29*100 is 29.
+pub fn approx_floor(x: f64) -> f64 {
+    let f = x.floor();
+    // not when it is as near the one below: a number too large to tell a half from a whole
+    if approx_eq(x, f + 1.0) && !approx_eq(x, f) { f + 1.0 } else { f }
+}
+
 /// Numbers sort before text, and text compares without case.
 pub fn compare(a: &V, b: &V) -> i32 {
     let fill = |v: &V, other: &V| match v {
@@ -316,6 +339,7 @@ pub fn compare(a: &V, b: &V) -> i32 {
     let (a, b) = (fill(&a, &b), fill(&b, &a));
     let sign = |o: std::cmp::Ordering| o as i32;
     match (&a, &b) {
+        (V::Num(x), V::Num(y)) if approx_eq(*x, *y) => 0,
         (V::Num(x), V::Num(y)) => x.partial_cmp(y).map_or(0, sign),
         (V::Str(x), V::Str(y)) => sign(x.to_lowercase().cmp(&y.to_lowercase())),
         (V::Num(_), _) => -1,
@@ -660,8 +684,13 @@ impl<'a> Engine<'a> {
             Node::Paren(x) => self.ev(x, ctx)?,
             Node::Un(op, x) => {
                 let v = self.ev(x, ctx)?;
-                match to_num(&self.one(v, ctx)) {
-                    V::Num(v) => V::Num(if *op == '-' { -v } else { v }),
+                let v = self.one(v, ctx);
+                // a plus before a value does nothing to it, text and all: `=+B1` is what B1 holds
+                if *op != '-' {
+                    return Ok(v);
+                }
+                match to_num(&v) {
+                    V::Num(v) => V::Num(-v),
                     e => e,
                 }
             }
@@ -1432,15 +1461,30 @@ mod tests {
         assert_eq!(n, 59);
     }
 
+    /// The formulas of the web client's corpora that LibreOffice answers otherwise, with its answer, which
+    /// is the one held here: a year of two figures under 30 is in the 2000s, the hour and the minute of a
+    /// time are those it is in, a criterion of "TRUE" finds the truth and the text, a number and a step
+    /// of unlike signs are refused, and a step of nought gives nought.
+    const LIBREOFFICE: [(&str, &str); 19] = [
+        ("DATE(0,1,1)+0", "36526"), ("HOUR(0.999999)", "23"), ("MINUTE(0.999999)", "59"), ("HOUR(B2)", "23"), ("MINUTE(B2)", "59"), ("COUNTIF(A1:E4,\"TRUE\")", "2"), ("CEILING(-2.1,0.5)", "Err:502"), ("FLOOR(2,0)", "0"),
+        // a capital after a figure, nothing found when there is nothing to look for, `*` for any run in SEARCH, and no
+        // occurrence, start or count below what there can be
+        ("PROPER(\"hello wORLD-foo 2nd o'brien\")", "Hello World-Foo 2Nd O'Brien"), ("FIND(\"\",\"hello\")", "#VALUE!"), ("FIND(\"\",\"hello\",9)", "#VALUE!"), ("SEARCH(\"*\",\"a*b\")", "1"),
+        ("SUBSTITUTE(\"a-b-c\",\"-\",\"+\",0)", "Err:502"), ("SUBSTITUTE(\"a-b-c\",\"-\",\"+\",1.5)", "a+b-c"), ("SUBSTITUTE(\"abcd\",\"bc\",\"X\",0)", "Err:502"), ("SUBSTITUTE(\"a-b\",\"-\",\"+\",-1)", "Err:502"),
+        ("REPLACE(\"hello\",0,1,\"X\")", "Err:502"), ("REPLACE(\"hello\",2,-1,\"X\")", "Err:502"), ("REPLACE(\"hello\",2.5,1.5,\"X\")", "hXllo"),
+    ];
+
     /// Checks formulas against the web client's answers. Each line of a corpus is a formula and what
     /// the web client's engine shows for it in G8 of the sheet, from ui-src/sheet/book.js run under
-    /// node. STALE is a formula it does not work out either.
+    /// node. STALE is a formula it does not work out either. Where LibreOffice answers otherwise
+    /// (`LIBREOFFICE`), its answer is the one checked.
     fn corpus(sheet: &[&[&str]], lines: &str, count: usize) {
         let src = doc(sheet);
         let (mut n, mut wrong) = (0, Vec::new());
         for line in lines.lines() {
             let (f, want) = line.split_once('\t').unwrap();
             let (f, want): (String, String) = (serde_json::from_str(f).unwrap(), serde_json::from_str(want).unwrap());
+            let want = LIBREOFFICE.iter().find(|(g, _)| *g == f).map_or(want, |(_, lo)| (*lo).to_owned());
             let got = enter(&src, 0, 7, 6, &format!("={f}")).unwrap();
             let shown = if got.stale.contains(&(0, 7, 6)) { "STALE".to_owned() } else { grid(&got.body).get(7).and_then(|r| r.get(6).cloned()).unwrap_or_default() };
             if shown != want {
@@ -2141,9 +2185,47 @@ mod tests {
     }
 
     #[test]
-    fn comparisons_and_sums_are_exact_as_on_the_web() {
+    fn two_numbers_a_hair_apart_through_binary_arithmetic_are_one_number_as_in_calc() {
         let v = shown;
-        assert_eq!((v("=0.1*3>0.3"), v("=1e16-9999999999999998"), v("=0.1+0.2=0.3"), v("=0.1+0.2-0.3")), ("TRUE".into(), "2".into(), "FALSE".into(), "5.55111512312578E-017".into()));
+        // the web client compares them exactly: 0.1+0.2=0.3 is false there. A sum is still exact here
+        assert_eq!((v("=0.1*3>0.3"), v("=1e16-9999999999999998"), v("=0.1+0.2=0.3"), v("=0.1+0.2-0.3")), ("FALSE".into(), "2".into(), "TRUE".into(), "5.55111512312578E-017".into()));
+        for (a, b, same) in [(0.1 + 0.2, 0.3, true), (1.0, 1.000000000000001, true), (1.0, 1.0000000000001, false), (0.0, 1e-300, false), (0.0, 0.0, true), (1e300, 1.0000000000000002e300, true), (5.0, 6.0, false), (1e15, 1e15 + 1.0, false), (-0.3, -(0.1 + 0.2), true), (0.3, -0.3, false), (f64::NAN, f64::NAN, false), (f64::INFINITY, f64::INFINITY, true), (f64::INFINITY, 1e308, false)] {
+            assert_eq!((approx_eq(a, b), approx_eq(b, a)), (same, same), "{a} {b}");
+        }
+        for (x, want) in [(28.999999999999996, 29.0), (-28.999999999999996, -29.0), (2.5, 2.0), (-2.5, -3.0), (0.9999999999999999, 1.0), (-1e-16, -1.0), (1e15 + 0.5, 1e15), (0.0, 0.0), (-0.0, 0.0), (7.0, 7.0), (1e300, 1e300)] {
+            assert_eq!(approx_floor(x), want, "{x}");
+        }
+    }
+
+    #[test]
+    fn every_answer_held_against_the_web_clients_is_of_a_formula_its_corpora_have() {
+        let all = [include_str!("funcs_corpus.tsv"), include_str!("funcs_text_corpus.tsv"), include_str!("funcs_date_corpus.tsv"), include_str!("funcs_lookup_corpus.tsv"), include_str!("calc_corpus.tsv")].concat();
+        for (f, lo) in LIBREOFFICE {
+            let line = all.lines().find(|l| l.split_once('\t').is_some_and(|(g, _)| serde_json::from_str::<String>(g).is_ok_and(|g| g == f)));
+            let web: Option<String> = line.and_then(|l| serde_json::from_str(l.split_once('\t')?.1).ok());
+            assert!(web.as_deref().is_some_and(|w| w != lo), "{f}: the corpora have {web:?}");
+        }
+    }
+
+    #[test]
+    fn formulas_give_what_libreoffice_gives() {
+        // Each line is a formula and what LibreOffice shows for it, worked out by LibreOffice itself from a page
+        // with no results in it, over a small sheet of numbers, texts, a truth, a date, a time, a percentage and
+        // money, with `*` and `?` standing for other characters as they do for COUNTIF here
+        let src = include_str!("lo_funcs_sheet.fods");
+        let (mut n, mut wrong) = (0, Vec::new());
+        for line in include_str!("lo_funcs_corpus.tsv").lines() {
+            let (f, want) = line.split_once('\t').unwrap();
+            let (f, want): (String, String) = (serde_json::from_str(f).unwrap(), serde_json::from_str(want).unwrap());
+            let got = enter(src, 0, 20, 4, &format!("={f}")).unwrap();
+            let shown = if got.stale.contains(&(0, 20, 4)) { "STALE".to_owned() } else { sheet::book(&got.body).unwrap().at(0, 20, 4).map_or(String::new(), |c| c.text.clone()) };
+            if shown != want {
+                wrong.push(format!("={f} gave {shown}, LibreOffice gives {want}"));
+            }
+            n += 1;
+        }
+        assert!(wrong.is_empty(), "{} of {n} differ:\n{}", wrong.len(), wrong.join("\n"));
+        assert_eq!(n, 317);
     }
 
     #[test]

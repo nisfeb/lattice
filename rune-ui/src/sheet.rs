@@ -273,6 +273,10 @@ pub fn general(n: f64) -> String {
     if n == 0.0 {
         return "0".into();
     }
+    // a whole number that a double holds exactly is written in full, all sixteen figures of a card's number
+    if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
+        return format!("{n:.0}");
+    }
     let sci = format!("{n:.14e}");
     if n.abs() >= 1e16 || n.abs() < 1e-15 {
         let (mant, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
@@ -444,6 +448,18 @@ const FAR_DAY: i64 = FAR_YEAR * 366;
 /// 9999 after: the dates a page can hold and a person can mean.
 pub(crate) fn dated(n: f64, null_date: f64) -> bool {
     (n + null_date).abs() <= 4_400_000.0
+}
+
+/// A day number as its whole days and the seconds of the day past them, as LibreOffice
+/// reads a time of day from one. The seconds are rounded to as many decimals as the day
+/// number leaves room for, so that 09:30:15 held as a fraction of a day is not a hair
+/// under it, and no further: 23:59:59.9 stays under midnight.
+pub(crate) fn day_seconds(t: f64) -> (f64, f64) {
+    let whole = t.floor();
+    let room = if t.abs() >= 1.0 { (10 - t.abs().log10().ceil() as i32).clamp(2, 9) } else { 9 };
+    let to = 10f64.powi(room);
+    let secs = ((t - whole) * 86_400.0 * to).round() / to;
+    if secs >= 86_400.0 { (whole + 1.0, secs - 86_400.0) } else { (whole, secs) }
 }
 
 /// Days from 1970-01-01 to a day of the calendar, and back.

@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use crate::calc::{Ctx, Engine, Rg, Unsupported, V, compare, to_num, to_str};
+use crate::calc::{Ctx, Engine, Rg, Unsupported, V, approx_floor, compare, to_num, to_str};
 use crate::formula::Node;
 
 type R = Result<V, Unsupported>;
@@ -131,13 +131,16 @@ fn variance(ns: &[f64], pop: bool) -> Result<f64, V> {
 }
 
 /// A text against a pattern where `*` is any run and `?` any one character, without case.
+/// A `~` before one of the two, or before itself, makes it the character it is.
 fn wild(pat: &[char], text: &[char]) -> bool {
+    let plain = |p: usize| matches!((pat.get(p), pat.get(p + 1)), (Some('~'), Some('*' | '?' | '~')));
     // one place to go back to, the last star: a pattern of many stars is not tried every way it could be cut
     let (mut p, mut t, mut star, mut held) = (0, 0, None, 0);
     while t < text.len() {
         match pat.get(p) {
-            Some('*') => (star, held, p) = (Some(p), t, p + 1),
-            Some(c) if *c == '?' || *c == text[t] => (p, t) = (p + 1, t + 1),
+            Some(_) if plain(p) && pat[p + 1] == text[t] => (p, t) = (p + 2, t + 1),
+            Some('*') if !plain(p) => (star, held, p) = (Some(p), t, p + 1),
+            Some(c) if !plain(p) && (*c == '?' || *c == text[t]) => (p, t) = (p + 1, t + 1),
             _ => match star {
                 Some(s) => (p, held, t) = (s + 1, held + 1, held + 1),
                 None => return false,
@@ -145,6 +148,11 @@ fn wild(pat: &[char], text: &[char]) -> bool {
         }
     }
     pat[p..].iter().all(|c| *c == '*')
+}
+
+/// Whether a text to look for has a `*` or a `?` that stands for others.
+fn wildcards(raw: &str) -> bool {
+    raw.contains(['*', '?'])
 }
 
 /// A criterion as SUMIF and COUNTIF read it: ">3", "<>x", "abc", 4.
@@ -156,9 +164,14 @@ fn criterion(e: &mut Engine, c: &V) -> Box<dyn Fn(&V) -> bool> {
         other => return Box::new(move |v| !matches!(v, V::Blank | V::Missing | V::Str(_)) && compare(v, &other) == 0),
     };
     let (op, raw) = ["<>", "<=", ">=", "=", "<", ">"].into_iter().find_map(|op| text.strip_prefix(op).map(|r| (op, r.to_owned()))).unwrap_or(("=", text.clone()));
-    let num = numeric(&raw);
+    // a number, or what is typed into a cell as one: a date, a time of day, a percentage, money, true or false
+    let num = numeric(&raw).or_else(|| match crate::sheet::typed_on(&raw, e.null_date()) {
+        Ok(crate::sheet::Typed::Number(n) | crate::sheet::Typed::Special(_, n)) => Some(n),
+        Ok(crate::sheet::Typed::Bool(b)) => Some(f64::from(b)),
+        _ => None,
+    });
     let equal = op == "=" || op == "<>";
-    let pat: Option<Vec<char>> = (num.is_none() && raw.contains(['*', '?']) && equal).then(|| raw.to_lowercase().chars().collect());
+    let pat: Option<Vec<char>> = (num.is_none() && wildcards(&raw) && equal).then(|| raw.to_lowercase().chars().collect());
     Box::new(move |v| {
         let v = match v {
             V::Err(_) => return false,
@@ -170,7 +183,9 @@ fn criterion(e: &mut Engine, c: &V) -> Box<dyn Fn(&V) -> bool> {
                 (V::Blank | V::Missing, _, _) => raw.is_empty(),
                 (V::Str(s), Some(p), _) => wild(p, &s.to_lowercase().chars().collect::<Vec<_>>()),
                 (_, Some(_), _) => false,
-                (V::Num(n), None, Some(want)) => *n == want,
+                (V::Num(n), None, Some(want)) => crate::calc::approx_eq(*n, want),
+                // a cell of text that spells the number as the criterion spells it
+                (V::Str(s), None, Some(_)) => s.to_lowercase() == raw.to_lowercase(),
                 (_, None, Some(_)) => false,
                 (V::Str(s), None, None) => s.to_lowercase() == raw.to_lowercase(),
                 _ => false,
@@ -260,11 +275,14 @@ fn ifs(e: &mut Engine, sum: Option<&V>, tests: &[V], step: impl Fn(f64, &V) -> f
     V::Num(acc)
 }
 
-/// Rounded as Calc rounds: half away from nothing, with a hair's allowance for what a binary fraction cannot hold.
+/// Rounded as Calc rounds: half away from nothing (`r`), away from it (`u`) or towards it
+/// (`d`). A product a hair off a whole number through binary arithmetic is that number:
+/// 0.29*100 is 29. The allowance is by the number's size, about the last of a double's
+/// figures. A set one took 8.2-8, which is under 0.2 by more than a hair, for 0.2.
 fn round(n: f64, d: f64, mode: u8) -> f64 {
     // the count of places is a whole number: 2.9 places are 2
     let f = 10f64.powf(d.trunc());
-    let x = n * f;
+    let x = n.abs() * f;
     // more places than a number can have leave it as it is, and fewer than it has digits leave nothing
     if !f.is_finite() || !x.is_finite() {
         return n;
@@ -272,20 +290,30 @@ fn round(n: f64, d: f64, mode: u8) -> f64 {
     if f == 0.0 {
         return 0.0;
     }
+    // too large to have a fraction at this place
+    if x >= 4_503_599_627_370_496.0 {
+        return n;
+    }
+    let hair = x * 4.0 * f64::EPSILON;
     let y = match mode {
-        b'u' if n < 0.0 => -(-x - 1e-9).ceil(),
-        b'u' => (x - 1e-9).ceil(),
-        b'd' if n < 0.0 => -(-x + 1e-9).floor(),
-        b'd' => (x + 1e-9).floor(),
-        _ if n < 0.0 => -js_round(-x + 1e-9),
-        _ => js_round(x + 1e-9),
+        b'u' => (x - hair).ceil(),
+        b'd' => (x + hair).floor(),
+        _ => js_round(x + hair),
     };
-    y / f
+    if n < 0.0 { -y / f } else { y / f }
 }
 
 /// JavaScript's `Math.round`: a half goes up, toward the larger number.
 fn js_round(x: f64) -> f64 {
     (x + 0.5).floor()
+}
+
+/// The hour, the minute and the second of a day number, as Calc's HOUR, MINUTE and SECOND
+/// give them: the hour and the minute are those the time is in, and the second is the
+/// nearest, so 23:59:59.9 is hour 23, minute 59, second 0.
+fn clock(x: f64) -> (f64, f64, f64) {
+    let secs = crate::sheet::day_seconds(x).1;
+    ((secs / 3600.0).floor() % 24.0, (secs / 60.0).floor() % 60.0, (secs + 0.5).floor() % 60.0)
 }
 
 fn fin(n: f64) -> V {
@@ -351,6 +379,14 @@ fn lookup(e: &mut Engine, needle: &V, vec: &[V], exact: bool) -> Result<usize, V
         return Err(needle);
     }
     if exact {
+        // a text looked for with a `*` or a `?` in it is a pattern, as it is for COUNTIF
+        if let V::Str(want) = &needle {
+            if wildcards(want) {
+                let pat: Vec<char> = want.to_lowercase().chars().collect();
+                let hit = vec.iter().position(|v| matches!(v, V::Str(s) if wild(&pat, &s.to_lowercase().chars().collect::<Vec<_>>())));
+                return hit.ok_or_else(|| err(NA));
+            }
+        }
         let hit = vec.iter().position(|v| (kind(v) != 0 && kind(v) == kind(&needle) && compare(v, &needle) == 0) || matches!((v, &needle), (V::Bool(b), V::Num(x)) if f64::from(*b) == *x));
         return hit.ok_or_else(|| err(NA));
     }
@@ -379,7 +415,8 @@ fn line(e: &mut Engine, g: Rg, down: bool) -> Vec<V> {
 /// `Date.UTC` takes them: a month or a day outside its range runs on into the next or the
 /// one before, and a year from 0 to 99 is in the 1900s.
 fn utc_days(y: f64, m0: f64, d: f64) -> f64 {
-    let y = if (0.0..=99.0).contains(&y) { y + 1900.0 } else { y };
+    // two figures of a year are a year of the century round now, as Calc reads them and as a date typed is read: under 30 in the 2000s
+    let y = if (0.0..30.0).contains(&y) { y + 2000.0 } else if (30.0..=99.0).contains(&y) { y + 1900.0 } else { y };
     let (y, m) = (y + (m0 / 12.0).floor(), m0.rem_euclid(12.0));
     crate::sheet::days_from_civil(y as i64, m as i64 + 1, 1) as f64 + d - 1.0
 }
@@ -476,7 +513,9 @@ pub fn lazy(e: &mut Engine, name: &str, n: &[Node], ctx: Ctx) -> Option<R> {
                     if is_err(&w) {
                         return Ok(w);
                     }
-                    if std::mem::discriminant(&w) == std::mem::discriminant(&v) && compare(&v, &w) == 0 {
+                    // an empty cell and an empty text are the same to it
+                    let empty = |x: &V| matches!(x, V::Blank | V::Missing) || *x == V::Str(String::new());
+                    if (std::mem::discriminant(&w) == std::mem::discriminant(&v) && compare(&v, &w) == 0) || (empty(&v) && empty(&w)) {
                         return e.ev(&n[i + 1], ctx);
                     }
                     i += 2;
@@ -619,14 +658,17 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         })?,
         "LARGE" | "SMALL" => {
             let k = to_num(&scalar(e, &arg(1)));
+            let large = name == "LARGE";
             stat(e, &a[..a.len().min(1)], |mut ns| match k {
-                V::Num(k) if k < 1.0 || k > ns.len() as f64 => err(VALUE),
                 V::Num(k) => {
-                    ns.sort_by(f64::total_cmp);
-                    if name == "LARGE" {
-                        ns.reverse();
+                    // the place counted from the smallest, cut to a whole number: the 1.5th largest of seven is the
+                    // 6.5th smallest, which is the 6th, as Calc has it
+                    let at = if large { ns.len() as f64 - k + 1.0 } else { k }.floor();
+                    if !(at >= 1.0 && at <= ns.len() as f64) {
+                        return err(VALUE);
                     }
-                    n(ns[k.floor() as usize - 1])
+                    ns.sort_by(f64::total_cmp);
+                    V::Num(ns[at as usize - 1])
                 }
                 bad => bad,
             })?
@@ -650,7 +692,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
                     match w {
                         V::Err(_) if name == "SUMIF" => bad = Some(w),
                         V::Num(x) => ns.push(x),
-                        V::Bool(b) if name == "SUMIF" => ns.push(f64::from(b)),
+                        V::Bool(b) => ns.push(f64::from(b)),
                         _ => {}
                     }
                 }
@@ -663,7 +705,11 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
                 _ => n(ksum(&ns) / ns.len() as f64),
             }
         }
-        "SUMIFS" => ifs(e, a.first(), a.get(1..).unwrap_or(&[]), |acc, w| if let V::Num(x) = w { acc + x } else { acc }),
+        "SUMIFS" => ifs(e, a.first(), a.get(1..).unwrap_or(&[]), |acc, w| match w {
+            V::Num(x) => acc + x,
+            V::Bool(b) => acc + f64::from(*b),
+            _ => acc,
+        }),
         "COUNTIFS" => ifs(e, None, a, |acc, _| acc + 1.0),
         "SUMPRODUCT" => {
             let gs: Vec<Rg> = a.iter().filter_map(|x| if let V::Range(g) = x { Some(*g) } else { None }).collect();
@@ -696,7 +742,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         // maths
         "ABS" => num1!(|x| V::Num(x.abs())),
         "SIGN" => num1!(|x| V::Num(if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 })),
-        "INT" => num1!(|x| V::Num(x.floor())),
+        "INT" => num1!(|x| V::Num(approx_floor(x))),
         "TRUNC" | "ROUNDDOWN" => num2!(or(1, 0.0), |x, d| V::Num(round(x, d, b'd'))),
         "ROUND" => num2!(or(1, 0.0), |x, d| V::Num(round(x, d, b'r'))),
         "ROUNDUP" => num2!(or(1, 0.0), |x, d| V::Num(round(x, d, b'u'))),
@@ -725,9 +771,26 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         }),
         // past 170 it is more than a number can hold, and is not counted up to
         "FACT" => num1!(|x| if x < 0.0 { err(ARG) } else if x > 170.0 { fin(f64::INFINITY) } else { fin((2..=x.floor() as u64).fold(1.0, |f, i| f * i as f64)) }),
-        "CEILING" => num2!(or(1, 1.0), |x, s| V::Num(if s == 0.0 { 0.0 } else if x < 0.0 && s < 0.0 { (x / s + 1e-12).floor() * s } else { (x / s - 1e-12).ceil() * s })),
-        "FLOOR" => num2!(or(1, 1.0), |x, s| if s == 0.0 { err(DIV0) } else { V::Num(if x < 0.0 && s < 0.0 { (x / s - 1e-12).ceil() * s } else { (x / s + 1e-12).floor() * s }) }),
-        "MROUND" => num2!(arg(1), |x, s| V::Num(if s == 0.0 { 0.0 } else { js_round(x / s) * s })),
+        "CEILING" | "FLOOR" => {
+            // a third argument that is not nought rounds a negative number by its size: away from nought for CEILING
+            let by_size = a.get(2).is_some_and(|x| !matches!(x, V::Missing | V::Blank)) && to_num(&scalar(e, &arg(2))) != V::Num(0.0);
+            let x = to_num(&scalar(e, &arg(0)));
+            // with no step given it is one, of the number's own sign
+            let s = to_num(&scalar(e, &or(1, if matches!(x, V::Num(x) if x < 0.0) { -1.0 } else { 1.0 })));
+            match (x, s) {
+                (V::Num(x), V::Num(s)) if x == 0.0 || s == 0.0 => V::Num(0.0),
+                // a number and a step of unlike signs: Calc's error for an argument it cannot take
+                (V::Num(x), V::Num(s)) if (x < 0.0) != (s < 0.0) => err(ILLEGAL),
+                (V::Num(x), V::Num(s)) => {
+                    // the quotient is above nought. It is rounded up for CEILING of a number above nought, and for one
+                    // below it the other way, so that the answer is the larger number, unless it is rounded by size
+                    let up = (name == "CEILING") == (x > 0.0 || by_size);
+                    V::Num(if up { (x / s - 1e-12).ceil() * s } else { (x / s + 1e-12).floor() * s })
+                }
+                (V::Num(_), bad) | (bad, _) => bad,
+            }
+        }
+        "MROUND" => num2!(arg(1), |x, s| V::Num(if s == 0.0 { 0.0 } else { round(x / s, 0.0, b'r') * s })),
         "GCD" => stat(e, a, |ns| {
             n(ns.iter().map(|x| x.abs().floor()).fold(0.0, |mut x, mut y| {
                 while y != 0.0 {
@@ -790,11 +853,11 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
                     "UPPER" => V::Str(s.to_uppercase()),
                     "LOWER" => V::Str(s.to_lowercase()),
                     "PROPER" => {
-                        // a letter after the start, or after what is neither a letter nor a digit, is a capital
+                        // a letter after the start, or after what is not a letter, a figure too, is a capital: 3Rd, A1B2C
                         let mut up = true;
                         V::Str(s.to_lowercase().chars().flat_map(|c| {
                             let out: Vec<char> = if up && c.is_alphabetic() { c.to_uppercase().collect() } else { vec![c] };
-                            up = !c.is_alphanumeric();
+                            up = !c.is_alphabetic();
                             out
                         }).collect())
                     }
@@ -889,6 +952,23 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             match (first_err(&[&needle, &hay, &st]), st) {
                 (Some(bad), _) => bad,
                 (None, V::Num(st)) if st < 1.0 => err(VALUE),
+                // nothing to look for is not found
+                (None, V::Num(_)) if to_str(&needle).is_empty() => err(VALUE),
+                // SEARCH takes `*` and `?` for others: the first place from which the text goes on as the pattern says
+                (None, V::Num(st)) if name == "SEARCH" && wildcards(&to_str(&needle)) => {
+                    let (mut pat, hy): (Vec<char>, Vec<char>) = (to_str(&needle).to_lowercase().chars().collect(), to_str(&hay).to_lowercase().chars().collect());
+                    pat.push('*');
+                    // places are counted in UTF-16 units, as the plain search counts them
+                    let (mut at, mut found) = (0usize, None);
+                    for (i, c) in hy.iter().enumerate() {
+                        if at as f64 >= st.floor() - 1.0 && wild(&pat, &hy[i..]) {
+                            found = Some(at);
+                            break;
+                        }
+                        at += c.len_utf16();
+                    }
+                    found.map_or(err(VALUE), |at| n(at as f64 + 1.0))
+                }
                 (None, V::Num(st)) => {
                     let fold = |v: &V| if name == "SEARCH" { to_str(v).to_lowercase() } else { to_str(v) };
                     let (nd, hy) = (units(&fold(&needle)), units(&fold(&hay)));
@@ -903,17 +983,21 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
                 return Ok(bad);
             }
             let (s, f, t) = (to_str(&s), to_str(&from), to_str(&to));
+            // the one named: the first, the second. The first is 1, and a fraction is cut off: there is none before the first
+            let k = if a.get(3).is_none_or(|x| *x == V::Missing) {
+                None
+            } else {
+                match to_num(&scalar(e, &arg(3))) {
+                    V::Num(k) if k < 1.0 => return Ok(err(ILLEGAL)),
+                    V::Num(k) => Some(k.floor()),
+                    bad => return Ok(bad),
+                }
+            };
             if f.is_empty() {
                 return Ok(V::Str(s));
             }
-            if a.get(3).is_none_or(|x| *x == V::Missing) {
-                return Ok(V::Str(s.replace(&f, &t)));
-            }
-            // the one named: the first, the second. As JavaScript counts, in UTF-16 units
-            let k = match to_num(&scalar(e, &arg(3))) {
-                V::Num(k) => k,
-                bad => return Ok(bad),
-            };
+            // counted as JavaScript counts, in UTF-16 units
+            let Some(k) = k else { return Ok(V::Str(s.replace(&f, &t))) };
             let (su, fu) = (units(&s), units(&f));
             let mut at: f64 = -1.0;
             let mut i = 0.0;
@@ -930,7 +1014,10 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             let (s, st, k, w) = (scalar(e, &arg(0)), to_num(&scalar(e, &arg(1))), to_num(&scalar(e, &arg(2))), scalar(e, &arg(3)));
             match (first_err(&[&s, &st, &k, &w]), st, k) {
                 (Some(bad), ..) => bad,
+                // the first character is 1, and a count is not below nought
+                (None, V::Num(st), V::Num(k)) if st < 1.0 || k < 0.0 => err(ILLEGAL),
                 (None, V::Num(st), V::Num(k)) => {
+                    let (st, k) = (st.floor(), k.floor());
                     let ch: Vec<char> = to_str(&s).chars().collect();
                     V::Str(slice(&ch, 0.0, st - 1.0).into_iter().collect::<String>() + &to_str(&w) + &slice(&ch, st - 1.0 + k, f64::INFINITY).into_iter().collect::<String>())
                 }
@@ -940,7 +1027,15 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         "VALUE" => {
             let v = scalar(e, &arg(0));
             let got = match &v {
-                V::Str(s) => to_num(&V::Str(s.replace(',', ""))),
+                // a comma groups the figures before the point in threes, or the text is no number: 1,5 is not 15
+                V::Str(s) => {
+                    let t = s.trim();
+                    let body = t.strip_prefix(['+', '-']).unwrap_or(t);
+                    let whole = &body[..body.find(['.', 'e', 'E']).unwrap_or(body.len())];
+                    let mut groups = whole.split(',');
+                    let grouped = groups.next().is_some_and(|g| (1..=3).contains(&g.len())) && groups.all(|g| g.len() == 3);
+                    if whole.contains(',') && !grouped { err(VALUE) } else { to_num(&V::Str(s.replace(',', ""))) }
+                }
                 other => to_num(other),
             };
             // text that is no number is Calc's own error for it
@@ -996,14 +1091,25 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             if c == 0.0 && g.cols() == 1 {
                 c = 1.0;
             }
-            if r < 1.0 || c < 1.0 || r > g.rows() as f64 || c > g.cols() as f64 {
-                return Ok(err(if r == 0.0 || c == 0.0 { VALUE } else { "#REF!" }));
+            if r < 0.0 || c < 0.0 || r >= g.rows() as f64 + 1.0 || c >= g.cols() as f64 + 1.0 {
+                return Ok(err("#REF!"));
+            }
+            // nought for the row or the column is all of them: a whole column, a whole row, or the range itself
+            if r < 1.0 || c < 1.0 {
+                let (r, c) = (r.floor() as usize, c.floor() as usize);
+                let (r1, r2) = if r == 0 { (g.r1, g.r2) } else { (g.r1 + r - 1, g.r1 + r - 1) };
+                let (c1, c2) = if c == 0 { (g.c1, g.c2) } else { (g.c1 + c - 1, g.c1 + c - 1) };
+                return Ok(V::Range(Rg { r1, r2, c1, c2, ..g }));
             }
             e.value((g.s, g.r1 + r.floor() as usize - 1, g.c1 + c.floor() as usize - 1))
         }
         "CHOOSE" => match to_num(&scalar(e, &arg(0))) {
             V::Num(k) if k < 1.0 || k >= a.len() as f64 => err(ILLEGAL),
-            V::Num(k) => scalar(e, &arg(k.floor() as usize)),
+            // a range chosen is handed on whole, for a function round this one to take
+            V::Num(k) => match arg(k.floor() as usize) {
+                V::Range(g) if g.r1 != g.r2 || g.c1 != g.c2 => V::Range(g),
+                one => scalar(e, &one),
+            },
             bad => bad,
         },
         "ROW" | "COLUMN" => match a.first() {
@@ -1046,9 +1152,9 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             }
             bad => bad,
         },
-        "HOUR" => num1!(|x| V::Num((((x - x.floor()) * 86_400.0 + 0.5).floor() / 3600.0).floor() % 24.0)),
-        "MINUTE" => num1!(|x| V::Num((((x - x.floor()) * 86_400.0 + 0.5).floor() / 60.0).floor() % 60.0)),
-        "SECOND" => num1!(|x| V::Num(((x - x.floor()) * 86_400.0 + 0.5).floor() % 60.0)),
+        "HOUR" => num1!(|x| V::Num(clock(x).0)),
+        "MINUTE" => num1!(|x| V::Num(clock(x).1)),
+        "SECOND" => num1!(|x| V::Num(clock(x).2)),
         "WEEKDAY" => {
             let (x, how) = (to_num(&scalar(e, &arg(0))), if a.get(1).is_none_or(|v| *v == V::Missing) { V::Num(1.0) } else { to_num(&scalar(e, &arg(1))) });
             match (x, how) {
