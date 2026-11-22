@@ -112,12 +112,29 @@
   |=  v=tape
   ^-  tape
   (lead-strip (skip (unent v) |=(c=@tD (lth c 32))))
-::  +self-closed: is a tag written as an empty element, <svg ../>?
+::  +self-closed: is a tag written as an empty element, <svg ../>? The
+::  `/` must stand alone, or follow an attribute's name or quoted value:
+::  after an unquoted value it is the value's last byte (`a=/`, `a=b/`).
 ++  self-closed
   |=  att=tape
   ^-  ?
   =/  a=tape  (lead-strip (flop att))
-  &(?=(^ a) =('/' i.a))
+  ?.  &(?=(^ a) =('/' i.a))  |
+  ::  the word the `/` ends, back to the blank before it
+  =/  w=tape
+    =|  acc=tape
+    =/  r=tape  t.a
+    |-  ^-  tape
+    ?~  r  acc
+    ?:  (lth `@`i.r 33)  acc
+    $(r t.r, acc [i.r acc])
+  =/  e=(unit @ud)  (find "=" w)
+  ?~  e  &
+  =/  v=tape  (slag +(u.e) w)
+  ?&  ?=([@ @ *] v)
+      |(=('"' i.v) =('\'' i.v))
+      =(i.v (rear v))
+  ==
 ::  +md-url: an address as markdown's ( ) can hold it. A ')' ends the
 ::  address there, and a space or a quote starts a title, so those are
 ::  percent-encoded. Control bytes go: a browser drops them from a url.
@@ -274,6 +291,10 @@
   ::  ng: no '>' is left in the input, so no later '<' can open a tag
   =/  ng=?   |
   =|  lnk=(unit tape)
+  ::  miss: the dropped tags whose closing tag is not in the rest of the
+  ::  input. It is not in any later rest either, so it is looked for once:
+  ::  a page of unclosed tags would look again at each one (quadratic).
+  =|  miss=(set tape)
   |-  ^-  tape
   ?~  t  (flop acc)
   ::  `?~` above narrows t to a non-empty tape, and a WET gate (scag/slag/find)
@@ -319,12 +340,19 @@
     ::  drop the tag AND its content
     ?:  &(!cls.g (drop-tag n))
       ::  scan for the closer without lowercasing the whole remainder,
-      ::  which every dropped tag used to do (+find-ci)
-      ?:  (self-closed att.g)  $(t rest.g, sp &)
-      =/  e=(unit @ud)  (find-ci (weld "</" n) rest.g)
+      ::  which every dropped tag used to do (+find-ci). A `/>` empties
+      ::  a tag that holds markup. It does not empty one that holds raw
+      ::  text (a browser ignores it there), so what follows up to the
+      ::  closing tag is its content. With no closing tag at all, such a
+      ::  tag written as empty costs only itself.
+      =/  sc=?  (self-closed att.g)
+      ?:  &(sc !(raw-tag n))  $(t rest.g, sp &)
+      =/  e=(unit @ud)
+        ?:  (~(has in miss) n)  ~
+        (find-ci (weld "</" n) rest.g)
       ?~  e
-        ?:  (raw-tag n)  (flop acc)
-        $(t rest.g, sp &)
+        ?:  &((raw-tag n) !sc)  (flop acc)
+        $(t rest.g, sp &, miss (~(put in miss) n))
       =/  aft=tape  (slag u.e `tape`rest.g)
       =/  g2=(unit @ud)  (find ">" aft)
       ?~  g2  (flop acc)
