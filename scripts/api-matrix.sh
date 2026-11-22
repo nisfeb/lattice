@@ -775,6 +775,20 @@ has   "clearweb view shows the source"         'cube([width, 20, 10])' "$r"
 hasnt "clearweb view runs no script from it"   '<script>alert' "$r"
 sc -X POST "$B/page-share?name=$P/scad/box&mode=private" >/dev/null
 
+echo "==> archive routes act on a navigation only"
+# /clip and /share archive on a GET, so they must not answer a load a
+# page makes on its own: an <img> in a page the owner reads is sent with
+# the session. A share with no web address archives nothing, so these
+# make no request to any site.
+is "share as an image is refused"       403 "$(sc -H 'Sec-Fetch-Dest: image' "$B/share?text=hello")"
+is "share as a frame is refused"        403 "$(sc -H 'Sec-Fetch-Dest: iframe' "$B/share?url=https://lattice.invalid/a")"
+is "share as a page fetch is refused"   403 "$(sc -H 'Sec-Fetch-Dest: empty' "$B/share?title=hello")"
+is "share as a navigation arrives"      200 "$(sc -H 'Sec-Fetch-Dest: document' "$B/share?text=hello")"
+has "  ...and reads the share"          'Nothing to archive' "$(G -H 'Sec-Fetch-Dest: document' "$B/share?text=hello")"
+is "share with no such header arrives"  200 "$(sc "$B/share?text=hello")"
+is "clip as an image is refused"        403 "$(sc -H 'Sec-Fetch-Dest: image' "$B/clip")"
+is "clip as a navigation arrives"       400 "$(sc -H 'Sec-Fetch-Dest: document' "$B/clip")"
+
 echo "==> recursive folder delete"
 is "page-del on folder" 200 "$(sc -X POST "$B/page-del?name=$P")"
 sleep 2

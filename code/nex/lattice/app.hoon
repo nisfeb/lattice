@@ -4917,7 +4917,12 @@
   ::  only `url` would make the share sheet appear to do nothing on the platform
   ::  most likely to use it, so all three are searched for the first http(s)
   ::  token.
+  ::
+  ::  The share sheet navigates, so a subresource load is refused here as
+  ::  it is for /clip: the two routes run the same archive.
       [%'GET' %share]
+    ?:  (subresource:lu (get-header:http 'sec-fetch-dest' header-list.request.req))
+      (send-err eyre-id 403 'open this address as a page')
     =/  cand=(list @t)
       %+  murn  ~['url' 'text' 'title']
       |=(k=@t (~(get by args) k))
