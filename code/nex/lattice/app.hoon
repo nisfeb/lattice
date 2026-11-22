@@ -8326,12 +8326,18 @@
   (pure:m ~)
 ::  +apply-forum-remote: a forum action from a REMOTE ship, author stamped from
 ::  the transport. Runs, in the ONE writer, the gates the inbox used to run: a
-::  banned ship is dropped silently; the per-[ship board] rate limit is
-::  consulted BEFORE any refusal note and a cooldown is accrued on every
-::  attempt that clears the limit (success OR refusal), so a ship streaming
-::  refused pokes backs off; a refusal (bad board, owner-only, private, role,
-::  caps, or +act) rides back to the poster as a best-effort note. Always
-::  returns ~: a remote refusal is a note, never a fault.
+::  banned ship is dropped silently; the rate limit is consulted BEFORE any
+::  refusal note and a cooldown is accrued on every attempt that clears the
+::  limit (success OR refusal), so a ship streaming refused pokes backs off;
+::  a refusal on a board we host (owner-only, private, role, caps, or +act)
+::  rides back to the poster as a best-effort note. Always returns ~: a
+::  remote refusal is a note, never a fault.
+::
+::  The cooldown is kept per family and board (+rate-key:fr). The board name
+::  is the sender's to choose, so a name that is no board of ours (bad,
+::  unknown, or unreadable) is counted under the family's one entry for all
+::  such names, and is answered with no note: a stream of made-up names then
+::  meets the cooldown, adds one small entry, and sends nothing out.
 ::
 ++  apply-forum-remote
   |=  [now=@da src=@p act=action:ft]
@@ -8363,12 +8369,14 @@
   ::  so the plain cooldown applies (this is +rate-ok:fr for the no-board case).
   ;<  lim=limits:fr  bind:m  read-forum-limits
   =/  mod=?  ?~(obrd %.n (is-mod:fr src u.obrd))
-  =/  entry  (~(get by lim) [src name])
+  =/  key=[@p board-name:ft]  (rate-key:fr (family:ls src) name ?=(^ obrd))
+  =/  entry  (~(get by lim) key)
   =/  ratek=?
     ?:  mod  %.y
     ?~  entry  %.y
     (gte (sub now last.u.entry) cooldown.u.entry)
   ?.  ratek
+    ?~  obrd  (pure:m ~)
     (forum-note-send src name 'forum: you are acting too fast, slow down and retry')
   ::  run the gates and the apply, collecting any refusal reason.
   ;<  reason=(unit @t)  bind:m  (forum-remote-apply now src name act obrd)
@@ -8376,8 +8384,9 @@
   ::  refused pokes keeps lengthening the cooldown.
   ;<  ~  bind:m
     ?:  mod  (pure:(fiber:fiber:nexus ,~) ~)
-    (write-forum-limits (rate-update:fr src name now lim))
+    (write-forum-limits (rate-update:fr -.key +.key now lim))
   ?~  reason  (pure:m ~)
+  ?~  obrd  (pure:m ~)
   (forum-note-send src name u.reason)
 ::  +apply-forum-comet: a forum action from a comet, such as the desktop's
 ::  reader without a node. It lands only as a post or a reply on a public

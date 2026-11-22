@@ -155,6 +155,17 @@
 ++  rate-limit-base  ~s10
 ++  rate-limit-max   ~m10
 ::
+::  +rate-key: the entry a remote action is counted under. `fam` is whom
+::  the sender answers for (+family:lattice-share), so a planet's moons
+::  share one cooldown. The board name comes from the sender, so it keys
+::  an entry only when it names a board we host (`known`). Every other
+::  name shares one entry, under the empty name no board can have, or a
+::  fresh name on each poke would never meet a cooldown and would add an
+::  entry each time.
+++  rate-key
+  |=  [fam=@ name=board-name known=?]
+  ^-  [@p board-name]
+  [`@p`fam ?:(known name %$)]
 ++  rate-ok
   |=  [who=@p name=board-name brd=board now=@da lim=limits]
   ^-  ?
