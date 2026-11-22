@@ -4,7 +4,7 @@
 #![allow(dead_code)] // each test binary uses its own subset
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use lattice_fs::projection::{Dump, Node, PErr, Projection};
@@ -27,6 +27,9 @@ pub struct Ship {
     pub dirs: Mutex<Vec<String>>,
     pub log: Mutex<Vec<String>>,
     pub dumps: AtomicUsize,
+    /// A delete takes every page and folder under the name too, as a ship
+    /// before the page-only delete does. Off, a page goes alone, as now.
+    pub subtree: AtomicBool,
 }
 
 impl Ship {
@@ -121,8 +124,11 @@ impl Projection for Ship {
     }
     fn delete(&self, rel: &str) -> Result<(), PErr> {
         self.note(format!("delete {rel}"));
-        self.pages.lock().unwrap().remove(rel);
-        self.dirs.lock().unwrap().retain(|d| d != rel);
+        let under = format!("{rel}/");
+        let all = self.subtree.load(Ordering::SeqCst);
+        let goes = |r: &String| r == rel || (all && r.starts_with(&under));
+        self.pages.lock().unwrap().retain(|r, _| !goes(r));
+        self.dirs.lock().unwrap().retain(|d| !goes(d));
         Ok(())
     }
     fn mv(&self, src: &str, dst: &str) -> Result<(), PErr> {

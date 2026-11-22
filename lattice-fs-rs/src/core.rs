@@ -140,6 +140,12 @@ struct State {
     // ledger. Within RECENT_TTL a snapshot can't evict a created entry or
     // resurrect a deleted one. Entries age out. Steady state is empty.
     recent: HashMap<String, (Instant, bool)>,
+    // Pages whose own file was unlinked while pages were under them, by rel.
+    // An older ship's delete of a page takes everything under it, so it is
+    // not sent then: the file leaves the listing, and the page's delete goes
+    // once nothing is under it (`release_held`), or with its folder's rmdir.
+    // `rm -r` of the folder so works in whatever order it meets the files.
+    held: HashSet<String>,
 }
 
 pub struct GrubberyFs {
@@ -197,6 +203,7 @@ impl GrubberyFs {
             claim_rev: HashMap::new(),
             scratch: HashMap::new(),
             recent: HashMap::new(),
+            held: HashSet::new(),
         }));
         // watch thread: invalidate on external change, and track the stream's
         // own health — while it is up the core trusts it over the TTL clock
@@ -561,14 +568,41 @@ impl GrubberyFs {
     }
 
     /// Whether the page behind the file at `path` has anything under it
-    /// besides that file. The ship's delete of a name takes every page and
-    /// folder under the name, and it has no call for the page alone, so a
-    /// file's unlink must not be sent for such a page. Editor temp files are
-    /// the mount's own and are not counted.
+    /// besides that file. A ship before the page-only delete takes every page
+    /// and folder under a name it deletes, and the mount cannot tell such a
+    /// ship from a newer one (both report version 146, and no route says
+    /// which delete it has), so a file's unlink, or a rename that would carry
+    /// the pages under it, is never sent for such a page. Editor temp files
+    /// are the mount's own and are not counted.
     fn holds_others(&self, s: &State, path: &str) -> bool {
         let (rel, _) = self.rel_kind_of(s, path);
         let under = format!("/{rel}/");
         s.vt.keys().any(|k| k.starts_with(&under) && k != path && !s.scratch.contains_key(k))
+    }
+
+    /// Sends the delete of each held page with nothing under it now: on any
+    /// ship that takes the page alone. One the ship refuses stays held, and is
+    /// tried again at the next change. The folder of its name goes with it.
+    fn release_held(&self) {
+        let free: Vec<String> = {
+            let s = self.st.lock().unwrap();
+            s.held
+                .iter()
+                .filter(|rel| {
+                    let under = format!("/{rel}/");
+                    !s.vt.keys().any(|k| k.starts_with(&under) && !s.scratch.contains_key(k))
+                })
+                .cloned()
+                .collect()
+        };
+        for rel in free {
+            if self.proj.delete(&rel).is_ok() {
+                let mut s = self.st.lock().unwrap();
+                s.held.remove(&rel);
+                s.cache_take(&rel);
+                s.mutated(&format!("/{rel}"), false);
+            }
+        }
     }
 
     /// FS vpath -> (projection rel, kind). Strips the extension; maps a
@@ -1380,6 +1414,10 @@ fn apply_swap(s: &mut State, snap: Snapshot) {
             }
         }
     }
+    // a held page's file stays out of the listing until its delete is sent.
+    // One the ship no longer has needs none
+    s.held.retain(|rel| vt.values().any(|e| e.node.as_ref().is_some_and(|n| n.rel == *rel)));
+    vt.retain(|_, e| !(e.kind == VKind::File && e.node.as_ref().is_some_and(|n| s.held.contains(&n.rel))));
     s.vt = vt;
     s.vt_ts = Some(Instant::now());
     s.read_cache = cache;
@@ -1736,6 +1774,8 @@ impl Filesystem for GrubberyFs {
             return;
         }
         let (rel, kind) = self.rel_kind_of(&s, &path);
+        // the file of a held page made again: the page is still on the ship, and is written over, not made
+        let held = s.held.remove(&rel);
         let ino = ino_for(&mut s, &path);
         let fh = s.next_fh;
         s.next_fh += 1;
@@ -1747,7 +1787,7 @@ impl Filesystem for GrubberyFs {
                 buf: Vec::new(),
                 dirty: true,
                 gen: 0,
-                new: true,
+                new: !held,
                 scratch: false,
                 writable: true,
                 flushed: false,
@@ -1826,14 +1866,19 @@ impl Filesystem for GrubberyFs {
                 reply.ok();
                 return;
             }
-            // rm of one file must never take other pages with it. As for
-            // rmdir, what is under it goes first.
+            let (rel, _) = self.rel_kind_of(&s, &path);
+            // rm of one file must never take other pages with it. The page is
+            // held: its file leaves the listing now, and its delete goes once
+            // nothing is under it. So `rm -r` of its folder works whichever
+            // side of its own file the pages under it sort.
             if self.holds_others(&s, &path) {
+                s.held.insert(rel.clone());
+                s.vt.remove(&path);
+                s.cache_take(&rel);
                 drop(s);
-                reply.error(err(libc::ENOTEMPTY));
+                reply.ok();
                 return;
             }
-            let (rel, _) = self.rel_kind_of(&s, &path);
             (path, rel)
         };
         match self.proj.delete(&rel) {
@@ -1843,7 +1888,13 @@ impl Filesystem for GrubberyFs {
                 s.vt.remove(&path);
                 // a page made again under this name must not read as this one
                 s.cache_take(&rel);
+                // the page's own file inside the folder of its name: the folder
+                // went with it, so its rmdir has nothing left to send
+                if let Some(dir) = path.rsplit_once('/').map(|(d, _)| d.to_string()).filter(|d| *d == format!("/{rel}")) {
+                    s.mutated(&dir, false);
+                }
                 drop(s);
+                self.release_held();
                 reply.ok();
             }
             Err(e) => reply.error(err(e.errno)),
@@ -1867,11 +1918,20 @@ impl Filesystem for GrubberyFs {
         // populated lattice folder would pass straight to page-del and take the
         // whole subtree with it (rm -r still works because it empties, then rmdirs).
         {
-            let s = self.st.lock().unwrap();
+            let mut s = self.st.lock().unwrap();
             let prefix = format!("{path}/");
             if s.vt.keys().any(|k| k.starts_with(&prefix)) {
                 drop(s);
                 reply.error(err(libc::ENOTEMPTY));
+                return;
+            }
+            // a folder whose page this mount deleted a moment ago, with the
+            // last thing under it: it is gone already. A second delete could
+            // take a page another client has made at that name since
+            if s.recent.get(&path).is_some_and(|(t, alive)| !alive && t.elapsed() < RECENT_TTL) {
+                s.vt.remove(&path);
+                drop(s);
+                reply.ok();
                 return;
             }
         }
@@ -1881,7 +1941,10 @@ impl Filesystem for GrubberyFs {
                 let mut s = self.st.lock().unwrap();
                 s.mutated(&path, false);
                 s.vt.remove(&path);
+                // a page held for this folder went with it
+                s.held.remove(&rel);
                 drop(s);
+                self.release_held();
                 reply.ok();
             }
             Err(e) => reply.error(err(e.errno)),
@@ -1968,9 +2031,28 @@ impl Filesystem for GrubberyFs {
             }
             return;
         }
+        // a page's own file, with pages under the page: the ship's move of a
+        // page carries every page under it (`+move-pages`), and a rename of
+        // one file must not move others. Refused, as its unlink is held
+        {
+            let s = self.st.lock().unwrap();
+            let file = s.vt.get(&src_path).is_some_and(|e| e.kind == VKind::File);
+            if file && self.holds_others(&s, &src_path) {
+                drop(s);
+                reply.error(err(libc::ENOTEMPTY));
+                return;
+            }
+        }
         match self.proj.mv(&src_rel, &dst_rel) {
             Ok(()) => {
                 let mut s = self.st.lock().unwrap();
+                // a held page moved with its folder is held under its new name
+                let under = format!("{src_rel}/");
+                let moved: Vec<String> = s.held.iter().filter(|r| **r == src_rel || r.starts_with(&under)).cloned().collect();
+                for r in moved {
+                    s.held.remove(&r);
+                    s.held.insert(format!("{dst_rel}{}", &r[src_rel.len()..]));
+                }
                 // The entry moves in the vtree too. The ship holds it under the
                 // new name now, and leaving the destination to the async
                 // re-dump makes `mv a b && cat b` fail with ENOENT for up to a
@@ -1988,6 +2070,8 @@ impl Filesystem for GrubberyFs {
                 s.mutated(&dst_path, true);
                 remap_ino(&mut s, &src_path, &dst_path);
                 drop(s);
+                // a page moved out of a held page's folder may have been the last under it
+                self.release_held();
                 reply.ok();
             }
             Err(e) => reply.error(err(e.errno)),
@@ -2573,6 +2657,7 @@ mod tests {
             claim_rev: HashMap::new(),
             scratch: HashMap::new(),
             recent: HashMap::new(),
+            held: HashSet::new(),
         }
     }
 
@@ -2959,6 +3044,24 @@ mod tests {
         );
         assert!(!s.recent.contains_key("/stale.md"), "the ledger must age out");
         assert!(s.warm && s.vt_ts.is_some());
+    }
+
+    #[test]
+    fn a_held_page_stays_out_of_every_listing_until_its_delete_goes() {
+        let mut s = bare_state();
+        s.held.insert("demo".into());
+        s.held.insert("gone".into());
+        let swap = |s: &mut State, nodes: &[Node]| {
+            let vt = build_vt(nodes, |_| "md");
+            apply_swap(s, Snapshot { vt, cache: HashMap::new(), bytes: 0, since: None, beacon: None });
+        };
+        swap(&mut s, &[page("demo", "md", 1), page("demo/zeta", "md", 1), page("other", "md", 1)]);
+        assert!(!s.vt.contains_key("/demo/demo.md"), "a held page's own file is not listed again");
+        assert!(s.vt.contains_key("/demo") && s.vt.contains_key("/demo/zeta.md") && s.vt.contains_key("/other.md"));
+        assert!(s.held.contains("demo") && !s.held.contains("gone"), "one the ship no longer has needs no delete");
+        // the pages under it went elsewhere: its file would be beside the folder, and is not listed there either
+        swap(&mut s, &[page("demo", "md", 1)]);
+        assert!(!s.vt.contains_key("/demo.md") && s.held.contains("demo"));
     }
 
     #[test]

@@ -593,54 +593,115 @@ fn a_mounter_whose_stderr_is_gone_still_stops_cleanly() {
     assert!(!left, "and the folder is no longer a mount");
 }
 
-/// A page with pages under it shows as a folder holding its own file. The
-/// ship's delete of a name takes everything under it, so unlinking that file
-/// must not be sent while anything is still under the page.
+fn deletes(s: &Ship) -> Vec<String> {
+    s.log().into_iter().filter(|l| l.starts_with("delete")).collect()
+}
+
+/// A page with pages under it shows as a folder holding its own file. A ship
+/// before the page-only delete takes everything under a name it deletes, and
+/// the mount cannot tell it from a newer one, so unlinking that file sends
+/// nothing while anything is under the page: the file leaves the listing,
+/// and the page's delete goes once nothing is under it. Run against both.
 #[test]
 fn unlinking_a_pages_own_file_never_takes_the_pages_under_it() {
-    let ship = Ship::with(
-        &[
-            ("demo", "md", "the parent body\n"),
-            ("demo/child", "gmi", "child body\n"),
-            ("demo/keep", "md", "kept body\n"),
-            ("demo/sub/deep", "md", "deep body\n"),
-            ("solo", "md", "alone\n"),
-        ],
-        &[],
-    );
-    let s = ship.clone();
-    with_mount("unlink-parent", &ship, 30, move |mnt| {
-        let deletes = |s: &Ship| s.log().into_iter().filter(|l| l.starts_with("delete")).collect::<Vec<_>>();
-        let e = fs::remove_file(mnt.join("demo/demo.md")).unwrap_err();
-        assert_eq!(e.raw_os_error(), Some(libc::ENOTEMPTY), "the page has pages under it");
-        assert_eq!(deletes(&s), Vec::<String>::new(), "no delete may reach the ship");
-        assert!(names(&mnt.join("demo")).contains(&"demo.md".to_string()), "and the file is still listed");
-        // a page with nothing under it goes as before
-        fs::remove_file(mnt.join("solo.md")).unwrap();
-        assert_eq!(deletes(&s), ["delete solo"]);
-        // one page under it gone, others still there, one of them deeper: still refused
-        fs::remove_file(mnt.join("demo/child.gmi")).unwrap();
-        let e = fs::remove_file(mnt.join("demo/demo.md")).unwrap_err();
-        assert_eq!(e.raw_os_error(), Some(libc::ENOTEMPTY));
-        fs::remove_file(mnt.join("demo/sub/deep.md")).unwrap();
-        fs::remove_dir(mnt.join("demo/sub")).unwrap();
-        let e = fs::remove_file(mnt.join("demo/demo.md")).unwrap_err();
-        assert_eq!(e.raw_os_error(), Some(libc::ENOTEMPTY), "the last page under it still holds it");
-        assert_eq!(deletes(&s), ["delete solo", "delete demo/child", "delete demo/sub/deep", "delete demo/sub"]);
-        assert!(s.has("demo") && s.has("demo/keep"));
-        // with nothing left under it, it goes. The page is then a file beside
-        // where its folder was, once the mount has listed again, so it is
-        // looked for in both places
-        fs::remove_file(mnt.join("demo/keep.md")).unwrap();
-        for _ in 0..200 {
-            let inside = mnt.join("demo/demo.md");
-            let _ = fs::remove_file(if inside.exists() { inside } else { mnt.join("demo.md") });
-            if !s.has("demo") {
-                break;
+    for older in [false, true] {
+        let ship = Ship::with(
+            &[
+                ("demo", "md", "the parent body\n"),
+                ("demo/child", "gmi", "child body\n"),
+                ("demo/keep", "md", "kept body\n"),
+                ("demo/sub/deep", "md", "deep body\n"),
+                ("solo", "md", "alone\n"),
+                ("again", "md", "the page made again\n"),
+                ("again/kid", "md", "kid\n"),
+            ],
+            &[],
+        );
+        ship.subtree.store(older, std::sync::atomic::Ordering::SeqCst);
+        let s = ship.clone();
+        with_mount(if older { "unlink-parent-older" } else { "unlink-parent" }, &ship, 30, move |mnt| {
+            fs::remove_file(mnt.join("demo/demo.md")).unwrap();
+            assert_eq!(deletes(&s), Vec::<String>::new(), "no delete may reach the ship while pages are under it");
+            assert!(!names(&mnt.join("demo")).contains(&"demo.md".to_string()), "the file is no longer listed");
+            assert!(s.has("demo/child") && s.has("demo/keep") && s.has("demo/sub/deep"));
+            // a page with nothing under it goes as before
+            fs::remove_file(mnt.join("solo.md")).unwrap();
+            assert_eq!(deletes(&s), ["delete solo"]);
+            // pages under it go one by one, a deeper one with its folder, and the page waits for the last
+            fs::remove_file(mnt.join("demo/child.gmi")).unwrap();
+            fs::remove_file(mnt.join("demo/sub/deep.md")).unwrap();
+            fs::remove_dir(mnt.join("demo/sub")).unwrap();
+            assert!(s.has("demo") && s.has("demo/keep"), "{:?}", deletes(&s));
+            fs::remove_file(mnt.join("demo/keep.md")).unwrap();
+            assert_eq!(deletes(&s), ["delete solo", "delete demo/child", "delete demo/sub/deep", "delete demo/sub", "delete demo/keep", "delete demo"]);
+            assert!(!s.has("demo"));
+            // its folder went with it: nothing more is sent for it
+            fs::remove_dir(mnt.join("demo")).unwrap();
+            assert_eq!(deletes(&s).len(), 6);
+            // a held page's file written again is that page, written over and not deleted
+            fs::remove_file(mnt.join("again/again.md")).unwrap();
+            fs::write(mnt.join("again/again.md"), "written again\n").unwrap();
+            assert_eq!(s.body("again").as_deref(), Some(&b"written again\n"[..]));
+            fs::remove_file(mnt.join("again/kid.md")).unwrap();
+            assert!(s.has("again"), "a page written again is no longer held: {:?}", deletes(&s));
+        });
+    }
+}
+
+/// `rm -r` and `remove_dir_all` of a page's folder, with pages under it that
+/// sort before its own file and after it: both work, and the page's delete
+/// goes only once nothing is under it, on either kind of ship.
+#[test]
+fn removing_a_page_folder_works_whichever_side_of_its_own_file_its_pages_sort() {
+    for (older, rm) in [(false, true), (true, true), (false, false), (true, false)] {
+        let ship = Ship::with(
+            &[
+                ("demo", "md", "the parent body\n"),
+                ("demo/alpha", "md", "sorts before the page's own file\n"),
+                ("demo/zeta", "md", "sorts after it\n"),
+                ("other", "md", "x\n"),
+            ],
+            &[],
+        );
+        ship.subtree.store(older, std::sync::atomic::Ordering::SeqCst);
+        let s = ship.clone();
+        with_mount(&format!("rm-r-{older}-{rm}"), &ship, 30, move |mnt| {
+            assert_eq!(names(&mnt.join("demo")), ["alpha.md", "demo.md", "zeta.md"]);
+            if rm {
+                let out = std::process::Command::new("rm").arg("-r").arg(mnt.join("demo")).output().unwrap();
+                assert!(out.status.success(), "rm -r: {}", String::from_utf8_lossy(&out.stderr));
+            } else {
+                fs::remove_dir_all(mnt.join("demo")).unwrap();
             }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(!s.has("demo") && deletes(&s).contains(&"delete demo".to_string()));
+            assert!(!s.has("demo") && !s.has("demo/alpha") && !s.has("demo/zeta") && s.has("other"));
+            let log = deletes(&s);
+            let at = log.iter().position(|l| l == "delete demo").expect("the page's delete was sent");
+            assert!(log[..at].contains(&"delete demo/alpha".to_string()) && log[..at].contains(&"delete demo/zeta".to_string()), "the page's delete went before the pages under it: {log:?}");
+            assert_eq!(log.len(), 3, "each once: {log:?}");
+            assert!(!names(mnt).contains(&"demo".to_string()));
+        });
+    }
+}
+
+/// The ship's move of a page carries every page under it (`+move-pages`), so
+/// a rename of the page's own file is refused while pages are under it, as
+/// an unlink of it is held. A folder and a page with nothing under it move as
+/// before.
+#[test]
+fn a_rename_of_a_pages_own_file_never_moves_the_pages_under_it() {
+    let ship = Ship::with(&[("demo", "md", "the parent body\n"), ("demo/zeta", "md", "z\n"), ("solo", "md", "s\n")], &[]);
+    let s = ship.clone();
+    with_mount("mv-parent", &ship, 30, move |mnt| {
+        let moves = |s: &Ship| s.log().into_iter().filter(|l| l.starts_with("mv")).collect::<Vec<_>>();
+        let e = fs::rename(mnt.join("demo/demo.md"), mnt.join("moved.md")).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::ENOTEMPTY));
+        let e = fs::rename(mnt.join("demo/demo.md"), mnt.join("demo/renamed.md")).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::ENOTEMPTY));
+        assert_eq!(moves(&s), Vec::<String>::new(), "no move may reach the ship");
+        assert!(names(&mnt.join("demo")).contains(&"demo.md".to_string()) && s.has("demo") && s.has("demo/zeta"));
+        fs::rename(mnt.join("solo.md"), mnt.join("alone.md")).unwrap();
+        fs::rename(mnt.join("demo"), mnt.join("moved")).unwrap();
+        assert_eq!(moves(&s), ["mv solo alone", "mv demo moved"]);
     });
 }
 
