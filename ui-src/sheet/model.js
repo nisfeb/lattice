@@ -343,10 +343,22 @@ export function setCell(sheet, r, c, val) {
   //  the text of a formula that could not be read (book.js +enter). Not
   //  saved: in the file it is a text cell.
   cell.bad = !!val.bad;
+  cell.unsure = false;
   if (val.cur !== undefined) cell.cur = val.cur;
   if (cell.vt !== 'currency') delete cell.cur;
   cell.rich = false;
   cell.ps = null;
+  cell.dirty = true;
+  return cell;
+}
+//  +setUnsure: the formula at (r, c) has a value that is not right (its
+//  calculation stopped at a bound). It is still shown, but saved with no
+//  value, so a file never carries it as if computed.
+export function setUnsure(sheet, r, c) {
+  const row = ownRow(sheet, r);
+  const cell = row && ownCell(row, c);
+  if (!cell || !cell.f) return null;
+  cell.unsure = true;
   cell.dirty = true;
   return cell;
 }
@@ -426,7 +438,8 @@ function cellXml(doc, cell, ind) {
   for (const [k, raw] of cell.attrs) if (k === 'table:content-validation-name') a += ` ${k}="${raw}"`;
   if (cell.rep > 1) put('table:number-columns-repeated', cell.rep);
   if (cell.f) put('table:formula', cell.f);
-  if (cell.vt) {
+  const unsure = cell.unsure && cell.f;
+  if (cell.vt && !unsure) {
     put('office:value-type', cell.vt);
     if (cell.vt === 'string') {
       if (cell.f) put('office:string-value', cell.err ? '' : cell.v ?? '');
@@ -444,7 +457,7 @@ function cellXml(doc, cell, ind) {
   for (const [k, raw] of cell.attrs) {
     if (!VALUE_ATTRS.has(k) && k !== 'table:content-validation-name') a += ` ${k}="${raw}"`;
   }
-  const ps = cell.ps ? cell.ps.map(([s, e]) => doc.text.slice(s, e)) : textPs(cell.text);
+  const ps = unsure ? [] : cell.ps ? cell.ps.map(([s, e]) => doc.text.slice(s, e)) : textPs(cell.text);
   if (!ps.length && !cell.keep) return `<${name}${a}/>`;
   const pad = '\n' + ' '.repeat(ind + 1);
   return `<${name}${a}>${cell.keep ? pad + cell.keep : ''}${ps.map((p) => pad + p).join('')}\n${' '.repeat(ind)}</${name}>`;

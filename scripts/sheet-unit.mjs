@@ -792,6 +792,86 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   check(`${T.length} rounding and text results are Calc's`, off.length === 0, off.join(' | '));
 }
 
+console.log('==> a bound is never a wrong value shown as right');
+{
+  const num = (v) => `<table:table-cell office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  const fx = (f, v) => `<table:table-cell table:formula="${f}" office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  //  A holds 1s, B the running total of A
+  const running = (N) => {
+    let rows = '';
+    for (let i = 1; i <= N; i++) rows += `<table:table-row>${num(1)}${fx(`of:=SUM([.$A$1:.A${i}])`, i)}</table:table-row>`;
+    return new Book(HEAD + `<table:table table:name="S">${rows}</table:table>` + TAIL);
+  };
+  const judge = (b, N, a1) => {
+    let marked = 0, wrong = 0, unmarked = 0;
+    for (let r = 0; r < N; r++) {
+      const st = b.stale(0, r, 1);
+      if (st) marked++;
+      if (b.cell(0, r, 1).v !== r + a1) { wrong++; if (!st) unmarked++; }
+    }
+    return { marked, wrong, unmarked };
+  };
+  const N = 300;
+  const b = running(N);
+  b.engine.maxTotal = 30000;
+  b.mark();
+  b.enter(0, 0, 0, '100');
+  const one = judge(b, N, 100);
+  check('past the bound of a recalculation, some are marked and none is wrong unmarked', one.marked > 0 && one.marked < N && one.unmarked === 0, JSON.stringify(one));
+  const saved = b.text();
+  check('a marked formula is saved with no value as if computed', (() => { const d = parseFods(b.text()); let withValue = 0; for (let r = 0; r < N; r++) if (b.stale(0, r, 1) && cellAt(d.sheets[0], r, 1).vt) withValue++; return withValue === 0; })());
+  b.mark();
+  b.enter(0, 5, 5, 'x');
+  b.undo();
+  const un = judge(b, N, 100);
+  check('the marks survive an undo of an unrelated edit', un.marked === one.marked && un.unmarked === 0, JSON.stringify(un));
+  b.redo();
+  const re = judge(b, N, 100);
+  check('and the redo of it, where the next edit has computed what stopped', re.unmarked === 0 && re.wrong === 0, JSON.stringify(re));
+  const open = new Book(saved);
+  const op = judge(open, N, 100);
+  check('and a save read again', op.marked === one.marked && op.unmarked === 0, JSON.stringify(op));
+  open.enter(0, 0, 0, '200');
+  const fix = judge(open, N, 200);
+  check('an edit within the bound computes them again', fix.marked === 0 && fix.wrong === 0, JSON.stringify(fix));
+  //  what one recalculation did not reach is the first thing the next computes
+  const again = running(N);
+  again.engine.maxTotal = 30000;
+  again.enter(0, 0, 0, '100');
+  const tail = [];
+  for (let r = 0; r < N; r++) if (again.stale(0, r, 1)) tail.push(r);
+  again.enter(0, 0, 0, '101');
+  const second = judge(again, N, 101);
+  check('what one recalculation did not reach is computed first by the next', second.unmarked === 0 && tail.length > 0 && tail.every((r) => !again.stale(0, r, 1) && again.cell(0, r, 1).v === r + 101), JSON.stringify(second));
+}
+{
+  //  a formula that stopped, read through a range, taints its reader
+  const bomb = new Book(HEAD + '<table:table table:name="B"><table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="16384" office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>'
+    + '<table:table-row><table:table-cell/><table:table-cell table:formula="of:=SUM([.C1001:.C1002])" office:value-type="float" office:value="0"><text:p>0</text:p></table:table-cell></table:table-row></table:table>' + TAIL);
+  bomb.enter(0, 1000, 2, '=COUNTIF(D1:XFD1000,1)');
+  check('a formula that stopped has no value and is marked', bomb.cell(0, 1000, 2).vt === null && bomb.stale(0, 1000, 2));
+  for (const f of ['=SUM(C1001:C1002)', '=AVERAGE(C1001:C1002)', '=COUNT(C1001:C1002)', '=SUMPRODUCT(C1001:C1002;C1001:C1002)', '=C1001+1']) {
+    bomb.enter(0, 1000, 1, f);
+    bomb.enter(0, 1000, 2, '=COUNTIF(D1:XFD1000,1)');
+    check(`${f} reads it and is marked, not computed without it`, bomb.stale(0, 1000, 1), f);
+  }
+}
+{
+  //  an ordinary sheet is computed in full after an insert
+  const num = (v) => `<table:table-cell office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  const fx = (f, v) => `<table:table-cell table:formula="${f}" office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  const N = 3300;
+  let rows = `<table:table-row><table:table-cell/>${fx(`of:=SUM([.B2:.B${N + 1}])`, 0)}</table:table-row>`;
+  for (let i = 1; i <= N; i++) rows += `<table:table-row>${num(1)}${fx(`of:=SUM([.$A$2:.A${i + 1}])`, i)}</table:table-row>`;
+  const b = new Book(HEAD + `<table:table table:name="S">${rows}</table:table>` + TAIL);
+  for (const [dim, at] of [['r', 4000], ['r', 1], ['r', 1500], ['c', 0], ['c', 5]]) {
+    const b = new Book(HEAD + `<table:table table:name="S">${rows}</table:table>` + TAIL);
+    const r = b.shift(0, dim, at, 1);
+    check(`an insert (${dim} ${at}) in a ${N}-row sheet marks nothing`, r.ok && b.engine.stale.size === 0, `${b.engine.stale.size} marked`);
+    if (dim === 'r' && at === 4000) check.eq('and the formula over the running totals is right', b.cell(0, 0, 1).v, (N * (N + 1)) / 2);
+  }
+}
+
 console.log('==> hostile input');
 {
   const head = '<?xml version="1.0"?>\n<office:document xmlns:office="o" xmlns:table="t" xmlns:text="x" office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet>';
