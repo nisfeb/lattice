@@ -8129,17 +8129,19 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return { at: at + m[1].length, ch: on ? 'x' : ' ' };
   }
 
+  const GMI_H = /^(#{1,3}) *(.*)$/;
   const gmiToHtml = (input) => {
     const out = [];
     let pre = null;
-    for (const ln of String(input == null ? '' : input).split('\n')) {
+    for (const raw of String(input == null ? '' : input).split('\n')) {
+      const ln = raw.replace(/\r$/, '');
       if (pre !== null) {
-        if (ln.trimEnd() === '```') { out.push('<pre>' + mdEsc(pre) + '</pre>'); pre = null; }
-        else pre = pre === '' ? ln : pre + '\n' + ln;
+        if (ln.startsWith('```')) { out.push('<pre>' + mdEsc(pre.join('\n')) + '</pre>'); pre = null; }
+        else pre.push(ln);
         continue;
       }
-      if (ln.trimEnd() === '```') { pre = ''; continue; }
-      const h = ln.match(/^(#{1,3}) (.*)$/);
+      if (ln.startsWith('```')) { pre = []; continue; }
+      const h = ln.match(GMI_H);
       if (h) { out.push('<h' + h[1].length + '>' + mdEsc(h[2]) + '</h' + h[1].length + '>'); continue; }
       if (ln.startsWith('=> ')) {
         const rest = ln.slice(3).replace(/^\s+/, '');
@@ -8157,7 +8159,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (!ln.trim()) continue;
       out.push('<p>' + mdEsc(ln) + '</p>');
     }
-    if (pre !== null) out.push('<pre>' + mdEsc(pre) + '</pre>');
+    if (pre !== null) out.push('<pre>' + mdEsc(pre.join('\n')) + '</pre>');
     return out.join('\n');
   };
 
@@ -10729,16 +10731,16 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const lines = String(body == null ? '' : body).split('\n');
     let fence = null;
     for (let i = 0; i < lines.length; i++) {
-      const ln = lines[i];
+      const ln = lines[i].replace(/\r$/, '');
       if (kind === 'gmi') {
-        if (ln.trimEnd() === '```') { fence = fence ? null : '```'; continue; }
+        if (ln.startsWith('```')) { fence = fence ? null : '```'; continue; }
         if (fence) continue;
       } else {
         if (fence) { if (ln.trimStart().startsWith(fence)) fence = null; continue; }
         const f = ln.match(/^\s*(```|~~~)/);
         if (f) { fence = f[1]; continue; }
       }
-      const h = ln.match(kind === 'gmi' ? /^(#{1,3}) (.*)$/ : /^(#{1,6})\s+(.*)$/);
+      const h = ln.match(kind === 'gmi' ? GMI_H : /^(#{1,6})\s+(.*)$/);
       if (h) out.push({ level: h[1].length, text: h[2].trim(), line: i + 1 });
     }
     return out;

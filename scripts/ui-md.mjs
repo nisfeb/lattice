@@ -215,6 +215,22 @@ for (const u of ['/\\evil.example/p.png', '\\\\evil.example/p.png', '\\/evil.exa
 has('an image on this ship still draws', '![x](/apps/lattice/file?name=a%2Fb.png)', '<img alt="x" src="/apps/lattice/file?name=a%2Fb.png">');
 has('a backslash later in a path is left alone', '[x](/a/b\\c)', '<a href="/a/b\\c">');
 
+console.log('\ngemtext agrees with the ship (code/lib/lattice-gmi.hoon)');
+const gmi = require59gmi;
+const FENCED = '```hoon\n# not a heading\n```\n# Real';
+check.eq('a fence with a language opens a block', gmi(FENCED), '<pre># not a heading</pre>\n<h1>Real</h1>');
+check.eq('a closing fence may carry text too', gmi('```\na\n``` end\nb'), '<pre>a</pre>\n<p>b</p>');
+check.eq('an unclosed fence still renders', gmi('```x\na'), '<pre>a</pre>');
+check.eq('a heading needs no space', gmi('#One\n##Two\n###Three'), '<h1>One</h1>\n<h2>Two</h2>\n<h3>Three</h3>');
+check.eq('extra spaces after the hashes are dropped', gmi('#   One'), '<h1>One</h1>');
+check.eq('a fourth hash is heading text', gmi('#### d'), '<h3># d</h3>');
+check.eq('CRLF: the CR is not content', gmi('# a\r\n```x\r\nb\r\n```\r\nc\r\n'), '<h1>a</h1>\n<pre>b</pre>\n<p>c</p>');
+eqj('the outline skips a fence with a language', outline(FENCED, 'gmi'), [{ level: 1, text: 'Real', line: 4 }]);
+eqj('the outline reads a heading with no space', outline('#One\n##Two', 'gmi'),
+  [{ level: 1, text: 'One', line: 1 }, { level: 2, text: 'Two', line: 2 }]);
+eqj('the outline reads CRLF gemtext', outline('# a\r\n```x\r\n# b\r\n```\r\n', 'gmi'), [{ level: 1, text: 'a', line: 1 }]);
+eqj('gemtext links inside a fence with a language are not links', outLinks('```x\n=> https://e.com a\n```', 'gmi'), []);
+
 console.log('\noutgoing links and outline (76-outline.js)');
 eqj('an empty body has no links', outLinks('', 'md'), []);
 eqj('an empty body has no outline', outline('', 'md'), []);
@@ -239,7 +255,7 @@ eqj('#nospace is not a heading', outline('#tag\n####### seven', 'md'), []);
 eqj('gemtext headings stop at three',
   outline('# a\n### c\n#### d\n```\n# fenced\n```\n## b', 'gmi'),
   [{ level: 1, text: 'a', line: 1 }, { level: 3, text: 'c', line: 2 },
-    { level: 2, text: 'b', line: 7 }]);
+    { level: 3, text: '# d', line: 3 }, { level: 2, text: 'b', line: 7 }]);
 eqj('other kinds have no outline', outline('# x', 'html'), []);
 
 console.log('task boxes: a click flips the one marker on its own source line');

@@ -315,17 +315,25 @@
   // => links, > quotes, blank lines dropped, everything else a paragraph.
   // Same safety contract as the markdown above: EVERY line is escaped, links
   // only for urb:// and http(s) (a javascript: => target renders as text).
+  const GMI_H = /^(#{1,3}) *(.*)$/;
   const gmiToHtml = (input) => {
     const out = [];
     let pre = null;
-    for (const ln of String(input == null ? '' : input).split('\n')) {
+    for (const raw of String(input == null ? '' : input).split('\n')) {
+      //  a CRLF document's CR is not content (the ship's +strip-cr)
+      const ln = raw.replace(/\r$/, '');
+      //  A fence is any line that starts with ```: the text after an
+      //  opening one names a language. Matching the whole line left
+      //  ```hoon as a paragraph, and the closing fence then opened a block
+      //  over the rest of the document.
       if (pre !== null) {
-        if (ln.trimEnd() === '```') { out.push('<pre>' + mdEsc(pre) + '</pre>'); pre = null; }
-        else pre = pre === '' ? ln : pre + '\n' + ln;
+        if (ln.startsWith('```')) { out.push('<pre>' + mdEsc(pre.join('\n')) + '</pre>'); pre = null; }
+        else pre.push(ln);
         continue;
       }
-      if (ln.trimEnd() === '```') { pre = ''; continue; }
-      const h = ln.match(/^(#{1,3}) (.*)$/);
+      if (ln.startsWith('```')) { pre = []; continue; }
+      //  blanks after the hashes are optional, so #Heading is one
+      const h = ln.match(GMI_H);
       if (h) { out.push('<h' + h[1].length + '>' + mdEsc(h[2]) + '</h' + h[1].length + '>'); continue; }
       if (ln.startsWith('=> ')) {
         const rest = ln.slice(3).replace(/^\s+/, '');
@@ -343,6 +351,6 @@
       if (!ln.trim()) continue;
       out.push('<p>' + mdEsc(ln) + '</p>');
     }
-    if (pre !== null) out.push('<pre>' + mdEsc(pre) + '</pre>');
+    if (pre !== null) out.push('<pre>' + mdEsc(pre.join('\n')) + '</pre>');
     return out.join('\n');
   };
