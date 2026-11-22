@@ -320,12 +320,27 @@ pub fn approx_eq(a: f64, b: f64) -> bool {
     d < a.abs() * E48 && d < b.abs() * E48
 }
 
-/// The whole number at or below a number, as Calc takes it: one a hair below a whole
-/// number, through binary arithmetic, is that whole number. 0.29*100 is 29.
+/// A number as Calc's INT, ROUND and ROUNDDOWN see it: rounded to fifteen figures, so that what binary
+/// arithmetic leaves of 0.29*100 (28.999999999999996) is 29, and 5.99999999999999, which has fifteen figures
+/// of its own, is not 6. A positive number past 2^41 is left as it is.
+pub fn approx_value(x: f64) -> f64 {
+    if x == 0.0 || !x.is_finite() || x > 2_199_023_255_552.0 {
+        return x;
+    }
+    let v = x.abs();
+    // Calc keeps 999999999999.999 as it is, so a big number is read to three decimals at most
+    let scale = 10f64.powi((14 - v.log10().floor() as i32).max(3));
+    let scaled = v * scale;
+    if !scaled.is_finite() {
+        return x;
+    }
+    let back = (scaled + 0.5).floor() / scale;
+    if x < 0.0 { -back } else { back }
+}
+
+/// The whole number at or below a number, as Calc takes it: see `approx_value`.
 pub fn approx_floor(x: f64) -> f64 {
-    let f = x.floor();
-    // not when it is as near the one below: a number too large to tell a half from a whole
-    if approx_eq(x, f + 1.0) && !approx_eq(x, f) { f + 1.0 } else { f }
+    approx_value(x).floor()
 }
 
 /// Numbers sort before text, and text compares without case.
@@ -685,9 +700,10 @@ impl<'a> Engine<'a> {
             Node::Un(op, x) => {
                 let v = self.ev(x, ctx)?;
                 let v = self.one(v, ctx);
-                // a plus before a value does nothing to it, text and all: `=+B1` is what B1 holds
+                // a plus before a value leaves text and numbers as they are: `=+B1` is what B1 holds. A
+                // logical is its number, as it is for every other operator
                 if *op != '-' {
-                    return Ok(v);
+                    return Ok(if let V::Bool(b) = v { V::Num(f64::from(b)) } else { v });
                 }
                 match to_num(&v) {
                     V::Num(v) => V::Num(-v),
@@ -2225,7 +2241,7 @@ mod tests {
             n += 1;
         }
         assert!(wrong.is_empty(), "{} of {n} differ:\n{}", wrong.len(), wrong.join("\n"));
-        assert_eq!(n, 317);
+        assert_eq!(n, 354);
     }
 
     #[test]
