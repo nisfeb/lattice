@@ -120,7 +120,8 @@ for i in 1 2 3 4 5 6; do forum "[%upvote %${FAKE}n$i [%post 1]]" >/dev/null; don
 sleep 20
 n=$(bnotes | grep -oE "${FAKE}n[1-6]" | sort -u | wc -l)
 is "no refusal note for a made-up board" 0 "$n"
-# a refusal on a board A does host is still noted: B may not delete A's thread
+# a refusal on a board A does host is still noted: its default role is
+# reader, so B may not post there
 is "public board made" 303 "$(code -H "$AK" -X POST "$A/forum/_new" --data "name=$UB&title=Guard+$UB&role=reader")"
 sleep 2
 pace; forum "[%new-post %$UB 'Reader post' ~ \`'no role']" >/dev/null

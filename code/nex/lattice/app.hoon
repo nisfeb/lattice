@@ -8363,11 +8363,11 @@
     (forum-reply-tell now src p.lod post.act parent.act body.act)
   (pure:m ~)
 ::  +apply-forum-remote: a forum action from a REMOTE ship, author stamped from
-::  the transport. Runs, in the ONE writer, the gates the inbox used to run: a
-::  banned ship is dropped silently; the rate limit is consulted BEFORE any
-::  refusal note and a cooldown is accrued on every attempt that clears the
-::  limit (success OR refusal), so a ship streaming refused pokes backs off;
-::  a refusal on a board we host (owner-only, private, role, caps, or +act)
+::  the transport. Runs, in the ONE writer, the gates the inbox used to run.
+::  A banned ship is dropped silently. The rate limit is consulted BEFORE any
+::  refusal note, and a cooldown is accrued on every attempt that clears the
+::  limit (success OR refusal), so a ship streaming refused pokes backs off.
+::  A refusal on a board we host (owner-only, private, role, caps, or +act)
 ::  rides back to the poster as a best-effort note. Always returns ~: a
 ::  remote refusal is a note, never a fault.
 ::
