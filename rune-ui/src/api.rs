@@ -987,7 +987,7 @@ pub fn ships_forget() {
 /// be sent to the ship is left: it is work not yet saved there.
 #[cfg(not(target_arch = "wasm32"))]
 fn end_session(url: String, cookie: String) {
-    if let Some(kept) = kept_path(&url) {
+    if let Some(kept) = kept_path(&url, (Conn { url: url.clone(), cookie: cookie.clone() }).ship()) {
         let _ = std::fs::remove_file(kept);
     }
     // asked once and not waited for: a ship that is away keeps the session until it lapses
@@ -1005,12 +1005,95 @@ fn end_session(url: String, cookie: String) {
 /// Where a signed-in session is kept between runs: the app's own file,
 /// readable by its owner alone.
 fn session_path() -> Option<std::path::PathBuf> {
-    Some(config_dir()?.join("session.json"))
+    let dir = config_dir()?;
+    // before anything is read or signed in to: what was kept under an address alone is given to its ship
+    // only while the sessions on disk are those of before. A test's own folder alone is looked at in a test
+    #[cfg(all(not(test), not(target_arch = "wasm32")))]
+    adopt_old_names(&dir);
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if TEST_CONFIG.with(|t| t.borrow().is_some()) {
+        adopt_old_names(&dir);
+    }
+    Some(dir.join("session.json"))
+}
+
+/// The part of a kept file's name that says whose it is: the ship's name, then its address. Every
+/// byte that is not a letter, a digit or one of `.-~` is written `%XX`, so two ships or two
+/// addresses never make one name, and `+` stands only between the two. A name too long for a file
+/// is cut and ends in a sum of the whole of it, after `%%`, which no other name holds.
+fn ship_key(url: &str, ship: &str) -> String {
+    let esc = |t: &str| t.bytes().map(|b| if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'~') { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
+    let key = format!("{}+{}", esc(ship), esc(url));
+    if key.len() <= 180 {
+        return key;
+    }
+    // ponytail: FNV-1a, to tell long names apart, not to keep anyone out. The address is the owner's own
+    let sum = key.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    format!("{}%%{sum:016x}", &key[..160])
+}
+
+/// The part of a file's name an address made before files were named for a ship: every character
+/// that is not a letter or a digit a dash. Two addresses could make one, and it names no ship.
+#[cfg(not(target_arch = "wasm32"))]
+fn old_key(url: &str) -> String {
+    url.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+/// One of a ship's own files: `what` is `kept`, `waiting`, `ops` or `prefs`.
+fn ship_file(what: &str, url: &str, ship: &str) -> Option<std::path::PathBuf> {
+    Some(session_path()?.with_file_name(format!("{what}-{}.json", ship_key(url, ship))))
+}
+
+/// The file that says the files in a folder are named for their ships.
+#[cfg(not(target_arch = "wasm32"))]
+const NAMED_BY_SHIP: &str = "named-by-ship";
+
+/// Gives the files kept under an address alone to the ship they are for, once, at the first run
+/// that names files for a ship. Such a file says nothing of whose it is, so it is given only to
+/// the ship signed in at its address at that moment, and only when no other ship signed in makes
+/// the same old name. Any other is left as it is, under its old name, and is never read or sent
+/// again: a ship signed in later may not be the one it was written for.
+#[cfg(not(target_arch = "wasm32"))]
+fn adopt_old_names(dir: &std::path::Path) {
+    let mark = dir.join(NAMED_BY_SHIP);
+    if mark.exists() {
+        return;
+    }
+    let mut ships: Vec<(String, String)> = crate::accounts::load_at(dir, now_secs()).list.iter().map(|a| (a.url.clone(), a.ship().to_owned())).collect();
+    if let Some(c) = Conn::from_env().map(|c| (c.url.clone(), c.ship().to_owned())) {
+        if !ships.contains(&c) {
+            ships.push(c);
+        }
+    }
+    for (url, ship) in &ships {
+        let old = old_key(url);
+        if ships.iter().filter(|(u, _)| old_key(u) == old).count() != 1 {
+            continue;
+        }
+        for what in ["kept", "waiting", "ops", "prefs"] {
+            let (from, to) = (dir.join(format!("{what}-{old}.json")), dir.join(format!("{what}-{}.json", ship_key(url, ship))));
+            if std::fs::symlink_metadata(&from).is_ok_and(|m| m.is_file()) && std::fs::symlink_metadata(&to).is_err() {
+                let _ = std::fs::rename(&from, &to);
+            }
+        }
+    }
+    // the mark is what stops a ship signed in later from being given what is left
+    let _ = write_private(&mark, b"");
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The folder a test keeps the app's files in, on its own thread: the folder of whoever runs the tests is not written to.
+    pub(crate) static TEST_CONFIG: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The app's own folder for what it keeps between runs.
 // ponytail: XDG_CONFIG_HOME, then HOME. Windows sets neither, so nothing is kept there. The system's own folder for it is the fix
 pub(crate) fn config_dir() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(dir) = TEST_CONFIG.with(|t| t.borrow().clone()) {
+        return Some(dir);
+    }
     // one set and empty is not set: it would name the folder the app was started in
     let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
     let base = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|h| h.join(".config")))?;
@@ -1018,10 +1101,9 @@ pub(crate) fn config_dir() -> Option<std::path::PathBuf> {
 }
 
 /// Where a ship's tree and pages are kept between runs, to read when it
-/// does not answer: beside the session, one file for each ship's address.
-fn kept_path(url: &str) -> Option<std::path::PathBuf> {
-    let name: String = url.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-    Some(session_path()?.with_file_name(format!("kept-{name}.json")))
+/// does not answer: beside the session, one file for each ship at each address.
+fn kept_path(url: &str, ship: &str) -> Option<std::path::PathBuf> {
+    ship_file("kept", url, ship)
 }
 
 fn keep_at(p: &std::path::Path, nodes: Vec<Node>) -> Result<(), String> {
@@ -1707,13 +1789,12 @@ pub fn ops_over(mut nodes: Vec<Node>, ops: &[QueuedOp]) -> Vec<Node> {
     nodes
 }
 
-fn ops_path(url: &str) -> Option<std::path::PathBuf> {
-    let q = queue_path(url)?;
-    Some(q.with_file_name(format!("ops-{}", q.file_name()?.to_str()?.trim_start_matches("waiting-"))))
+fn ops_path(url: &str, ship: &str) -> Option<std::path::PathBuf> {
+    ship_file("ops", url, ship)
 }
 
-fn queue_path(url: &str) -> Option<std::path::PathBuf> {
-    Some(kept_path(url)?.with_file_name(format!("waiting-{}", kept_path(url)?.file_name()?.to_str()?.trim_start_matches("kept-"))))
+fn queue_path(url: &str, ship: &str) -> Option<std::path::PathBuf> {
+    ship_file("waiting", url, ship)
 }
 
 fn queue_at(p: &std::path::Path) -> Queue {
@@ -1810,17 +1891,19 @@ pub struct Prefs {
     /// The address of the ship these are kept for. Empty with no ship: the computer's own alone.
     #[serde(skip)]
     pub of: String,
+    /// The name of that ship. Another ship that answers at the address later has its own.
+    #[serde(skip)]
+    pub ship: String,
 }
 
 impl Prefs {
-    /// Where they are kept: a file for each ship's address, and `prefs.json` for what is the
+    /// Where they are kept: a file for each ship at each address, and `prefs.json` for what is the
     /// computer's whichever ship is in front.
-    fn path_for(of: &str) -> Option<std::path::PathBuf> {
+    fn path_for(of: &str, ship: &str) -> Option<std::path::PathBuf> {
         if of.is_empty() {
             return Some(session_path()?.with_file_name("prefs.json"));
         }
-        let name: String = of.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-        Some(session_path()?.with_file_name(format!("prefs-{name}.json")))
+        ship_file("prefs", of, ship)
     }
 
     /// What is the computer's, not a ship's, taken from `from`: light or dark, the editor's font,
@@ -1833,29 +1916,29 @@ impl Prefs {
 
     /// The kept preferences with no ship in front.
     pub fn load() -> Prefs {
-        Prefs::load_for("")
+        Prefs::load_for("", "")
     }
 
-    /// The preferences for the ship at `of`: its own (the last page, tabs, pins, the theme it wears),
+    /// The preferences for the ship named `ship` at `of`: its own (the last page, tabs, pins, the theme it wears),
     /// with the computer's laid over them. A ship with none of its own yet starts from what was
     /// kept before ships had their own, so the first ship keeps its tabs through the change.
-    pub fn load_for(of: &str) -> Prefs {
+    pub fn load_for(of: &str, ship: &str) -> Prefs {
         #[cfg(target_arch = "wasm32")]
         {
             let kept = web::storage().and_then(|st| st.get_item(web::PREFS).ok().flatten());
             let mut p: Prefs = kept.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-            p.of = of.to_owned();
+            (p.of, p.ship) = (of.to_owned(), ship.to_owned());
             p
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let read = |of: &str| Prefs::path_for(of).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Prefs>(&t).ok());
+            let read = |of: &str| Prefs::path_for(of, ship).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Prefs>(&t).ok());
             let device = read("");
             let mut p = if of.is_empty() { device.clone().unwrap_or_default() } else { read(of).or_else(|| device.clone()).unwrap_or_default() };
             if let (false, Some(d)) = (of.is_empty(), &device) {
                 p.take_device(d);
             }
-            p.of = of.to_owned();
+            (p.of, p.ship) = (of.to_owned(), ship.to_owned());
             p
         }
     }
@@ -1870,7 +1953,7 @@ impl Prefs {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let put = |of: &str, p: &Prefs| {
-                if let (Some(path), Ok(t)) = (Prefs::path_for(of), serde_json::to_string(p)) {
+                if let (Some(path), Ok(t)) = (Prefs::path_for(of, &self.ship), serde_json::to_string(p)) {
                     // whole or not at all, and the owner's alone: they hold the names of pages lately read
                     let _ = write_private(&path, t.as_bytes());
                 }
@@ -2292,7 +2375,7 @@ impl Conn {
 
     /// Keeps the tree with every page's text, to read when the ship does not answer. In a file only its owner reads, written whole or not at all.
     pub fn keep_tree(&self, nodes: Vec<Node>) -> Result<(), String> {
-        keep_at(&kept_path(&self.url).ok_or("no home directory")?, nodes)
+        keep_at(&kept_path(&self.url, self.ship()).ok_or("no home directory")?, nodes)
     }
 
     /// Sends one save that waited (`docs/offline-edits.md`). A page made here
@@ -2347,11 +2430,11 @@ impl Conn {
 
     /// The deletes and moves that wait for this ship, in the order they were made.
     pub fn ops(&self) -> Vec<QueuedOp> {
-        ops_path(&self.url).and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        ops_path(&self.url, self.ship()).and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
     }
 
     pub fn store_ops(&self, ops: &[QueuedOp]) -> Result<(), String> {
-        write_private(&ops_path(&self.url).ok_or("no home directory")?, &serde_json::to_vec(ops).map_err(|e| e.to_string())?)
+        write_private(&ops_path(&self.url, self.ship()).ok_or("no home directory")?, &serde_json::to_vec(ops).map_err(|e| e.to_string())?)
     }
 
     /// Sends one delete or move that waited, as it would have gone at the time.
@@ -2591,7 +2674,7 @@ impl Conn {
 
     /// The saves that wait for this ship, from the file they are kept in.
     pub fn queue(&self) -> Queue {
-        queue_path(&self.url).map(|p| queue_at(&p)).unwrap_or_default()
+        queue_path(&self.url, self.ship()).map(|p| queue_at(&p)).unwrap_or_default()
     }
 
     /// Sends what waits for this ship while it is not in front, as the window sends it for the ship
@@ -2649,12 +2732,12 @@ impl Conn {
 
     /// Keeps the saves that wait. They are nowhere else, so a failure here is one to say.
     pub fn store_queue(&self, q: &Queue) -> Result<(), String> {
-        write_private(&queue_path(&self.url).ok_or("no home directory")?, &serde_json::to_vec(q).map_err(|e| e.to_string())?)
+        write_private(&queue_path(&self.url, self.ship()).ok_or("no home directory")?, &serde_json::to_vec(q).map_err(|e| e.to_string())?)
     }
 
     /// The tree as it was last kept for this ship, and how many seconds ago. Its `since` is empty, so the next read of the ship is a whole one.
     pub fn kept_tree(&self) -> Option<(Dump, u64)> {
-        kept_at(&kept_path(&self.url)?)
+        kept_at(&kept_path(&self.url, self.ship())?)
     }
 
     /// Keeps this session for the next run, among the ships signed in, and brings its ship to the front.
@@ -3768,6 +3851,202 @@ pub fn enc(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// One request a stand-in ship was sent.
+    #[derive(Clone, Debug)]
+    struct Asked {
+        path: String,
+        head: String,
+        body: String,
+    }
+
+    impl Asked {
+        fn cookie(&self) -> &str {
+            self.head.lines().find_map(|h| h.strip_prefix("cookie: ").or_else(|| h.strip_prefix("Cookie: "))).unwrap_or("")
+        }
+    }
+
+    /// A stand-in ship on this computer alone, answering each request with what `h` gives, raw. Its address, and what it was asked.
+    fn serve(h: impl Fn(&Asked) -> Vec<u8> + Send + Sync + 'static) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Asked>>>) {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (log2, h) = (log.clone(), std::sync::Arc::new(h));
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { continue };
+                let (h, log) = (h.clone(), log2.clone());
+                std::thread::spawn(move || {
+                    let (mut buf, mut b) = (Vec::new(), [0u8; 4096]);
+                    let end = loop {
+                        match s.read(&mut b) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&b[..n]),
+                        }
+                        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break i;
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&buf[..end]).into_owned();
+                    let len = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0))).unwrap_or(0);
+                    while buf.len() < end + 4 + len {
+                        match s.read(&mut b) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => buf.extend_from_slice(&b[..n]),
+                        }
+                    }
+                    let mut first = head.lines().next().unwrap_or("").split(' ');
+                    let asked = Asked { path: first.nth(1).unwrap_or("").to_owned(), head: head.clone(), body: String::from_utf8_lossy(&buf[(end + 4).min(buf.len())..]).into_owned() };
+                    let out = h(&asked);
+                    log.lock().unwrap().push(asked);
+                    let _ = s.write_all(&out);
+                    let _ = s.flush();
+                });
+            }
+        });
+        (url, log)
+    }
+
+    fn answer(code: &str, extra: &str, body: &[u8]) -> Vec<u8> {
+        let mut out = format!("HTTP/1.1 {code}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n{extra}\r\n", body.len()).into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn ok(body: &str) -> Vec<u8> {
+        answer("200 OK", "", body.as_bytes())
+    }
+
+    fn conn(url: &str, ship: &str) -> Conn {
+        Conn { url: url.to_owned(), cookie: format!("urbauth-{ship}=0v7.of{}", &ship[1..]) }
+    }
+
+    /// The app's own folder for one test, on that test's thread, until it is dropped.
+    struct Home(std::path::PathBuf);
+
+    impl Home {
+        fn new(tag: &str) -> Home {
+            let dir = std::env::temp_dir().join(format!("lr-home-{tag}-{}", std::process::id())).join("lattice-rune");
+            let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+            std::fs::create_dir_all(&dir).unwrap();
+            TEST_CONFIG.with(|t| *t.borrow_mut() = Some(dir.clone()));
+            Home(dir)
+        }
+    }
+
+    impl Drop for Home {
+        fn drop(&mut self) {
+            TEST_CONFIG.with(|t| *t.borrow_mut() = None);
+            let _ = std::fs::remove_dir_all(self.0.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn what_is_kept_for_a_ship_is_never_read_or_sent_for_another_that_answers_at_its_address() {
+        let _home = Home::new("same-address");
+        let (url, log) = serve(|r| if r.path.contains("page-save") { ok(r#"{"rev":9,"conflicted":false,"kept":""}"#) } else { ok("{}") });
+        let (zod, bus) = (conn(&url, "~zod"), conn(&url, "~bus"));
+        // ~zod wrote and deleted with the ship away, and was signed out of: what waits is left
+        let mut q = Queue::new();
+        enqueue(&mut q, &Page { name: "diary".into(), body: "what ~zod wrote with the ship away".into(), kind: "md".into(), rev: 3 }, Some(3), false, 1);
+        zod.store_queue(&q).unwrap();
+        zod.store_ops(&[QueuedOp::Del("drafts".into())]).unwrap();
+        zod.keep_tree(vec![Node { path: "diary".into(), page: true, kind: "md".into(), rev: 3, body: Some("~zod's diary".into()), ..Node::default() }]).unwrap();
+        let mut p = Prefs::load_for(&url, "~zod");
+        p.last = "diary".into();
+        p.save();
+        // another ship answers at the address and is signed in to: none of it is that ship's
+        assert!(bus.queue().is_empty() && bus.ops().is_empty() && bus.kept_tree().is_none());
+        assert_eq!(Prefs::load_for(&url, "~bus").last, "");
+        assert_eq!(bus.send_waiting(&std::sync::atomic::AtomicBool::new(false)), 0);
+        assert!(log.lock().unwrap().is_empty(), "nothing of ~zod's is sent under ~bus's session: {:?}", log.lock().unwrap());
+        // and what ~bus keeps does not go over ~zod's
+        bus.keep_tree(vec![Node { path: "home".into(), page: true, ..Node::default() }]).unwrap();
+        bus.store_queue(&Queue::new()).unwrap();
+        bus.store_ops(&[]).unwrap();
+        // it all still waits for ~zod, and goes to ~zod under its own session
+        assert_eq!((zod.queue(), zod.ops()), (q, vec![QueuedOp::Del("drafts".into())]));
+        assert_eq!(zod.kept_tree().unwrap().0.nodes[0].body.as_deref(), Some("~zod's diary"));
+        assert_eq!(Prefs::load_for(&url, "~zod").last, "diary");
+        zod.send_waiting(&std::sync::atomic::AtomicBool::new(false));
+        let sent = log.lock().unwrap().clone();
+        assert!(sent.iter().any(|r| r.path.contains("page-del?name=drafts")) && sent.iter().any(|r| r.path.contains("page-save?name=diary") && r.body == "what ~zod wrote with the ship away"), "{sent:?}");
+        assert!(sent.iter().all(|r| r.cookie() == zod.cookie), "{sent:?}");
+        assert!(zod.queue().is_empty() && zod.ops().is_empty());
+        let _ = bg_sent(&url, true);
+    }
+
+    #[test]
+    fn files_kept_under_an_address_alone_go_to_the_ship_signed_in_there_and_to_no_other() {
+        let home = Home::new("old-names");
+        let dir = home.0.clone();
+        // as the version before left them: each file named for an address, with nothing in it to say whose it is
+        let waiting = |body: &str| format!(r#"{{"diary":{{"kind":"md","body":"{body}","base":3,"is_new":false,"at":1}}}}"#);
+        let old = |what: &str, key: &str, text: &str| std::fs::write(dir.join(format!("{what}-{key}.json")), text).unwrap();
+        old("waiting", "http---ship-example-8080", &waiting("zod's edit"));
+        old("ops", "http---ship-example-8080", r#"[{"Del":"drafts"}]"#);
+        old("kept", "http---ship-example-8080", r#"{"nodes":[{"path":"diary","page":true,"kind":"md","rev":3,"body":"zod's diary"}],"since":""}"#);
+        old("prefs", "http---ship-example-8080", r#"{"last":"diary","theme":"dark"}"#);
+        // a ship signed out of before the change, whose edit still waits
+        old("waiting", "http---gone-example", &waiting("of a ship signed out of"));
+        // two addresses signed in that made one name
+        old("waiting", "https---my-ship-example", &waiting("of one of the two"));
+        let mut all = crate::accounts::Accounts::default();
+        all.put("https://my.ship.example", "urbauth-~nec=0v1", 1);
+        all.put("https://my-ship.example", "urbauth-~bud=0v1", 1);
+        all.put("http://ship.example:8080", "urbauth-~zod=0v1", 1);
+        crate::accounts::store_at(&dir, &all).unwrap();
+
+        let zod = conn("http://ship.example:8080", "~zod");
+        assert_eq!(zod.queue()["diary"].body, "zod's edit");
+        assert_eq!(zod.ops(), [QueuedOp::Del("drafts".into())]);
+        assert_eq!(zod.kept_tree().unwrap().0.nodes[0].body.as_deref(), Some("zod's diary"));
+        assert_eq!(Prefs::load_for(&zod.url, "~zod").last, "diary");
+        assert!(!dir.join("waiting-http---ship-example-8080.json").exists(), "it was moved, not copied");
+        // another ship at that address is given none of it
+        assert!(conn("http://ship.example:8080", "~bus").queue().is_empty());
+        // the two that shared a name: which one wrote it cannot be told, so neither is given it
+        assert!(conn("https://my.ship.example", "~nec").queue().is_empty() && conn("https://my-ship.example", "~bud").queue().is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("waiting-https---my-ship-example.json")).unwrap(), waiting("of one of the two"));
+        // a ship signed in later at the address of the one signed out of is not given what was left, and the file stays as it was
+        all.put("http://gone.example", "urbauth-~bus=0v1", 2);
+        crate::accounts::store_at(&dir, &all).unwrap();
+        assert!(conn("http://gone.example", "~bus").queue().is_empty() && conn("http://gone.example", "~bus").ops().is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("waiting-http---gone-example.json")).unwrap(), waiting("of a ship signed out of"));
+    }
+
+    #[test]
+    fn a_fresh_folder_gives_nothing_away_to_the_first_ship_signed_in() {
+        // the first run of this version with nobody signed in, and files left from before
+        let home = Home::new("old-names-signed-out");
+        std::fs::write(home.0.join("waiting-http---ship-example-8080.json"), r#"{"diary":{"kind":"md","body":"x","base":3}}"#).unwrap();
+        assert_eq!(Prefs::load().last, "", "the first thing a window with no ship reads");
+        let mut all = crate::accounts::Accounts::default();
+        all.put("http://ship.example:8080", "urbauth-~bus=0v1", 1);
+        crate::accounts::store_at(&home.0, &all).unwrap();
+        assert!(conn("http://ship.example:8080", "~bus").queue().is_empty());
+        assert!(home.0.join("waiting-http---ship-example-8080.json").exists());
+    }
+
+    #[test]
+    fn two_addresses_or_two_ships_never_make_one_file_name() {
+        let differ = |a: (&str, &str), b: (&str, &str)| assert_ne!(ship_key(a.0, a.1), ship_key(b.0, b.1), "{a:?} {b:?}");
+        differ(("https://my.ship.example", "~zod"), ("https://my-ship.example", "~zod"));
+        differ(("https://\u{65e5}\u{672c}.example", "~zod"), ("https://\u{4e2d}\u{56fd}.example", "~zod"));
+        differ(("https://ship.example", "~zod"), ("https://ship.example", "~bus"));
+        differ(("http://ship.example:80", "~zod"), ("http://ship.example/80", "~zod"));
+        // the mark between the two parts cannot be made by either part
+        differ(("b", "~zod+a"), ("a+b", "~zod"));
+        differ(("http://a%2Fb", "~zod"), ("http://a/b", "~zod"));
+        assert_eq!(ship_key("http://ship.example:8080", "~zod"), "~zod+http%3A%2F%2Fship.example%3A8080");
+        // a long address still makes a name a file can have, and its own
+        let long = |end: &str| format!("https://{}.example/{end}", "\u{65e5}".repeat(60));
+        differ((&long("a"), "~zod"), (&long("b"), "~zod"));
+        assert!(format!("waiting-{}.json", ship_key(&long("a"), "~sampel-palnet-sampel-palnet")).len() < 255);
+        // and no name made now is one made before
+        assert!(!ship_key("http://x", "~zod").chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    }
+
     #[test]
     fn a_sign_in_that_fails_says_which_of_three_things_it_was() {
         assert_eq!(login_refused("https://zod.test", 400), "that access code was refused");
@@ -3833,7 +4112,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new(), edit_size: 0.0, no_wrap: false }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new(), ship: String::new(), edit_size: 0.0, no_wrap: false }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert!(back.sort_desc);
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
@@ -4265,8 +4544,8 @@ mod tests {
         assert!(age < 60 && d.since.is_empty());
         assert_eq!((d.nodes.len(), d.nodes[0].dname.as_str(), d.nodes[1].rev, d.nodes[1].body.as_deref()), (2, "Notes", 7, Some("# A\n\ntext \u{e9}\n")));
         // each ship's address has its own file
-        assert_ne!(kept_path("http://ship.example:8080"), kept_path("http://other.example"));
-        assert!(kept_path("http://ship.example:8080").unwrap().ends_with("lattice-rune/kept-http---ship-example-8080.json"));
+        assert_ne!(kept_path("http://ship.example:8080", "~zod"), kept_path("http://other.example", "~zod"));
+        assert!(kept_path("http://ship.example:8080", "~zod").unwrap().ends_with("lattice-rune/kept-~zod+http%3A%2F%2Fship.example%3A8080.json"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -4301,7 +4580,7 @@ mod tests {
         std::fs::write(&file, "not json").unwrap();
         assert!(queue_at(&file).is_empty());
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
-        assert!(queue_path("http://ship.example:8080").unwrap().ends_with("lattice-rune/waiting-http---ship-example-8080.json"));
+        assert!(queue_path("http://ship.example:8080", "~zod").unwrap().ends_with("lattice-rune/waiting-~zod+http%3A%2F%2Fship.example%3A8080.json"));
     }
 
     #[test]
@@ -4404,7 +4683,7 @@ mod tests {
         // a move with a name to show
         let shown = ops_over(vec![node("x", true)], &[QueuedOp::Move { from: "x".into(), to: "my-page".into(), dname: "My Page".into(), dnames: String::new() }]);
         assert_eq!((shown[0].path.as_str(), shown[0].dname.as_str()), ("my-page", "My Page"));
-        assert!(ops_path("http://ship.example:8080").unwrap().ends_with("lattice-rune/ops-http---ship-example-8080.json"));
+        assert!(ops_path("http://ship.example:8080", "~zod").unwrap().ends_with("lattice-rune/ops-~zod+http%3A%2F%2Fship.example%3A8080.json"));
     }
 
     /// Deletes and moves that waited, sent to a ship in order, and a save carried by a move.

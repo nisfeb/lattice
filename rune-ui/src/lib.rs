@@ -1179,7 +1179,7 @@ fn init() -> App {
         autosaving: false,
         save_again: false,
         auto_held: false,
-        prefs: Prefs::load_for(conn.as_ref().map_or("", |c| c.url.as_str())),
+        prefs: conn.as_ref().map_or_else(Prefs::load, |c| Prefs::load_for(&c.url, c.ship())),
         ships: api::ships(),
         ships_open: false,
         seen: Default::default(),
@@ -6446,7 +6446,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 if let Err(e) = c.remember() {
                     s.note = format!("signed in, but the session was not kept: {e}");
                 }
-                s.prefs = Prefs::load_for(&c.url);
+                s.prefs = Prefs::load_for(&c.url, c.ship());
                 s.ships = api::ships();
                 s.code = TextEdit::new("");
                 s.queue = c.queue();
@@ -15171,7 +15171,7 @@ pub fn run() {
     // where its tables are wrong, before Rune looks for the family itself. A font first worn in this
     // run is found by Rune, and is read this way from the next launch
     #[cfg(not(target_arch = "wasm32"))]
-    let worn = api::Prefs::load_for(Conn::load().as_ref().map_or("", |c| c.url.as_str())).worn;
+    let worn = Conn::load().as_ref().map_or_else(api::Prefs::load, |c| api::Prefs::load_for(&c.url, c.ship())).worn;
     #[cfg(not(target_arch = "wasm32"))]
     let fonts: &'static [&'static [u8]] = match (worn.font(), worn.font_ids()) {
         (Some(theme::Font::Named(f)), ids) => {
