@@ -15,7 +15,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { makeCheck } from './lib/check.mjs';
 import { parseParams, rewriteLine, fmtValue, defineArg, parseLiteral } from '../ui-src/scad/customizer.js';
-import { scanIncludes, resolveRef, collect } from '../ui-src/scad/includes.js';
+import { scanIncludes, resolveRef, collect, CAPS } from '../ui-src/scad/includes.js';
 import { parseStl, smoothNormals, MAX_TRIS } from '../ui-src/scad/stl.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -123,6 +123,37 @@ console.log('\nincludes: resolved as lattice pages, inside lattice');
   check.eq('hostile paths are noted, never read', esc.files.length + ':' + esc.notes.length, '1:2');
   const thrown = await collect('t', 'include <a.scad>', async () => { throw new Error('down'); });
   check.eq('a read that fails is a missing page', thrown.files.length, 1);
+}
+
+console.log('\nincludes: a hostile source costs its length, and a few reads');
+{
+  //  the scan visits each character a bounded number of times: twice the
+  //  text is about twice the steps, whatever the text is
+  const steps = (src) => { const t = {}; scanIncludes(src, t); return t.steps; };
+  for (const [what, unit] of [['include < with no >', 'include <'], ['use< with no >', 'use<'], ['an unterminated /*', '/* '], ['a quote that never closes', '"\\"'],
+    ['// comments', '// x\n'], ['real includes', 'include <a.scad>\n'], ['include and spaces', 'include   '], ['include < x // y', 'include <x // y\n']]) {
+    const a = steps('cube(1);\n' + unit.repeat(5000)), b = steps('cube(1);\n' + unit.repeat(10000)), len = 9 + unit.length * 10000;
+    check(`${what}, 10,000 times: the steps double with the text`, b <= a * 2.2 && b <= len * 4, `${a} then ${b} for ${len} characters`);
+  }
+  //  and it still reads what it read
+  const scan = (src) => scanIncludes(src).map((i) => `${i.kind}:${i.ref}@${i.line}`).join(' ');
+  check.eq('an include after one with no > on its line', scan('include <a\ninclude <b.scad>\nuse<c>'), 'include:b.scad@2 use:c@3');
+  check.eq('a // inside a path is part of the path', scan('include <http://x/y.scad>\ninclude <a//b.scad> // include <no.scad>'), 'include:http://x/y.scad@1 include:a//b.scad@2');
+  check.eq('include on one line, its path on the next', scan('include\n  <a.scad>\nuse\t<b>'), 'include:a.scad@1 use:b@3');
+  check.eq('a word that only ends in use or include is not one', scan('reuse <a>\nmyinclude <b>\nuse_ <c>\n;use <d>\n}include <e>'), 'use:d@4 include:e@5');
+  check.eq('comments and strings hide an include, and one after them is found', scan('/* include <a> */ include <b>\n"include <c>" include <d>\n/* open\ninclude <e>\n*/use <f>'), 'include:b@1 include:d@2 use:f@5');
+  check.eq('an escaped quote does not end a string', scan('x = "a \\" include <no>"; include <yes>'), 'include:yes@1');
+  check.eq('an empty path is still an include', scan('include <>'), 'include:@1');
+  check.eq('CRLF lines', scan('include <a.scad>\r\ninclude <b.scad>\r\n'), 'include:a.scad@1 include:b.scad@2');
+  //  pages that do not exist are asked for too: the cap counts the asking
+  let reads = 0;
+  const missing = await collect('m', Array.from({ length: 8000 }, (_, i) => `include <m${i}.scad>`).join('\n'), async () => { reads++; return null; });
+  check(`8,000 includes of pages that do not exist are not 8,000 reads`, reads <= CAPS.files && missing.notes.some((x) => /more than/.test(x)), `${reads} reads, ${missing.notes.length} notes`);
+  reads = 0;
+  const some = await collect('m', Array.from({ length: 40 }, (_, i) => `include <m${i}.scad>`).join('\n') + '\ninclude <real.scad>', async (n) => { reads++; return n === 'real' ? 'x=1;' : null; });
+  check.eq('a page with a few missing includes still reads the real one', `${reads} ${some.files.length} ${some.notes.length}`, '41 2 0');
+  const bad = await collect('b', Array.from({ length: 20000 }, () => 'include </etc/passwd>').join('\n'), async () => null);
+  check('20,000 refused includes are not 20,000 notes', bad.notes.length <= CAPS.refs + 1 && bad.notes.some((x) => /include lines/.test(x)), `${bad.notes.length} notes`);
 }
 
 console.log('\nSTL: OpenSCAD\'s binary STL');
