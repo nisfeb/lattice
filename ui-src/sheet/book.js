@@ -78,6 +78,21 @@ const BLOCKS = {
 };
 const RANGEISH = /(?:^|:)(?:[a-z-]*cell-range-address[a-z-]*|[a-z-]*range-address|[a-z-]*cell-address|print-ranges|notify-on-update-of-ranges|cell-ranges|buttons)$/;
 
+//  where the value of attribute `name` is in an element's opening tag, in
+//  double or single quotes: [start, end) of the text between them. `raw` is
+//  the value as the parser keeps it, which is how it reads in double quotes.
+function valueSpan(open, name, raw) {
+  const re = new RegExp(`\\s${name.replace(/[^\w]/g, '\\$&')}\\s*=\\s*(["'])`, 'g');
+  for (let m; (m = re.exec(open));) {
+    const vs = m.index + m[0].length;
+    const ve = open.indexOf(m[1], vs);
+    if (ve < 0) return null;
+    const val = open.slice(vs, ve);
+    if ((m[1] === "'" ? val.replace(/"/g, '&quot;') : val) === raw) return [vs, ve];
+  }
+  return null;
+}
+
 export class Book {
   constructor(text) {
     this.history = [];
@@ -439,11 +454,9 @@ export class Book {
           if (kind === 'addr') next = moveAddrs(val, op, home);
           else next = val.includes('[') ? moveRefs(val, home, op) : val;
           if (next === null || next === val) continue;
-          const open = text.slice(k.start, k.openEnd);
-          const at0 = open.indexOf(` ${a}="${raw[1]}"`);
-          if (at0 < 0) continue;
-          const vs = k.start + at0 + a.length + 3;
-          edits.push([vs, vs + raw[1].length, attrText(next)]);
+          const span = valueSpan(text.slice(k.start, k.openEnd), a, raw[1]);
+          if (!span) continue;
+          edits.push([k.start + span[0], k.start + span[1], attrText(next)]);
         }
         if (k.name !== 'table:table-row') fix(k, table);
       }

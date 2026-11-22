@@ -910,6 +910,25 @@ console.log('==> an insert never pushes a filled cell off the sheet');
   check('then one more is refused', !!roomy.shift(0, 'c', 1, 1).error);
 }
 
+console.log('==> references in single-quoted attributes move with the rows');
+{
+  const body = `<table:content-validations><table:content-validation table:name='val1' table:condition='of:cell-content-is-in-list([.$A$3:.$A$5])' table:base-cell-address='Sheet1.B1'/>`
+    + `<table:content-validation table:name='val2' table:condition='of:cell-content-is-in-list("a";[.A3])' table:base-cell-address='Sheet1.B1'/></table:content-validations>`
+    + `<table:table table:name='Sheet1'><table:table-row><table:table-cell table:content-validation-name='val1' office:value-type='string'><text:p>x</text:p></table:table-cell></table:table-row>`
+    + `<table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row></table:table>`
+    + `<table:named-expressions><table:named-expression table:name='nm' table:expression='of:[Sheet1.$A$3]' table:base-cell-address='Sheet1.A1'/></table:named-expressions>`;
+  const b = new Book(HEAD + body + TAIL);
+  check('a file in single quotes opens', !b.error, b.error);
+  check('and takes a row insert', b.shift(0, 'r', 1, 1).ok);
+  const t = b.text();
+  check('the rule moves with its cells', /table:condition=['"]of:cell-content-is-in-list\(\[\.\$A\$4:\.\$A\$6\]\)['"]/.test(t), (/table:condition=[^>]*/.exec(t) || [''])[0]);
+  check('a rule with a quote in its text keeps the quote and moves', t.includes(`of:cell-content-is-in-list(&quot;a&quot;;[.A4])`) || t.includes(`of:cell-content-is-in-list("a";[.A4])`), (/val2[^>]*/.exec(t) || [''])[0]);
+  check('and so does a named expression', /table:expression=['"]of:\[Sheet1\.\$A\$4\]['"]/.test(t), (/table:expression=[^>]*/.exec(t) || [''])[0]);
+  const again = new Book(t);
+  check('and the result is a file that opens', !again.error, again.error);
+  check('a row insert after it moves the rule once more', again.shift(0, 'r', 0, 1).ok && /list\(\[\.\$A\$5:\.\$A\$7\]\)/.test(again.text()));
+}
+
 console.log('==> hostile input');
 {
   const head = '<?xml version="1.0"?>\n<office:document xmlns:office="o" xmlns:table="t" xmlns:text="x" office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet>';
