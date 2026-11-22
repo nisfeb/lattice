@@ -534,9 +534,9 @@ const PICTURE_SIDE: u64 = 8192;
 /// decoded. A drawing (SVG) that draws other files in is refused too.
 /// That is a second guard, and it reads the text only as it is plainly
 /// written: a drawing that is zipped, or spelt with a prefix, passes
-/// it. What holds is that neither crate that reads drawings resolves
-/// an address to a file (`vendor/usvg` for an HTML page's, and
-/// `vendor/usvg-0.45` for the pictures a Markdown page shows).
+/// it. What holds is that nothing that reads drawings resolves an
+/// address to a file: `vendor/usvg` for an HTML page's, and `drawing`
+/// for the pictures a Markdown page shows.
 /// What is not a picture this knows (a style sheet, a font) passes.
 // ponytail: PNG, GIF, JPEG, WebP and BMP are measured. A bomb in another format the decoder knows is not caught here. A size limit in the decoder itself is the fix
 pub fn fetched_ok(b: &[u8]) -> bool {
@@ -585,6 +585,57 @@ pub fn fetched_ok(b: &[u8]) -> bool {
         return !draws_a_file(&all);
     }
     true
+}
+
+/// Whether bytes are a drawing as Rune's picture cache takes them to be: gzip (SVGZ), or markup after an optional
+/// byte order mark and white space. No raster format starts with `<`.
+pub fn is_drawing(bytes: &[u8]) -> bool {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return true;
+    }
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<')
+}
+
+/// The longest side, in pixels, a drawing is drawn at.
+const DRAWING_SIDE: u32 = 2048;
+
+/// A drawing a page shows, drawn as straight RGBA at twice its own size, as Rune's picture cache draws one but
+/// with a reader that resolves no address to a file: a drawing may hold only the pictures written out in it
+/// (`data:`). `None` when the bytes are no drawing by `is_drawing`, which are for the cache to decode. Every
+/// drawing that comes to the cache is drawn here, since the one it draws with reads any file a drawing names.
+pub fn drawing(bytes: &[u8]) -> Option<Result<(u32, u32, Vec<u8>), String>> {
+    use resvg::{tiny_skia, usvg};
+    if !is_drawing(bytes) {
+        return None;
+    }
+    let draw = || {
+        if bytes.len() > 32 << 20 {
+            return Err("the drawing is too large".to_owned());
+        }
+        let options = usvg::Options { image_href_resolver: usvg::ImageHrefResolver { resolve_string: Box::new(|_, _| None), ..Default::default() }, ..Default::default() };
+        let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| format!("drawing: {e}"))?;
+        let size = tree.size();
+        let side = size.width().max(size.height());
+        let px = if side > 0.0 && side.is_finite() { (side * 2.0).ceil().clamp(1.0, DRAWING_SIDE as f32) as u32 } else { return Err("the drawing is empty".to_owned()) };
+        let k = px as f32 / side;
+        let (w, h) = (((size.width() * k).round() as u32).clamp(1, px), ((size.height() * k).round() as u32).clamp(1, px));
+        let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("the drawing is empty")?;
+        resvg::render(&tree, tiny_skia::Transform::from_scale(k, k), &mut pixmap.as_mut());
+        Ok((
+            w,
+            h,
+            pixmap
+                .pixels()
+                .iter()
+                .flat_map(|p| {
+                    let c = p.demultiply();
+                    [c.red(), c.green(), c.blue(), c.alpha()]
+                })
+                .collect(),
+        ))
+    };
+    Some(draw())
 }
 
 /// HTML as it is given to what draws it. A drawing set into the page
@@ -981,32 +1032,30 @@ mod tests {
         }
     }
 
-    /// A test that a drawing which names a file does not read it, for one of the two crates that read drawings: `usvg` reads those an HTML page holds (through Blitz) and `usvg_rune` those a Markdown page shows (through Rune's picture cache). Each is read as it is there, with the options the crate gives by default.
-    #[cfg(not(target_arch = "wasm32"))]
-    macro_rules! reads_no_file {
-        ($test:ident, $usvg:ident) => {
+    /// Straight RGBA of the middle of a drawing as `drawing` draws it, or what it said.
+    fn middle(bytes: &[u8]) -> Result<[u8; 4], String> {
+        let (w, h, px) = drawing(bytes).expect("a drawing")?;
+        let at = ((h / 2 * w + w / 2) * 4) as usize;
+        Ok([px[at], px[at + 1], px[at + 2], px[at + 3]])
+    }
+
     #[test]
-    fn $test() {
+    fn a_drawing_a_markdown_page_shows_that_names_a_file_does_not_read_it() {
         use std::io::Write;
-        // how many pictures a drawing holds, those of its filters too. `None` when it is no drawing
-        fn pictures(bytes: &[u8]) -> Option<usize> {
-            fn count(g: &$usvg::Group) -> usize {
-                let filtered: usize = g.filters().iter().flat_map(|f| f.primitives()).map(|p| if let $usvg::filter::Kind::Image(i) = p.kind() { count(i.root()) } else { 0 }).sum();
-                filtered + g.children().iter().map(|n| match n { $usvg::Node::Image(_) => 1, $usvg::Node::Group(g) => count(g), _ => 0 }).sum::<usize>()
-            }
-            $usvg::Tree::from_data(bytes, &$usvg::Options::default()).ok().map(|t| count(t.root()))
-        }
         const SVG: &str = "http://www.w3.org/2000/svg";
-        // a picture that is really there, so that a reading of it would show
-        let png = [0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R', 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89];
-        let file = std::env::temp_dir().join(format!("lattice-drawing-test-{}-{}.png", stringify!($usvg), std::process::id()));
-        std::fs::write(&file, png).unwrap();
-        let path = file.to_str().unwrap();
+        // a drawing in a file that would paint the middle red if it were read
+        let red = format!("<svg xmlns='{SVG}' width='100' height='100'><rect width='100' height='100' fill='#ff0000'/></svg>");
+        let dir = std::env::temp_dir().join(format!("lattice-drawing-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("red.svg");
+        std::fs::write(&file, &red).unwrap();
         let gz = |text: &str| {
             let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
             e.write_all(text.as_bytes()).unwrap();
             e.finish().unwrap()
         };
+        let enc = |text: &str| text.replace('<', "%3C").replace('>', "%3E").replace('\'', "%27");
+        // every spelling by which a drawing may name an address: the same of a file, and of the drawing written out
         let spelt = |href: &str| {
             let plain = format!("<svg xmlns='{SVG}' width='10' height='10'><image href='{href}' width='10' height='10'/></svg>");
             vec![
@@ -1014,34 +1063,34 @@ mod tests {
                 ("xlink", format!("<svg xmlns='{SVG}' xmlns:xlink='http://www.w3.org/1999/xlink' width='10' height='10'><image xlink:href='{href}' width='10' height='10'/></svg>").into_bytes()),
                 ("past the first 4096 bytes", format!("<?xml version='1.0'?><!--{}-->{plain}", "x".repeat(4100)).into_bytes()),
                 ("a prefix for the namespace", format!("<s:svg xmlns:s='{SVG}' width='10' height='10'><s:image href='{href}' width='10' height='10'/></s:svg>").into_bytes()),
+                ("a byte order mark and white space", format!("\u{feff} \n{plain}").into_bytes()),
                 ("gzip", gz(&plain)),
                 ("gzip of a prefix", gz(&format!("<s:svg xmlns:s='{SVG}' width='10' height='10'><s:image href='{href}' width='10' height='10'/></s:svg>"))),
-                ("set into a page, with a prefix", format!("<svg xmlns:x=\"{SVG}\" width=\"10\" height=\"10\"><x:image href=\"{href}\" width=\"10\" height=\"10\"></x:image></svg>").into_bytes()),
                 ("an entity for the address", format!("<!DOCTYPE svg [<!ENTITY e \"{href}\">]><svg xmlns='{SVG}' width='10' height='10'><image href='&e;' width='10' height='10'/></svg>").into_bytes()),
-                ("a filter", format!("<svg xmlns='{SVG}' width='10' height='10'><filter id='f'><feImage href='{href}'/></filter><rect width='10' height='10' filter='url(#f)'/></svg>").into_bytes()),
+                ("a filter", format!("<svg xmlns='{SVG}' width='10' height='10'><filter id='f' x='0' y='0' width='1' height='1'><feImage href='{href}' width='10' height='10'/></filter><rect width='10' height='10' filter='url(#f)'/></svg>").into_bytes()),
+                ("a drawing in a drawing", format!("<svg xmlns='{SVG}' width='10' height='10'><image href=\"data:image/svg+xml,{}\" width='10' height='10'/></svg>", enc(&plain)).into_bytes()),
             ]
         };
-        for (how, drawing) in spelt(path) {
-            assert_eq!(pictures(&drawing), Some(0), "{how}: the drawing is read, and the file it names is not");
+        let data = format!("data:image/svg+xml;base64,{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, red.as_bytes()));
+        let mut read = Vec::new();
+        for ((how, named), (_, written)) in spelt(file.to_str().unwrap()).into_iter().zip(spelt(&data)) {
+            // the control: the drawing written out in the drawing is drawn, so a read of the file would be seen
+            if how != "a drawing in a drawing" {
+                let control = middle(&written).unwrap();
+                assert!(control[0] > 200 && control[1] < 50 && control[3] > 200, "{how}: the control draws {control:?}");
+            }
+            let got = middle(&named).unwrap();
+            if got[3] != 0 {
+                read.push(format!("{how}: {got:?}"));
+            }
         }
-        // the same drawings with the picture written out in them hold it: the count above would have shown a file read
-        for (how, drawing) in spelt("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ") {
-            assert_eq!(pictures(&drawing), Some(1), "{how}");
-        }
-        // a drawing held in a drawing reads no file either
-        let inner = format!("<svg xmlns='{SVG}' width='10' height='10'><image href='{path}' width='10' height='10'/></svg>").replace('<', "%3C").replace('>', "%3E").replace('\'', "%27");
-        let nested = format!("<svg xmlns='{SVG}' width='10' height='10'><image href=\"data:image/svg+xml,{inner}\" width='10' height='10'/></svg>");
-        if let Some($usvg::Node::Image(held)) = $usvg::Tree::from_data(nested.as_bytes(), &$usvg::Options::default()).unwrap().root().children().first() {
-            assert!(matches!(held.kind(), $usvg::ImageKind::SVG(t) if t.root().children().is_empty()), "the inner drawing read the file");
-        }
-        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(read.is_empty(), "drawn from the file: {read:?}");
+        // what is no drawing is left to the picture cache, and what is one is said when it cannot be drawn
+        assert!(drawing(b"\x89PNG\r\n\x1a\n").is_none() && drawing(b"GIF89a").is_none() && drawing(b"").is_none());
+        assert!(matches!(drawing(b"<svg"), Some(Err(_))) && matches!(drawing(b"\x1f\x8b\x08"), Some(Err(_))));
+        assert!(is_drawing(b"\xef\xbb\xbf\n <svg>") && !is_drawing(b"\xef\xbb\xbf\n x <svg>"));
     }
-        };
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    reads_no_file!(a_drawing_in_an_html_page_that_names_a_file_does_not_read_it, usvg);
-    #[cfg(not(target_arch = "wasm32"))]
-    reads_no_file!(a_drawing_a_markdown_page_shows_that_names_a_file_does_not_read_it, usvg_rune);
 
     #[test]
     fn broken_pages_do_not_panic_or_hang() {

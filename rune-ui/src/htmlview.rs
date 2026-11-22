@@ -549,6 +549,89 @@ mod tests {
         }
     }
 
+    /// The pixel in the middle of a 100 by 100 band of a page, laid out and painted as the page's thread does.
+    fn middle_of(html: &str) -> [u8; 4] {
+        let (tx, _rx) = channel();
+        let net = Arc::new(Net { tx: Mutex::new(tx), outside: false, left: FETCHES.into(), held: 0.into() });
+        let ask = Ask { key: Key { name: "paint".into(), rev: 1, text: 0 }, width: 100.0, scale: 1.0, dark: false, outside: false };
+        let doc = document(html, || DocumentConfig { viewport: Some(viewport(&ask, 100.0)), net_provider: Some(net.clone()), ..Default::default() });
+        let mut p = Page { ask, doc, net, height: 1.0, have: BTreeSet::new(), view: 100.0 };
+        lay(&mut p);
+        // what a page names as `data:` has come, and is laid out again, once for what that names in turn
+        for _ in 0..3 {
+            p.doc.handle_messages();
+            lay(&mut p);
+        }
+        let (w, h, px) = paint(&mut p, &mut None, 0);
+        let at = ((h.min(100) / 2 * w + w / 2) * 4) as usize;
+        [px[at], px[at + 1], px[at + 2], px[at + 3]]
+    }
+
+    #[test]
+    fn a_drawing_in_an_html_page_that_names_a_file_does_not_read_it() {
+        use base64::Engine as _;
+        const SVG: &str = "http://www.w3.org/2000/svg";
+        // a drawing in a file that would paint the page red if it were read
+        let red = format!("<svg xmlns='{SVG}' width='100' height='100'><rect width='100' height='100' fill='#ff0000'/></svg>");
+        let dir = std::env::temp_dir().join(format!("lattice-page-drawing-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("red.svg");
+        std::fs::write(&file, &red).unwrap();
+        let b64 = |t: &str| base64::engine::general_purpose::STANDARD.encode(t.as_bytes());
+        let gz = |t: &str| {
+            use std::io::Write;
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(t.as_bytes()).unwrap();
+            e.finish().unwrap()
+        };
+        // the ways a page puts a drawing in: set in the page, as a picture, as a background, with the address spelt several ways
+        let ways = |href: &str| {
+            let prefixed = format!("<s:svg xmlns:s='{SVG}' width='100' height='100'><s:image href='{href}' width='100' height='100'/></s:svg>");
+            let wrap = |body: &str| format!("<html><body style='margin:0'>{body}</body></html>");
+            vec![
+                ("set in the page", wrap(&format!("<svg width='100' height='100'><image href='{href}' width='100' height='100'/></svg>"))),
+                ("set in the page, xlink", wrap(&format!("<svg width='100' height='100' xmlns:xlink='http://www.w3.org/1999/xlink'><image xlink:href='{href}' width='100' height='100'/></svg>"))),
+                ("set in the page, with a prefix", wrap(&format!("<svg xmlns:x=\"{SVG}\" width=\"100\" height=\"100\"><x:image href=\"{href}\" width=\"100\" height=\"100\"></x:image></svg>"))),
+                // the guard on what is fetched (`html::fetched_ok`) reads the text as it is plainly written, so a
+                // picture is taken in the spellings it misses, and the drawing reader is what holds
+                ("a picture, with a prefix", wrap(&format!("<img width='100' height='100' src='data:image/svg+xml;base64,{}'>", b64(&prefixed)))),
+                ("a picture, gzip of a prefix", wrap(&format!("<img width='100' height='100' src='data:image/svg+xml;base64,{}'>", base64::engine::general_purpose::STANDARD.encode(gz(&prefixed))))),
+                ("a background", wrap(&format!("<div style=\"width:100px;height:100px;background-image:url('data:image/svg+xml;base64,{}')\"></div>", b64(&prefixed)))),
+            ]
+        };
+        let data = format!("data:image/svg+xml;base64,{}", b64(&red));
+        let mut read = Vec::new();
+        for ((how, named), (_, written)) in ways(file.to_str().unwrap()).into_iter().zip(ways(&data)) {
+            // the control: the same page with the drawing written out is drawn, so a read of the file would be seen
+            let control = middle_of(&written);
+            assert!(control[0] > 200 && control[1] < 50, "{how}: the control paints {control:?}");
+            let got = middle_of(&named);
+            if got[0] > 200 && got[1] < 100 {
+                read.push(format!("{how}: {got:?}"));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(read.is_empty(), "painted from the file: {read:?}");
+    }
+
+    #[test]
+    fn every_drawing_reader_the_build_links_that_a_page_reaches_reads_no_file() {
+        // `[patch.crates-io]` replaces only the version it names. A usvg the build links from the registry is
+        // stock, and reads any file a drawing names, so it must be one that no page's drawing reaches: the 0.45 that
+        // Rune's picture cache draws icons with, which `html::drawing` keeps every page's drawing from. When
+        // blitz-dom or anything else moves to a usvg of another version, the patch drops away and this stops the build
+        let lock = include_str!("../Cargo.lock");
+        let mut stock = Vec::new();
+        for package in lock.split("[[package]]").skip(1) {
+            let field = |k: &str| package.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix(" = \"")?.strip_suffix('"'));
+            if field("name") == Some("usvg") && field("source").is_some() {
+                stock.push(field("version").unwrap_or("?").to_owned());
+            }
+        }
+        assert!(stock.iter().all(|v| v.starts_with("0.45.")), "usvg from the registry, reading any file a drawing names: {stock:?}. Patch it in Cargo.toml (`vendor/usvg`) or draw with options that resolve no file");
+        assert!(lock.contains("name = \"usvg\"\nversion = \"0.48.1\"\ndependencies"), "the usvg that Blitz draws with is the vendored copy");
+    }
+
     #[test]
     fn the_bands_in_view_come_first_and_those_far_off_are_let_go() {
         // a page of ten bands, the view over the fourth and fifth
