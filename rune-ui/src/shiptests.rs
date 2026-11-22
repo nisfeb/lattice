@@ -643,6 +643,40 @@ fn a_waiting_save_goes_with_its_page_when_the_page_is_renamed() {
 }
 
 #[test]
+fn a_save_answered_after_going_to_the_memories_is_kept_among_the_pages() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("budget", "fods", &budget());
+    ship.write("notes/a", "md", "first\n");
+    let mut r = Run::new(&ship);
+    r.open("budget");
+    ship.st().slow = 0.4;
+    type_cell(&mut r, "Oat milk");
+    flip(&mut r.s);
+    assert!(r.s.memory);
+    r.settle();
+    assert!(!r.s.cache.contains_key("budget") && !r.s.names.iter().any(|n| n == "budget"), "the page is not filed among the memories");
+    assert!(r.s.other.2.get("budget").is_some_and(|p| p.rev == 2 && p.body.contains("Oat milk")), "the pages hold it as saved");
+    // the same for a save sent behind a press of Read
+    flip(&mut r.s);
+    r.open("notes/a");
+    start_edit(&mut r.s);
+    r.typ("more");
+    to_read(&mut r.s);
+    flip(&mut r.s);
+    r.settle();
+    assert!(r.s.memory && r.s.other.2.get("notes/a").is_some_and(|p| p.rev == 2 && p.body == "firstmore\n"), "its new revision is the page's, not a memory's");
+    // and back among the pages the next change is taken
+    flip(&mut r.s);
+    r.open("notes/a");
+    start_edit(&mut r.s);
+    r.typ(" again");
+    save(&mut r.s);
+    r.settle();
+    assert_eq!(ship.body("notes/a"), "firstmore again\n", "{:?}", r.s.note);
+}
+
+#[test]
 fn a_save_answered_and_not_yet_looked_at_is_still_a_save_on_its_way() {
     let _one = one();
     let ship = Ship::start();

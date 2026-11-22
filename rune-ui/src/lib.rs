@@ -886,6 +886,8 @@ struct App {
     moved_changed: bool,
     /// The page the save now on its way is of.
     save_for: Option<String>,
+    /// Which half the save on its way is of: the memories (`true`) or the pages. None for a save of another ship's page, which is kept in neither.
+    save_half: Option<bool>,
     /// What is kept on leaving an edit is not sent by this window: what comes next sends it.
     no_drain: bool,
     /// A page moved while it was being edited, until the tree says what revision it now has.
@@ -1367,6 +1369,7 @@ fn init() -> App {
         moved_save: false,
         moved_changed: false,
         save_for: None,
+        save_half: None,
         no_drain: false,
         moved_wait: None,
         here_beat: 0.0,
@@ -3400,7 +3403,7 @@ fn save_body(s: &mut App, p: Page, body: String) {
     let page = Page { body, ..p };
     match s.conn.clone() {
         Some(c) => {
-            s.save_for = Some(page.name.clone());
+            (s.save_for, s.save_half) = (Some(page.name.clone()), Some(s.memory));
             s.save_req.request((c, page), move |(c, mut p)| {
                 p.rev = c.save(&p, Some(base))?;
                 Ok(p)
@@ -4882,7 +4885,7 @@ fn restore(s: &mut App) {
     }
     let base = cur.rev;
     let p = Page { name: old.name, body: old.body, kind: cur.kind.clone(), rev: base };
-    s.save_for = Some(p.name.clone());
+    (s.save_for, s.save_half) = (Some(p.name.clone()), Some(false));
     s.save_req.request((c, p), move |(c, mut p)| {
         p.rev = c.save(&p, Some(base))?;
         Ok(p)
@@ -5531,7 +5534,7 @@ fn write(s: &mut App) {
     match s.conn.clone() {
         Some(c) => {
             s.save_sent = own.then(|| (p.clone(), base, memory));
-            s.save_for = Some(p.name.clone());
+            (s.save_for, s.save_half) = (Some(p.name.clone()), own.then_some(memory));
             s.save_req.request((c, p), move |(c, mut p)| {
                 if let Some(sh) = &remote {
                     // an unconfirmed write keeps the rev it was based on
@@ -5705,13 +5708,17 @@ fn drained(s: &mut App, (did, out): Drained) {
             }
             api::Sent::Done { rev, kept } => {
                 gone_to_ship += 1;
-                if let Some(p) = s.cache.get_mut(&name) {
-                    p.rev = rev;
-                }
-                if let Some(p) = s.open.as_mut().filter(|p| p.name == name) {
-                    p.rev = rev;
-                    // the ship has a new revision of the page in front: its history is read again
-                    hist = true;
+                // a page's revision is the pages' to hold, whichever half is showing. A memory has none
+                if api::queued_know(&name).is_none() {
+                    let pages = if s.memory { &mut s.other.2 } else { &mut s.cache };
+                    if let Some(p) = pages.get_mut(&name) {
+                        p.rev = rev;
+                    }
+                    if let Some(p) = s.open.as_mut().filter(|p| !s.memory && s.remote.is_none() && p.name == name) {
+                        p.rev = rev;
+                        // the ship has a new revision of the page in front: its history is read again
+                        hist = true;
+                    }
                 }
                 if let Some(kept) = kept {
                     said.push(format!("{name} had changed on the ship. Yours is the page now, and what it replaced is kept at {kept}"));
@@ -6760,7 +6767,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if saved.is_none() && ended {
         // a save that ended with no answer is not waited on for ever: nothing could be saved or left while it was
         changed = true;
-        (s.save_for, s.save_sent) = (None, None);
+        (s.save_for, s.save_half, s.save_sent) = (None, None, None);
         (s.save_again, s.autosaving) = (false, false);
         s.note = "not saved: the save ended with no answer".into();
     }
@@ -6768,6 +6775,14 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         let sent = s.save_sent.take();
         s.save_for = None;
+        // a save answered after the window went to the other half is that half's: kept among its texts, with whatever is in front here left as it is
+        let away = s.save_half.take().is_some_and(|half| half != s.memory);
+        let front = if away {
+            flip_quiet(s);
+            s.open.take()
+        } else {
+            None
+        };
         match r {
             Ok(p) => {
                 // the ship has this page's text now: an older save of it that waited is done with
@@ -6802,6 +6817,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     s.note = format!("not saved: {e}");
                 }
             }
+        }
+        if away {
+            s.open = front;
+            flip_quiet(s);
         }
     }
     // after the tree is read, which is where a page is found to be behind
