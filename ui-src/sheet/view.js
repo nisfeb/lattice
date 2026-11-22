@@ -683,7 +683,7 @@ export function mount(host, opts = {}) {
     const tsv = rows.join('\n');
     e.clipboardData.setData('text/plain', tsv);
     e.preventDefault();
-    clip = { tsv, r1, c1, cells, sheet: cur };
+    clip = { tsv, r1, c1, r2: Math.min(r2, r1 + 5000), c2: Math.min(c2, c1 + 500), cells, sheet: cur, cut };
     if (cut) clear();
   }
   function pasteIn(e) {
@@ -694,10 +694,15 @@ export function mount(host, opts = {}) {
     const [r1, , c1] = box();
     edit(() => {
       if (clip && clip.tsv === t.replace(/\r/g, '')) {
-        //  lattice's own copy: formulas come along, their references moved
-        for (const k of clip.cells) {
-          const r = r1 + (k.r - clip.r1), c = c1 + (k.c - clip.c1);
-          if (r < MAX_ROWS && c < MAX_COLS && !book.cell(cur, r, c).covered) book.copyCell(k, cur, r, c);
+        //  lattice's own copy: formulas come along, their references
+        //  moved. A cut is a move: its formulas read what they read
+        //  before, and it is pasted once.
+        const from = clip;
+        if (from.cut) clip = null;
+        for (const k of from.cells) {
+          const r = r1 + (k.r - from.r1), c = c1 + (k.c - from.c1);
+          if (r >= MAX_ROWS || c >= MAX_COLS || book.cell(cur, r, c).covered) continue;
+          if (from.cut) book.moveCell(k, from, cur, r, c); else book.copyCell(k, cur, r, c);
         }
         return null;
       }

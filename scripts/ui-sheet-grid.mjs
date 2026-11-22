@@ -270,6 +270,58 @@ console.log('==> a formula that cannot be read is never dropped');
   await g.page.close();
 }
 
+console.log('==> cut and paste is a move');
+{
+  const g = await open(corpus('02-formulas'));
+  const cut = () => g.page.evaluate(() => {
+    const dt = new DataTransfer();
+    document.activeElement.dispatchEvent(new ClipboardEvent('cut', { clipboardData: dt, bubbles: true, cancelable: true }));
+    return dt.getData('text/plain');
+  });
+  const type = async (r, c, t) => { await g.page.evaluate((a, b) => window.ctl.select(0, a, b), r, c); await g.page.keyboard.type(t); await g.press('Enter'); };
+  await g.click(1, 0);
+  //  G41 reads outside the block, relative, mixed, absolute and on another sheet. H41 reads G41.
+  await type(40, 6, '=A2+$A3+A$4+$A$5');
+  await type(40, 7, '=G41*2');
+  const want = (await g.cell(0, 40, 6)).v;
+  await g.page.evaluate(() => window.ctl.select(0, 40, 6));
+  await g.page.keyboard.down('Shift'); await g.press('ArrowRight'); await g.page.keyboard.up('Shift');
+  const tsv = await cut();
+  check('cut empties the cells', (await g.cell(0, 40, 6)).f === null && (await g.cell(0, 40, 7)).f === null);
+  await g.page.evaluate(() => window.ctl.select(0, 44, 8));
+  await g.paste(tsv);
+  check.eq('a moved formula still reads the cells it read', (await g.cell(0, 44, 8)).f + ' ' + (await g.cell(0, 44, 8)).v, 'of:=[.A2]+[.$A3]+[.A$4]+[.$A$5] ' + want);
+  check.eq('and one that read a cell moved with it follows that cell', (await g.cell(0, 44, 9)).f + ' ' + (await g.cell(0, 44, 9)).v, 'of:=[.I45]*2 ' + want * 2);
+  await g.page.evaluate(() => window.ctl.select(0, 48, 8));
+  await g.paste(tsv);
+  check('a second paste of the same cut is plain text, not the formula again', (await g.cell(0, 48, 8)).f === null);
+  //  a copy still moves its relative references
+  await g.page.evaluate(() => window.ctl.select(0, 44, 8));
+  const copied = await g.copy();
+  await g.page.evaluate(() => window.ctl.select(0, 45, 8));
+  await g.paste(copied);
+  check.eq('a copy still moves relative references', (await g.cell(0, 45, 8)).f, 'of:=[.A3]+[.$A4]+[.A$4]+[.$A$5]');
+  await g.page.close();
+  //  a cut on one sheet pasted on another keeps reading the first sheet
+  const s = await open(corpus('05-sheets'));
+  await s.click(1, 0);
+  await s.page.evaluate(() => window.ctl.select(0, 9, 3));
+  await s.page.keyboard.type('=A2+E10');
+  await s.press('Enter');
+  await s.page.evaluate(() => window.ctl.select(0, 9, 3));
+  await s.page.keyboard.down('Shift'); await s.press('ArrowRight'); await s.page.keyboard.up('Shift');
+  const t2 = await s.page.evaluate(() => {
+    const dt = new DataTransfer();
+    document.activeElement.dispatchEvent(new ClipboardEvent('cut', { clipboardData: dt, bubbles: true, cancelable: true }));
+    return dt.getData('text/plain');
+  });
+  await s.page.evaluate(() => document.querySelectorAll('.ls-tabs button')[1].click());
+  await s.page.evaluate(() => window.ctl.select(1, 5, 0));
+  await s.paste(t2);
+  check.eq('moved to another sheet, it names the sheet it read, and follows the cell moved with it', (await s.cell(1, 5, 0)).f, 'of:=[$Data.A2]+[.B6]');
+  await s.page.close();
+}
+
 console.log('==> the toolbar');
 {
   const g = await open(corpus('06-formats'));

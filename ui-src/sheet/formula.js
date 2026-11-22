@@ -585,5 +585,46 @@ export function offsetFormula(stored, dr, dc) {
   return head + out + body.slice(pos);
 }
 
+//  +cutFormula: a stored formula as it reads after a block of cells it
+//  was in, `b` ({ r1, c1, r2, c2 }) on sheet `from`, was moved `dr` rows
+//  down and `dc` columns right onto sheet `to`. A move does not change
+//  what a formula reads. A reference to cells outside the block stays as
+//  written, absolute or not, and names the sheet it was on when the
+//  formula left it. A reference to cells that moved with it follows them.
+//  null when lattice cannot tokenize it.
+export function cutFormula(stored, b, dr, dc, from, to) {
+  const body = bodyOf(stored);
+  if (body === null) return null;
+  const head = stored.slice(0, stored.length - body.length);
+  let toks;
+  try { toks = tokenize(body, 'of'); } catch { return null; }
+  if (toks.some((k) => k.t === 'ref' && k.ref.unknown)) return null;
+  const away = !sameSheet(from, to);
+  const shift = (e) => {
+    const r = e.r + dr, c = e.c + dc;
+    if (r < 0 || c < 0 || r >= 1048576 || c >= 16384) return null;
+    return { ...e, r, c, sheet: e.sheet !== null && away ? to : e.sheet };
+  };
+  let out = '';
+  let pos = 0;
+  for (const k of toks) {
+    if (k.t !== 'ref' || k.ref.bad) continue;
+    const { a } = k.ref;
+    const z = k.ref.b || a;
+    const sa = a.sheet ?? from, sz = z.sheet ?? sa;
+    const inside = !k.ref.full && sameSheet(sa, from) && sameSheet(sz, from)
+      && Math.min(a.r, z.r) >= b.r1 && Math.max(a.r, z.r) <= b.r2 && Math.min(a.c, z.c) >= b.c1 && Math.max(a.c, z.c) <= b.c2;
+    let ref;
+    if (inside) {
+      const na = shift(a), nz = k.ref.b ? shift(k.ref.b) : null;
+      ref = !na || (k.ref.b && !nz) ? { bad: true } : { a: na, b: nz };
+    } else if (away && a.sheet === null) ref = { ...k.ref, a: { ...a, sheet: from, sheetAbs: true } };
+    else continue;
+    out += body.slice(pos, k.s) + printRef(ref, 'of');
+    pos = k.e;
+  }
+  return head + out + body.slice(pos);
+}
+
 //  does a stored formula hold a reference that points at nothing
 export const hasBadRef = (stored) => stored.includes('#REF!');

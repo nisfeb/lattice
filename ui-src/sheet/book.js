@@ -10,7 +10,7 @@ import {
 } from './model.js';
 import { Engine } from './engine.js';
 import { Styles, fixed } from './styles.js';
-import { toOf, toUser, FormulaError, moveFormula, moveAddrs, offsetFormula, hasBadRef, bodyOf, quoteSheet, renameInFormula, parseAddrs } from './formula.js';
+import { toOf, toUser, FormulaError, moveFormula, moveAddrs, offsetFormula, cutFormula, hasBadRef, bodyOf, quoteSheet, renameInFormula, parseAddrs } from './formula.js';
 import { general } from './funcs.js';
 import { attr, escAttr } from '../writer/xml.js';
 
@@ -243,6 +243,16 @@ export class Book {
     setCell(sheet, r, c, { vt: from.vt, v: from.v, f: null, text: from.text, err: false, cur: from.cur });
     this.engine.setFormula(s, r, c, null);
     return { changed: [[s, r, c], ...this.engine.recalc([[s, r, c]])] };
+  }
+
+  //  +moveCell: one cell of a cut block pasted at its new place. `block`
+  //  is { sheet, r1, c1, r2, c2 }, where the block was cut from. Unlike a
+  //  copy, a moved formula goes on reading the cells it read.
+  moveCell(from, block, s, r, c) {
+    const src = this.doc.sheets[block.sheet];
+    if (!from.f || !src) return this.copyCell({ ...from, f: null }, s, r, c);
+    const f = cutFormula(from.f, block, r - from.r, c - from.c, src.name, this.doc.sheets[s].name);
+    return this.putFormula(s, r, c, f ?? from.f);
   }
 
   //  +format: a formatting change over a rectangle. change is { bold,

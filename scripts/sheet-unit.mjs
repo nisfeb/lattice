@@ -24,7 +24,7 @@ import { makeCheck } from './lib/check.mjs';
 import { parseFods, serializeFods, cellAt, extent, rowCount, serialDate } from '../ui-src/sheet/model.js';
 import { Engine, cellValue } from '../ui-src/sheet/engine.js';
 import { Err, Unsupported, general } from '../ui-src/sheet/funcs.js';
-import { toUser, toOf, moveFormula, moveAddrs, offsetFormula, parseAddrs, colName, colIndex } from '../ui-src/sheet/formula.js';
+import { toUser, toOf, moveFormula, moveAddrs, offsetFormula, cutFormula, parseAddrs, colName, colIndex } from '../ui-src/sheet/formula.js';
 import { Book, readTyped } from '../ui-src/sheet/book.js';
 import { fixed } from '../ui-src/sheet/styles.js';
 
@@ -141,6 +141,18 @@ check.eq('moveAddrs', moveAddrs('$S.$B$2:.$B$5 S.A1:S.C9', op('r', 3, 1)), '$S.$
 check.eq("moveAddrs: another sheet's addresses stay", moveAddrs("'My Sheet'.A1:'My Sheet'.C5", op('r', 0, 1)), "'My Sheet'.A1:'My Sheet'.C5");
 check('parseAddrs refuses what is not an address', parseAddrs('hello') === null);
 check.eq('offsetFormula moves relative parts only', offsetFormula('of:=[.A1]+[.$A1]+[.A$1]+[.$A$1]', 2, 3), 'of:=[.D3]+[.$A3]+[.D$1]+[.$A$1]');
+{
+  //  a move: block C3:D4 on S, two rows down and one column right
+  const blk = { r1: 2, c1: 2, r2: 3, c2: 3 };
+  const cut = (f, to = 'S', dr = 2, dc = 1) => cutFormula(f, blk, dr, dc, 'S', to);
+  check.eq('cutFormula leaves references outside the block as written', cut('of:=[.A1]+[.$A2]+[.A$3]+[.$A$4]+SUM([.A1:.B9])'), 'of:=[.A1]+[.$A2]+[.A$3]+[.$A$4]+SUM([.A1:.B9])');
+  check.eq('cutFormula moves references into the block, absolute ones too', cut('of:=[.C3]+[.$D$4]+SUM([.C3:.D4])'), 'of:=[.D5]+[.$E$6]+SUM([.D5:.E6])');
+  check.eq('a range that straddles the edge of the block stays', cut('of:=SUM([.B3:.D4])+SUM([.C3:.C9])'), 'of:=SUM([.B3:.D4])+SUM([.C3:.C9])');
+  check.eq('another sheet is left alone, and a whole column', cut('of:=[$T.C3]+SUM([.C:.C])'), 'of:=[$T.C3]+SUM([.C:.C])');
+  check.eq('moved to another sheet, outside references name the old sheet', cut('of:=[.A1]+SUM([.A1:.B2])+SUM([.A:.A])+[$S.A1]+[$T.A1]+[.C3]+[$S.D4]', 'T'), 'of:=[$S.A1]+SUM([$S.A1:.B2])+SUM([$S.A:.A])+[$S.A1]+[$T.A1]+[.D5]+[$T.E6]');
+  check.eq('moved off the edge, an inside reference is #REF!', cut('of:=[.C3]+[.A1]', 'S', -3, 0), 'of:=#REF!+[.A1]');
+  check('an unreadable formula is not guessed at', cut('of:={1;2}+[.C3]') === null);
+}
 check.eq('offsetFormula off the edge is #REF!', offsetFormula('of:=[.A1]', -1, 0), 'of:=#REF!');
 
 console.log('==> numbers as text');
