@@ -602,6 +602,7 @@ fn unlinking_a_pages_own_file_never_takes_the_pages_under_it() {
         &[
             ("demo", "md", "the parent body\n"),
             ("demo/child", "gmi", "child body\n"),
+            ("demo/keep", "md", "kept body\n"),
             ("demo/sub/deep", "md", "deep body\n"),
             ("solo", "md", "alone\n"),
         ],
@@ -617,21 +618,29 @@ fn unlinking_a_pages_own_file_never_takes_the_pages_under_it() {
         // a page with nothing under it goes as before
         fs::remove_file(mnt.join("solo.md")).unwrap();
         assert_eq!(deletes(&s), ["delete solo"]);
-        // one page under it gone, another still deeper: still refused. With
-        // no page directly under it, the page's file is beside the folder
-        let own = |mnt: &Path| {
-            let inside = mnt.join("demo/demo.md");
-            if inside.exists() { inside } else { mnt.join("demo.md") }
-        };
+        // one page under it gone, others still there, one of them deeper: still refused
         fs::remove_file(mnt.join("demo/child.gmi")).unwrap();
-        let e = fs::remove_file(own(mnt)).unwrap_err();
-        assert_eq!(e.raw_os_error(), Some(libc::ENOTEMPTY), "a page two levels down is under it too");
-        assert!(s.has("demo") && s.has("demo/sub/deep"));
-        // with nothing left under it, it goes
+        let e = fs::remove_file(mnt.join("demo/demo.md")).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::ENOTEMPTY));
         fs::remove_file(mnt.join("demo/sub/deep.md")).unwrap();
         fs::remove_dir(mnt.join("demo/sub")).unwrap();
-        fs::remove_file(own(mnt)).unwrap();
-        assert_eq!(deletes(&s).last().map(String::as_str), Some("delete demo"));
+        let e = fs::remove_file(mnt.join("demo/demo.md")).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::ENOTEMPTY), "the last page under it still holds it");
+        assert_eq!(deletes(&s), ["delete solo", "delete demo/child", "delete demo/sub/deep", "delete demo/sub"]);
+        assert!(s.has("demo") && s.has("demo/keep"));
+        // with nothing left under it, it goes. The page is then a file beside
+        // where its folder was, once the mount has listed again, so it is
+        // looked for in both places
+        fs::remove_file(mnt.join("demo/keep.md")).unwrap();
+        for _ in 0..200 {
+            let inside = mnt.join("demo/demo.md");
+            let _ = fs::remove_file(if inside.exists() { inside } else { mnt.join("demo.md") });
+            if !s.has("demo") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!s.has("demo") && deletes(&s).contains(&"delete demo".to_string()));
     });
 }
 
