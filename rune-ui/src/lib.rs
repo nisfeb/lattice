@@ -17429,3 +17429,6 @@ mod tests {
         assert_eq!(edited(&s), odd);
     }
 }
+
+#[cfg(test)]
+mod shiptests;

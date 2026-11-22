@@ -1013,6 +1013,11 @@ fn session_path() -> Option<std::path::PathBuf> {
 pub(crate) fn config_dir() -> Option<std::path::PathBuf> {
     // one set and empty is not set: it would name the folder the app was started in
     let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+    // a test run that names no folder keeps what it writes among the system's temporary files, never in the folder of whoever runs it: their preferences and what waits for their ships are there
+    #[cfg(test)]
+    if var("XDG_CONFIG_HOME").is_none() {
+        return Some(std::env::temp_dir().join("lattice-rune-tests").join("lattice-rune"));
+    }
     let base = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|h| h.join(".config")))?;
     Some(base.join("lattice-rune"))
 }

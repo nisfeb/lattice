@@ -1,0 +1,462 @@
+//! Saving and syncing, run against a stand-in ship on this computer.
+//!
+//! The stand-in answers the few routes these tests use, and answers a save as
+//! `code/nex/lattice/app.hoon` does (`+handle-page-save`, `+link-write`,
+//! `+move-guard`): a claimed base that is not the page's revision is refused
+//! with `cas` and applied with the old text kept aside without it, a link
+//! shared to read is a 403, a link whose host does not answer is a 504, and a
+//! page that moved away is not written again at its old name.
+//!
+//! Every test here holds one lock. Rune runs each `Latest` on four workers the
+//! whole process shares, and the senders of waiting saves hold one lock, so two
+//! of these side by side would change the order of each other's answers.
+
+use super::*;
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+static ONE: Mutex<()> = Mutex::new(());
+
+fn one() -> MutexGuard<'static, ()> {
+    ONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A save as the stand-in was sent it.
+#[derive(Clone, Debug)]
+struct Save {
+    name: String,
+    base: Option<String>,
+    body: String,
+}
+
+#[derive(Default)]
+struct Stub {
+    /// Each page's text, kind and revision.
+    pages: BTreeMap<String, (String, String, u64)>,
+    /// Each link's mode (`read` or `edit`), text and revision.
+    links: BTreeMap<String, (String, String, u64)>,
+    knows: BTreeMap<String, String>,
+    /// Where each page that was moved went.
+    moved: BTreeMap<String, String>,
+    saves: Vec<Save>,
+    /// Seconds a save of a page takes to be answered.
+    slow: f64,
+    /// Seconds a read of the tree takes, and whether the tree is read before that wait or after it.
+    dump_slow: f64,
+    dump_early: bool,
+    /// Seconds a read of an address takes.
+    urb_slow: f64,
+    /// A status every save and every read of the tree is answered with, as when nothing reaches the ship.
+    fail: u16,
+    /// A status every save of a page is answered with, the ship answering all else.
+    save_fail: u16,
+    /// A status a save through a link is answered with, as when the link's host is away.
+    link_fail: u16,
+    /// A status a save of a memory is answered with.
+    know_fail: u16,
+}
+
+struct Ship {
+    st: Arc<Mutex<Stub>>,
+    port: u16,
+}
+
+fn unpct(s: &str) -> String {
+    let b = s.as_bytes();
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < b.len() {
+        match (b[i], s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())) {
+            (b'%', Some(x)) => {
+                out.push(x);
+                i += 3;
+            }
+            (c, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn wait(secs: f64) {
+    if secs > 0.0 {
+        std::thread::sleep(Duration::from_secs_f64(secs));
+    }
+}
+
+/// One request answered: the status and the text.
+fn answer(st: &Mutex<Stub>, method: &str, route: &str, q: &BTreeMap<String, String>, body: String) -> (u16, String) {
+    use serde_json::json;
+    let get = |k: &str| q.get(k).cloned().unwrap_or_default();
+    let lock = || st.lock().unwrap_or_else(|e| e.into_inner());
+    let missing = (404, json!({"error": "not in the stub"}).to_string());
+    let ok = (200, json!({"ok": true}).to_string());
+    match (method, route) {
+        ("GET", "page-dump") => {
+            let (fail, slow, early) = {
+                let s = lock();
+                (s.fail, s.dump_slow, s.dump_early)
+            };
+            if fail > 0 {
+                return (fail, "bad gateway".into());
+            }
+            let read = || {
+                let s = lock();
+                let mut nodes: Vec<serde_json::Value> = s.pages.iter().map(|(n, v)| json!({"path": n, "page": true, "kind": v.1, "rev": v.2, "body": v.0})).collect();
+                // a link is in the tree with no text, as the ship sends one
+                nodes.extend(s.links.iter().map(|(n, l)| json!({"path": n, "page": true, "kind": "md", "rev": l.2, "link": {"host": "~sampel-palnet", "path": format!("/{n}"), "mode": l.0}})));
+                json!({"nodes": nodes, "since": "s1"}).to_string()
+            };
+            if early {
+                let text = read();
+                wait(slow);
+                (200, text)
+            } else {
+                wait(slow);
+                (200, read())
+            }
+        }
+        ("GET", "page-source") => {
+            let s = lock();
+            match (s.links.get(&get("name")), s.pages.get(&get("name"))) {
+                (Some(l), _) => (200, json!({"body": l.1, "kind": "md", "rev": l.2}).to_string()),
+                (_, Some(v)) => (200, json!({"body": v.0, "kind": v.1, "rev": v.2}).to_string()),
+                _ => (404, json!({"error": "no such page"}).to_string()),
+            }
+        }
+        ("GET", "know-all") => {
+            let s = lock();
+            (200, json!({"items": s.knows.iter().map(|(k, v)| json!({"key": k, "body": v})).collect::<Vec<_>>()}).to_string())
+        }
+        ("GET", "urb-read") => {
+            let slow = lock().urb_slow;
+            wait(slow);
+            (200, json!({"kind": "page", "ship": "~sampel-palnet", "path": "/notes/plan", "mode": "md", "body": "# The plan\n", "comments": []}).to_string())
+        }
+        ("POST", "know-save") => {
+            let mut s = lock();
+            if s.know_fail > 0 {
+                return (s.know_fail, "bad gateway".into());
+            }
+            s.knows.insert(get("key"), body);
+            ok
+        }
+        ("POST", "page-move") | ("POST", "page-del") => {
+            let mut s = lock();
+            let at = get(if route == "page-del" { "name" } else { "from" });
+            let hit: Vec<String> = s.pages.keys().filter(|n| is_under(n, &at)).cloned().collect();
+            // a delete of nothing is answered as done, a move of nothing is refused
+            if hit.is_empty() && route == "page-move" {
+                return (404, json!({"error": "no such page or folder"}).to_string());
+            }
+            for n in hit {
+                let v = s.pages.remove(&n).expect("just listed");
+                if route == "page-move" {
+                    // the ship makes the moved page anew: its revision there is not the one it had
+                    let to = format!("{}{}", get("to"), &n[at.len()..]);
+                    s.pages.insert(to.clone(), (v.0, v.1, 1));
+                    s.moved.insert(n, to);
+                }
+            }
+            ok
+        }
+        ("POST", "page-save") => {
+            let name = get("name");
+            let base = q.get("base").cloned();
+            {
+                let mut s = lock();
+                s.saves.push(Save { name: name.clone(), base: base.clone(), body: body.clone() });
+                if let Some(l) = s.links.get(&name).cloned() {
+                    if l.0 == "read" {
+                        return (403, "this page is shared with you read-only".into());
+                    }
+                    if s.link_fail > 0 {
+                        return (s.link_fail, "~sampel-palnet is unreachable or no longer shares this page".into());
+                    }
+                    s.links.insert(name, (l.0, body, l.2 + 1));
+                    return (200, json!({"ok": true, "rev": l.2 + 1, "conflicted": false, "kept": ""}).to_string());
+                }
+            }
+            let slow = lock().slow;
+            wait(slow);
+            let mut s = lock();
+            if s.fail > 0 {
+                return (s.fail, "bad gateway".into());
+            }
+            if s.save_fail > 0 {
+                return (s.save_fail, "the ship says no".into());
+            }
+            let old = s.pages.get(&name).cloned();
+            let new = q.contains_key("new");
+            if new && old.is_some() {
+                return (409, "page exists".into());
+            }
+            if let (None, false, Some(to)) = (&old, new, s.moved.get(&name).filter(|to| s.pages.contains_key(*to))) {
+                return (409, format!("{name} moved to {to}: save it there"));
+            }
+            let prev = old.as_ref().map_or(0, |o| o.2);
+            // any base is a claim, 0 included, and a save that claims nothing sends none
+            let stale = base.as_ref().is_some_and(|b| b.parse() != Ok(prev));
+            let differs = old.as_ref().is_none_or(|o| o.0 != body);
+            if q.contains_key("cas") && stale && differs {
+                return (409, format!("stale: the page is at rev {prev}"));
+            }
+            let mut kept = String::new();
+            if let Some(o) = old.as_ref().filter(|_| stale && differs) {
+                kept = format!("conflicts/{}-rev{}", name.replace('/', "-"), o.2);
+                s.pages.entry(kept.clone()).or_insert((o.0.clone(), o.1.clone(), 1));
+            }
+            s.pages.insert(name, (body, get("type"), prev + 1));
+            (200, json!({"rev": prev + 1, "conflicted": !kept.is_empty(), "kept": kept}).to_string())
+        }
+        _ => missing,
+    }
+}
+
+fn serve(st: &Mutex<Stub>, stream: std::net::TcpStream) -> Option<()> {
+    let mut r = BufReader::new(stream.try_clone().ok()?);
+    let mut line = String::new();
+    r.read_line(&mut line).ok()?;
+    let mut parts = line.split_whitespace();
+    let (method, target) = (parts.next()?.to_owned(), parts.next()?.to_owned());
+    let mut len = 0;
+    loop {
+        let mut h = String::new();
+        r.read_line(&mut h).ok()?;
+        if h.trim().is_empty() {
+            break;
+        }
+        if let Some((k, v)) = h.split_once(':') {
+            if k.eq_ignore_ascii_case("content-length") {
+                len = v.trim().parse().ok()?;
+            }
+        }
+    }
+    let mut body = vec![0; len];
+    r.read_exact(&mut body).ok()?;
+    let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+    let q: BTreeMap<String, String> = query.split('&').filter(|p| !p.is_empty()).map(|p| p.split_once('=').unwrap_or((p, ""))).map(|(k, v)| (unpct(k), unpct(v))).collect();
+    let (code, text) = answer(st, &method, path.trim_start_matches("/apps/lattice/"), &q, String::from_utf8_lossy(&body).into_owned());
+    let mut out = stream;
+    out.write_all(format!("HTTP/1.1 {code} stub\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}", text.len()).as_bytes()).ok()
+}
+
+impl Ship {
+    fn start() -> Ship {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port on this computer");
+        let port = listener.local_addr().expect("its address").port();
+        let st = Arc::new(Mutex::new(Stub::default()));
+        st.lock().unwrap().knows.insert("/rune/fact".into(), "a fact as the ship has it\n".into());
+        let theirs = st.clone();
+        // it listens for as long as the test run lasts: nothing asks it anything once its test is over
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let st = theirs.clone();
+                std::thread::spawn(move || serve(&st, stream));
+            }
+        });
+        let ship = Ship { st, port };
+        // nothing waits for this address from an earlier run that was given the same port
+        let c = ship.conn();
+        c.store_queue(&api::Queue::new()).expect("the test's own folder can be written");
+        c.store_ops(&[]).expect("the test's own folder can be written");
+        ship
+    }
+
+    fn conn(&self) -> Conn {
+        Conn { url: format!("http://127.0.0.1:{}", self.port), cookie: "urbauth-~zod=x".into() }
+    }
+
+    fn st(&self) -> MutexGuard<'_, Stub> {
+        self.st.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Writes a page as another window would: its revision goes up by one.
+    fn write(&self, name: &str, kind: &str, body: &str) {
+        let mut s = self.st();
+        let rev = s.pages.get(name).map_or(1, |p| p.2 + 1);
+        s.pages.insert(name.into(), (body.into(), kind.into(), rev));
+    }
+
+    fn link(&self, name: &str, mode: &str, body: &str) {
+        self.st().links.insert(name.into(), (mode.into(), body.into(), 4));
+    }
+
+    fn body(&self, name: &str) -> String {
+        self.st().pages.get(name).map_or_else(|| "<none>".into(), |p| p.0.clone())
+    }
+
+    fn saves(&self) -> Vec<Save> {
+        self.st().saves.clone()
+    }
+
+    fn saves_of(&self, name: &str) -> Vec<Save> {
+        self.saves().into_iter().filter(|s| s.name == name).collect()
+    }
+}
+
+impl Drop for Ship {
+    /// What the window kept for this address goes with it: each test has an address of its own.
+    fn drop(&mut self) {
+        let mark = format!("-127-0-0-1-{}.", self.port);
+        for f in api::config_dir().and_then(|d| std::fs::read_dir(d).ok()).into_iter().flatten().flatten() {
+            if f.file_name().to_string_lossy().contains(&mark) {
+                let _ = std::fs::remove_file(f.path());
+            }
+        }
+    }
+}
+
+/// A window on the stand-in ship, with its tree read.
+struct Run {
+    s: App,
+    t0: Instant,
+}
+
+impl Run {
+    fn new(ship: &Ship) -> Run {
+        let mut s = init();
+        let c = ship.conn();
+        s.queue = c.queue();
+        s.ops = c.ops();
+        // this address's own preferences, as after a sign-in: the computer's are read by other tests, and are left as they are
+        s.prefs = api::Prefs::load_for(&c.url);
+        s.conn = Some(c);
+        // autosave looks only when a test asks it to
+        s.next_auto = f64::INFINITY;
+        load_tree(&mut s);
+        let mut r = Run { s, t0: Instant::now() };
+        r.until("the tree", |s| !s.names.is_empty() && !s.tree_req.is_pending());
+        r
+    }
+
+    fn clock(&self) -> f64 {
+        1000.0 + self.t0.elapsed().as_secs_f64()
+    }
+
+    /// One look, with someone at the window.
+    fn tick(&mut self) {
+        let c = self.clock();
+        self.s.touched = true;
+        poll(&mut self.s, c, &mut Tx::default());
+    }
+
+    fn until(&mut self, what: &str, f: impl Fn(&App) -> bool) {
+        let t = Instant::now();
+        loop {
+            self.tick();
+            if f(&self.s) {
+                return;
+            }
+            assert!(t.elapsed() < Duration::from_secs(20), "timed out waiting for {what}. The note is {:?}", self.s.note);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn secs(&mut self, n: f64) {
+        let t = Instant::now();
+        while t.elapsed().as_secs_f64() < n {
+            self.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Looks until nothing is on its way to the ship or back.
+    fn settle(&mut self) {
+        self.until("every answer", |s| !s.save_req.is_pending() && !s.drain_req.is_pending() && !s.tree_req.is_pending() && !s.page_req.is_pending() && !s.op_req.is_pending());
+        self.tick();
+    }
+
+    fn open(&mut self, name: &str) {
+        open_page(&mut self.s, name);
+        let n = name.to_owned();
+        self.until("the page", move |s| !s.page_req.is_pending() && s.open.as_ref().is_some_and(|p| p.name == n));
+        self.tick();
+    }
+
+    fn typ(&mut self, text: &str) {
+        let at = self.s.edit.text.len();
+        self.s.edit.set_caret(at);
+        self.s.edit.insert(text);
+    }
+
+    /// Reads the tree again and waits for what that sets going.
+    fn sync(&mut self) {
+        load_tree(&mut self.s);
+        self.tick();
+        self.settle();
+    }
+
+    /// Lets autosave see the text as it is, twice, as when it has rested, and waits for the save it starts.
+    fn autosave(&mut self) {
+        for _ in 0..2 {
+            self.s.next_auto = 0.0;
+            self.tick();
+        }
+        self.s.next_auto = f64::INFINITY;
+        self.until("the autosave", |s| !s.save_req.is_pending());
+        self.tick();
+    }
+}
+
+fn budget() -> String {
+    SAMPLE.iter().find(|(n, _)| *n == "budget").expect("the sample sheet").1.to_owned()
+}
+
+fn rename(r: &mut Run, from: &str, to: &str) {
+    r.s.prompt = Some(Prompt::Rename(from.to_owned(), TextEdit::new(to)));
+    confirm(&mut r.s);
+}
+
+fn type_cell(r: &mut Run, text: &str) {
+    pick_cell(&mut r.s, 1, 0);
+    r.s.sheet.as_mut().expect("the sheet shows").entry.text = text.into();
+    commit_cell(&mut r.s);
+}
+
+fn ctrl_e(r: &mut Run) {
+    on_key(&mut r.s, &KeyEvent { key: Key::Command('e'), mods: Default::default() }, &mut Tx::default());
+}
+
+#[test]
+fn a_renamed_page_edited_on_is_saved_under_its_new_name_once_its_revision_is_read() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "first\n");
+    let mut r = Run::new(&ship);
+    r.open("notes/a");
+    start_edit(&mut r.s);
+    r.typ("one");
+    rename(&mut r, "notes/a", "notes/b");
+    r.until("the rename", |s| s.open.as_ref().is_some_and(|p| p.name == "notes/b"));
+    r.typ(" two");
+    // Save pressed while the revision is not known yet waits for it, and is made then
+    save(&mut r.s);
+    r.until("the save", |s| !s.editing);
+    r.settle();
+    assert!(ship.body("notes/b").contains("one two") && !r.s.stale && ship.body("notes/a") == "<none>");
+    assert!(ship.conn().queue().is_empty(), "nothing is left waiting");
+}
+
+#[test]
+fn a_ship_that_does_not_answer_a_save_is_still_taken_to_be_away() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "first\n");
+    ship.link("m-link", "edit", "theirs\n");
+    let mut r = Run::new(&ship);
+    r.open("notes/a");
+    start_edit(&mut r.s);
+    r.typ("more");
+    // nothing reaches the ship: what is in between answers 504 for every page
+    ship.st().fail = 504;
+    save(&mut r.s);
+    r.settle();
+    assert!(r.s.offline.is_some() && r.s.queue.contains_key("notes/a"), "{:?}", r.s.note);
+    ship.st().fail = 0;
+    r.sync();
+    assert!(r.s.offline.is_none() && ship.body("notes/a") == "firstmore\n" && r.s.queue.is_empty(), "{:?}", r.s.note);
+}
