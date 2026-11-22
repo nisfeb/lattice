@@ -41,6 +41,9 @@
     // decode, THEN test the scheme: "javascript&#58;" must not sneak past a
     // check run against still-escaped text, and then re-escape for the attr.
     const s = mdUnesc(u).trim();
+    //  A browser reads a backslash in a path as a slash, so /\host is
+    //  //host: another site, not a path on this ship.
+    if (/^\/\\/.test(s)) return '';
     return /^(https?:\/\/|urb:\/\/|mailto:|#|\/)/i.test(s) ? mdEsc(s) : '';
   };
   // An image from another host (http(s) or //host) shows that host your
@@ -59,7 +62,8 @@
       localStorage[OUTSIDE] = JSON.stringify([name, ...l].slice(0, 500));
     } catch {}
   };
-  const remoteUrl = (u) => /^(https?:)?\/\//i.test(mdUnesc(u).trim());
+  //  Either slash may be written as a backslash: the browser reads both.
+  const remoteUrl = (u) => /^(https?:)?[\/\\]{2}/i.test(mdUnesc(u).trim());
 
   // The test for a wikilink to a page not written yet (ghostTest,
   // 60-preview.js). Only the live preview sets it, around its own paint:

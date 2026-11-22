@@ -202,6 +202,19 @@ has('a bare pipe pair is a delimiter row, as before', 'a|b\n||\n1|2', '<table>')
 hasnt('a rule under a pipe line is no table', 'a|b\n---', '<table>');
 hasnt('one leading pipe is no delimiter row', 'a|b\n|', '<table>');
 
+console.log('\nan image or link whose path the browser reads as another host');
+// The browser reads a backslash in a path as a slash, so /\host/p.png
+// is //host/p.png: another site, which no outside-content consent covers.
+for (const u of ['/\\evil.example/p.png', '\\\\evil.example/p.png', '\\/evil.example/p.png', '/\\\\evil.example/p.png', '//evil.example/p.png']) {
+  hasnt('no <img> for ' + u, '![x](' + u + ')', '<img');
+  hasnt('no link for ' + u.replace('//', '/\\'), '[x](' + u.replace('//', '/\\') + ')', '<a ');
+  setOutside(true);
+  hasnt('none with outside content allowed either: ' + u.replace('//', '/\\'), '![x](' + u.replace('//', '/\\') + ')', '<img');
+  setOutside(false);
+}
+has('an image on this ship still draws', '![x](/apps/lattice/file?name=a%2Fb.png)', '<img alt="x" src="/apps/lattice/file?name=a%2Fb.png">');
+has('a backslash later in a path is left alone', '[x](/a/b\\c)', '<a href="/a/b\\c">');
+
 console.log('\noutgoing links and outline (76-outline.js)');
 eqj('an empty body has no links', outLinks('', 'md'), []);
 eqj('an empty body has no outline', outline('', 'md'), []);

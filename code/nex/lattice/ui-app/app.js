@@ -7928,6 +7928,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   const mdHref = (u) => {
     const s = mdUnesc(u).trim();
+    if (/^\/\\/.test(s)) return '';
     return /^(https?:\/\/|urb:\/\/|mailto:|#|\/)/i.test(s) ? mdEsc(s) : '';
   };
   let mdOutside = false, mdBlocked = false;
@@ -7941,7 +7942,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       localStorage[OUTSIDE] = JSON.stringify([name, ...l].slice(0, 500));
     } catch {}
   };
-  const remoteUrl = (u) => /^(https?:)?\/\//i.test(mdUnesc(u).trim());
+  const remoteUrl = (u) => /^(https?:)?[\/\\]{2}/i.test(mdUnesc(u).trim());
 
   let mdGhosts = null;
 
