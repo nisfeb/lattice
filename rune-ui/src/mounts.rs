@@ -60,15 +60,59 @@ pub fn default_mountpoint(ship: &str) -> String {
     format!("~/{}", ship.trim_start_matches('~'))
 }
 
-/// Whether a folder is a mount, from the system's list of them (`/proc/self/mounts`: device, folder, kind, and more, with a space in a folder written `\040`).
+/// A folder as the system's list writes it, read back: a space, a tab, a newline and a backslash are each written as a backslash and three digits in base eight.
+fn unescaped(m: &str) -> String {
+    let (b, mut out, mut i) = (m.as_bytes(), Vec::with_capacity(m.len()), 0);
+    while i < b.len() {
+        let digits = b.get(i + 1..i + 4).filter(|d| b[i] == b'\\' && d[0] <= b'3' && d.iter().all(|c| (b'0'..=b'7').contains(c)));
+        match digits {
+            Some(d) => {
+                out.push((d[0] - b'0') * 64 + (d[1] - b'0') * 8 + (d[2] - b'0'));
+                i += 4;
+            }
+            None => {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Whether a folder is a mount, from the system's list of them (`/proc/self/mounts`: device, folder, kind, and more). `folder` is spelled as the system spells it (`resolved`).
 pub fn in_mounts(list: &str, folder: &str) -> bool {
     let want = folder.trim_end_matches('/');
-    list.lines().filter_map(|l| l.split(' ').nth(1)).any(|m| m.replace("\\040", " ").trim_end_matches('/') == want)
+    list.lines().filter_map(|l| l.split(' ').nth(1)).any(|m| unescaped(m).trim_end_matches('/') == want)
+}
+
+/// A folder as the system spells it in its list of mounts: with no link on the way to it, no
+/// doubled slash and no `.`. The folder itself is never looked into, only read as a link and its
+/// parent resolved: it may be a mount whose mounter does not answer, and asking after it would
+/// wait on that. A folder not there yet, under a parent not there yet, stays as typed.
+fn resolved(folder: &str) -> String {
+    // a slash at the end would have a link followed where it is only to be read
+    let mut p = PathBuf::from(match folder.trim_end_matches('/') {
+        "" => "/",
+        f => f,
+    });
+    // the folder itself a link, or a short run of them
+    for _ in 0..8 {
+        match std::fs::read_link(&p) {
+            Ok(to) => p = p.parent().unwrap_or(Path::new("/")).join(to),
+            Err(_) => break,
+        }
+    }
+    let whole = match (p.parent(), p.file_name()) {
+        (Some(dir), Some(name)) => std::fs::canonicalize(dir).map(|d| d.join(name)),
+        // the root, or a path that ends in `..`: nothing of a mount's own is asked by these
+        _ => std::fs::canonicalize(&p),
+    };
+    whole.map_or_else(|_| folder.to_owned(), |w| w.to_string_lossy().into_owned())
 }
 
 pub fn mounted(folder: &str) -> bool {
     // ponytail: Linux's list. A Mac has none at this path and would say no: its `mount` is asked when a Mac is where this runs
-    std::fs::read_to_string("/proc/self/mounts").is_ok_and(|l| in_mounts(&l, folder))
+    std::fs::read_to_string("/proc/self/mounts").is_ok_and(|l| in_mounts(&l, &resolved(folder)))
 }
 
 /// Why a folder cannot be mounted on, if it cannot: it is a mount already, a file, or has things in it.
@@ -277,6 +321,30 @@ pub fn resume(list: Vec<MountSpec>, session: impl Fn(&str) -> Option<String>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn a_mount_is_seen_however_its_folder_is_spelled() {
+        let dir = std::env::temp_dir().join(format!("lr-mnt-spell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real/plain")).unwrap();
+        // through a link, as a home directory under a linked /home is
+        std::os::unix::fs::symlink("/proc", dir.join("link")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("to-real")).unwrap();
+        let at = |n: &str| dir.join(n).to_string_lossy().into_owned();
+        assert!(mounted("/proc") && mounted(&at("link")) && mounted(&format!("{}/", at("link"))), "the folder itself a link");
+        assert!(mounted("//proc") && mounted("/proc/.") && mounted("/proc/"));
+        assert!(refusal(&at("link")).unwrap().ends_with("is a mount already"));
+        // a folder that is no mount is not one by any spelling, there or not
+        assert!(!mounted(&at("real/plain")) && !mounted(&at("to-real/plain")) && !mounted(&at("to-real/not-there-yet")) && !mounted(&at("real/../real/plain")));
+        assert_eq!(refusal(&at("to-real/plain")), None);
+        // every character the system writes its own way is read back: a tab, a backslash, a letter of more than one byte
+        let list = "lattice /home/x/my\\011ship fuse rw 0 0\nlattice /home/x/caf\\303\\251 fuse rw 0 0\nlattice /home/x/back\\134slash fuse rw 0 0\nlattice /home/x/odd\\9 fuse rw 0 0\n";
+        assert!(in_mounts(list, "/home/x/my\tship") && in_mounts(list, "/home/x/caf\u{e9}") && in_mounts(list, "/home/x/back\\slash"));
+        assert!(!in_mounts(list, "/home/x/back\\134slash"), "a name is not read through the system's way of writing another");
+        assert!(in_mounts(list, "/home/x/odd\\9"), "a backslash that starts no number is itself");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn a_folder_is_read_as_typed_and_told_from_a_mount() {
