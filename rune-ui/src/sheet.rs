@@ -64,23 +64,12 @@ fn unescape(s: &str, out: &mut String) {
     out.push_str(rest);
 }
 
-/// An attribute's value in a tag's text, unescaped.
+/// An attribute's value in a tag's text, unescaped. `tag` starts at the element's name.
 pub(crate) fn attr(tag: &str, name: &str) -> Option<String> {
-    let mut from = 0;
-    while let Some(i) = tag[from..].find(name) {
-        let at = from + i;
-        let after = &tag[at + name.len()..];
-        // the name whole, not the tail of a longer one
-        let whole = tag[..at].ends_with(char::is_whitespace) && after.starts_with("=\"");
-        if whole {
-            let v = &after[2..];
-            let mut out = String::new();
-            unescape(&v[..v.find('"')?], &mut out);
-            return Some(out);
-        }
-        from = at + name.len();
-    }
-    None
+    let at = crate::odf::each_attr(tag).find(|a| a.0 == name)?.1;
+    let mut out = String::new();
+    unescape(&tag[at], &mut out);
+    Some(out)
 }
 
 fn repeat(tag: &str, name: &str) -> usize {
@@ -1200,6 +1189,56 @@ mod tests {
         assert!(add_sheet(&body, &"x".repeat(101)).is_err());
         assert!(add_sheet(&body, &"x".repeat(100)).is_ok());
         assert!(add_sheet("not a sheet", "").is_err());
+    }
+
+    #[test]
+    fn an_attribute_in_single_quotes_is_read_the_same_by_the_grid_and_the_model() {
+        // XML takes either quote. LibreOffice writes double ones, and other writers need not
+        let doc = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:o" xmlns:table="urn:t" xmlns:text="urn:x" xmlns:calcext="urn:c" office:mimetype="application/vnd.oasis.opendocument.spreadsheet">
+ <office:body><office:spreadsheet><table:table table:name='A "quoted" &amp; one'>
+  <table:table-row table:number-rows-repeated='2'>
+   <table:table-cell table:number-columns-repeated='3' office:value-type='float' office:value='1'><text:p>1</text:p></table:table-cell>
+   <table:table-cell office:value-type="float" office:value="2"><text:p>2</text:p></table:table-cell>
+   <table:table-cell office:value-type='string' table:note="it's"><text:p>three</text:p></table:table-cell>
+  </table:table-row>
+  <table:table-row>
+   <table:table-cell table:formula='of:=[.A1]+1' office:value-type='float' office:value='2' office:lookalike="table:formula='of:=9'"><text:p>2</text:p></table:table-cell>
+   <table:table-cell office:value-type = 'float'  office:value
+     ='7'><text:p>7</text:p></table:table-cell>
+  </table:table-row>
+ </table:table></office:spreadsheet></office:body>
+</office:document>"#;
+        let shown = parse(doc);
+        assert_eq!(shown[0].name, "A \"quoted\" & one");
+        let want = ["1", "1", "1", "2", "three"];
+        assert_eq!(shown[0].rows, [want.map(str::to_owned).to_vec(), want.map(str::to_owned).to_vec(), vec!["2".to_owned(), "7".to_owned()]]);
+        // the model holds the same cells at the same places, with their kinds and values
+        let model = book(doc).unwrap();
+        for (r, row) in shown[0].rows.iter().enumerate() {
+            for (c, text) in row.iter().enumerate() {
+                assert_eq!(&model.at(0, r, c).unwrap().text, text, "row {r} column {c}");
+            }
+        }
+        assert_eq!(model.sheets[0].name, shown[0].name);
+        // a formula in single quotes is a formula, and one that only stands in another attribute's value is not
+        assert_eq!(formula_at(doc, 0, 2, 0).as_deref(), Some("of:=[.A1]+1"));
+        assert_eq!(formula_at(doc, 0, 2, 1), None);
+        assert_eq!(attr("table:table-cell a='1' b=\"x a='2'\" c = '3'", "a").as_deref(), Some("1"));
+        assert_eq!(attr("table:table-cell b=\"x a='2'\" c = '3' d=\"&lt;'&quot;\"", "a"), None);
+        assert_eq!(attr("table:table-cell b=\"x a='2'\" c = '3' d=\"&lt;'&quot;\"", "c").as_deref(), Some("3"));
+        assert_eq!(attr("table:table-cell b=\"x a='2'\" c = '3' d=\"&lt;'&quot;\"/", "d").as_deref(), Some("<'\""));
+        assert_eq!(attr("table:table-cell xa='1' a.b='2'", "a"), None);
+        // typing where the grid shows a cell changes that cell
+        let typed = set_cell(doc, 0, 0, 4, "X").unwrap();
+        let after = parse(&typed);
+        assert_eq!(after[0].rows[0], ["1", "1", "1", "2", "X"]);
+        assert_eq!(after[0].rows[1], want);
+        // and typing over a cell written with single quotes, in a run of cells in a run of rows, changes it alone
+        let typed = set_cell(doc, 0, 1, 1, "5").unwrap();
+        let after = parse(&typed);
+        assert_eq!((after[0].rows[0].clone(), after[0].rows[1].clone(), after[0].rows[2].clone()), (want.map(str::to_owned).to_vec(), ["1", "5", "1", "2", "three"].map(str::to_owned).to_vec(), vec!["2".to_owned(), "7".to_owned()]));
+        assert_eq!(book(&typed).unwrap().at(0, 1, 1).map(|c| c.text.clone()).as_deref(), Some("5"));
     }
 
     const BOOK: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
