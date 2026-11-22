@@ -7150,13 +7150,27 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return b.slice(0, a.p) + a.txt + b.slice(a.e, c.p) + c.txt + b.slice(c.e);
   }
   async function settleStale(name, kind, sent, base, here) {
+    while (saving) await new Promise((r) => setTimeout(r, 50));
+    saving = true;
+    try { await settleRun(name, kind, sent, base, here); } finally { saving = false; }
+  }
+  const srcSwap = (text) => {
+    const old = src.value, a = src.selectionStart, b = src.selectionEnd, d = text.length - old.length;
+    let p = 0;
+    while (p < old.length && p < text.length && old[p] === text[p]) p++;
+    src.value = text;
+    src.setSelectionRange(a > p ? Math.max(p, a + d) : a, b > p ? Math.max(p, b + d) : b);
+  };
+  async function settleRun(name, kind, sent, base, here) {
     const th = await bodyRead(name);
+    const known = pageRevs.get(name);
+    const moved = isRev(known) && isRev(base) && known > base;
     pageRevs.delete(name);
     let res = null;
     if (th && th.body === (sent || '\n')) { knowRev(name, th.rev); res = { rev: th.rev, body: sent, how: 'saved' }; }
     if (th && !res && isRev(base)) {
       let mb = null;
-      let bt = shipText.get(name);
+      let bt = moved ? null : shipText.get(name);
       if (typeof bt !== 'string') {
         try {
           const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base);
@@ -7175,30 +7189,39 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         }
       }
     }
-    let alt = null;
-    if (th && !res) {
-      alt = await keepAside({ name, kind, body: sent }, keptName('mine', name));
-      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
-    }
-    if (!res) {
-      casHold.set(name, th && isRev(th.rev) ? th.rev : null);
+    const hold = async (text, rev, keep) => {
+      let alt = null;
+      if (keep) {
+        alt = await keepAside({ name, kind, body: text }, keptName('mine', name));
+        if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
+      }
+      casHold.set(name, rev);
       st(name + ' changed elsewhere, so your text was not saved over it. '
         + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
       if (here()) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
       paintCas();
-      return;
-    }
+    };
+    if (!res) { await hold(sent, th && isRev(th.rev) ? th.rev : null, !!th); return; }
     patchLocal(name, null, res.body, res.rev);
-    for (const t of allTabs())
-      if (t.kind === 'page' && t.key === name && t.snap && t.snap.body === sent)
-        Object.assign(t.snap, { body: res.body, rev: res.rev, dirty: false });
-    if (here() && src.value === sent) {
-      if (res.body !== sent) { src.value = res.body; render(); refreshPreview(); }
-      curRev = res.rev;
-      dirty = false;
-      cerr.textContent = 'saved'; cerr.className = 'ok';
+    const rebase = (text) => (text === sent ? res.body : res.body === sent ? text : merge3(sent, text, res.body));
+    const apart = [];
+    for (const t of allTabs()) {
+      if (t.kind !== 'page' || t.key !== name || !t.snap) continue;
+      const nb = rebase(t.snap.body);
+      if (typeof nb !== 'string') { apart.push(t.snap.body); continue; }
+      Object.assign(t.snap, t.snap.body === sent ? { dirty: false } : {}, { body: nb, rev: res.rev });
     }
-    st(res.how, res.how === 'saved');
+    if (here()) {
+      const was = src.value, nb = rebase(was);
+      if (typeof nb !== 'string') apart.push(was);
+      else {
+        if (nb !== was) { srcSwap(nb); render(); refreshPreview(); }
+        curRev = res.rev;
+        if (was === sent) { dirty = false; cerr.textContent = 'saved'; cerr.className = 'ok'; }
+      }
+    }
+    for (const text of apart) await hold(text, res.rev, true);
+    if (!apart.length) st(res.how, res.how === 'saved');
   }
 
   let autoTimer = null;
@@ -7252,6 +7275,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         '&type=' + tkind + linkBase(target) + casQ(target, trev);
     let w = { gone: true };
     const sentSeq = offSeq();
+    const tbase = baseFor(target, trev);     // the rev this save claims
     saving = true;     // at the send, as in save(): nothing awaits before it
     try {
       if (!(jobWait && !know && !linkOf(target)))
@@ -7273,7 +7297,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     if (!know && r.status === 409) {
       const why = await errText(r);
-      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, baseFor(target, trev), here);
+      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, tbase, here);
       else st('autosave failed' + why, false);
       flushPending();
       return;
@@ -7317,6 +7341,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         + (linkOf(name) && isRev(s.rev) ? '&base=' + s.rev : '') + casQ(name, s.rev);
     let w = { gone: true };
     const sentSeq = offSeq();
+    const sbase = baseFor(name, s.rev);     // the rev this save claims
     saving = true;
     try {
       if (!(jobWait && !know && !linkOf(name)))
@@ -7340,7 +7365,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!know && w.r.status === 409) {
       const why = await errText(w.r);
       if (/^: stale/.test(why)) {
-        await settleStale(name, kind, sent, baseFor(name, s.rev),
+        await settleStale(name, kind, sent, sbase,
           () => t === activeTab && current === name && mode !== 'know' && !grubPath);
       } else st('autosave of ' + name + ' failed' + why, false);
       flushPending();

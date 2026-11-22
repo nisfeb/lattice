@@ -1088,8 +1088,33 @@
   // of which was lost); an edit apart from theirs merges and is saved on
   // their rev; anything else keeps our text as a page of its own under
   // conflicts/ and shows theirs. `here`: the editor still shows it.
+  // `base` is the rev the refused save claimed, as it was sent.
+  //  A settle reads, merges and saves, and it holds the writer's turn for
+  //  all of it. An autosave of text typed meanwhile used to go out beside
+  //  it, be refused on the old rev, and settle against the merged text as
+  //  its base, which put the typed buffer over the other writer's edit.
+  //  Now that autosave waits, and is sent when the settle ends.
   async function settleStale(name, kind, sent, base, here) {
+    while (saving) await new Promise((r) => setTimeout(r, 50));
+    saving = true;
+    try { await settleRun(name, kind, sent, base, here); } finally { saving = false; }
+  }
+  //  the editor's text replaced with the caret kept on the text it was in:
+  //  a change before it moves it along, one after it leaves it alone
+  const srcSwap = (text) => {
+    const old = src.value, a = src.selectionStart, b = src.selectionEnd, d = text.length - old.length;
+    let p = 0;
+    while (p < old.length && p < text.length && old[p] === text[p]) p++;
+    src.value = text;
+    src.setSelectionRange(a > p ? Math.max(p, a + d) : a, b > p ? Math.max(p, b + d) : b);
+  };
+  async function settleRun(name, kind, sent, base, here) {
     const th = await bodyRead(name);
+    //  shipText is the text at the newest rev this window knows. That is
+    //  the claimed rev, unless another save or settle of this page landed
+    //  after the claim was sent: then the base text is asked for by rev
+    const known = pageRevs.get(name);
+    const moved = isRev(known) && isRev(base) && known > base;
     //  the ship's head now outranks any rev this window had for the page:
     //  a save answer's rev can be a guess, and a claim past the head (a
     //  page deleted elsewhere is at 0) is refused for ever, retries and
@@ -1099,7 +1124,7 @@
     if (th && th.body === (sent || '\n')) { knowRev(name, th.rev); res = { rev: th.rev, body: sent, how: 'saved' }; }
     if (th && !res && isRev(base)) {
       let mb = null;
-      let bt = shipText.get(name);
+      let bt = moved ? null : shipText.get(name);
       if (typeof bt !== 'string') {
         try {
           const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base);
@@ -1123,30 +1148,46 @@
     //  a real conflict: our text is kept as a page of its own, and stays
     //  in the editor too (unsaved edits are never replaced), with autosave
     //  standing down and a bar offering theirs or ours over theirs
-    let alt = null;
-    if (th && !res) {
-      alt = await keepAside({ name, kind, body: sent }, keptName('mine', name));
-      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
-    }
-    if (!res) {
-      casHold.set(name, th && isRev(th.rev) ? th.rev : null);
+    const hold = async (text, rev, keep) => {
+      let alt = null;
+      if (keep) {
+        alt = await keepAside({ name, kind, body: text }, keptName('mine', name));
+        if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
+      }
+      casHold.set(name, rev);
       st(name + ' changed elsewhere, so your text was not saved over it. '
         + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
       if (here()) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
       paintCas();
-      return;
-    }
+    };
+    if (!res) { await hold(sent, th && isRev(th.rev) ? th.rev : null, !!th); return; }
     patchLocal(name, null, res.body, res.rev);
-    for (const t of allTabs())
-      if (t.kind === 'page' && t.key === name && t.snap && t.snap.body === sent)
-        Object.assign(t.snap, { body: res.body, rev: res.rev, dirty: false });
-    if (here() && src.value === sent) {
-      if (res.body !== sent) { src.value = res.body; render(); refreshPreview(); }
-      curRev = res.rev;
-      dirty = false;
-      cerr.textContent = 'saved'; cerr.className = 'ok';
+    //  The page's buffer, the editor's or a parked tab's, held `sent` when
+    //  the save left. Still holding it, it takes what was saved. Typed
+    //  into since, it lacks a change merged in from elsewhere, and its
+    //  next save would claim the new rev and write over that change. So
+    //  it is rebased onto the merged text. Where that cannot be done (it
+    //  now touches what they changed) it is a conflict like any other:
+    //  kept aside, and held from saving until the bar is answered.
+    const rebase = (text) => (text === sent ? res.body : res.body === sent ? text : merge3(sent, text, res.body));
+    const apart = [];
+    for (const t of allTabs()) {
+      if (t.kind !== 'page' || t.key !== name || !t.snap) continue;
+      const nb = rebase(t.snap.body);
+      if (typeof nb !== 'string') { apart.push(t.snap.body); continue; }
+      Object.assign(t.snap, t.snap.body === sent ? { dirty: false } : {}, { body: nb, rev: res.rev });
     }
-    st(res.how, res.how === 'saved');
+    if (here()) {
+      const was = src.value, nb = rebase(was);
+      if (typeof nb !== 'string') apart.push(was);
+      else {
+        if (nb !== was) { srcSwap(nb); render(); refreshPreview(); }
+        curRev = res.rev;
+        if (was === sent) { dirty = false; cerr.textContent = 'saved'; cerr.className = 'ok'; }
+      }
+    }
+    for (const text of apart) await hold(text, res.rev, true);
+    if (!apart.length) st(res.how, res.how === 'saved');
   }
 
   let autoTimer = null;
@@ -1248,6 +1289,7 @@
         '&type=' + tkind + linkBase(target) + casQ(target, trev);
     let w = { gone: true };
     const sentSeq = offSeq();
+    const tbase = baseFor(target, trev);     // the rev this save claims
     saving = true;     // at the send, as in save(): nothing awaits before it
     try {
       if (!(jobWait && !know && !linkOf(target)))
@@ -1273,7 +1315,7 @@
     }
     if (!know && r.status === 409) {
       const why = await errText(r);
-      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, baseFor(target, trev), here);
+      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, tbase, here);
       else st('autosave failed' + why, false);
       flushPending();
       return;
@@ -1341,6 +1383,7 @@
     //  behind a folder job a page's save queues instead of going out, as
     //  the live editor's does (jobWait, 08-offline.js)
     const sentSeq = offSeq();
+    const sbase = baseFor(name, s.rev);     // the rev this save claims
     //  set at the send, as in save(). Set above the stand-down for a held
     //  or oversized page, that return left it set for good.
     saving = true;
@@ -1367,7 +1410,7 @@
     if (!know && w.r.status === 409) {
       const why = await errText(w.r);
       if (/^: stale/.test(why)) {
-        await settleStale(name, kind, sent, baseFor(name, s.rev),
+        await settleStale(name, kind, sent, sbase,
           () => t === activeTab && current === name && mode !== 'know' && !grubPath);
       } else st('autosave of ' + name + ' failed' + why, false);
       flushPending();

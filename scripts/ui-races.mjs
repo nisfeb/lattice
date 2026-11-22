@@ -5,6 +5,7 @@
 //  then, and checks that no text is lost by it:
 //
 //    a parked save that has nothing to send leaves the window able to save
+//    text typed while a stale save is settled is merged, not saved over it
 //
 //  No ship: lib/stub-ship.mjs stands in for the routes the editor uses and
 //  serves the built app.js, and holds answers back to force the order.
@@ -74,6 +75,55 @@ cases.parked = async () => {
   await waitFor(() => (body(x, 'n/b') || '').includes('again'), 6000, 100);
   check.eq('and Ctrl+S saves', body(x, 'n/b'), 'beta\nTYPED-IN-B again');
   check.eq('the held page was not written over', body(x, 'n/a'), 'alpha\nTHEIRS');
+  await x.done();
+};
+
+//  Another writer changes line 1. This window appends, autosaves, is
+//  refused as stale, and the settle reads theirs, merges and saves. The
+//  stub answers slowly, as a pier does, and more is typed meanwhile.
+const LINES = 'line1\nline2\nline3\nline4\nline5\n';
+const staleThenType = async (typeMore) => {
+  const x = await up({ 'n/a': LINES }, '?name=n/a');
+  const p = x.page;
+  x.S.put('n/a', LINES.replace('line1', 'line1 THEIRS'));
+  x.S.delay = 500;
+  await typeEnd(p, 'MINE1');
+  await waitFor(() => x.S.saves().some((e) => e.res && e.res.code === 409), 15000, 25);
+  await typeMore(p);
+  //  quiet: every save answered and none for two seconds
+  let n = -1;
+  await waitFor(async () => {
+    const k = x.S.log.length;
+    if (k === n && x.S.saves().every((e) => e.res)) return true;
+    n = k; await sleep(2500); return false;
+  }, 30000, 10);
+  return x;
+};
+cases.settleTyping = async () => {
+  const x = await staleThenType((p) => p.keyboard.type(' MINE2'));
+  const head = body(x, 'n/a'), shown = await ed(x.page);
+  check('their edit is still on the page', head.includes('line1 THEIRS'), JSON.stringify(head));
+  check('and so is everything typed here', head.endsWith('MINE1 MINE2'), JSON.stringify(head));
+  check.eq('the editor shows what the ship holds', shown, head);
+  check('no conflict was made of it', ![...x.S.pages.keys()].some((k) => k.startsWith('conflicts/')), [...x.S.pages.keys()].join(' '));
+  check('the caret stayed at the end of the typed text', await x.page.evaluate(() => {
+    const s = document.querySelector('#src'); return s.selectionStart === s.value.length;
+  }));
+  await x.done();
+};
+//  The same, but what is typed meanwhile touches the stretch they changed,
+//  so it cannot be merged: it is kept aside and held, never saved over.
+cases.settleOverlap = async () => {
+  const x = await staleThenType(async (p) => {
+    await p.evaluate(() => { document.querySelector('#src').setSelectionRange(5, 5); });
+    await p.keyboard.type('Z');
+  });
+  const head = body(x, 'n/a'), p = x.page;
+  check('their edit is still on the page', head.includes('line1 THEIRS'), JSON.stringify(head));
+  check('the text typed here is still in the editor', (await ed(p)).startsWith('line1Z'), JSON.stringify(await ed(p)));
+  check('the bar says it is not saved', await p.evaluate(() => !document.querySelector('#casbar').hidden), await status(p));
+  const kept = [...x.S.pages.keys()].filter((k) => k.startsWith('conflicts/mine-'));
+  check('and a copy of it is kept', kept.length === 1 && x.S.pages.get(kept[0]).body.startsWith('line1Z'), kept.join(' '));
   await x.done();
 };
 
