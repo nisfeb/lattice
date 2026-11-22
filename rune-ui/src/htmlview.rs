@@ -517,6 +517,39 @@ mod tests {
     }
 
     #[test]
+    fn pages_as_deep_as_the_limit_allows_are_laid_out_and_painted_on_the_thread() {
+        // the limit is only as high as the thread's stack lets any shape of element go: each of these is as deep as is
+        // let by, and is laid out and painted (the stack is deeper-hungry in a debug build, so passing here holds in a release)
+        let h = Html::start(Arc::new(|| {}));
+        let room = DEEPEST - 8;
+        let pages = [
+            format!("{}x", "<div>".repeat(room)),
+            format!("{}x", "<table><tr><td>".repeat(room / 4)),
+            format!("{}x", "<ul><li>".repeat(room / 2)),
+            format!("{}x", "<div style='display:flex'>".repeat(room)),
+            format!("{}x", "<p><b><i>".repeat(room / 3)),
+        ];
+        for (n, page) in pages.into_iter().enumerate() {
+            assert!(tree_depth(&HtmlDocument::from_html(&page, DocumentConfig::default())) <= DEEPEST, "shape {n} is let by");
+            h.show(Ask { key: Key { name: format!("near{n}"), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some(page));
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            let mut got = (false, false);
+            while !(got.0 && got.1) {
+                for o in h.take() {
+                    match o {
+                        Out::Laid { .. } => got.0 = true,
+                        Out::Band { .. } => got.1 = true,
+                        Out::Failed => panic!("shape {n} failed in the engine"),
+                        _ => {}
+                    }
+                }
+                assert!(std::time::Instant::now() < end, "shape {n} was not painted");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+
+    #[test]
     fn the_bands_in_view_come_first_and_those_far_off_are_let_go() {
         // a page of ten bands, the view over the fourth and fifth
         let (want, keep) = wanted(BAND * 3.0, BAND * 2.0, BAND * 10.0);
