@@ -1280,6 +1280,7 @@
   //  front, the editor owns it again and that copy is dropped.
   const flushHidden = (e) => {
     if (e.type === 'visibilitychange' && !document.hidden) { unstash(); return; }
+    writerSync();
     if (!dirty) return;
     clearTimeout(autoTimer);
     autosave(true);

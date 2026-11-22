@@ -13,7 +13,9 @@
   // A parked tab (21-tabs.js) holds its own dirty buffer, so the live flag
   // alone misses work typed into any tab that is not in front, in any group.
   // A SKILL.md being edited in the Skills tab (95s-skills.js) counts too.
-  window.__latUnsaved = () => dirty === true
+  // A cell or field typed and not yet written is in no buffer: the view
+  // writes it first, and one it cannot write counts as unsaved.
+  window.__latUnsaved = () => !writerSync() || dirty === true
     || allTabs().some((t) => t !== activeTab && t.snap && t.snap.dirty)
     || skUnsaved();
   // Whether the user has typed since the current editor view was established.

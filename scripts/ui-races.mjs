@@ -851,6 +851,43 @@ cases.closeUnwritten = async () => {
   await x.done();
 };
 
+//  Hiding or closing the page decides on dirty too: a cell or a map field
+//  typed and not yet written must be synced first, or nothing is saved and
+//  the close asks nothing.
+cases.hideUnwritten = async () => {
+  const FODS = readFileSync(new URL('../tests/sheet/corpus/01-values.fods', import.meta.url), 'utf8');
+  const hideIt = (p) => p.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { get: () => true, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('pagehide'));
+  });
+  let x = await up({ 's/s': [FODS, 'fods'], 'n/b': 'beta\n' }, '?name=s/s');
+  let p = x.page;
+  const C = 'lat-sheet:not([hidden]) .ls-c[data-r="6"][data-c="1"]';
+  await waitFor(() => p.$(C), 20000, 100);
+  await p.click(C); await sleep(200);
+  await p.keyboard.type('4242.5');
+  await sleep(300);
+  check('a cell being typed asks before the page is closed', await p.evaluate(() => window.__latUnsaved()), 'no');
+  await hideIt(p);
+  await sleep(3000);
+  const inQ = (await queue(p)).some((q) => q.body.includes('4242.5'));
+  check('a cell being typed is saved when the page is hidden', (body(x, 's/s') || '').includes('4242.5') || inQ, 'saves ' + x.S.saves().length);
+  await x.done();
+  x = await up({ 'm/map': [MAP1, 'geojson'], 'n/b': 'beta\n' }, '?name=m/map');
+  p = x.page;
+  await pickFeature(p);
+  await p.focus(mapF('name'));
+  await p.keyboard.type(' HID');
+  await sleep(300);
+  check('a map field being typed asks before the page is closed', await p.evaluate(() => window.__latUnsaved()), 'no');
+  await hideIt(p);
+  await sleep(3000);
+  const mq = (await queue(p)).some((q) => q.body.includes('a HID'));
+  check('a map field being typed is saved when the page is hidden', (body(x, 'm/map') || '').includes('a HID') || mq, 'saves ' + x.S.saves().length);
+  await x.done();
+};
+
 //  Not a race, but it needs the real editor and real keys, and no ship:
 //  vim mode on characters outside the BMP (an emoji is two UTF-16 units).
 //  No command may leave half of one in the text or rest the caret inside it.

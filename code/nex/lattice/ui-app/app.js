@@ -1486,7 +1486,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   let deletedHere = null;
   const DELETED_NOTE = 'this page was deleted elsewhere — save to recreate it';
   let mode = 'pages';      // 'know' while a memory is in front (95-know.js)
-  window.__latUnsaved = () => dirty === true
+  window.__latUnsaved = () => !writerSync() || dirty === true
     || allTabs().some((t) => t !== activeTab && t.snap && t.snap.dirty)
     || skUnsaved();
   let everTyped = false;
@@ -7342,6 +7342,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const UNREACHED_NOTE = 'not saved yet: the ship is unreachable. It saves when the ship answers';
   const flushHidden = (e) => {
     if (e.type === 'visibilitychange' && !document.hidden) { unstash(); return; }
+    writerSync();
     if (!dirty) return;
     clearTimeout(autoTimer);
     autosave(true);
@@ -8797,7 +8798,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       lines.push('Lattice makes this folder again on the next conflict.');
     const open = mode !== 'know' && !grubPath && current
       && (current === path || current.startsWith(path + '/'));
-    if (open && dirty) lines.push('The open page has unsaved changes, and they go too.');
+    if (open && (!writerSync() || dirty)) lines.push('The open page has unsaved changes, and they go too.');
     const parked = parkedUnder(path).filter((t) => t.snap.dirty).length;
     if (parked) lines.push(plural(parked, 'other tab') + ' with unsaved changes to it'
       + (parked === 1 ? ' loses them.' : ' lose them.'));
