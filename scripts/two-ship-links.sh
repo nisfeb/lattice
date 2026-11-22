@@ -349,7 +349,10 @@ section_proxy() {
 
   # B revokes: the read fails with the copy, and the dump says so
   is "B revokes A's grant" 200 "$(code -H "$BK" -X POST "$B/share-group-del?name=${ASHIP#\~}")"
-  s=$(A_ -w '\n%{http_code}' "$A/page-source?name=notes/doc")
+  # a revoke lands a moment after it answers: the shell derives the group
+  # again and the weirs follow, about 1.5 s
+  rvk() { local r; r=$(A_ -w '\n%{http_code}' "$A/page-source?name=notes/doc"); [ "$(tail -1 <<<"$r")" = 504 ] && echo "$r"; }
+  s=$(wait_for 20 rvk) || s=$(A_ -w '\n%{http_code}' "$A/page-source?name=notes/doc")
   is "read after revoke: 504" 504 "$(tail -1 <<<"$s")"
   is "  ...with the read-failure copy" "$CR" "$(head -n -1 <<<"$s" | jq -r .error)"
   is "  ...and page-dump shows seen.ok=false" false "$(wait_for 20 nok)"
