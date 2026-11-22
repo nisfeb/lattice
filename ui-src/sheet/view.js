@@ -13,7 +13,7 @@
 //  document is dirty.
 
 import { Book } from './book.js';
-import { colName, toUser } from './formula.js';
+import { colName, toUser, moveFormula } from './formula.js';
 import { rowCount, MAX_ROWS, MAX_COLS } from './model.js';
 import { exportOds, exportCsv } from './ods.js';
 
@@ -525,8 +525,10 @@ export function mount(host, opts = {}) {
       return null;
     });
   }
-  function undo() { if (!locked() && book.undo()) { changed(); refresh(); } }
-  function redo() { if (!locked() && book.redo()) { changed(); refresh(); } }
+  //  an undo or a redo changes the sheet in ways the held cut cannot follow,
+  //  and a cut that was undone has its cells back: it is pasted as a copy
+  function undo() { if (!locked() && book.undo()) { if (clip) clip.cut = false; changed(); refresh(); } }
+  function redo() { if (!locked() && book.redo()) { if (clip) clip.cut = false; changed(); refresh(); } }
   function toggle(prop, val) {
     const [r1, r2, c1, c2] = box();
     const now = book.look(cur, ar, ac)[prop];
@@ -630,7 +632,22 @@ export function mount(host, opts = {}) {
   // ── rows and columns ───────────────────────────────────────────────────
   function shift(dim, where, n) {
     if (editing && !closeEd(true)) return;
-    edit(() => book.shift(cur, dim, where, n));
+    if (edit(() => book.shift(cur, dim, where, n))) moveCut(dim, where, n);
+  }
+  //  rows or columns moved after a cut and before its paste: what the cut
+  //  formulas read is where it now is, and a block below the edit has moved
+  function moveCut(dim, at, n) {
+    if (!clip || !clip.cut) return;
+    const op = { sheet: book.sheets[cur].name, dim, at, n };
+    const home = book.sheets[clip.sheet].name;
+    for (const k of clip.cells) if (k.f) k.f = moveFormula(k.f, home, op) ?? k.f;
+    if (clip.sheet !== cur) return;
+    const [lo, hi] = dim === 'r' ? [clip.r1, clip.r2] : [clip.c1, clip.c2];
+    if (at > hi) return;
+    //  an edit that reaches into the block: it is pasted as a copy
+    if (n > 0 ? at > lo : at - n - 1 >= lo) { clip.cut = false; return; }
+    for (const k of clip.cells) k[dim === 'r' ? 'r' : 'c'] += n;
+    if (dim === 'r') { clip.r1 += n; clip.r2 += n; } else { clip.c1 += n; clip.c2 += n; }
   }
   let openMenu = null;
   function menu(e, kind, idx) {

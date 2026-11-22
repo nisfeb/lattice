@@ -96,6 +96,17 @@ const CASES = {
     b.enter(0, 49, 0, '=SUBSTITUTE("hello","l","X",0)'); b.enter(0, 50, 0, '=REPLACE("abc",0,1,"x")'); b.enter(0, 51, 0, '=ROW()&"|"&INDEX(A1:A9,3)&"|"&ROWS(A1:A9)&"|"&MATCH(10,A1:A9,0)');
     must(b.shift(0, 'r', 1, 1)); must(b.shift(0, 'c', 0, 1));
   }],
+  //  the second review: a stopped recalculation saved with no value, a
+  //  formula number no double holds kept as text, rounding with places
+  //  that are not whole, dates that do not exist, a time before the null date
+  's-bounds': ['02-formulas', (b) => {
+    for (let r = 60; r < 100; r++) { b.enter(0, r, 7, '1'); b.enter(0, r, 8, `=SUM(H$61:H${r + 1})`); }
+    b.engine.maxTotal = 300;
+    b.enter(0, 60, 7, '5');
+    b.enter(0, 40, 0, '=ROUND(324.55,2.7)&"|"&ROUNDUP(845.651,1.5)&"|"&ROUND(4567.876,-0.5)&"|"&ROUNDUP(640.0005,-300)&"|"&ROUND(2.5,0.9)');
+    b.enter(0, 41, 0, '=1e999'); b.enter(0, 42, 0, '2026-02-31'); b.enter(0, 43, 0, '1899-12-29 18:00');
+    b.enter(0, 45, 0, '="2024-02-29"+0'); b.enter(0, 46, 0, '=ROUNDUP(0.5,-298)');
+  }],
   'n-values': ['01-values', (b) => { b.enter(0, 9, 1, '40'); b.enter(0, 10, 1, '99.5'); b.enter(0, 11, 1, '2027-02-28'); b.enter(0, 12, 1, '07:05:09'); b.enter(0, 7, 1, '0.005'); b.enter(0, 13, 1, 'false'); }],
 };
 for (const n of readdirSync(dir).filter((f) => f.endsWith('.fods')).sort()) CASES['z-untouched-' + n.slice(0, -5)] = [n.slice(0, -5), null];

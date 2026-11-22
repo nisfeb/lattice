@@ -61,7 +61,15 @@ const CLOCK = /^\s*(\d+):(\d\d)(?::(\d\d(?:\.\d+)?))?\s*$/;
 function textNum(v) {
   if (NUMERIC.test(v)) return Number(v);
   let m = ISO_DATE.exec(v);
-  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000 + 25569 + (m[4] ? (+m[4] * 3600 + +m[5] * 60 + +(m[6] || 0)) / 86400 : 0);
+  if (m) {
+    //  only a date that exists, with a time that is one: the 31st of
+    //  February is not read as the 2nd of March. Year 1 is year 1.
+    const t = new Date(0);
+    t.setUTCFullYear(+m[1], +m[2] - 1, +m[3]);
+    if (+m[1] < 1 || t.getUTCMonth() !== +m[2] - 1 || t.getUTCDate() !== +m[3]) return E.value;
+    if (m[4] && (+m[4] > 24 || +m[5] > 59 || +(m[6] || 0) >= 60)) return E.value;
+    return t.getTime() / 86400000 + 25569 + (m[4] ? (+m[4] * 3600 + +m[5] * 60 + +(m[6] || 0)) / 86400 : 0);
+  }
   m = CLOCK.exec(v);
   if (m) return (+m[1] * 3600 + +m[2] * 60 + +(m[3] || 0)) / 86400;
   return E.value;
@@ -224,21 +232,28 @@ function pairs(test, other, ok, fn) {
 //  n to d decimal places, half away from zero, or away from zero ('up')
 //  or toward it ('down'), as Calc rounds
 const round = (n, d, mode) => {
+  //  places are a whole number, cut toward zero, as in Calc
+  d = Math.trunc(d);
   const f = 10 ** d;
   //  more places than a number can have: there is nothing to round
   if (!Number.isFinite(f)) return n;
   //  fewer than it has digits: nothing is left
   if (f === 0) return 0;
+  //  Calc's power of ten is nothing below 1E-308
+  if (d < -308) return 0;
   const x = Math.abs(n) * f;
   //  too large to have a fraction at this place
   if (!(x < 4503599627370496)) return n;
+  //  a fraction far under one whole unit of the place rounds up to nothing
+  if (mode === 'up' && x < 1e-297 && !Number.isInteger(n)) return 0;
   //  a product a hair off a whole number through binary arithmetic is
   //  that number: 0.29*100 is 29. The allowance is relative, about the
   //  last of a double's digits, as in styles.js +fixed. An absolute one
   //  rounded 1.4999999999 up.
   const fuzz = x * 4 * Number.EPSILON;
   const y = mode === 'up' ? Math.ceil(x - fuzz) : mode === 'down' ? Math.floor(x + fuzz) : Math.round(x + fuzz);
-  return (n < 0 ? -y : y) / f;
+  //  scaled back by a power of ten, which is exact where its inverse is not
+  return d < 0 ? (n < 0 ? -y : y) * 10 ** -d : (n < 0 ? -y : y) / f;
 };
 
 const num1 = (f) => (a) => { const n = toNum(scalar(a)); return isErr(n) ? n : f(n); };

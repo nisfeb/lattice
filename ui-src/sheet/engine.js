@@ -8,7 +8,7 @@
 //  function it does not know, an array, a syntax it cannot read) keeps the
 //  result LibreOffice last cached and is reported stale, never guessed.
 
-import { cellAt, extent, setCell, rowCount, MAX_COLS } from './model.js';
+import { cellAt, extent, setCell, setUnsure, rowCount, MAX_COLS } from './model.js';
 import { parse, bodyOf, parseAddrs } from './formula.js';
 import { FUNCS, LAZY, Range, Err, E, Unsupported, toNum, toStr, compareOp, power } from './funcs.js';
 import { attr } from '../writer/xml.js';
@@ -50,6 +50,8 @@ export class Engine {
     this.cut = new Set();
     this.missed = new Set();      // entries a search cut short did not reach
     this.deep = [];               // keys that ran out of stack, in the order met
+    this.left = false;            // a formula inside another was left to be computed on its own
+    this.retry = [];              // formulas that stopped because of one left over
     this.tainted = false;
     this.changed = [];
     this.steps = 0;
@@ -82,7 +84,16 @@ export class Engine {
           for (let i = 0; i < reps; i++) {
             let c = 0;
             for (const cell of row.cells) {
-              if (cell.f) for (let j = 0; j < Math.min(cell.rep, 256); j++) this.formulas.push(this.index(this.entry(s, r + i, c + j, cell.f)));
+              if (cell.f) {
+                for (let j = 0; j < Math.min(cell.rep, 256); j++) {
+                  const e = this.index(this.entry(s, r + i, c + j, cell.f));
+                  this.formulas.push(e);
+                  //  a formula with no value was not computed (it stopped
+                  //  at a bound, or was never computed): it is marked, and
+                  //  what reads it is not computed from nothing
+                  if (!cell.vt) { this.stale.add(e.k); this.cut.add(e.k); }
+                }
+              }
               c += cell.rep;
             }
           }
@@ -212,6 +223,7 @@ export class Engine {
     const sheet = this.doc.sheets[s];
     const v = e ? this.compute(e) : sheet ? cellValue(cellAt(sheet, r, c)) : E.ref;
     if (this.cut.size && this.cut.has(k)) this.tainted = true;
+    else if (this.stale.size && this.stale.has(k) && !e && sheet && !cellAt(sheet, r, c).vt) this.tainted = true;
     return v;
   }
 
@@ -225,7 +237,7 @@ export class Engine {
       r += row.rep;
       if (bot < r1) continue;
       if (top > r2) break;
-      if (!row.cells.some((c) => c.vt)) continue;
+      if (!row.cells.some((c) => c.vt || c.f)) continue;
       const lo = Math.max(top, r1), hi = Math.min(bot, r2);
       for (let rr = lo; rr <= hi; rr++) {
         let c = 0;
@@ -234,12 +246,17 @@ export class Engine {
           c += cell.rep;
           if (right < c1) continue;
           if (left > c2) break;
-          if (!cell.vt) continue;
+          //  a formula with no value is read too: it may be waiting, or
+          //  stopped at a bound, and what reads it is then not right
+          if (!cell.vt && !cell.f) continue;
           for (let cc = Math.max(left, c1); cc <= Math.min(right, c2); cc++) {
             //  a hostile run (a million rows of sixteen thousand cells) is
             //  not walked: the formula keeps its cached result
             let v;
-            if (this.pending.size) v = this.value(s, rr, cc);
+            if (this.pending.size || !cell.vt) {
+              v = this.value(s, rr, cc);
+              if (!cell.vt && !cellAt(sheet, rr, cc).vt) continue;
+            }
             else if (++this.steps > MAX_STEPS) throw new Cut('too many cells');
             else v = cellValue(cell);
             if (v !== null) fn(v, rr, cc);
@@ -363,7 +380,7 @@ export class Engine {
     let cut = top && this.total > this.maxTotal;
     const was = this.tainted;
     this.tainted = false;
-    if (cut) ok = false;
+    if (cut) { ok = false; this.missed.add(e); }
     else {
       try { v = this.evaluate(e.f, e.s, e.r, e.c); } catch (x) {
         //  out of stack, in a chain of formulas each reading the next.
@@ -378,15 +395,20 @@ export class Engine {
           }
           this.busy.clear();
         } else if (!(x instanceof Unsupported)) { this.busy.delete(k); this.tainted = was; throw x; }
+        //  the budget ran out inside a formula another one pulled in. That
+        //  one is not at fault: it stays waiting, to be computed with a
+        //  budget of its own, and the outermost one is tried again after.
+        else if (x instanceof Cut && !top) { this.busy.delete(k); this.tainted = was; this.left = true; throw x; }
         ok = false;
         cut = x instanceof Cut || x instanceof RangeError;
+        if (top && this.left && x instanceof Cut) this.retry.push(e);
       }
       //  it read a cell that stopped at a bound, so its own result would
       //  be made from a value that is not right
-      if (this.tainted) { ok = false; cut = true; }
+      if (this.tainted) { ok = false; cut = true }
     }
     this.tainted = was;
-    if (top) this.total += this.steps;
+    if (top) { this.total += this.steps; this.left = false; }
     this.busy.delete(k);
     this.pending.delete(k);
     const sheet = this.doc.sheets[e.s];
@@ -490,7 +512,18 @@ export class Engine {
       for (const k of again) if (hit.has(k)) this.pending.set(k, hit.get(k));
       for (let i = again.length - 1; i >= 0; i--) { const e = this.pending.get(again[i]); if (e) this.compute(e); }
     }
+    //  a formula that stopped only because a formula it pulled in used up
+    //  its budget is tried again, now that one is computed
+    const retry = this.retry;
+    this.retry = [];
+    for (const e of retry) if (this.stale.has(e.k) && this.total <= this.maxTotal) { this.pending.set(e.k, e); this.compute(e); }
     this.pending.clear();
+    //  what is marked is shown with the value it had, and saved with none
+    for (const k of this.cut) {
+      const c = k % 16384, r = Math.floor(k / 16384) % 1048576, s = Math.floor(k / 17179869184);
+      const sheet = this.doc.sheets[s];
+      if (sheet && cellAt(sheet, r, c).f && !cellAt(sheet, r, c).unsure) setUnsure(sheet, r, c);
+    }
     return this.changed;
   }
 

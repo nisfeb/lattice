@@ -322,6 +322,59 @@ console.log('==> cut and paste is a move');
   await s.page.close();
 }
 
+console.log('==> a cut is pasted as a move after the rows or columns moved');
+{
+  const mk = async () => {
+    const g = await open(corpus('02-formulas'));
+    const type = async (r, c, t) => { await g.page.evaluate((x, y) => window.ctl.select(0, x, y), r, c); await g.page.keyboard.type(t); await g.press('Enter'); };
+    await g.click(1, 0);
+    await type(40, 6, '=A2+$A3+A$4+$A$5');
+    await type(40, 7, '=G41*2');
+    const want = (await g.cell(0, 40, 6)).v;
+    await g.page.evaluate(() => window.ctl.select(0, 40, 6));
+    await g.page.keyboard.down('Shift'); await g.press('ArrowRight'); await g.page.keyboard.up('Shift');
+    const tsv = await g.page.evaluate(() => {
+      const dt = new DataTransfer();
+      document.activeElement.dispatchEvent(new ClipboardEvent('cut', { clipboardData: dt, bubbles: true, cancelable: true }));
+      return dt.getData('text/plain');
+    });
+    return { g, tsv, want, type };
+  };
+  {
+    //  a row inserted above the cells it reads, after the cut
+    const { g, tsv, want } = await mk();
+    await g.page.evaluate(() => window.ctl.select(0, 0, 0));
+    await g.tool('Insert a row below');
+    check.eq('the row went in above the cells the cut formulas read', (await g.cell(0, 2, 0)).v, 2);
+    await g.page.evaluate(() => window.ctl.select(0, 44, 8));
+    await g.paste(tsv);
+    check.eq('the pasted formula reads the cells it read, where they now are', (await g.cell(0, 44, 8)).f + ' ' + (await g.cell(0, 44, 8)).v, 'of:=[.A3]+[.$A4]+[.A$5]+[.$A$6] ' + want);
+    check.eq('and one that read a cell moved with it follows that cell', (await g.cell(0, 44, 9)).f + ' ' + (await g.cell(0, 44, 9)).v, 'of:=[.I45]*2 ' + want * 2);
+    await g.page.close();
+  }
+  {
+    //  a column inserted left of the cut block
+    const { g, tsv, want } = await mk();
+    await g.page.evaluate(() => window.ctl.select(0, 0, 0));
+    await g.tool('Insert a column to the right');
+    await g.page.evaluate(() => window.ctl.select(0, 44, 8));
+    await g.paste(tsv);
+    check.eq('a column inserted beside the cells it reads moves the reads', (await g.cell(0, 44, 8)).f + ' ' + (await g.cell(0, 44, 8)).v, 'of:=[.A2]+[.$A3]+[.A$4]+[.$A$5] ' + want);
+    await g.page.close();
+  }
+  {
+    //  the cut is undone: the cells are back, and a paste is a copy of them
+    const { g, tsv } = await mk();
+    await g.chord('Control', 'z');
+    check('the undo put the cut cells back', (await g.cell(0, 40, 6)).f === 'of:=[.A2]+[.$A3]+[.A$4]+[.$A$5]');
+    await g.page.evaluate(() => window.ctl.select(0, 44, 8));
+    await g.paste(tsv);
+    check.eq('and pasting is a copy, which moves relative references', (await g.cell(0, 44, 8)).f, 'of:=[.C6]+[.$A7]+[.C$4]+[.$A$5]');
+    check('the original is still there', (await g.cell(0, 40, 6)).f === 'of:=[.A2]+[.$A3]+[.A$4]+[.$A$5]');
+    await g.page.close();
+  }
+}
+
 console.log('==> the toolbar');
 {
   const g = await open(corpus('06-formats'));

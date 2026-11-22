@@ -42,7 +42,7 @@ export function readTyped(text, nullDate) {
     const day = dateSerial(iso, nullDate);
     //  only a date that exists. The 31st of February would be read as the
     //  2nd of March: it stays the text typed, as in Calc.
-    if (day !== null && serialDate(day, nullDate) === iso) {
+    if (day !== null && +m[1] >= 1 && serialDate(day, nullDate) === iso) {
       return { vt: 'date', v: day + (m[4] === undefined ? 0 : (+m[4] * 3600 + +m[5] * 60 + +(m[6] || 0)) / 86400), kind: 'date' };
     }
   }
@@ -77,6 +77,21 @@ const BLOCKS = {
   'table:cell-range-source': 'a linked range', 'table:table-source': 'a linked sheet', 'chart:chart': 'a chart',
 };
 const RANGEISH = /(?:^|:)(?:[a-z-]*cell-range-address[a-z-]*|[a-z-]*range-address|[a-z-]*cell-address|print-ranges|notify-on-update-of-ranges|cell-ranges|buttons)$/;
+
+//  where the value of attribute `name` is in an element's opening tag, in
+//  double or single quotes: [start, end) of the text between them. `raw` is
+//  the value as the parser keeps it, which is how it reads in double quotes.
+function valueSpan(open, name, raw) {
+  const re = new RegExp(`\\s${name.replace(/[^\w]/g, '\\$&')}\\s*=\\s*(["'])`, 'g');
+  for (let m; (m = re.exec(open));) {
+    const vs = m.index + m[0].length;
+    const ve = open.indexOf(m[1], vs);
+    if (ve < 0) return null;
+    const val = open.slice(vs, ve);
+    if ((m[1] === "'" ? val.replace(/"/g, '&quot;') : val) === raw) return [vs, ve];
+  }
+  return null;
+}
 
 export class Book {
   constructor(text) {
@@ -162,7 +177,7 @@ export class Book {
     }
     if (cell.vt === 'boolean') return cell.v ? 'TRUE' : 'FALSE';
     if (cell.vt === 'percentage') return general(Number((cell.v * 100).toPrecision(15))) + '%';
-    if (cell.vt === 'date') return this.styles.text(null, cell.v, 'date') + (cell.v % 1 ? ' ' + this.styles.text(null, cell.v % 1, 'time') : '');
+    if (cell.vt === 'date') return this.styles.text(null, cell.v, 'date') + (cell.v !== Math.floor(cell.v) ? ' ' + this.styles.text(null, cell.v - Math.floor(cell.v), 'time') : '');
     if (cell.vt === 'time') return this.styles.text(null, cell.v, 'time');
     return general(cell.v);
   }
@@ -361,6 +376,12 @@ export class Book {
     };
     walk(body);
     if (why) return why;
+    //  cells pushed past the last row or column are lost: Calc refuses an
+    //  insert that would, and so does lattice
+    if (n > 0) {
+      const used = extent(sheet)[dim === 'r' ? 0 : 1];
+      if (used > max - cnt && at < used) return `the last ${dim === 'r' ? 'rows' : 'columns'} of this sheet are filled, and they would be pushed past its edge`;
+    }
     //  a merged cell the edit would cut through
     let r = 0;
     for (const row of sheet.rows) {
@@ -433,11 +454,9 @@ export class Book {
           if (kind === 'addr') next = moveAddrs(val, op, home);
           else next = val.includes('[') ? moveRefs(val, home, op) : val;
           if (next === null || next === val) continue;
-          const open = text.slice(k.start, k.openEnd);
-          const at0 = open.indexOf(` ${a}="${raw[1]}"`);
-          if (at0 < 0) continue;
-          const vs = k.start + at0 + a.length + 3;
-          edits.push([vs, vs + raw[1].length, attrText(next)]);
+          const span = valueSpan(text.slice(k.start, k.openEnd), a, raw[1]);
+          if (!span) continue;
+          edits.push([k.start + span[0], k.start + span[1], attrText(next)]);
         }
         if (k.name !== 'table:table-row') fix(k, table);
       }

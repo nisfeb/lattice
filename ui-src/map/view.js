@@ -607,6 +607,14 @@ export function mount(host, opts = {}) {
       }
     }
     detail.replaceChildren(...parts);
+    //  what each field shows as painted, and as last written: a field is
+    //  written only when it holds something else, so that being in a field
+    //  is not an edit
+    for (const x of detail.querySelectorAll('[data-k]')) {
+      x._v0 = x.value;
+      const was = x.onchange;
+      if (typeof was === 'function') x.onchange = () => { const ok = was(); if (ok !== false) x._v0 = x.value; return ok; };
+    }
   }
   function kv(k, v) { const d = el('div', 'lm-kv'); d.append(el('b', '', k + ': '), String(v)); return d; }
   //  what a feature is, to read: its name, kind, time, where, its links
@@ -684,13 +692,19 @@ export function mount(host, opts = {}) {
   //  the detail pane rebuilt under a field in use: the field keeps what
   //  is typed in it, and the cursor. A field taken off the page while it
   //  has the focus fires no change, so its text would be lost.
-  function repaintDetail() {
+  //  Text typed in it comes back only if this is still the feature it was
+  //  typed for (`same`), and a field only focused takes what the page now has.
+  function repaintDetail(same = true) {
     const a = document.activeElement;
-    const held = a && detail.contains(a) && a.dataset.k ? { k: a.dataset.k, v: a.value, s: a.selectionStart, e: a.selectionEnd } : null;
+    const held = a && detail.contains(a) && a.dataset.k ? { k: a.dataset.k, v: a.value, s: a.selectionStart, e: a.selectionEnd, typed: a.value !== a._v0 } : null;
+    //  the field taken off the page may still fire its change when the focus
+    //  leaves it, and write what it holds to whatever is selected by then
+    if (held) a.onchange = null;
     paintDetail();
     const b = held && [...detail.querySelectorAll('[data-k]')].find((x) => x.dataset.k === held.k);
     if (!b) return;
-    b.value = held.v;
+    if (held.typed && !same) ctl.say('The features changed under what was being typed, so that text was not kept.');
+    else if (held.typed) b.value = held.v;
     b.focus({ preventScroll: true });
     try { b.setSelectionRange(held.s, held.e); } catch { /* a field with no text selection */ }
   }
@@ -851,13 +865,23 @@ export function mount(host, opts = {}) {
     const r = parse(t);
     if (r.error) return false;
     const oldLayers = JSON.stringify(viewOf().layers);
+    //  the selected feature is the one with the same shape, which may be at
+    //  another place in the list now. With none, the selection stays at its
+    //  place and nothing typed for the old one is carried to the new.
+    const shape = (f) => JSON.stringify(f && f.geometry);
+    const was = sel >= 0 && doc.features[sel] ? shape(doc.features[sel]) : null;
     doc = r.doc;
     base = String(t);
     draw.cancel();
+    let same = true;
+    if (was !== null && !(sel < doc.features.length && shape(doc.features[sel]) === was)) {
+      const at = doc.features.findIndex((f) => shape(f) === was);
+      if (at >= 0) sel = at; else same = false;
+    }
     if (sel >= doc.features.length) sel = -1;
     drawAll();
     draw.selected();
-    paintLegend(); paintList(); repaintDetail(); paintTime();
+    paintLegend(); paintList(); repaintDetail(same); paintTime();
     const v = viewOf();
     if (v.base !== style) setStyle(v.base);
     if (JSON.stringify(v.layers) !== oldLayers) loadLayers();
@@ -878,6 +902,8 @@ export function mount(host, opts = {}) {
   ctl.sync = () => {
     const a = document.activeElement;
     if (!a || !detail.contains(a) || typeof a.onchange !== 'function' || locked()) return true;
+    //  only a field whose text is not what the page holds
+    if (a.value === a._v0) return true;
     return a.onchange() !== false;
   };
   ctl.destroy = () => {

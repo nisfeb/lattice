@@ -717,6 +717,24 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   const was = dt.v;
   b.enter(0, 3, 0, b.input(0, 3, 0) + ' ');
   check('what the bar shows, typed back, is the same date and time', b.cell(0, 3, 0).vt === 'date' && b.cell(0, 3, 0).v === was);
+  //  before the null date the time of day is still a time of day
+  const early = ['1899-12-29 18:00', '1700-06-15 06:00', '1899-12-29 00:00:01'].map((t) => {
+    b.enter(0, 5, 0, t);
+    const v = b.cell(0, 5, 0).v, bar = b.input(0, 5, 0);
+    b.enter(0, 5, 0, bar + ' ');
+    return `${bar}|${b.cell(0, 5, 0).vt === 'date' && b.cell(0, 5, 0).v === v}`;
+  }).join(' ');
+  check.eq('a date and time before 1899-12-30 shows a time of day, and typed back is the same', early, '1899-12-29 18:00:00|true 1700-06-15 06:00:00|true 1899-12-29 00:00:01|true');
+  //  a date that does not exist is not read as the shifted one by a formula either, as in Calc
+  const asNum = (f) => { b.enter(0, 6, 0, f); const c = b.cell(0, 6, 0); return c.err ? c.text : c.v; };
+  check.eq('a text date that does not exist is an error in a formula', ['="2026-02-31"+0', '=VALUE("2026-02-31")', '="2026-04-31"+0', '="1900-02-29"+0', '="2026-13-01"+0', '="2026-00-10"+0', '="2026-04-30 12:60"+0', '="2026-04-30 12:30:60"+0'].map(asNum).join(' '),
+    '#VALUE! Err:502 #VALUE! #VALUE! #VALUE! #VALUE! #VALUE! #VALUE!');
+  check.eq('and one that does is its serial', ['="2026-02-28"+0', '="2024-02-29"+0', '="1900-03-01"+0', '="2026-04-30 24:00"+0', '="9999-12-31"+0'].map(asNum).join(' '), '46081 45351 61 46143 2958465');
+  check('a year under 100 is not read as 19xx', asNum('="0050-06-15"+0') < -600000 && asNum('="0001-01-01"+0') < -690000);
+  //  a number too large to hold, in a formula, is kept as typed
+  const big = ['=1e999', '=2*1e400', '=SUM(1,5E1000)'].map((t) => { const e = b.enter(0, 7, 0, t); const c = b.cell(0, 7, 0); return `${c.f === null && c.v === t && /too large/.test(e.note || '')}|${b.input(0, 7, 0)}`; }).join(' ');
+  check.eq('a formula holding a number no double holds is kept as the text typed', big, 'true|=1e999 true|=2*1e400 true|=SUM(1,5E1000)');
+  check.eq('and the largest that fits is a number', (b.enter(0, 7, 0, '=1e308'), b.cell(0, 7, 0).f + ' ' + b.cell(0, 7, 0).v), 'of:=1E308 1e+308');
   check.eq('with a T, without seconds, and one that is not a time', ['2024-01-15T10:30:00', '2024-01-15 7:05', '2024-01-15 25:00', '2024-02-30 10:00', '2024-01-15 10:61'].map((t) => typed(t, 4) + '|' + b.input(0, 4, 0)).join(' '),
     'date:2024-01-15|2024-01-15 10:30:00 date:2024-01-15|2024-01-15 07:05:00 string:2024-01-15 25:00|2024-01-15 25:00 string:2024-02-30 10:00|2024-02-30 10:00 string:2024-01-15 10:61|2024-01-15 10:61');
   //  a cell a file gives a date and time format keeps both through an edit in the bar
@@ -757,17 +775,17 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   //  a column insert into a row already as long as the sheet
   const full = HEAD + '<table:table table:name="S"><table:table-column table:number-columns-repeated="16384"/>'
     + '<table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell><table:table-cell table:style-name="ce1" table:number-columns-repeated="16383"/></table:table-row>'
-    + '<table:table-row><table:table-cell table:number-columns-repeated="16383"/><table:table-cell office:value-type="string"><text:p>last</text:p></table:table-cell></table:table-row>'
+    + '<table:table-row><table:table-cell table:number-columns-repeated="16383"/><table:table-cell table:style-name="ce1"/></table:table-row>'
     + '<table:table-row><table:table-cell table:number-columns-repeated="16384"/></table:table-row></table:table>' + TAIL;
   const b = new Book(full);
   check('insert two columns into rows that reach the last column', b.shift(0, 'c', 1, 2).ok, b.error);
   const d = parseFods(b.text());
   check.eq('no row is longer than the sheet', d.sheets[0].rows.map((r) => r.cells.reduce((n, c) => n + c.rep, 0)).join(), '16384,16384,16384');
   check.eq('nor the column list', d.sheets[0].cols.reduce((n, c) => n + c.rep, 0), 16384);
-  check.eq('the cell pushed off the edge is gone, and the first is where it was', cellAt(d.sheets[0], 1, 16383).text + '|' + cellAt(d.sheets[0], 0, 0).v, '|1');
+  check.eq('the empty cell pushed off the edge is gone, and the first is where it was', (cellAt(d.sheets[0], 1, 16383).st || '') + '|' + cellAt(d.sheets[0], 0, 0).v, '|1');
   const one = new Book(full);
   one.shift(0, 'c', 16383, 1);
-  check.eq('an insert before the last column pushes that cell off', new Book(one.text()).cell(0, 1, 16383).text + '|' + parseFods(one.text()).sheets[0].rows.map((r) => r.cells.reduce((n, c) => n + c.rep, 0)).join(), '|16384,16384,16384');
+  check.eq('an insert before the last column pushes an empty cell off', (new Book(one.text()).cell(0, 1, 16383).st || '') + '|' + parseFods(one.text()).sheets[0].rows.map((r) => r.cells.reduce((n, c) => n + c.rep, 0)).join(), '|16384,16384,16384');
 }
 {
   //  results Calc gives, each run in LibreOffice
@@ -784,6 +802,8 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
     ['=ROUND(1234.5678,-2)', '1200'], ['=ROUNDUP(1234.5678,-2)', '1300'], ['=ROUNDDOWN(-1234.5678,-2)', '-1200'],
     ['=ROUND(2.5,400)', '2.5'], ['=ROUND(-2.5,400)', '-2.5'], ['=ROUNDUP(2.5,400)', '2.5'], ['=ROUNDDOWN(2.5,400)', '2.5'], ['=TRUNC(2.5,400)', '2.5'], ['=ROUND(123.456,300)', '123.456'],
     ['=ROUND(2.5,-400)', '0'], ['=ROUND(-2.5,-400)', '0'], ['=ROUNDUP(2.5,-400)', '0'], ['=ROUNDDOWN(2.5,-400)', '0'], ['=TRUNC(2.5,-400)', '0'], ['=ROUND(1E300,-300)', '1E+300'], ['=ROUND(1E300,2)', '1E+300'],
+    ['=ROUND(324.55,2.7)', '324.55'], ['=ROUND(324.55,2.2)', '324.55'], ['=ROUNDUP(845.651,1.5)', '845.7'], ['=ROUNDDOWN(3375.999,-1.5)', '3370'], ['=ROUND(4567.876,-0.5)', '4568'], ['=ROUND(2.5,0.9)', '3'],
+    ['=ROUNDUP(640.0005,-300)', '0'], ['=ROUNDUP(640.0005,-299)', '1E+299'], ['=ROUNDUP(640.0005,-320)', '0'], ['=ROUNDUP(0.5,-298)', '0'], ['=ROUNDUP(1.5,-297)', '1E+297'], ['=ROUNDUP(1,-300)', '1E+300'], ['=ROUNDUP(12345.6789,-300)', '1E+300'],
     ['=SUBSTITUTE("hello","l","X",0)', 'Err:502'], ['=SUBSTITUTE("hello","l","X",-1)', 'Err:502'], ['=SUBSTITUTE("hello","l","X",0.5)', 'Err:502'], ['=SUBSTITUTE("hello","","X",0)', 'Err:502'],
     ['=SUBSTITUTE("hello","l","X",1)', 'heXlo'], ['=SUBSTITUTE("hello","l","X",2.9)', 'helXo'], ['=SUBSTITUTE("hello","l","X",3)', 'hello'], ['=SUBSTITUTE("hello","l","X")', 'heXXo'],
     ['=REPLACE("abc",0,1,"x")', 'Err:502'], ['=REPLACE("abc",-1,1,"x")', 'Err:502'], ['=REPLACE("abc",1,-1,"x")', 'Err:502'], ['=REPLACE("abc",0.5,1,"x")', 'Err:502'],
@@ -792,17 +812,145 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   check(`${T.length} rounding and text results are Calc's`, off.length === 0, off.join(' | '));
 }
 
+console.log('==> a bound is never a wrong value shown as right');
+{
+  const num = (v) => `<table:table-cell office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  const fx = (f, v) => `<table:table-cell table:formula="${f}" office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  //  A holds 1s, B the running total of A
+  const running = (N) => {
+    let rows = '';
+    for (let i = 1; i <= N; i++) rows += `<table:table-row>${num(1)}${fx(`of:=SUM([.$A$1:.A${i}])`, i)}</table:table-row>`;
+    return new Book(HEAD + `<table:table table:name="S">${rows}</table:table>` + TAIL);
+  };
+  const judge = (b, N, a1) => {
+    let marked = 0, wrong = 0, unmarked = 0;
+    for (let r = 0; r < N; r++) {
+      const st = b.stale(0, r, 1);
+      if (st) marked++;
+      if (b.cell(0, r, 1).v !== r + a1) { wrong++; if (!st) unmarked++; }
+    }
+    return { marked, wrong, unmarked };
+  };
+  const N = 300;
+  const b = running(N);
+  b.engine.maxTotal = 30000;
+  b.mark();
+  b.enter(0, 0, 0, '100');
+  const one = judge(b, N, 100);
+  check('past the bound of a recalculation, some are marked and none is wrong unmarked', one.marked > 0 && one.marked < N && one.unmarked === 0, JSON.stringify(one));
+  const saved = b.text();
+  check('a marked formula is saved with no value as if computed', (() => { const d = parseFods(b.text()); let withValue = 0; for (let r = 0; r < N; r++) if (b.stale(0, r, 1) && cellAt(d.sheets[0], r, 1).vt) withValue++; return withValue === 0; })());
+  b.mark();
+  b.enter(0, 5, 5, 'x');
+  b.undo();
+  const un = judge(b, N, 100);
+  check('the marks survive an undo of an unrelated edit', un.marked === one.marked && un.unmarked === 0, JSON.stringify(un));
+  b.redo();
+  const re = judge(b, N, 100);
+  check('and the redo of it, where the next edit has computed what stopped', re.unmarked === 0 && re.wrong === 0, JSON.stringify(re));
+  const open = new Book(saved);
+  const op = judge(open, N, 100);
+  check('and a save read again', op.marked === one.marked && op.unmarked === 0, JSON.stringify(op));
+  open.enter(0, 0, 0, '200');
+  const fix = judge(open, N, 200);
+  check('an edit within the bound computes them again', fix.marked === 0 && fix.wrong === 0, JSON.stringify(fix));
+  //  what one recalculation did not reach is the first thing the next computes
+  const again = running(N);
+  again.engine.maxTotal = 30000;
+  again.enter(0, 0, 0, '100');
+  const tail = [];
+  for (let r = 0; r < N; r++) if (again.stale(0, r, 1)) tail.push(r);
+  again.enter(0, 0, 0, '101');
+  const second = judge(again, N, 101);
+  check('what one recalculation did not reach is computed first by the next', second.unmarked === 0 && tail.length > 0 && tail.every((r) => !again.stale(0, r, 1) && again.cell(0, r, 1).v === r + 101), JSON.stringify(second));
+}
+{
+  //  a formula that stopped, read through a range, taints its reader
+  const bomb = new Book(HEAD + '<table:table table:name="B"><table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="16384" office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>'
+    + '<table:table-row><table:table-cell/><table:table-cell table:formula="of:=SUM([.C1001:.C1002])" office:value-type="float" office:value="0"><text:p>0</text:p></table:table-cell></table:table-row></table:table>' + TAIL);
+  bomb.enter(0, 1000, 2, '=COUNTIF(D1:XFD1000,1)');
+  check('a formula that stopped has no value and is marked', bomb.cell(0, 1000, 2).vt === null && bomb.stale(0, 1000, 2));
+  for (const f of ['=SUM(C1001:C1002)', '=AVERAGE(C1001:C1002)', '=COUNT(C1001:C1002)', '=SUMPRODUCT(C1001:C1002;C1001:C1002)', '=C1001+1']) {
+    bomb.enter(0, 1000, 1, f);
+    bomb.enter(0, 1000, 2, '=COUNTIF(D1:XFD1000,1)');
+    check(`${f} reads it and is marked, not computed without it`, bomb.stale(0, 1000, 1), f);
+  }
+}
+{
+  //  an ordinary sheet is computed in full after an insert
+  const num = (v) => `<table:table-cell office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  const fx = (f, v) => `<table:table-cell table:formula="${f}" office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  const N = 3300;
+  let rows = `<table:table-row><table:table-cell/>${fx(`of:=SUM([.B2:.B${N + 1}])`, 0)}</table:table-row>`;
+  for (let i = 1; i <= N; i++) rows += `<table:table-row>${num(1)}${fx(`of:=SUM([.$A$2:.A${i + 1}])`, i)}</table:table-row>`;
+  const b = new Book(HEAD + `<table:table table:name="S">${rows}</table:table>` + TAIL);
+  for (const [dim, at] of [['r', 4000], ['r', 1], ['r', 1500], ['c', 0], ['c', 5]]) {
+    const b = new Book(HEAD + `<table:table table:name="S">${rows}</table:table>` + TAIL);
+    const r = b.shift(0, dim, at, 1);
+    check(`an insert (${dim} ${at}) in a ${N}-row sheet marks nothing`, r.ok && b.engine.stale.size === 0, `${b.engine.stale.size} marked`);
+    if (dim === 'r' && at === 4000) check.eq('and the formula over the running totals is right', b.cell(0, 0, 1).v, (N * (N + 1)) / 2);
+  }
+}
+
+console.log('==> an insert never pushes a filled cell off the sheet');
+{
+  const cellOf = (v) => `<table:table-cell office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  const edgeCol = new Book(HEAD + '<table:table table:name="S"><table:table-row><table:table-cell table:number-columns-repeated="16383"/>' + cellOf(7)
+    + '</table:table-row><table:table-row><table:table-cell table:formula="of:=[.XFD1]" office:value-type="float" office:value="7"><text:p>7</text:p></table:table-cell></table:table-row></table:table>' + TAIL);
+  check('a column insert is refused when a cell is in the last column', edgeCol.shift(0, 'c', 1, 1).error && /pushed past/.test(edgeCol.shift(0, 'c', 1, 1).error), JSON.stringify(edgeCol.shift(0, 'c', 1, 1)));
+  check('and nothing moved', edgeCol.cell(0, 0, 16383).v === 7 && edgeCol.cell(0, 1, 0).f === 'of:=[.XFD1]');
+  check('an insert at that column is refused too', !!edgeCol.shift(0, 'c', 16384 - 1, 1).error === true);
+  check('a delete is allowed', edgeCol.shift(0, 'c', 1, -1).ok && edgeCol.cell(0, 0, 16382).v === 7);
+  const edgeRow = new Book(HEAD + '<table:table table:name="S"><table:table-row table:number-rows-repeated="1048575"><table:table-cell/></table:table-row><table:table-row>' + cellOf(9) + '</table:table-row></table:table>' + TAIL);
+  check('a row insert is refused when a cell is in the last row', !!edgeRow.shift(0, 'r', 3, 1).error && edgeRow.cell(0, 1048575, 0).v === 9);
+  check('and a delete is not', edgeRow.shift(0, 'r', 3, -1).ok && edgeRow.cell(0, 1048574, 0).v === 9);
+  const roomy = new Book(HEAD + '<table:table table:name="S"><table:table-row><table:table-cell table:number-columns-repeated="16000"/>' + cellOf(7) + '</table:table-row></table:table>' + TAIL);
+  check('an insert with room to spare is accepted', roomy.shift(0, 'c', 1, 5).ok && roomy.cell(0, 0, 16005).v === 7);
+  check('and so is one that fills the room exactly', roomy.shift(0, 'c', 1, 16384 - 16006).ok && roomy.cell(0, 0, 16383).v === 7);
+  check('then one more is refused', !!roomy.shift(0, 'c', 1, 1).error);
+}
+
+console.log('==> references in single-quoted attributes move with the rows');
+{
+  const body = `<table:content-validations><table:content-validation table:name='val1' table:condition='of:cell-content-is-in-list([.$A$3:.$A$5])' table:base-cell-address='Sheet1.B1'/>`
+    + `<table:content-validation table:name='val2' table:condition='of:cell-content-is-in-list("a";[.A3])' table:base-cell-address='Sheet1.B1'/></table:content-validations>`
+    + `<table:table table:name='Sheet1'><table:table-row><table:table-cell table:content-validation-name='val1' office:value-type='string'><text:p>x</text:p></table:table-cell></table:table-row>`
+    + `<table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row></table:table>`
+    + `<table:named-expressions><table:named-expression table:name='nm' table:expression='of:[Sheet1.$A$3]' table:base-cell-address='Sheet1.A1'/></table:named-expressions>`;
+  const b = new Book(HEAD + body + TAIL);
+  check('a file in single quotes opens', !b.error, b.error);
+  check('and takes a row insert', b.shift(0, 'r', 1, 1).ok);
+  const t = b.text();
+  check('the rule moves with its cells', /table:condition=['"]of:cell-content-is-in-list\(\[\.\$A\$4:\.\$A\$6\]\)['"]/.test(t), (/table:condition=[^>]*/.exec(t) || [''])[0]);
+  check('a rule with a quote in its text keeps the quote and moves', t.includes(`of:cell-content-is-in-list(&quot;a&quot;;[.A4])`) || t.includes(`of:cell-content-is-in-list("a";[.A4])`), (/val2[^>]*/.exec(t) || [''])[0]);
+  check('and so does a named expression', /table:expression=['"]of:\[Sheet1\.\$A\$4\]['"]/.test(t), (/table:expression=[^>]*/.exec(t) || [''])[0]);
+  const again = new Book(t);
+  check('and the result is a file that opens', !again.error, again.error);
+  check('a row insert after it moves the rule once more', again.shift(0, 'r', 0, 1).ok && /list\(\[\.\$A\$5:\.\$A\$7\]\)/.test(again.text()));
+}
+
+{
+  //  a cut moves its formulas, a copy offsets them
+  const b = new Book(blankText);
+  b.enter(0, 0, 0, '7');
+  b.enter(0, 4, 2, '=A1+1');
+  const k = { ...b.cell(0, 4, 2), r: 4, c: 2 };
+  b.moveCell(k, { sheet: 0, r1: 4, c1: 2, r2: 4, c2: 2 }, 0, 8, 4);
+  b.copyCell(k, 0, 9, 4);
+  check.eq('moveCell keeps what the formula read, copyCell moves it', `${b.cell(0, 8, 4).f} ${b.cell(0, 8, 4).v} | ${b.cell(0, 9, 4).f} ${b.cell(0, 9, 4).v}`, 'of:=[.A1]+1 8 | of:=[.C6]+1 1');
+}
+
 console.log('==> hostile input');
 {
   const head = '<?xml version="1.0"?>\n<office:document xmlns:office="o" xmlns:table="t" xmlns:text="x" office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet>';
   const tail = '</office:spreadsheet></office:body></office:document>';
   const bomb = head + '<table:table table:name="B"><table:table-row table:number-rows-repeated="1048576"><table:table-cell table:number-columns-repeated="16384" office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>'
     + '<table:table-row><table:table-cell table:formula="of:=SUM([.A1:.XFD1048576])" office:value-type="float" office:value="7"><text:p>7</text:p></table:table-cell><table:table-cell table:formula="of:=SUM([.A1:.B3])"/></table:table-row></table:table>' + tail;
-  const t0 = Date.now();
   const b = new Book(bomb);
   check('a repeat bomb opens', !b.error, b.error);
   const r = b.enter(0, 0, 0, '5');
-  check('an edit inside it is fast', Date.now() - t0 < 4000, `${Date.now() - t0} ms`);
+  //  counted, not timed: the work of the edit is bounded by the walk budget
+  check('an edit inside it reads at most the budget of cells', b.engine.total <= 2 * 5000001 && b.engine.steps <= 5000001, `${b.engine.total} ${b.engine.steps}`);
   check('the formula over 17 billion cells keeps its cached value and is marked', b.cell(0, 1048576 - 1 + 1, 0).v === 7 || b.stale(0, 1048576, 0), JSON.stringify(r).slice(0, 80));
   check('the row count is never over the sheet', rowCount(b.sheets[0]) <= 1048577);
   check('a repeat count of nonsense is one', parseFods(head + '<table:table table:name="B"><table:table-row table:number-rows-repeated="-5"><table:table-cell table:number-columns-repeated="x"/></table:table-row></table:table>' + tail).sheets[0].rows[0].rep === 1);
