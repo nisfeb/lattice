@@ -169,7 +169,9 @@ export function tokenize(text, mode) {
       i += m[0].length;
       //  a number no double holds is not turned into the name Infinity
       const v = Number(m[0]);
-      if (!Number.isFinite(v)) bad(`${m[0]} is too large a number`);
+      //  typed, it is refused. In a stored formula it stays a number the
+      //  moves read past, so its references still move with the rows.
+      if (!Number.isFinite(v) && mode === 'user') bad(`${m[0]} is too large a number`);
       out.push({ t: 'num', v, s, e: i });
       continue;
     }

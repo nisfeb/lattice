@@ -891,6 +891,19 @@ console.log('==> a bound is never a wrong value shown as right');
   check('an edit back to the first value clears every mark, in the save and when read again', marked(back) === 0 && valueless(back.text()) === 0 && marked(reback) === 0, `${marked(back)} ${valueless(back.text())} ${marked(reback)}`);
 }
 {
+  //  a stored formula holding a number no double holds does not stop rows and columns moving
+  const cellv = (v) => `<table:table-cell office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  const withInf = () => new Book(HEAD + '<table:table table:name="S"><table:table-row><table:table-cell table:formula="of:=1E999+[.B1]" office:value-type="float" office:value="5"><text:p>5</text:p></table:table-cell>' + cellv(1) + '</table:table-row></table:table>' + TAIL);
+  const r = [];
+  for (const [dim, at, n] of [['r', 0, 1], ['c', 0, 1]]) {
+    const b = withInf();
+    b.mark();
+    const e = b.shift(0, dim, at, n);
+    r.push(e && e.error ? 'refused' : (b.text().match(/of:=1E999\+\[\.([A-Z]+\d+)\]/) || [])[1] || 'lost');
+  }
+  check.eq('inserting and deleting rows and columns moves the references of a formula holding 1E999', r.join(' '), 'B2 C1');
+}
+{
   //  a formula that stopped, read through a range, taints its reader
   const bomb = new Book(HEAD + '<table:table table:name="B"><table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="16384" office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>'
     + '<table:table-row><table:table-cell/><table:table-cell table:formula="of:=SUM([.C1001:.C1002])" office:value-type="float" office:value="0"><text:p>0</text:p></table:table-cell></table:table-row></table:table>' + TAIL);

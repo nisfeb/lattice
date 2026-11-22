@@ -346,7 +346,11 @@ export function mount(host, opts) {
     if (fmt === 'stl' && lastStl) {
       const was = xseq, nm = leaf(o.name), i0 = await gather();
       if (dead) return;
-      if (was === xseq && lastStl && lastKey === key(i0)) { download(nm + '.stl', lastStl, 'model/stl'); return; }
+      if (was === xseq && lastStl && lastKey === key(i0)) {
+        download(nm + '.stl', lastStl, 'model/stl');
+        if (i0.notes.length) { con.open = true; setSt('STL downloaded, but not all it includes was read, see the console', true); }
+        return;
+      }
     }
     stopExport();
     //  the page it is of: its name and its turn, taken before any wait
@@ -365,7 +369,11 @@ export function mount(host, opts) {
     if (r.rc !== 0 || !r.data) { showLog(r.log, inc.notes); setSt('could not make the ' + fmt.toUpperCase(), true); return; }
     if (fmt === 'stl' && r.data.length > 84 + MAX_TRIS * 50 * 4) { setSt('the part is too large to export here', true); return; }
     download(name + '.' + fmt, r.data, fmt === 'stl' ? 'model/stl' : 'model/3mf');
-    setSt(fmt.toUpperCase() + ' downloaded');
+    //  a page the model includes that was not read is not a part made
+    //  whole: say so, as the render does
+    const left = inc.notes.length;
+    if (left) { showLog(r.log, inc.notes); con.open = true; }
+    setSt(fmt.toUpperCase() + ' downloaded' + (left ? ', but not all it includes was read, see the console' : ''), left > 0);
   }
 
   function update(t, more = {}) {

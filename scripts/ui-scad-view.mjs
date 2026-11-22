@@ -419,6 +419,18 @@ console.log('\na page and its child page, the model needs the one left out');
   const stc = await page.$eval('.lscad-st', (e) => e.className);
   check('the status does not pass for a plain render', /left out|not all/.test(s) && /err/.test(stc), s + ' ' + stc);
   check('  and the console is open on the include left out', await page.$eval('.lscad-con', (e) => e.open) && /a\/b: not read/.test(await con(page)), (await con(page)).slice(0, 200));
+  //  an export of it says the same, for the 3MF and for the STL
+  await page.evaluate(() => { document.querySelector('.lscad-con').open = false; });
+  await page.evaluate(() => document.querySelectorAll('.lscad-bar button')[3].click());
+  for (let i = 0; i < 100 && !/3MF downloaded/.test(await page.$eval('.lscad-st', (e) => e.textContent)); i++) await sleep(100);
+  const x3 = await page.$eval('.lscad-st', (e) => [e.textContent, e.className]);
+  check('a 3MF made without an include is not a plain download', /3MF downloaded.*not all it includes/.test(x3[0]) && /err/.test(x3[1]), x3.join(' '));
+  check('  and the console is open on it', await page.$eval('.lscad-con', (e) => e.open) && /a\/b: not read/.test(await con(page)), (await con(page)).slice(0, 200));
+  await page.evaluate(() => { document.querySelector('.lscad-con').open = false; });
+  await page.evaluate(() => document.querySelectorAll('.lscad-bar button')[2].click());
+  await sleep(500);
+  const xs = await page.$eval('.lscad-st', (e) => [e.textContent, e.className]);
+  check('and so is an STL of the part on screen', /STL downloaded.*not all it includes/.test(xs[0]) && /err/.test(xs[1]) && await page.$eval('.lscad-con', (e) => e.open), xs.join(' '));
   await page.close();
 }
 
