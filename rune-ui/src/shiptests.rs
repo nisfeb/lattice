@@ -60,6 +60,12 @@ struct Stub {
     op_fail: u16,
     /// Names whose page a page-only delete took, with pages left under them (`page-gone` on the ship).
     gone: Vec<String>,
+    /// The access list: each group's ships, peek lines and make lines, as the ship keeps them.
+    groups: BTreeMap<String, (Vec<String>, Vec<String>, Vec<String>)>,
+    /// Whether the ship speaks the save protocol where a save's list is authoritative (`"v": 2`).
+    groups_v2: bool,
+    /// The last body a group was saved with.
+    group_saves: Vec<serde_json::Value>,
 }
 
 struct Ship {
@@ -130,6 +136,38 @@ fn answer(st: &Mutex<Stub>, method: &str, route: &str, q: &BTreeMap<String, Stri
                 (_, Some(v)) => (200, json!({"body": v.0, "kind": v.1, "rev": v.2}).to_string()),
                 _ => (404, json!({"error": "no such page"}).to_string()),
             }
+        }
+        ("GET", "share-groups") => {
+            let s = lock();
+            let list: Vec<serde_json::Value> = s.groups.iter().map(|(n, g)| json!({"name": n, "ships": g.0, "peek": g.1, "make": g.2})).collect();
+            (200, if s.groups_v2 { json!({"v": 2, "groups": list}) } else { json!(list) }.to_string())
+        }
+        ("POST", "share-group-save") => {
+            let mut s = lock();
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            s.group_saves.push(v.clone());
+            let lines = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect::<Vec<_>>()).unwrap_or_default();
+            let (ships, peek, make) = (lines("ships"), lines("peek"), lines("make"));
+            let old = s.groups.get(&get("name")).cloned().unwrap_or_default();
+            // a save marked `v: 2` is the whole list. Without it a folder is kept whose lines are both left out (`+share-group-save`)
+            let (peek, make) = if v["v"] == 2 {
+                (peek, make)
+            } else {
+                let keep = |old: &[String], new: Vec<String>| {
+                    let mut out = new.clone();
+                    for line in old {
+                        let folder = old.contains(&format!("{line}/dir-index"));
+                        if folder && !new.contains(line) && !new.contains(&format!("{line}/dir-index")) {
+                            out.push(line.clone());
+                            out.push(format!("{line}/dir-index"));
+                        }
+                    }
+                    out
+                };
+                (keep(&old.1, peek), keep(&old.2, make))
+            };
+            s.groups.insert(get("name"), (ships, peek, make));
+            ok
         }
         ("GET", "know-all") => {
             let s = lock();
@@ -1444,4 +1482,47 @@ fn a_folder_left_by_a_page_only_delete_is_deleted_with_tree_live_and_from_the_qu
     // a page deleted by name alone goes alone
     c.delete("keep").unwrap();
     assert_eq!(ship.body("keep"), "<none>");
+}
+
+#[test]
+fn a_group_is_saved_with_every_line_it_keeps_and_the_ship_that_says_so_takes_the_list_whole() {
+    let _one = one();
+    let ship = Ship::start();
+    let c = ship.conn();
+    let base = "/apps/x/lattice";
+    let line = |p: &str| format!("{base}/page/{p}");
+    let seed = || {
+        let mut s = ship.st();
+        s.groups_v2 = true;
+        s.groups.insert("team".into(), (vec!["~nec".into()], vec![line("trip"), line("trip/dir-index"), line("sail"), line("sail/dir-index"), line("one/code")], vec![]));
+    };
+    let held = |n: &str| ship.st().groups.get(n).map(|g| g.1.clone()).unwrap_or_default();
+    let team = || c.groups().unwrap().into_iter().find(|g| g.name == "team").unwrap();
+    // keep everything: a ship that took the list whole keeps both lines of each folder
+    seed();
+    let g = team();
+    assert_eq!(g.v, 2);
+    c.group_save(&g).unwrap();
+    assert_eq!(ship.st().group_saves.last().unwrap()["v"], 2);
+    assert_eq!(held("team"), g.peek);
+    // a page toggled on and off at a folder's own path leaves the folder's lines as they were
+    c.group_save(&g.with_level(base, "trip", Level::Edit).with_level(base, "trip", Level::None)).unwrap();
+    assert_eq!(held("team"), g.peek, "{:?}", held("team"));
+    // remove one folder: both its lines left out
+    let one = Group { peek: g.peek.iter().filter(|p| !p.starts_with(&line("trip"))).cloned().collect(), ..g.clone() };
+    c.group_save(&one).unwrap();
+    assert_eq!(held("team"), vec![line("sail"), line("sail/dir-index"), line("one/code")]);
+    // remove everything: the group holds nothing
+    seed();
+    c.group_save(&Group { peek: vec![], make: vec![], ..team() }).unwrap();
+    assert!(held("team").is_empty(), "{:?}", held("team"));
+    // a ship that does not say it takes the list whole is not told to: the save carries no version, and its own rule stands
+    ship.st().groups_v2 = false;
+    seed();
+    ship.st().groups_v2 = false;
+    let old = team();
+    assert_eq!(old.v, 0);
+    c.group_save(&Group { peek: vec![], make: vec![], ..old }).unwrap();
+    assert!(ship.st().group_saves.last().unwrap().get("v").is_none());
+    assert_eq!(held("team").len(), 4, "the ship keeps the folders an old client leaves out");
 }

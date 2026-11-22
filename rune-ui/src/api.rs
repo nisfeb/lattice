@@ -158,6 +158,25 @@ pub struct Group {
     pub peek: Vec<String>,
     #[serde(default)]
     pub make: Vec<String>,
+    /// The version of the save protocol the ship that listed it speaks: 2 when its list is authoritative on a save
+    /// (every line not sent back is removed). It is sent back as it came, and 0 for a ship that says none.
+    #[serde(default)]
+    pub v: u8,
+}
+
+/// The groups in what `/share-groups` answers: a list of them, or an object with the list in `groups` and the
+/// save protocol's version in `v`, which each group then carries to its save.
+pub fn parse_groups(raw: &str) -> Result<Vec<Group>, String> {
+    let value: serde_json::Value = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+    let (v, list) = match value {
+        serde_json::Value::Object(mut o) => (o.get("v").and_then(|v| v.as_u64()).unwrap_or(0).min(u8::MAX as u64) as u8, o.remove("groups").unwrap_or_default()),
+        list => (0, list),
+    };
+    let mut groups: Vec<Group> = serde_json::from_value(list).map_err(|e| e.to_string())?;
+    for g in &mut groups {
+        g.v = g.v.max(v);
+    }
+    Ok(groups)
 }
 
 /// A sharing group from before lattice kept its own (`/legacy-groups`,
@@ -3744,7 +3763,7 @@ impl Conn {
     }
 
     pub fn groups(&self) -> Result<Vec<Group>, String> {
-        serde_json::from_str(&self.call("GET", "share-groups", None)?).map_err(|e| e.to_string())
+        parse_groups(&self.call("GET", "share-groups", None)?)
     }
 
     /// Where this lattice lives on the ship: the start of every grant path.
@@ -3756,7 +3775,12 @@ impl Conn {
     /// Writes a group: its ships and the paths it may read and write
     /// replace what it had. The ship keeps anything else the group holds.
     pub fn group_save(&self, g: &Group) -> Result<(), String> {
-        let body = serde_json::json!({ "ships": g.ships, "peek": g.peek, "make": g.make }).to_string();
+        let mut body = serde_json::json!({ "ships": g.ships, "peek": g.peek, "make": g.make });
+        // a ship that said its list is authoritative is told that this one is: what is not sent back is removed
+        if g.v >= 2 {
+            body["v"] = g.v.into();
+        }
+        let body = body.to_string();
         self.call_in(120, "POST", &format!("share-group-save?name={}", enc(&g.name)), Some(&body)).map(drop)
     }
 
@@ -4558,6 +4582,7 @@ mod tests {
             ships: ships.iter().map(|s| (*s).to_owned()).collect(),
             peek: peek.iter().map(|p| format!("{base}{p}")).collect(),
             make: make.iter().map(|p| format!("{base}{p}")).collect(),
+            ..Group::default()
         };
         let groups = [
             g("nec", &["~nec"], &["notes/today/code"], &[]),
@@ -4588,7 +4613,7 @@ mod tests {
         // text-path grant too
         let base = "/apps/x/lattice";
         let page = format!("{base}/page/a/b");
-        let g = Group { name: "nec".into(), ships: vec!["~nec".into()], peek: vec![page.clone()], make: vec![page.clone()] };
+        let g = Group { name: "nec".into(), ships: vec!["~nec".into()], peek: vec![page.clone()], make: vec![page.clone()], ..Group::default() };
         assert_eq!(g.level(base, "a/b"), Level::Edit);
         let gone = g.with_level(base, "a/b", Level::None);
         assert!(gone.peek.is_empty() && gone.make.is_empty(), "unsharing takes the ship's own form out");
@@ -4605,7 +4630,7 @@ mod tests {
         // path is granted by `<folder>/code` only
         let base = "/apps/x/lattice";
         let (folder, index, code) = (format!("{base}/page/trip"), format!("{base}/page/trip/dir-index"), format!("{base}/page/trip/code"));
-        let g = Group { name: "nec".into(), ships: vec!["~nec".into()], peek: vec![folder.clone(), index.clone()], make: vec![] };
+        let g = Group { name: "nec".into(), ships: vec!["~nec".into()], peek: vec![folder.clone(), index.clone()], make: vec![], ..Group::default() };
         assert_eq!(g.level(base, "trip"), Level::None, "the folder's line is not the page's grant");
         let read = g.with_level(base, "trip", Level::Read);
         assert_eq!(read.peek, vec![folder.clone(), index.clone(), code.clone()]);
@@ -4619,7 +4644,7 @@ mod tests {
         assert_eq!(g.with_level(base, "trip/day", Level::Read).peek, vec![folder.clone(), index.clone(), format!("{base}/page/trip/day")]);
         assert_eq!(g.with_level(base, "trip/day", Level::Read).with_level(base, "trip/day", Level::None), g);
         // a group that does not hold the folder takes the page as the page's path, as before
-        let other = Group { name: "bud".into(), ships: vec![], peek: vec![], make: vec![] };
+        let other = Group { name: "bud".into(), ships: vec![], peek: vec![], make: vec![], ..Group::default() };
         assert_eq!(other.with_level(base, "trip", Level::Read).peek, vec![folder.clone()]);
         // index lines are not counted as paths the group reads
         assert_eq!(Group::shown(&g.peek), 1);
@@ -4628,7 +4653,7 @@ mod tests {
     #[test]
     fn a_groups_grant_on_a_page_is_set_without_touching_its_others() {
         let base = "/apps/x/lattice";
-        let g = Group { name: "team".into(), ships: vec!["~nec".into()], peek: vec![format!("{base}/page/other/code"), format!("{base}/page/dir")], make: vec![] };
+        let g = Group { name: "team".into(), ships: vec!["~nec".into()], peek: vec![format!("{base}/page/other/code"), format!("{base}/page/dir")], make: vec![], ..Group::default() };
         assert_eq!(g.level(base, "a/b"), Level::None);
         let read = g.with_level(base, "a/b", Level::Read);
         assert_eq!((read.level(base, "a/b"), read.peek.len(), read.make.len()), (Level::Read, 3, 0));

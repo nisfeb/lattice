@@ -16380,7 +16380,7 @@ mod tests {
     #[test]
     fn a_groups_ships_are_changed_only_by_a_list_that_reads() {
         let mut s = sample("welcome");
-        s.groups = vec![Group { name: "team".into(), ships: vec!["~nec".into()], peek: vec!["/x/page/a/code".into()], make: vec![] }];
+        s.groups = vec![Group { name: "team".into(), ships: vec!["~nec".into()], peek: vec!["/x/page/a/code".into()], make: vec![], ..Group::default() }];
         // a list that does not read keeps the field open and says why
         s.group_edit = Some(("team".into(), TextEdit::new("~nec Bad")));
         save_ships(&mut s);
