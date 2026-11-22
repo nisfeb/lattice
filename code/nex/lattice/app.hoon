@@ -9358,20 +9358,19 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ?:  =('' body.act)  (pure:m ~)
-  ::  reject an empty page path (levy is vacuously true on ~) so a comment can't
-  ::  land loose in the /comments root. Value-eq, not ?=, so page.act keeps its
-  ::  general `path` type (a ?= refinement makes the levy below mull-grow).
-  ?:  =(~ page.act)  (pure:m ~)
-  ?.  (levy page.act |=(s=@ta &(!=(%$ s) ((sane %ta) s))))  (pure:m ~)
-  ;<  on=?  bind:m  (comments-on page.act)
-  ?.  on  (pure:m ~)
-  ::  the page must EXIST: comments-on walks flags upward, so a folder-level
-  ::  comment-on would otherwise let any un-banned ship spray grubs under
-  ::  invented sub-paths of a commentable site.
+  ::  an empty body or page path, or a path longer than any page's, is
+  ::  dropped before anything is read (+act-ok:lc)
+  ?.  (act-ok:lc act)  (pure:m ~)
+  ::  the page must EXIST, and that is asked first: one read. +comments-on
+  ::  walks the flags upward, a read for each segment of the path, so a
+  ::  path to nothing must not reach it. And a folder-level comment-on
+  ::  would otherwise let any un-banned ship spray grubs under invented
+  ::  sub-paths of a commentable site.
   ;<  ex=?  bind:m
     (peek-exists:fio (rf root (weld /page page.act) %code))
   ?.  ex  (pure:m ~)
+  ;<  on=?  bind:m  (comments-on page.act)
+  ?.  on  (pure:m ~)
   ::  and the store is BOUNDED, for the reason the shares inbox is bounded:
   ::  anyone may poke this road, each poke files a fresh time-salted grub,
   ::  and without a cap a hostile ship grows the pier without limit. 200

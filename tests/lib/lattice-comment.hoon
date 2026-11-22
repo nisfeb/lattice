@@ -18,6 +18,23 @@
 ++  cp   `[id=@ta c=comment:lc]`[%a [pla t1 'from a planet']]
 ++  cm   `[id=@ta c=comment:lc]`[%b [mun t2 'from a moon']]
 ++  cc   `[id=@ta c=comment:lc]`[%c [com t3 'from a comet']]
+::  an action is refused before any read when its body or path is empty,
+::  or its path is longer than any page's
+++  test-act-ok
+  =/  long=path  (reap 2.000 %a)
+  =/  wide=path  ~[(crip (reap 3.000 'a'))]
+  ;:  weld
+    (expect !>((act-ok:lc [/notes/a 'hi'])))
+    (expect !>(!(act-ok:lc [/notes/a ''])))
+    (expect !>(!(act-ok:lc [~ 'hi'])))
+    (expect !>(!(act-ok:lc [long 'hi'])))
+    (expect !>(!(act-ok:lc [wide 'hi'])))
+    (expect !>(!(act-ok:lc [/notes/'' 'hi'])))
+    (expect !>(!(act-ok:lc [/notes/'A B' 'hi'])))
+    ::  the longest path the inboxes keep still passes
+    (expect !>((act-ok:lc [(reap 64 %a) 'hi'])))
+    (expect !>(!(act-ok:lc [(reap 65 %a) 'hi'])))
+  ==
 ++  ids
   |=  l=(list [id=@ta c=comment:lc])
   ^-  (list @ta)

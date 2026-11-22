@@ -7,6 +7,7 @@
 ::  other ships, and it reaches only /comments/. So a commenter can append a
 ::  comment but structurally cannot edit a page.
 ::
+/<  ls  /lib/lattice-share.hoon
 |%
 ::  +$  comment: one stored comment grub.
 ::
@@ -20,6 +21,19 @@
 ::  commenter, like the peer-page data cap.
 ::
 ++  max-body  ^-(@ud 4.096)
+::  +act-ok: is a comment action worth a read at all? Any ship may poke
+::  one, and what follows walks the page path a segment at a time, so the
+::  path is bounded here, before anything is read, as the shares and
+::  access inboxes bound theirs (+pax-ok:lattice-share: its length, its
+::  bytes, every segment sane). The body and the path may not be empty:
+::  an empty path would file a comment loose in the store's root.
+++  act-ok
+  |=  act=comment-action
+  ^-  ?
+  ?&  !=('' body.act)
+      !=(~ page.act)
+      (pax-ok:ls page.act)
+  ==
 ::  +per-author: of a page's 200 slots, how many one author may hold, its
 ::  moons counted with it and each comet on its own
 ::  (+quota-family:lattice-share).
