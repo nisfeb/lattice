@@ -38,4 +38,27 @@
     (expect-eq !>(`(list @t)`~['日本語' 'café']) !>((query-terms:li "日本語, café")))
     (expect-eq !>(`(list @t)`~['quoted']) !>((query-terms:li "“quoted”")))
   ==
+::  a token is indexed whole and by its parts, so a word that touches
+::  punctuation inside its token is still found: the text of a link, the
+::  sides of a slash, a dash or an equals sign
+++  test-index-parts
+  =/  doc  (index-terms:li ~ "read the [kubernetes](https://kubernetes.io) docs")
+  =/  long=tape  "see [Mercury](https://en.wikipedia.org/wiki/Mercury_(planet)?utm_source=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) now"
+  =/  mix  (index-terms:li ~ "client/server name=value foo,bar [[notes/todo]] ~ricsul-bilwyt foo.hoon state—of—the—art")
+  =/  got  |=([m=(map @t @ud) ws=(list @t)] (skip ws |=(w=@t (~(has by m) w))))
+  ;:  weld
+    (expect-eq !>(`(list @t)`~) !>((got doc ~['read' 'kubernetes' 'https' 'docs' 'kubernetes](https://kubernetes.io'])))
+    (expect-eq !>(2) !>((~(got by doc) 'kubernetes')))
+    ::  a link too long to keep whole still gives its words
+    (expect-eq !>(`(list @t)`~) !>((got (index-terms:li ~ long) ~['mercury' 'wikipedia' 'planet'])))
+    %+  expect-eq  !>(`(list @t)`~)
+    !>  %+  got  mix
+        :~  'client'  'server'  'name'  'value'  'foo'  'bar'  'notes'  'todo'
+            'ricsul'  'bilwyt'  'hoon'  'state'  'art'
+            'client/server'  'ricsul-bilwyt'  'foo.hoon'  'notes/todo'
+        ==
+    ::  a plain word counts once per use, and short parts and stop words stay out
+    =/  few  (index-terms:li ~ "word (word), a/b the/of")
+    (expect-eq !>([`(unit @ud)``2 | | |]) !>([(~(get by few) 'word') (~(has by few) 'the') (~(has by few) 'of') (~(has by few) 'a')]))
+  ==
 --

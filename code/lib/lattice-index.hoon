@@ -98,6 +98,14 @@
 ::  +index-terms: fold every content word in [t] into the frequency map [m].
 ::  Dropped tokens (too short / stop word) never enter the map. Surviving
 ::  tokens bump their count. This is the dedup-to-count (bag-of-words) stage.
+::
+::  A token goes in whole, so ricsul-bilwyt and foo.hoon are found as
+::  typed, and also by its parts, the runs of word bytes in it. Whole
+::  tokens alone hid every word that touches punctuation inside its
+::  token: the text of a markdown link is glued to its url, and
+::  client/server, name=value and [[notes/todo]] are one token each. A
+::  query word is still looked up whole (+query-terms), and now meets
+::  the part.
 ++  index-terms
   |=  [m=(map @t @ud) t=tape]
   ^-  (map @t @ud)
@@ -105,8 +113,25 @@
   |-  ^-  (map @t @ud)
   ?~  toks  m
   =/  nt=(unit @t)  (normalize-term i.toks)
-  ?~  nt  $(toks t.toks)
-  $(toks t.toks, m (~(put by m) u.nt +((~(gut by m) u.nt 0))))
+  =/  ps=(list @t)
+    %+  skip  (murn (word-runs i.toks) normalize-term)
+    |=(p=@t =(`p nt))
+  =/  ws=(list @t)  ?~(nt ps [u.nt ps])
+  %=  $
+    toks  t.toks
+    m     (roll ws |=([w=@t n=_m] (~(put by n) w +((~(gut by n) w 0)))))
+  ==
+::  +word-runs: the maximal runs of word bytes in a token
+++  word-runs
+  |=  t=tape
+  ^-  (list tape)
+  =|  [cur=tape out=(list tape)]
+  |-  ^-  (list tape)
+  ?~  t  (flop ?~(cur out [(flop cur) out]))
+  =/  hp=@ud  (high-punct t)
+  ?.  =(0 hp)  $(t (slag hp `tape`t), cur ~, out ?~(cur out [(flop cur) out]))
+  ?:  (is-alnum i.t)  $(t t.t, cur [i.t cur])
+  $(t t.t, cur ~, out ?~(cur out [(flop cur) out]))
 ::  +query-terms: the index terms a search query asks for, by the same
 ::  split and normalization the indexer uses (+index-terms), in the order
 ::  typed, each once. The omnibar used to split its query in the browser
