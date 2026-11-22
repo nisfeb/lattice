@@ -5128,6 +5128,8 @@ fn start_edit(s: &mut App) {
         return;
     }
     s.note.clear();
+    // that autosave was refused was said of one edit of one page: this is another
+    s.auto_held = false;
     // rich only when the page comes back from it unchanged (md::exact)
     match (p.kind == "md").then(|| md::exact(&p.body)).flatten() {
         Some(d) => {
@@ -5329,6 +5331,7 @@ fn open_today(s: &mut App) {
 /// Leaves the editor without saving. A capture never saved is dropped.
 fn cancel_edit(s: &mut App) {
     s.editing = false;
+    s.auto_held = false;
     (s.moved_wait, s.moved_save, s.moved_changed) = (None, false, false);
     // that the page changed elsewhere was said of this edit: the next one starts from the page as it then is
     (s.stale, s.moved_changed) = (false, false);
@@ -5809,6 +5812,7 @@ fn landed(s: &mut App, p: Page) {
     s.capture = false;
     s.open = Some(p);
     (s.stale, s.moved_changed) = (false, false);
+    s.auto_held = false;
     s.note = "saved".into();
     if std::mem::take(&mut s.save_again) {
         // Save was pressed meanwhile: what was typed since goes too, and the editor closes
@@ -13316,6 +13320,8 @@ fn merge_theirs(s: &mut App) {
     }
     s.open = Some(Page { body: theirs.body, rev: theirs.rev, ..p });
     (s.stale, s.moved_changed) = (false, false);
+    // the refusal that held autosave is answered: the text is counted from theirs now, and a save of it lands
+    s.auto_held = false;
     s.note = match m.conflicts.as_slice() {
         [] => "Merged: their changes are in, and yours are kept".to_owned(),
         all => format!("Merged. Yours was kept {}, where both of you wrote. Theirs is in the page\u{2019}s history", all.iter().map(|c| here::place_said(&c.place)).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(" and ")),

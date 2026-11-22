@@ -516,6 +516,55 @@ fn a_change_where_a_page_is_read_waits_for_the_save_before_it() {
 }
 
 #[test]
+fn autosave_goes_on_after_a_refusal_once_theirs_is_merged_in() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "# One\n\nfirst\n\n# Two\n\nsecond\n");
+    let mut r = Run::new(&ship);
+    r.open("notes/a");
+    start_edit(&mut r.s);
+    r.typ("mine");
+    ship.write("notes/a", "md", "# One\n\nfirst theirs\n\n# Two\n\nsecond\n");
+    r.autosave();
+    assert!(r.s.auto_held && r.s.note.contains("not saved: 409"), "the autosave is refused: {:?}", r.s.note);
+    r.sync();
+    assert!(r.s.stale);
+    merge_theirs(&mut r.s);
+    r.typ(" and more typed after the merge");
+    r.autosave();
+    assert!(ship.body("notes/a").contains("after the merge") && ship.body("notes/a").contains("first theirs"), "what is typed after the merge is autosaved: {:?}", r.s.note);
+}
+
+#[test]
+fn autosave_refused_on_one_page_is_not_held_on_the_next() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "first\n");
+    ship.write("other", "md", "other\n");
+    let mut r = Run::new(&ship);
+    r.open("notes/a");
+    start_edit(&mut r.s);
+    r.typ("mine");
+    ship.write("notes/a", "md", "theirs\n");
+    r.autosave();
+    assert!(r.s.auto_held);
+    cancel_edit(&mut r.s);
+    r.open("other");
+    start_edit(&mut r.s);
+    r.typ("typed on another page");
+    r.autosave();
+    assert!(ship.body("other").contains("typed on another page"), "the other page is autosaved. The note is {:?}", r.s.note);
+    // and a refusal still holds autosave for the edit it was of
+    ship.write("other", "md", "theirs\n");
+    r.typ(" again");
+    r.autosave();
+    let sent = ship.saves_of("other").len();
+    r.typ(" and again");
+    r.autosave();
+    assert!(r.s.auto_held && ship.saves_of("other").len() == sent, "a refused autosave is not tried again by itself");
+}
+
+#[test]
 fn a_save_answered_and_not_yet_looked_at_is_still_a_save_on_its_way() {
     let _one = one();
     let ship = Ship::start();
