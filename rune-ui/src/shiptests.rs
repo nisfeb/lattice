@@ -259,15 +259,21 @@ impl Ship {
             }
         });
         let ship = Ship { st, port };
-        // nothing waits for this address from an earlier run that was given the same port
-        let c = ship.conn();
-        c.store_queue(&api::Queue::new()).expect("the test's own folder can be written");
-        c.store_ops(&[]).expect("the test's own folder can be written");
+        // what is kept for this address is kept in a folder of the test's own, which starts empty: an earlier run given the same port left nothing in it
+        let dir = ship.dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the test's own folder can be made");
+        api::TEST_SHIP_DIRS.lock().unwrap_or_else(|e| e.into_inner()).insert(ship.conn().url, dir);
         ship
     }
 
     fn conn(&self) -> Conn {
         Conn { url: format!("http://127.0.0.1:{}", self.port), cookie: "urbauth-~zod=x".into() }
+    }
+
+    /// The folder what the window keeps for this ship is kept in.
+    fn dir(&self) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("lattice-rune-ship-{}-{}", std::process::id(), self.port))
     }
 
     fn st(&self) -> MutexGuard<'_, Stub> {
@@ -299,14 +305,17 @@ impl Ship {
 }
 
 impl Drop for Ship {
-    /// What the window kept for this address goes with it: each test has an address of its own.
+    /// What the window kept for this address goes with it, folder and all.
     fn drop(&mut self) {
-        let mark = format!("-127-0-0-1-{}.", self.port);
-        for f in api::config_dir().and_then(|d| std::fs::read_dir(d).ok()).into_iter().flatten().flatten() {
-            if f.file_name().to_string_lossy().contains(&mark) {
-                let _ = std::fs::remove_file(f.path());
-            }
+        api::TEST_SHIP_DIRS.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.conn().url);
+        let dir = self.dir();
+        // a test that made it read-only gives it back first
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
         }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -968,4 +977,25 @@ fn a_change_to_what_waits_is_made_to_what_the_file_holds_now() {
     assert_eq!(ops, [del.clone()]);
     let (ops, _) = c.change_waiting(|ops, _| api::drop_first(ops, &del)).expect("taken out");
     assert!(ops.is_empty() && c.ops().is_empty());
+}
+
+#[test]
+fn a_ship_test_leaves_nothing_for_a_later_one_given_its_address() {
+    let _one = one();
+    let ship = Ship::start();
+    let c = ship.conn();
+    let mine = format!("127.0.0.1%3A{}.", ship.port);
+    let shared = || -> Vec<String> { api::config_dir().and_then(|d| std::fs::read_dir(d).ok()).into_iter().flatten().flatten().map(|f| f.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(&mine)).collect() };
+    let before = shared();
+    // what a window keeps for its ship as it runs: the tree, what waits, and the locks beside them
+    c.keep_tree(vec![Node { path: "left-behind".into(), page: true, ..Node::default() }]).expect("kept");
+    c.change_waiting(|_, q| api::enqueue(q, &Page { name: "left-behind".into(), body: "x\n".into(), kind: "md".into(), rev: 1 }, Some(1), false, 0)).expect("put by");
+    drop(c.sending_lock());
+    let dir = ship.dir();
+    assert!(dir.join("waiting-~zod+http%3A%2F%2F127.0.0.1%3A".to_owned() + &format!("{}.json", ship.port)).exists(), "what waits is kept in the test's own folder");
+    drop(ship);
+    // a test later given the same port reads nothing of this one's
+    assert!(!dir.exists(), "the test's folder is left");
+    assert_eq!(shared(), before, "this test's files were kept among everyone's");
+    assert!(c.kept_tree().is_none_or(|(d, _)| !d.nodes.iter().any(|n| n.path == "left-behind")) && !c.queue().contains_key("left-behind"));
 }

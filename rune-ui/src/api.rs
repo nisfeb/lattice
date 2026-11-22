@@ -1052,8 +1052,18 @@ fn old_key(url: &str) -> String {
 
 /// One of a ship's own files: `what` is `kept`, `waiting`, `ops` or `prefs`.
 fn ship_file(what: &str, url: &str, ship: &str) -> Option<std::path::PathBuf> {
-    Some(session_path()?.with_file_name(format!("{what}-{}.json", ship_key(url, ship))))
+    let name = format!("{what}-{}.json", ship_key(url, ship));
+    #[cfg(test)]
+    if let Some(dir) = TEST_SHIP_DIRS.lock().unwrap_or_else(|e| e.into_inner()).get(url) {
+        return Some(dir.join(name));
+    }
+    Some(session_path()?.with_file_name(name))
 }
+
+#[cfg(test)]
+/// A folder for each address a test's stand-in ship answers at: what is kept for a ship there is
+/// made and read in it from any thread, the window's workers too, and goes with the test.
+pub(crate) static TEST_SHIP_DIRS: std::sync::Mutex<std::collections::BTreeMap<String, std::path::PathBuf>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// The file that says the files in a folder are named for their ships.
 #[cfg(not(target_arch = "wasm32"))]
