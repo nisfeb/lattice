@@ -399,4 +399,23 @@
     ::  an unclosed fence is code to the end
     (yes (has "<code>unclosed\0a\0a[^1]: note" (r 'p[^1]\0a\0a```\0aunclosed\0a\0a[^1]: note')))
   ==
+::  a link's address may be as long as 4,096 characters, as in the
+::  browser's preview. A reference label too.
+++  test-long-link
+  =/  u=tape  (weld "https://x.example/" (reap 3.000 'a'))
+  =/  lnk=tape  (weld "<a href=\"" u)
+  ;:  weld
+    (yes (has lnk (r (crip :(weld "[t](" u ")")))))
+    =/  i=tape  :(weld "/" (reap 3.000 'a') ".png")
+    (yes (has (weld "<img src=\"" i) (r (crip :(weld "![t](" i ")")))))
+    (yes (has lnk (r (crip :(weld "[t][" (reap 1.000 'k') "]\0a\0a[" (reap 1.000 'k') "]: " u)))))
+    ::  past the cap it is text, as in the browser
+    (yes !(has "<a href" (r (crip :(weld "[t](https://x.example/" (reap 5.000 'a') ")")))))
+  ==
+::  a reference label's scan stops where another link starts, as the
+::  ( ) scan does: a run of "[a][" costs one pass
+++  test-open-refs-bounded
+  =/  o=tape  (zing (reap 30.000 "[a]["))
+  =/  h=tape  (r (crip :(weld o " [x][k] " o "\0a\0a[k]: /u")))
+  (yes (has "<a href=\"/u\"" h))
 --

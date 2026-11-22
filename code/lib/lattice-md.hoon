@@ -129,11 +129,11 @@
 ::  2K is far longer than any real link text, code span or emphasis run, so
 ::  no realistic document renders differently.
 ++  scan-cap  ^~((mul 2 1.024))
-::  +link-scan-cap: lookahead for a link's ( ) or [ref] tail. Reached only
-::  after a bracket matched, so a tight bound is safe (real URLs and
-::  reference labels are far shorter), and it stops "[a](" spam from costing
-::  a full-tail scan per link.
-++  link-scan-cap  ^~(512)
+::  +link-scan-cap: lookahead for a link's ( ) or [ref] tail, as long as
+::  the browser's preview looks (4,096 characters: a signed or tracking
+::  url runs past 512). Each scan also stops where another link starts
+::  (+find-stop), so "[a](" spam costs one pass, not a full cap per link.
+++  link-scan-cap  ^~(4.096)
 ::  +stop-run: how many characters at the head of `t` are not in `stops`,
 ::  a bit mask of byte values (see +stop-mask).
 ++  stop-run
@@ -226,7 +226,7 @@
   ^-  (unit [url=tape title=tape rest=tape])
   ?~  t  ~
   ?.  =('[' i.t)  ~
-  =/  close  (find-cap "]" t.t link-scan-cap)
+  =/  close  (find-stop ']' t.t link-scan-cap "](")
   ?~  close  ~
   =/  key0=tape  (sc u.close t.t)
   =/  rest=tape  (sl +(u.close) t.t)
