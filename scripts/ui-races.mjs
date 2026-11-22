@@ -6,6 +6,7 @@
 //
 //    a parked save that has nothing to send leaves the window able to save
 //    text typed while a stale save is settled is merged, not saved over it
+//    a refresh read answered after a later save does not paint over it
 //
 //  No ship: lib/stub-ship.mjs stands in for the routes the editor uses and
 //  serves the built app.js, and holds answers back to force the order.
@@ -124,6 +125,39 @@ cases.settleOverlap = async () => {
   check('the bar says it is not saved', await p.evaluate(() => !document.querySelector('#casbar').hidden), await status(p));
   const kept = [...x.S.pages.keys()].filter((k) => k.startsWith('conflicts/mine-'));
   check('and a copy of it is kept', kept.length === 1 && x.S.pages.get(kept[0]).body.startsWith('line1Z'), kept.join(' '));
+  await x.done();
+};
+
+//  A background refresh reads the open page. Before its answer lands the
+//  user types and saves, and that save's answer lands first. The late
+//  answer holds the text from before the edit.
+cases.lateRead = async () => {
+  const x = await up({ 'n/a': 'alpha\n' }, '?name=n/a');
+  const p = x.page;
+  let held = null, go;
+  const gate = new Promise((r) => { go = r; });
+  x.S.hook = async (ev, S) => {
+    //  the tree read fails, so the focus refresh reads the open page
+    if (ev.path === 'page-dump') return { code: 500, body: {} };
+    if (ev.path !== 'page-source' || ev.q.render || held) return null;
+    const was = S.pages.get('n/a');
+    held = { body: was.body, kind: was.kind, rev: was.rev, share: 'private', comments: false };
+    await gate;
+    return { code: 200, body: held };
+  };
+  await p.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await waitFor(() => held, 35000, 50);
+  check('a refresh read of the page is on the wire', !!held);
+  await typeEnd(p, 'TYPED-1 ');
+  await p.keyboard.down('Control'); await p.keyboard.press('s'); await p.keyboard.up('Control');
+  await waitFor(() => body(x, 'n/a').includes('TYPED-1'), 8000, 50);
+  await sleep(300);
+  go();
+  await sleep(1000);
+  check.eq('the late answer does not replace the saved text', await ed(p), 'alpha\nTYPED-1 ');
+  await typeEnd(p, 'TYPED-2');
+  await waitFor(() => body(x, 'n/a').includes('TYPED-2'), 8000, 50);
+  check.eq('and the next save keeps it', body(x, 'n/a'), 'alpha\nTYPED-1 TYPED-2');
   await x.done();
 };
 

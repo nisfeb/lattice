@@ -11667,6 +11667,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   async function refreshOpen() {
     if (!current || curFolder || dirty || document.hidden || viewingRev !== null) return;
     const wasCurrent = current, wasMode = mode;
+    const shown = src.value;
     if (await offGet(mode === 'know' ? 'know:' + current : current)) return;
     const url = mode === 'know'
       ? api + '/know-read?key=' + encodeURIComponent(current)
@@ -11681,6 +11682,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     } catch { return; }
     if (dirty || current !== wasCurrent || mode !== wasMode) return;
     if (curFolder || viewingRev !== null) return;
+    if (src.value !== shown) return;
+    if (mode !== 'know' && d && isRev(d.rev) && d.rev < baseFor(wasCurrent, curRev)) return;
     if (notFound) {
       if (mode !== 'know') {
         const doomed = current;
