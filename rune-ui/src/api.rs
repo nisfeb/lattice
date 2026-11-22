@@ -328,6 +328,14 @@ pub fn readers(groups: &[Group], name: &str) -> Vec<Reader> {
     out
 }
 
+/// The ship a session cookie names (`urbauth-~zod=..` is `~zod`'s), when the name is a ship's.
+/// The name comes from whatever answered the sign-in and goes on to name files and a folder to
+/// mount at, so one that is not a ship's name is no session at all.
+pub fn cookie_ship(cookie: &str) -> Option<&str> {
+    let name = cookie.split('=').next()?.strip_prefix("urbauth-")?;
+    (name.starts_with('~') && ship_name(name).as_deref() == Some(name)).then_some(name)
+}
+
 /// A ship's name as typed, with its sig: `nec` and `~nec` are both `~nec`.
 /// `None` for text that cannot be a ship's name.
 pub fn ship_name(typed: &str) -> Option<String> {
@@ -2837,10 +2845,9 @@ impl Conn {
                 Err(ureq::Error::Status(code, _)) => return Err(login_refused(&url, code)),
                 Err(e) => return Err(format!("{url} does not answer: {e}")),
             };
-            let cookie = res.header("set-cookie").and_then(|c| c.split(';').next()).unwrap_or("").trim().to_owned();
-            if !cookie.starts_with("urbauth-~") {
-                return Err("the ship gave no session".into());
-            }
+            // the ship's own among the cookies set: something in front of it may set one of its own, before or after
+            let cookie = res.all("set-cookie").into_iter().filter_map(|c| c.split(';').next()).map(str::trim).find(|c| cookie_ship(c).is_some());
+            let Some(cookie) = cookie.map(str::to_owned) else { return Err("the ship gave no session".into()) };
             let c = Conn { url, cookie };
             // the ship is there and took the code: is lattice on it? Where that cannot be told, it is let through
             if let Some(why) = lattice_missing(c.ship(), &c.call("GET", "streams", None)) {
@@ -4110,6 +4117,22 @@ mod tests {
         let over = read_text(get(), 11).unwrap_err();
         assert!(over.starts_with("200: ") && over.contains("too large"), "{over}");
         assert!(!gone(&over), "the ship answered: what was kept is not read in its place");
+    }
+
+    #[test]
+    fn a_session_is_taken_only_when_it_names_a_ship_and_wherever_it_stands_among_the_cookies() {
+        let ship = |cookies: &'static str| serve(move |r| if r.path == "/~/login" { answer("204 No Content", cookies, b"") } else { ok(r#"{"base":"/b","streams":{}}"#) }).0;
+        // a name that is no ship's would name a folder to mount at, outside the home directory
+        for bad in ["set-cookie: urbauth-~zod/../../../../../tmp/elsewhere=0v1; Path=/\r\n", "set-cookie: urbauth-~Zod=0v1\r\n", "set-cookie: urbauth-~zod.x=0v1\r\n", "set-cookie: urbauth-~=0v1\r\n", "set-cookie: urbauth-~zod bus=0v1\r\n", "set-cookie: lb=sticky1; Path=/\r\n"] {
+            assert_eq!(Conn::login(&ship(bad), "code").map(|c| c.cookie), Err("the ship gave no session".into()), "{bad}");
+        }
+        assert_eq!(Conn::login(&ship("set-cookie: urbauth-~sampel-palnet=0v1.x; Path=/; Max-Age=604800\r\n"), "code").map(|c| c.ship().to_owned()), Ok("~sampel-palnet".into()));
+        // something in front of the ship set a cookie of its own first, or after
+        assert_eq!(Conn::login(&ship("set-cookie: lb=sticky1; Path=/\r\nset-cookie: urbauth-~zod=0v1.x; Path=/; Max-Age=604800\r\nset-cookie: later=1\r\n"), "code").map(|c| c.cookie), Ok("urbauth-~zod=0v1.x".into()));
+        // and one already kept under such a name is not read back as a ship signed in
+        let kept = crate::accounts::Accounts::parse(r#"{"list":[{"url":"http://a","cookie":"urbauth-~zod/../x=0v1"},{"url":"http://b","cookie":"urbauth-~zod=0v1"}],"front":"http://a"}"#);
+        assert_eq!((kept.list.len(), kept.list[0].url.as_str(), kept.front), (1, "http://b", None));
+        assert!(crate::accounts::Accounts::from_session(r#"{"url":"http://a","cookie":"urbauth-~zod/../x=0v1"}"#, 1).is_none());
     }
 
     #[test]

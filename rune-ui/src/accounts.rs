@@ -64,7 +64,8 @@ impl Accounts {
     /// the worst of it is a sign-in asked for again.
     pub fn parse(text: &str) -> Accounts {
         let mut a: Accounts = serde_json::from_str(text).unwrap_or_default();
-        a.list.retain(|x| !x.url.is_empty() && x.cookie.starts_with("urbauth-~"));
+        // a session whose name is no ship's is not one: the name goes on to name files and a folder to mount at
+        a.list.retain(|x| !x.url.is_empty() && crate::api::cookie_ship(&x.cookie).is_some());
         if a.front.as_deref().is_some_and(|f| a.get(f).is_none()) {
             a.front = None;
         }
@@ -75,7 +76,7 @@ impl Accounts {
     pub fn from_session(session: &str, now: u64) -> Option<Account> {
         let v: serde_json::Value = serde_json::from_str(session).ok()?;
         let (url, cookie) = (plain(v["url"].as_str()?), v["cookie"].as_str()?.trim());
-        (!url.is_empty() && cookie.starts_with("urbauth-~")).then(|| Account { url: url.to_owned(), cookie: cookie.to_owned(), added: now, used: now, ..Account::default() })
+        (!url.is_empty() && crate::api::cookie_ship(cookie).is_some()).then(|| Account { url: url.to_owned(), cookie: cookie.to_owned(), added: now, used: now, ..Account::default() })
     }
 
     pub fn get(&self, url: &str) -> Option<&Account> {
