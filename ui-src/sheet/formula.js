@@ -663,6 +663,3 @@ export function cutFormula(stored, b, dr, dc, from, to) {
   }
   return head + out + body.slice(pos);
 }
-
-//  does a stored formula hold a reference that points at nothing
-export const hasBadRef = (stored) => stored.includes('#REF!');

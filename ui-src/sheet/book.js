@@ -530,6 +530,12 @@ export class Book {
         //  the new cells take the look of the column to their left
         const left = row.cells[i - 1];
         row.cells.splice(i, 0, blank(cnt, left && !left.covered ? left.st : null));
+        //  cells pushed past the last column fall off, as the columns do
+        let over = row.cells.reduce((a, c) => a + c.rep, 0) - MAX_COLS;
+        while (over > 0 && row.cells.length) {
+          const last = row.cells[row.cells.length - 1];
+          if (last.rep > over) { last.rep -= over; last.dirty = true; over = 0; } else { over -= last.rep; row.cells.pop(); }
+        }
       } else {
         let j = splitAt(row.cells, at + cnt, cloneCell);
         if (j < 0) j = row.cells.length;

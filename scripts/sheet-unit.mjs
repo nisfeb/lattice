@@ -754,6 +754,22 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   check('a moved rule keeps the line break in its text as a reference', m.text().includes('table:condition="of:cell-content-is-in-list(&quot;a&#10;b&quot;;[.B3])"'), (/table:condition="[^"]*"/.exec(m.text()) || [''])[0]);
 }
 {
+  //  a column insert into a row already as long as the sheet
+  const full = HEAD + '<table:table table:name="S"><table:table-column table:number-columns-repeated="16384"/>'
+    + '<table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell><table:table-cell table:style-name="ce1" table:number-columns-repeated="16383"/></table:table-row>'
+    + '<table:table-row><table:table-cell table:number-columns-repeated="16383"/><table:table-cell office:value-type="string"><text:p>last</text:p></table:table-cell></table:table-row>'
+    + '<table:table-row><table:table-cell table:number-columns-repeated="16384"/></table:table-row></table:table>' + TAIL;
+  const b = new Book(full);
+  check('insert two columns into rows that reach the last column', b.shift(0, 'c', 1, 2).ok, b.error);
+  const d = parseFods(b.text());
+  check.eq('no row is longer than the sheet', d.sheets[0].rows.map((r) => r.cells.reduce((n, c) => n + c.rep, 0)).join(), '16384,16384,16384');
+  check.eq('nor the column list', d.sheets[0].cols.reduce((n, c) => n + c.rep, 0), 16384);
+  check.eq('the cell pushed off the edge is gone, and the first is where it was', cellAt(d.sheets[0], 1, 16383).text + '|' + cellAt(d.sheets[0], 0, 0).v, '|1');
+  const one = new Book(full);
+  one.shift(0, 'c', 16383, 1);
+  check.eq('an insert before the last column pushes that cell off', new Book(one.text()).cell(0, 1, 16383).text + '|' + parseFods(one.text()).sheets[0].rows.map((r) => r.cells.reduce((n, c) => n + c.rep, 0)).join(), '|16384,16384,16384');
+}
+{
   //  results Calc gives, each run in LibreOffice
   const b = new Book(blankText);
   const at = (f) => { b.enter(0, 0, 0, f); return b.cell(0, 0, 0).text; };

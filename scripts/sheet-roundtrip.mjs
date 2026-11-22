@@ -85,6 +85,17 @@ const CASES = {
   'p-no-calcext': ['01-values', (b) => { b.enter(0, 1, 1, 'changed'); b.enter(0, 2, 1, '43'); b.enter(0, 17, 1, '=B3*2'); b.enter(0, 18, 1, '=1/0'); }, null,
     (t) => t.replace(/ xmlns:calcext="[^"]*"/, '').replace(/ calcext:[a-z-]+="[^"]*"/g, '')],
   'q-whole-rows': ['02-formulas', (b) => { b.enter(0, 40, 0, '=SUM(2:5)'); b.enter(0, 41, 0, '=COUNT(A:A)+MAX(B:B)'); }],
+  //  the review of release 145: a formula with a line break in its text,
+  //  one that cannot be read (kept as text), a date that does not exist
+  //  and a number too large (text), a date with a time, results that
+  //  differed from Calc's, and position functions after an insert
+  'r-review-145': ['02-formulas', (b) => {
+    b.enter(0, 40, 0, '="a\nb"&A2'); b.enter(0, 41, 0, '=IF(A2>1,"x"'); b.enter(0, 42, 0, '2024-02-31'); b.enter(0, 43, 0, '5E1000');
+    b.enter(0, 44, 0, '2024-01-15 10:30:00'); b.enter(0, 45, 0, '=MROUND(-7.5,5)&"|"&ROUND(1.4999999999,0)&"|"&TRUNC(0.29*100)&"|"&ROUND(2.5,400)');
+    b.enter(0, 46, 0, '=COUNTIF(A1:A100,"")&"|"&COUNTIF(F1:F9,"<>x")&"|"&SUMIF(F1:F9,"",A1:A9)'); b.enter(0, 47, 0, '=FACT(171)'); b.enter(0, 48, 0, '=FACT(-1)');
+    b.enter(0, 49, 0, '=SUBSTITUTE("hello","l","X",0)'); b.enter(0, 50, 0, '=REPLACE("abc",0,1,"x")'); b.enter(0, 51, 0, '=ROW()&"|"&INDEX(A1:A9,3)&"|"&ROWS(A1:A9)&"|"&MATCH(10,A1:A9,0)');
+    must(b.shift(0, 'r', 1, 1)); must(b.shift(0, 'c', 0, 1));
+  }],
   'n-values': ['01-values', (b) => { b.enter(0, 9, 1, '40'); b.enter(0, 10, 1, '99.5'); b.enter(0, 11, 1, '2027-02-28'); b.enter(0, 12, 1, '07:05:09'); b.enter(0, 7, 1, '0.005'); b.enter(0, 13, 1, 'false'); }],
 };
 for (const n of readdirSync(dir).filter((f) => f.endsWith('.fods')).sort()) CASES['z-untouched-' + n.slice(0, -5)] = [n.slice(0, -5), null];
