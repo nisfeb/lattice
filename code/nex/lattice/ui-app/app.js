@@ -4182,15 +4182,23 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   function setSel(a, b){ ta.selectionStart = a; ta.selectionEnd = b; }
   function clamp(n, lo, hi){ return n < lo ? lo : (n > hi ? hi : n); }
 
+  function pairAt(v, i){ return (v.charCodeAt(i) & 0xfc00) === 0xd800 && (v.charCodeAt(i + 1) & 0xfc00) === 0xdc00; }
+  function oneChar(k){ return k.length === 1 || (k.length === 2 && pairAt(k, 0)); }
+  function nextCh(p){ return p + (pairAt(val(), p) ? 2 : 1); }
+  function prevCh(p){ return p - (p >= 2 && pairAt(val(), p - 2) ? 2 : 1); }
+  function fwdCh(p, n, hi){ while(n-- > 0 && p < hi) p = nextCh(p); return p < hi ? p : hi; }
+  function backCh(p, n, lo){ while(n-- > 0 && p > lo) p = prevCh(p); return p > lo ? p : lo; }
+  function snapCh(p){ return p > 0 && pairAt(val(), p - 1) ? p - 1 : p; }
+
   function lineStart(p){ var v = val(); var i = v.lastIndexOf("\n", p - 1); return i + 1; }
   function lineEnd(p){ var v = val(); var i = v.indexOf("\n", p); return i < 0 ? v.length : i; }
   function lineText(p){ return val().slice(lineStart(p), lineEnd(p)); }
   function col(p){ return p - lineStart(p); }
-  function lineLastCol(p){ var s = lineStart(p), e = lineEnd(p); return e > s ? e - 1 : s; }
+  function lineLastCol(p){ var s = lineStart(p), e = lineEnd(p); return e > s ? prevCh(e) : s; }
   function normClamp(p){
     var ls = lineStart(p), le = lineEnd(p);
     if(le === ls) return ls;              // empty line
-    return clamp(p, ls, le - 1);
+    return snapCh(clamp(p, ls, le - 1));
   }
   function firstNonBlank(p){
     var ls = lineStart(p), le = lineEnd(p), v = val(), i = ls;
@@ -4201,6 +4209,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if(MODE === "insert") return;
     var p = pos(), last = lineLastCol(p);
     if(p > last) setPos(last);
+    else if(snapCh(p) !== p) setPos(snapCh(p));
   }
 
   /* ============================================================================
@@ -4252,7 +4261,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   function toNormal(){
     if(MODE === "insert"){                 // vim steps caret left when leaving insert
       var p = pos(), ls = lineStart(p);
-      if(p > ls) setPos(p - 1);
+      if(p > ls) setPos(prevCh(p));
     }
     MODE = "normal"; pending = ""; count = ""; fixCaret(); setInd();
   }
@@ -4263,7 +4272,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
      ============================================================================ */
   function visRange(){
     var a = visAnchor, b = visCaret;
-    var lo = Math.min(a, b), hi = Math.max(a, b) + 1;
+    var lo = Math.min(a, b), hi = nextCh(Math.max(a, b));
     return [lo, clamp(hi, 0, val().length)];
   }
   function visSync(){
@@ -4313,12 +4322,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       var cls = charClass(v[p]);
       while(p + 1 < len && charClass(v[p + 1]) === cls) p++;
     }
-    return clamp(p, 0, len);
+    return snapCh(clamp(p, 0, len));
   }
   function changeWordEnd(p, n){
     var v = val();
     if(charClass(v[p]) === "sp" || charClass(v[p]) === "nl") return wordFwd(p, n);
-    return clamp(wordEnd(p, n) + 1, p, v.length);
+    return clamp(nextCh(wordEnd(p, n)), p, v.length);
   }
   function vertical(p, delta){
     var v = val(), c = col(p), cur = p;
@@ -4336,7 +4345,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
     }
     var ns = lineStart(cur), maxc = MODE === "visual" ? lineEnd(cur) : lineLastCol(cur);
-    return clamp(ns + c, ns, maxc);
+    return snapCh(clamp(ns + c, ns, maxc));
   }
   function paraFwd(p, n){
     var v = val(), len = v.length, i = p;
@@ -4367,9 +4376,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   function findChar(p, ch, forward, till){
     var v = val(), ls = lineStart(p), le = lineEnd(p);
     if(forward){
-      for(var i = p + 1; i < le; i++) if(v[i] === ch) return till ? i - 1 : i;
+      for(var i = nextCh(p); i < le; i++) if(v.startsWith(ch, i)) return till ? prevCh(i) : i;
     } else {
-      for(var j = p - 1; j >= ls; j--) if(v[j] === ch) return till ? j + 1 : j;
+      for(var j = p - 1; j >= ls; j--) if(v.startsWith(ch, j)) return till ? j + ch.length : j;
     }
     return -1;
   }
@@ -4441,7 +4450,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         setPos(firstNonBlank(ls));
       }
     } else {
-      var at = after ? (v.length === 0 || v[p] === "\n" ? p : p + 1) : p;
+      var at = after ? (v.length === 0 || v[p] === "\n" ? p : nextCh(p)) : p;
       insertAt(at, reg);
       setPos(normClamp(at + reg.length - 1));
     }
@@ -4455,9 +4464,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     switch(key){
       case "w": return { end: op === "c" ? changeWordEnd(p, n) : wordFwd(p, n), linewise:false };
       case "b": return { end: wordBack(p, n), linewise:false };
-      case "e": return { end: wordEnd(p, n) + 1, linewise:false };
-      case "h": return { end: Math.max(lineStart(p), p - n), linewise:false };
-      case "l": case " ": return { end: Math.min(lineEnd(p), p + n), linewise:false };
+      case "e": return { end: nextCh(wordEnd(p, n)), linewise:false };
+      case "h": return { end: backCh(p, n, lineStart(p)), linewise:false };
+      case "l": case " ": return { end: fwdCh(p, n, lineEnd(p)), linewise:false };
       case "0": return { end: lineStart(p), linewise:false };
       case "^": return { end: firstNonBlank(p), linewise:false };
       case "$": return { end: lineEnd(vertical(p, n - 1)), linewise:false };
@@ -4547,11 +4556,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
     if(pending === "r"){
       var n0 = eff(); pending = "";
-      if(k.length === 1){
-        var p0 = pos(), le0 = lineEnd(p0);
-        if(p0 + n0 <= le0){
-          var rep = ""; for(var ri = 0; ri < n0; ri++) rep += k;
-          replaceRange(p0, p0 + n0, rep, p0 + n0 - 1);
+      if(oneChar(k)){
+        var p0 = pos(), le0 = lineEnd(p0), e0 = p0, ri;
+        for(ri = 0; ri < n0 && e0 < le0; ri++) e0 = nextCh(e0);
+        if(ri === n0){
+          var rep = ""; for(ri = 0; ri < n0; ri++) rep += k;
+          replaceRange(p0, e0, rep, p0 + rep.length - k.length);
         }
       }
       count = ""; setInd(); return true;
@@ -4560,7 +4570,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       var fwd = (pending === "f" || pending === "t");
       var till = (pending === "t" || pending === "T");
       var nF = eff(); pending = "";
-      if(k.length === 1){
+      if(oneChar(k)){
         var base = (MODE === "visual") ? visCaret : pos();
         var target = base;
         for(var ci = 0; ci < nF; ci++){
@@ -4607,8 +4617,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if(MODE === "visual"){
       var vc = visCaret, moved = null;
       switch(k){
-        case "h": case "ArrowLeft":  moved = clamp(vc - n, 0, val().length); break;
-        case "l": case "ArrowRight": case " ": moved = clamp(vc + n, 0, val().length); break;
+        case "h": case "ArrowLeft":  moved = backCh(vc, n, 0); break;
+        case "l": case "ArrowRight": case " ": moved = fwdCh(vc, n, val().length); break;
         case "j": case "ArrowDown":  moved = vertical(vc, n); break;
         case "k": case "ArrowUp":    moved = vertical(vc, -n); break;
         case "w": moved = wordFwd(vc, n); break;
@@ -4647,8 +4657,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
     var p = pos();
     switch(k){
-      case "h": case "ArrowLeft":  setPos(clamp(p - n, lineStart(p), p)); fixCaret(); break;
-      case "l": case "ArrowRight": case " ": setPos(clamp(p + n, p, lineLastCol(p))); break;
+      case "h": case "ArrowLeft":  setPos(backCh(p, n, lineStart(p))); fixCaret(); break;
+      case "l": case "ArrowRight": case " ": setPos(fwdCh(p, n, Math.max(p, lineLastCol(p)))); break;
       case "j": case "ArrowDown":  setPos(vertical(p, n)); break;
       case "k": case "ArrowUp":    setPos(vertical(p, -n)); break;
       case "w": setPos(normClamp(wordFwd(p, n))); break;
@@ -4664,7 +4674,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       case "f": case "F": case "t": case "T": pending = k; setInd(); return true;
 
       case "i": toInsert(); break;
-      case "a": if(lineText(p).length) setPos(p + 1); toInsert(); break;
+      case "a": if(lineText(p).length) setPos(nextCh(p)); toInsert(); break;
       case "I": setPos(firstNonBlank(p)); toInsert(); break;
       case "A": setPos(lineEnd(p)); toInsert(); break;
       case "o": { var le = lineEnd(p); insertAt(le, "\n"); setPos(le + 1); toInsert(); break; }
@@ -4678,7 +4688,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       case "D": { var le2 = lineEnd(p); yank(p, le2, false); deleteRange(p, le2, p); fixCaret(); break; }
       case "C": { var le3 = lineEnd(p); yank(p, le3, false); deleteRange(p, le3, p); setPos(p); toInsert(); break; }
       case "s": {
-        var le4 = lineEnd(p), end4 = clamp(p + n, p, le4);
+        var le4 = lineEnd(p), end4 = fwdCh(p, n, le4);
         if(end4 > p) yank(p, end4, false);
         deleteRange(p, end4, p); setPos(p); toInsert();
         break;
@@ -4686,12 +4696,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       case "S": linewiseChange(p, n); break;
 
       case "x": {
-        var le5 = lineEnd(p), end5 = clamp(p + n, p, le5);
+        var le5 = lineEnd(p), end5 = fwdCh(p, n, le5);
         if(end5 > p){ yank(p, end5, false); deleteRange(p, end5, p); fixCaret(); }
         break;
       }
       case "X": {
-        var ls6 = lineStart(p), start6 = clamp(p - n, ls6, p);
+        var ls6 = lineStart(p), start6 = backCh(p, n, ls6);
         if(start6 < p){ yank(start6, p, false); deleteRange(start6, p, start6); }
         break;
       }

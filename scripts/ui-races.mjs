@@ -11,6 +11,7 @@
 //      when the page was opened offline and when it was left and reopened
 //    a queued edit with no rev to claim still gets their text kept
 //    text typed before the fresh read lands is on the device when hidden
+//    vim mode never splits a two-unit character (not a race: see the case)
 //
 //  No ship: lib/stub-ship.mjs stands in for the routes the editor uses and
 //  serves the built app.js, and holds answers back to force the order.
@@ -300,6 +301,84 @@ cases.hidden = async () => {
   check('the queued copy is gone', !(await queue(p)).length, JSON.stringify(await queue(p)));
   check('and nothing was made a conflict', !kept(x), [...x.S.pages.keys()].join(' '));
   check('or written twice', x.S.saves().length === 1, x.S.saves().map((e) => e.path + ' ' + JSON.stringify(e.body)).join(' '));
+  await x.done();
+};
+
+//  Not a race, but it needs the real editor and real keys, and no ship:
+//  vim mode on characters outside the BMP (an emoji is two UTF-16 units).
+//  No command may leave half of one in the text or rest the caret inside it.
+cases.vimAstral = async () => {
+  const x = await up({ 'n/a': 'x\n' }, '?name=n/a');
+  const p = x.page;
+  await p.evaluate(() => { localStorage.setItem('edVim', '1'); localStorage.setItem('latAutosave', '0'); });
+  await p.reload({ waitUntil: 'domcontentloaded' });
+  await waitFor(async () => (await ed(p)) === 'x\n', 8000, 100);
+  await sleep(500);
+  const E = '\u{1F600}';
+  const show = (t) => JSON.stringify(t).replace(/[\ud800-\udfff]/g, (c) => '\\u' + c.charCodeAt(0).toString(16));
+  //  `keys`: one per key. A key of more than one character that is not a
+  //  key name (the emoji) is sent as a keydown of its own, as an IME does.
+  const run = async (text, at, keys, want, caret) => {
+    await p.focus('#src');
+    await p.evaluate((t) => {
+      const s = document.querySelector('#src');
+      s.value = t; s.dispatchEvent(new Event('input', { bubbles: true }));
+    }, text);
+    await p.keyboard.press('Escape');
+    await p.evaluate((at) => { document.querySelector('#src').setSelectionRange(at, at); }, at);
+    for (const k of keys) {
+      if (k === E) await p.evaluate((k) => document.querySelector('#src').dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })), k);
+      else if (k.length > 1) await p.keyboard.press(k);
+      else await p.keyboard.type(k);
+    }
+    const r = await p.evaluate(() => { const s = document.querySelector('#src'); return { v: s.value, a: s.selectionStart }; });
+    const inside = (r.v.charCodeAt(r.a) & 0xfc00) === 0xdc00;
+    const name = show(text) + ' @' + at + ' ' + keys.join(' ').replace(E, 'emoji');
+    check(name, r.v === want && !inside && (caret === undefined || r.a === caret),
+      'want ' + show(want) + (caret === undefined ? '' : ' caret ' + caret) + ' got ' + show(r.v) + ' caret ' + r.a);
+  };
+  await run('abc', 0, ['l', 'x', 'p'], 'acb', 2);
+  await run('a' + E + 'b', 0, ['l', 'x', 'p'], 'ab' + E, 2);
+  await run('a' + E + 'b', 0, ['l', 'x', 'P'], 'a' + E + 'b', 1);
+  await run(E + 'b', 0, ['y', 'l', 'p'], E + E + 'b', 2);
+  await run('a' + E + 'b', 1, ['d', 'l', 'p'], 'ab' + E, 2);
+  await run('a' + E + 'b', 3, ['d', 'h', 'P'], 'a' + E + 'b', 1);
+  await run(E + ' b', 0, ['v', 'y', '$', 'p'], E + ' b' + E, 4);
+  await run(E + E, 0, ['v', 'l', 'y', 'P'], E + E + E + E, 2);
+  await run(E + E + 'a', 2, ['v', 'h', 'd'], 'a', 0);
+  await run('ab' + E, 0, ['$'], 'ab' + E, 2);
+  await run('ab' + E, 0, ['$', 'r', 'z'], 'abz', 2);
+  await run('ab' + E, 0, ['A', 'Escape'], 'ab' + E, 2);
+  await run('abc', 0, ['r', E], E + 'bc', 0);
+  await run(E + E + 'c', 0, ['2', 'r', 'z'], 'zzc', 1);
+  await run(E + E, 0, ['l'], E + E, 2);
+  await run(E + E, 0, ['l', 'l', 'h'], E + E, 0);
+  await run('a' + E + 'b', 1, ['s', 'Z', 'Escape'], 'aZb', 1);
+  await run('a' + E + 'b', 1, ['a', 'Z', 'Escape'], 'a' + E + 'Zb', 3);
+  await run('a' + E + 'b', 3, ['X'], 'ab', 1);
+  await run('ab ' + E + E + ' cd', 0, ['w', 'e'], 'ab ' + E + E + ' cd', 5);
+  await run('ab ' + E + E + ' cd', 3, ['d', 'e'], 'ab  cd', 3);
+  await run('ab ' + E + E + ' cd', 3, ['c', 'w', 'Z', 'Escape'], 'ab Z cd', 3);
+  await run('x' + E + 'y', 0, ['f', E], 'x' + E + 'y', 1);
+  await run('x' + E + 'y', 0, ['f', 'y', 'F', E], 'x' + E + 'y', 1);
+  await run('xx' + E + 'y', 0, ['t', E], 'xx' + E + 'y', 1);
+  await run('x' + E + E + 'y', 0, ['f', 'y', 'T', 'x'], 'x' + E + E + 'y', 1);
+  await run('x' + E + 'y', 3, ['T', E], 'x' + E + 'y', 3);
+  await run(E + E + E + '\nabcd', 10, ['k'], E + E + E + '\nabcd', 2);
+  await run(E + E + E + '\nabcd', 10, ['v', 'k', 'd'], E, 0);
+  //  and plain text moves as it did
+  await run('abc def', 0, ['w'], 'abc def', 4);
+  await run('abc def', 0, ['d', 'e'], ' def', 0);
+  await run('abc', 0, ['$'], 'abc', 2);
+  await run('abc', 0, ['2', 'x'], 'c', 0);
+  await run('abc', 2, ['X'], 'ac', 1);
+  await run('abc', 0, ['3', 'r', 'z'], 'zzz', 2);
+  await run('ab', 0, ['3', 'r', 'z'], 'ab', 0);
+  await run('a\nb', 0, ['l'], 'a\nb', 0);
+  await run('abcabc', 0, ['2', 'f', 'c'], 'abcabc', 5);
+  await run('abc', 0, ['t', 'c'], 'abc', 1);
+  await run('abc', 0, ['v', 'l', 'd'], 'c', 0);
+  await run('abc', 1, ['a', 'Z', 'Escape'], 'abZc', 2);
   await x.done();
 };
 
