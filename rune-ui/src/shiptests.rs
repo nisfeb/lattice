@@ -483,6 +483,27 @@ fn a_renamed_page_edited_on_is_saved_under_its_new_name_once_its_revision_is_rea
 }
 
 #[test]
+fn read_then_sign_out_sends_the_save_once() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "first\n");
+    let mut r = Run::new(&ship);
+    r.open("notes/a");
+    start_edit(&mut r.s);
+    r.typ("more");
+    ship.st().slow = 0.6;
+    to_read(&mut r.s);
+    assert!(r.s.drain_req.is_pending(), "the sending is on its way");
+    r.secs(0.2);
+    let c = ship.conn();
+    sign_out_asked(&mut r.s, false);
+    // what the signing out does before it ends the session (`api::end_session`, which a test does not run)
+    c.send_waiting(&std::sync::atomic::AtomicBool::new(false));
+    assert_eq!(ship.saves_of("notes/a").len(), 1, "the one edit was sent more than once");
+    assert!(ship.body("notes/a").contains("more") && c.queue().is_empty());
+}
+
+#[test]
 fn a_change_where_a_page_is_read_waits_for_the_save_before_it() {
     let _one = one();
     let ship = Ship::start();
@@ -614,4 +635,76 @@ fn a_ship_that_does_not_answer_a_save_is_still_taken_to_be_away() {
     ship.st().fail = 0;
     r.sync();
     assert!(r.s.offline.is_none() && ship.body("notes/a") == "firstmore\n" && r.s.queue.is_empty(), "{:?}", r.s.note);
+}
+
+#[test]
+fn two_windows_on_one_ship_keep_each_others_waiting_saves() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "a\n");
+    ship.write("notes/b", "md", "b\n");
+    let mut w1 = Run::new(&ship);
+    let mut w2 = Run::new(&ship);
+    w1.open("notes/a");
+    w2.open("notes/b");
+    ship.st().fail = 502;
+    start_edit(&mut w1.s);
+    w1.typ("from window one");
+    save(&mut w1.s);
+    w1.settle();
+    start_edit(&mut w2.s);
+    w2.typ("from window two");
+    save(&mut w2.s);
+    w2.settle();
+    let c = ship.conn();
+    assert_eq!(c.queue().keys().collect::<Vec<_>>(), ["notes/a", "notes/b"], "each window's save is in the file");
+    // the first window is closed, with nothing being typed in it
+    closing(&mut w1.s);
+    drop(w1);
+    assert!(c.queue().contains_key("notes/a"), "what window one put by is still kept");
+    // the ship comes back: the window left sends what waits, the closed window's too
+    let before = ship.saves().len();
+    ship.st().fail = 0;
+    w2.sync();
+    w2.sync();
+    assert!(ship.body("notes/a").contains("window one") && ship.body("notes/b").contains("window two"), "{:?}", w2.s.note);
+    assert!(c.queue().is_empty() && w2.s.queue.is_empty());
+    assert_eq!(ship.saves().len() - before, 2, "each was sent once");
+}
+
+#[test]
+fn a_change_to_what_waits_is_made_to_what_the_file_holds_now() {
+    let _one = one();
+    let ship = Ship::start();
+    let c = ship.conn();
+    let page = |name: String| Page { name, body: "text\n".into(), kind: "md".into(), rev: 0 };
+    // many at once, each from what it read a moment before: none writes over another's
+    std::thread::scope(|sc| {
+        for t in 0..8 {
+            let c = c.clone();
+            sc.spawn(move || {
+                for i in 0..10 {
+                    c.change_waiting(|_, q| api::enqueue(q, &page(format!("notes/{t}-{i}")), Some(1), false, 0)).expect("put by");
+                }
+            });
+        }
+    });
+    assert_eq!(c.queue().len(), 80);
+    // one taken out leaves the rest, and what is answered is what the file holds
+    let sent = c.queue()["notes/0-0"].clone();
+    let (ops, q) = c.change_waiting(|_, q| api::drop_sent(q, "notes/0-0", &sent)).expect("taken out");
+    assert!(ops.is_empty() && q.len() == 79 && q == c.queue());
+    // a save put by again since it was sent is not taken out with the one that was sent
+    let newer = api::Queued { body: "newer\n".into(), ..sent.clone() };
+    c.change_waiting(|_, q| drop(q.insert("notes/0-1".into(), newer.clone()))).expect("put by");
+    let (_, q) = c.change_waiting(|_, q| api::drop_sent(q, "notes/0-1", &sent)).expect("left");
+    assert_eq!(q.get("notes/0-1"), Some(&newer));
+    // a delete or a move goes in with what it means for the saves, and comes out only from the front
+    let del = api::QueuedOp::Del("notes/1-1".into());
+    let (ops, q) = c.change_waiting(|ops, q| api::enqueue_op(ops, q, del.clone())).expect("put by");
+    assert!(ops == [del.clone()] && !q.contains_key("notes/1-1") && c.ops() == ops);
+    let (ops, _) = c.change_waiting(|ops, _| api::drop_first(ops, &api::QueuedOp::Del("another".into()))).expect("left");
+    assert_eq!(ops, [del.clone()]);
+    let (ops, _) = c.change_waiting(|ops, _| api::drop_first(ops, &del)).expect("taken out");
+    assert!(ops.is_empty() && c.ops().is_empty());
 }

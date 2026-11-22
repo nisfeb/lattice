@@ -2121,28 +2121,32 @@ fn confirm(s: &mut App) {
     let memory = s.memory;
     // with the ship away a page's delete, move or making waits on this device, as a save does
     if s.offline.is_some() && !memory && matches!(op, Op::Created(_) | Op::Renamed(..) | Op::Deleted(_)) {
-        let Some(c) = s.conn.clone() else { return };
-        let (mut ops, mut saves) = (s.ops.clone(), s.queue.clone());
-        match &op {
-            Op::Created(n) if s.names.contains(n) => {
-                s.note = "there is a page of that name".into();
-                return;
-            }
-            // a page made away is a save that waits as a new page, with the heading a page starts with
-            Op::Created(n) => {
-                let made = Page { name: n.clone(), body: format!("# {}\n", if rn.dname.is_empty() { n.rsplit('/').next().unwrap_or(n) } else { rn.dname.as_str() }), kind: "md".into(), rev: 0 };
-                api::enqueue(&mut saves, &made, None, true, 0);
-                s.cache.insert(n.clone(), made);
-            }
-            Op::Renamed(a, b) => api::enqueue_op(&mut ops, &mut saves, api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
-            Op::Deleted(n) => api::enqueue_op(&mut ops, &mut saves, api::QueuedOp::Del(n.clone())),
-            _ => unreachable!("matched above"),
+        if s.conn.is_none() {
+            return;
         }
-        if let Err(e) = c.store_ops(&ops).and_then(|()| c.store_queue(&saves)) {
+        if matches!(&op, Op::Created(n) if s.names.contains(n)) {
+            s.note = "there is a page of that name".into();
+            return;
+        }
+        // a page made away is a save that waits as a new page, with the heading a page starts with
+        let made = match &op {
+            Op::Created(n) => Some(Page { name: n.clone(), body: format!("# {}\n", if rn.dname.is_empty() { n.rsplit('/').next().unwrap_or(n) } else { rn.dname.as_str() }), kind: "md".into(), rev: 0 }),
+            _ => None,
+        };
+        // put into what the files hold now: another window on this ship keeps what waits there too
+        let kept = change_waiting(s, |ops, saves| match (&op, &made) {
+            (_, Some(made)) => api::enqueue(saves, made, None, true, 0),
+            (Op::Renamed(a, b), _) => api::enqueue_op(ops, saves, api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
+            (Op::Deleted(n), _) => api::enqueue_op(ops, saves, api::QueuedOp::Del(n.clone())),
+            _ => unreachable!("matched above"),
+        });
+        if let Err(e) = kept {
             s.note = format!("not done: the ship does not answer, and this could not be kept on this device to send later ({e})");
             return;
         }
-        (s.ops, s.queue) = (ops, saves);
+        if let Some(made) = made {
+            s.cache.insert(made.name.clone(), made);
+        }
         applied(s, op);
         s.note = "done on this device, to send when the ship answers".into();
         return;
@@ -5534,52 +5538,64 @@ fn write(s: &mut App) {
     }
 }
 
+/// Changes what waits for the ship in the files that keep it, and holds
+/// the lists from then on as the files do: another window on this ship
+/// may have put a save by there, or sent one.
+fn change_waiting(s: &mut App, change: impl FnOnce(&mut Vec<api::QueuedOp>, &mut api::Queue)) -> Result<(), String> {
+    let Some(c) = s.conn.clone() else { return Ok(()) };
+    (s.ops, s.queue) = c.change_waiting(change)?;
+    Ok(())
+}
+
 /// Sends the saves that wait, now that the ship answers: the pages made
 /// here first, then the edits, one request each, stopping at the first
 /// the ship does not take or refuse outright.
 // ponytail: one request for each page. The ship's batch route is for when a queue of hundreds shows up
 fn drain(s: &mut App) {
     bg_taken(s);
-    if (s.queue.is_empty() && s.ops.is_empty()) || s.drain_req.is_pending() {
+    if s.drain_req.is_pending() {
         return;
     }
     let Some(c) = s.conn.clone() else { return };
+    // what waits is read again from its files: another window on this ship keeps its own there, and a window that was closed left its own there too
+    (s.ops, s.queue) = (c.ops(), c.queue());
+    if s.queue.is_empty() && s.ops.is_empty() {
+        return;
+    }
     s.note = format!("sending {} saved on this device\u{2026}", s.queue.len() + s.ops.len());
-    s.drain_req.request((c, s.ops.clone(), s.queue.clone()), |(c, mut ops, mut q)| {
-        // one sender at a time: the watcher of the ships not in front may be part way through this ship's
-        // list, from before it came to the front. What it sent is not sent again
+    s.drain_req.request(c, |c| {
+        // one sender at a time, in this window and across them: the watcher of the ships not in front, a signing out, or another window may be part way through this ship's list
         let _held = api::send_lock();
-        for sent in api::bg_sent(&c.url, false) {
-            match sent {
-                api::BgSent::Op(op) => {
-                    if ops.first() == Some(&op) {
-                        ops.remove(0);
-                    }
-                }
-                api::BgSent::Save(name, item) => {
-                    if q.get(&name) == Some(&item) {
-                        q.remove(&name);
-                    }
-                }
-            }
-        }
+        let _file = c.sending_lock();
+        // each is read from the files just before it is sent, and taken out of them as soon as the ship has it, under the senders' lock. So what another sender sent is not sent again, and one that comes after this (a signing out sends what waits before it ends the session) finds nothing left of what went here
         // the deletes and moves first, in the order made: what they meant for the saves was settled when they were put by
         let mut did = Vec::new();
-        for op in ops {
+        while let Some(op) = c.ops().first().cloned() {
             let r = c.send_op(&op);
             // one the ship refuses for good no longer applies, and is passed. Anything else stops here, saves and all
-            let stop = r.as_ref().is_err_and(|e| !api::replay_drop(e));
+            // and so does one that cannot be taken out of the file: it would be read from there again, and sent without end
+            let stop = r.as_ref().is_err_and(|e| !api::replay_drop(e)) || c.change_waiting(|ops, _| api::drop_first(ops, &op)).is_err();
             did.push((op, r));
             if stop {
                 return (did, Vec::new());
             }
         }
-        let mut all: Vec<(String, api::Queued)> = q.into_iter().collect();
+        let mut all: Vec<(String, api::Queued)> = c.queue().into_iter().collect();
         all.sort_by_key(|(_, q)| !q.is_new);
         let mut out = Vec::new();
         for (name, q) in all {
+            // only if it still waits as it was read: a page renamed or deleted meanwhile took its save with it
+            if c.queue().get(&name) != Some(&q) {
+                continue;
+            }
             let sent = c.send_queued(&name, &q);
-            let stop = matches!(sent, api::Sent::Stop(_));
+            let stop = match &sent {
+                api::Sent::Stop(_) => true,
+                _ => {
+                    let _ = c.change_waiting(|_, w| api::drop_sent(w, &name, &q));
+                    false
+                }
+            };
             out.push((name, q, sent));
             if stop {
                 break;
@@ -5643,10 +5659,6 @@ fn drained(s: &mut App, (did, out): Drained) {
                 break;
             }
             r => {
-                // they were sent from the front, in order: the one done is the first that waits
-                if s.ops.first() == Some(&op) {
-                    s.ops.remove(0);
-                }
                 gone_to_ship += 1;
                 if let Err(e) = r {
                     said.push(format!("{what} no longer applies ({e}) and was let go"));
@@ -5654,11 +5666,9 @@ fn drained(s: &mut App, (did, out): Drained) {
             }
         }
     }
-    if let Some(Err(e)) = s.conn.as_ref().map(|c| c.store_ops(&s.ops)) {
-        said.push(format!("the list of what waits could not be written: {e}"));
-    }
+    // the saves the ship took, each with the revision it gave: one saved again meanwhile is written over that
+    let mut took = Vec::new();
     for (name, q, sent) in out {
-        let same = s.queue.get(&name) == Some(&q);
         match sent {
             api::Sent::Stop(why) => {
                 stopped = true;
@@ -5670,12 +5680,6 @@ fn drained(s: &mut App, (did, out): Drained) {
             }
             api::Sent::Done { rev, kept } => {
                 gone_to_ship += 1;
-                if same {
-                    s.queue.remove(&name);
-                } else if let Some(newer) = s.queue.get_mut(&name) {
-                    // saved again meanwhile: that one is written over what was just sent
-                    (newer.base, newer.is_new) = (Some(rev), false);
-                }
                 if let Some(p) = s.cache.get_mut(&name) {
                     p.rev = rev;
                 }
@@ -5687,17 +5691,24 @@ fn drained(s: &mut App, (did, out): Drained) {
                 if let Some(kept) = kept {
                     said.push(format!("{name} had changed on the ship. Yours is the page now, and what it replaced is kept at {kept}"));
                 }
+                took.push((name, q, rev));
             }
             api::Sent::Aside(alt, why) => {
                 gone_to_ship += 1;
-                if same {
-                    s.queue.remove(&name);
-                }
                 said.push(format!("{name} was refused ({why}). Your text is kept at {alt}"));
             }
         }
     }
-    if let Some(Err(e)) = s.conn.as_ref().map(|c| c.store_queue(&s.queue)) {
+    // the sender took each one out of the files as the ship had it. What is held here follows the files
+    let rebased = change_waiting(s, |_, w| {
+        for (name, q, rev) in &took {
+            // saved again meanwhile: that one is written over what was just sent
+            if let Some(newer) = w.get_mut(name).filter(|newer| *newer != q) {
+                (newer.base, newer.is_new) = (Some(*rev), false);
+            }
+        }
+    });
+    if let Err(e) = rebased {
         said.push(format!("the list of what waits could not be written: {e}"));
     }
     if gone_to_ship > 0 {
@@ -5728,21 +5739,18 @@ fn drained(s: &mut App, (did, out): Drained) {
 /// When the file cannot be written the save is nowhere, and that is
 /// said in place of "saved": the editor stays open with the text.
 fn queue_save(s: &mut App, mut p: Page, base: u64, memory: bool) {
-    let Some(c) = s.conn.clone() else { return };
-    let at = crate::api::since_epoch().map_or(0, |d| d.as_secs());
-    let mut q = s.queue.clone();
-    if memory {
-        // under its own name in the list, with no revision: the last write of a memory wins
-        api::enqueue(&mut q, &Page { name: api::know_queue_name(&p.name), ..p.clone() }, None, false, at);
-    } else {
-        api::enqueue(&mut q, &p, Some(base), !s.names.contains(&p.name), at);
+    if s.conn.is_none() {
+        return;
     }
-    if let Err(e) = c.store_queue(&q) {
+    let at = crate::api::since_epoch().map_or(0, |d| d.as_secs());
+    // a memory waits under its own name in the list, with no revision: the last write of a memory wins
+    let (as_page, claim, is_new) = if memory { (Page { name: api::know_queue_name(&p.name), ..p.clone() }, None, false) } else { (p.clone(), Some(base), !s.names.contains(&p.name)) };
+    // put into what the file holds now, not written over it from what this window holds: another window's waiting saves are in it too
+    if let Err(e) = change_waiting(s, |_, q| api::enqueue(q, &as_page, claim, is_new, at)) {
         (s.save_again, s.autosaving, s.auto_held) = (false, false, true);
         s.note = format!("NOT SAVED. The ship does not answer and this change could not be kept on this device ({e}). Copy your text somewhere safe");
         return;
     }
-    s.queue = q;
     p.rev = base;
     // the text is new and the revision is not yet: what was drawn from the old text is drawn again
     stale_views(s, &p.name);
@@ -6738,9 +6746,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         match r {
             Ok(p) => {
                 // the ship has this page's text now: an older save of it that waited is done with
-                let waited_as = if sent.as_ref().is_some_and(|x| x.2) { api::know_queue_name(&p.name) } else { p.name.clone() };
-                if s.queue.remove(&waited_as).is_some() {
-                    if let Some(Err(e)) = s.conn.as_ref().map(|c| c.store_queue(&s.queue)) {
+                let memory = sent.as_ref().is_some_and(|x| x.2);
+                let waited_as = if memory { api::know_queue_name(&p.name) } else { p.name.clone() };
+                if s.queue.contains_key(&waited_as) {
+                    if let Err(e) = change_waiting(s, |_, q| drop(q.remove(&waited_as))) {
                         s.note = format!("saved, but the list of what waits could not be written: {e}");
                     }
                 }

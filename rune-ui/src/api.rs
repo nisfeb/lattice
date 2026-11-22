@@ -1712,6 +1712,39 @@ pub fn ops_over(mut nodes: Vec<Node>, ops: &[QueuedOp]) -> Vec<Node> {
     nodes
 }
 
+/// Takes a delete or move out of the front of those that wait, if it is still the first there.
+pub fn drop_first(ops: &mut Vec<QueuedOp>, op: &QueuedOp) {
+    if ops.first() == Some(op) {
+        ops.remove(0);
+    }
+}
+
+/// Takes a save that was sent out of those that wait, unless the page was saved again meanwhile: that newer save still waits.
+pub fn drop_sent(q: &mut Queue, name: &str, sent: &Queued) {
+    if q.get(name) == Some(sent) {
+        q.remove(name);
+    }
+}
+
+/// A file locked until it is dropped, made if it is not there: whoever else asks for it, in this
+/// program or in another window's, waits until then. `None` where
+/// it cannot be made or locked (a folder that cannot be written, a file system with no locks): the
+/// caller goes on without it, as it did before there was one.
+fn file_lock(p: &std::path::Path) -> Option<std::fs::File> {
+    std::fs::create_dir_all(p.parent()?).ok()?;
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(p).ok()?;
+    f.lock().ok()?;
+    Some(f)
+}
+
+/// The lock a change to what waits is made under: this process's own, and a file's beside the
+/// list for the other windows on this computer.
+fn waiting_lock(queue: &std::path::Path) -> (std::sync::MutexGuard<'static, ()>, Option<std::fs::File>) {
+    static HERE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let here = HERE.lock().unwrap_or_else(|e| e.into_inner());
+    (here, file_lock(&queue.with_extension("lock")))
+}
+
 fn ops_path(url: &str) -> Option<std::path::PathBuf> {
     let q = queue_path(url)?;
     Some(q.with_file_name(format!("ops-{}", q.file_name()?.to_str()?.trim_start_matches("waiting-"))))
@@ -2614,13 +2647,13 @@ impl Conn {
                 return 0;
             }
             let _held = send_lock();
-            let mut ops = self.ops();
+            let _file = self.sending_lock();
+            let ops = self.ops();
             let Some(op) = ops.first().cloned() else { break };
             if self.send_op(&op).is_err_and(|e| !replay_drop(&e)) {
                 return 0;
             }
-            ops.remove(0);
-            if self.store_ops(&ops).is_err() {
+            if self.change_waiting(|ops, _| drop_first(ops, &op)).is_err() {
                 return 0;
             }
             note(BgSent::Op(op));
@@ -2633,13 +2666,12 @@ impl Conn {
                 break;
             }
             let _held = send_lock();
-            let mut q = self.queue();
-            let Some(item) = q.get(&name).cloned() else { continue };
+            let _file = self.sending_lock();
+            let Some(item) = self.queue().get(&name).cloned() else { continue };
             match self.send_queued(&name, &item) {
                 Sent::Stop(_) => break,
                 sent => {
-                    q.remove(&name);
-                    if self.store_queue(&q).is_err() {
+                    if self.change_waiting(|_, q| drop_sent(q, &name, &item)).is_err() {
                         break;
                     }
                     if matches!(sent, Sent::Aside(..)) {
@@ -2650,6 +2682,33 @@ impl Conn {
             }
         }
         aside
+    }
+
+    /// Changes what waits for this ship in the files that keep it: the lists are read as they stand,
+    /// changed, and written back, with a lock held from the read to the write. Two windows on one
+    /// ship keep their waiting saves in the same files, so a list written whole from one window's
+    /// memory would drop what the other put by. Every change is one entry put in or taken out of
+    /// what is there now. Answers the lists as the files then hold them. A failure is one to say:
+    /// a save that waits is nowhere else.
+    pub fn change_waiting(&self, change: impl FnOnce(&mut Vec<QueuedOp>, &mut Queue)) -> Result<(Vec<QueuedOp>, Queue), String> {
+        let path = queue_path(&self.url).ok_or("no home directory")?;
+        let _held = waiting_lock(&path);
+        let (was_ops, was) = (self.ops(), self.queue());
+        let (mut ops, mut q) = (was_ops.clone(), was.clone());
+        change(&mut ops, &mut q);
+        if ops != was_ops {
+            self.store_ops(&ops)?;
+        }
+        if q != was {
+            self.store_queue(&q)?;
+        }
+        Ok((ops, q))
+    }
+
+    /// Held by a sender of what waits for this ship from before it reads the first to after it has
+    /// sent the last, across windows: two that sent at once would each send every save.
+    pub fn sending_lock(&self) -> Option<std::fs::File> {
+        file_lock(&queue_path(&self.url)?.with_extension("sending"))
     }
 
     /// Keeps the saves that wait. They are nowhere else, so a failure here is one to say.
