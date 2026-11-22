@@ -274,14 +274,17 @@
   }
   // a page's body without the render (page-source, no render=1): what a
   // painted open shows, or null
-  const bodyRead = async (name) => {
+  //  `o.gone` is set when the ship did not answer, as against one that
+  //  said no (a page deleted elsewhere)
+  const bodyRead = async (name, o = {}) => {
     try {
-      const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name));
+      const r = await tfetch(api + '/page-source?name=' + encodeURIComponent(name), {}, o.ms || 20000);
+      if (shipGone(r)) { o.gone = true; return null; }
       if (!r.ok) return null;
       const d = await r.json();
       if (typeof d.body !== 'string' || d.link) return null;
       return { body: d.body, kind: d.kind, rev: d.rev, share: d.share, comments: d.comments };
-    } catch { return null; }
+    } catch { o.gone = true; return null; }
   };
   function applyPage(name, d, quiet) {
     if (name !== current) writerNewDoc();
@@ -1019,6 +1022,10 @@
   }
   casBar.querySelector('#castheirs').onclick = async () => {
     const name = current;
+    //  text typed since the copy was kept is in no copy
+    if (editorText() !== cfKept.get(name) && editorText() !== (shipText.get(name) || '\n')
+        && !(await askConfirm('some of your text is in no copy. show theirs and drop it?', 'drop it'))) return;
+    cfKept.delete(name);
     casHold.delete(name);
     dirty = false;
     paintCas();
@@ -1075,7 +1082,7 @@
     casHold.set(name, isRev(d.rev) ? d.rev : null);
     paintCas();
     keepAside({ name, kind, body: mine }, keptName('mine', name)).then((alt) => {
-      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
+      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); cfKept.set(name, mine); }
       st(name + ' changed elsewhere, so your text was not saved over it. '
         + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
     });
@@ -1122,8 +1129,28 @@
     src.value = text;
     src.setSelectionRange(a > p ? Math.max(p, a + d) : a, b > p ? Math.max(p, b + d) : b);
   };
-  async function settleRun(name, kind, sent, base, here) {
-    const th = await bodyRead(name);
+  //  A settle is bounded: its three requests share SETTLE_MS, and one that
+  //  gets no answer in time ends it with the text queued, as a save does
+  //  when the ship is gone. It holds the writer's turn, so a request left
+  //  hanging would stop every save, Ctrl+S and flush until the tab ended.
+  const SETTLE_MS = 30000;
+  //  the text this editor holds for the page, written from its view first
+  const editorText = () => { writerSync(); return src.value; };
+  //  what the conflicts/ copies hold, per page: the bar's "Show theirs"
+  //  asks before it drops text no copy has
+  const cfKept = new Map();
+  async function settleRun(name, kind, sent, base, here, until = Date.now() + SETTLE_MS, tries = 0) {
+    const left = () => Math.max(1, until - Date.now());
+    //  the ship did not answer: what was refused is queued on the rev it
+    //  claimed, and the replay keeps their text if the page moved on
+    const gone = async () => {
+      if (!(await enqueueSave(name, kind, sent, false, null, base))) return;
+      if (here() && src.value === sent) dirty = false;
+      else tabLanded('page', name, sent);
+    };
+    const nog = { ms: left() };
+    const th = await bodyRead(name, nog);
+    if (!th && nog.gone) return gone();
     //  shipText is the text at the newest rev this window knows. That is
     //  the claimed rev, unless another save or settle of this page landed
     //  after the claim was sent: then the base text is asked for by rev
@@ -1141,16 +1168,25 @@
       let bt = moved ? null : shipText.get(name);
       if (typeof bt !== 'string') {
         try {
-          const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base);
+          const r = await tfetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base, {}, left());
+          if (shipGone(r)) return gone();
           if (r.ok) bt = (await r.json()).body;
-        } catch {}
+        } catch { return gone(); }
       }
       if (typeof bt === 'string') mb = merge3(bt, sent, th.body);
       if (typeof mb === 'string') {
-        const r = await fetch(api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
-          + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);
-        let j = null;
-        if (r && r.ok) { try { j = await r.json(); } catch {} }
+        let r = null, j = null;
+        try {
+          r = await tfetch(api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
+            + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }, left());
+        } catch { return gone(); }
+        if (shipGone(r)) return gone();
+        if (r.ok) { try { j = await r.json(); } catch {} }
+        //  the page moved again while this ran: read it once more and
+        //  merge onto that, a few times at most
+        if (r.status === 409 && tries < 3 && /^: stale/.test(await errText(r))) {
+          return settleRun(name, kind, sent, base, here, until, tries + 1);
+        }
         //  the ship still holding what this window last knew is no change
         //  made elsewhere: the claim was only behind
         if (j && isRev(j.rev)) {
@@ -1166,7 +1202,7 @@
       let alt = null;
       if (keep) {
         alt = await keepAside({ name, kind, body: text }, keptName('mine', name));
-        if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
+        if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); cfKept.set(name, text); }
       }
       casHold.set(name, rev);
       st(name + ' changed elsewhere, so your text was not saved over it. '
@@ -1174,7 +1210,9 @@
       if (here()) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
       paintCas();
     };
-    if (!res) { await hold(sent, th && isRev(th.rev) ? th.rev : null, !!th); return; }
+    //  the copy holds what the editor holds now, which is more than was
+    //  sent when text was typed while this ran
+    if (!res) { await hold(here() ? editorText() : sent, th && isRev(th.rev) ? th.rev : null, !!th); return; }
     patchLocal(name, null, res.body, res.rev);
     //  The page's buffer, the editor's or a parked tab's, held `sent` when
     //  the save left. Still holding it, it takes what was saved. Typed
@@ -1192,12 +1230,18 @@
       Object.assign(t.snap, t.snap.body === sent ? { dirty: false } : {}, { body: nb, rev: res.rev });
     }
     if (here()) {
+      //  a rich view holds keystrokes its buffer lacks, and its remount
+      //  below would drop them: written first. What it refuses cannot be
+      //  rebased, so it is kept as a conflict.
+      const ok = writerSync();
       const was = src.value, nb = rebase(was);
-      if (typeof nb !== 'string') apart.push(was);
+      if (!ok || typeof nb !== 'string') apart.push(was);
       else {
         if (nb !== was) { srcSwap(nb); render(); refreshPreview(); }
         curRev = res.rev;
         if (was === sent) { dirty = false; cerr.textContent = 'saved'; cerr.className = 'ok'; }
+        //  a rebuilt rich view re-arms nothing: the rebased text still waits
+        else if (dirty && autosaveOn()) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 2000); }
       }
     }
     for (const text of apart) await hold(text, res.rev, true);

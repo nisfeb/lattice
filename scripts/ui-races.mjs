@@ -416,6 +416,147 @@ cases.syncRefused = async () => {
   await x.done();
 };
 
+//  The ship takes the requests of a settle and does not answer them. The
+//  settle holds the writer's turn, so without a bound nothing typed after
+//  it is saved, queued or stashed, Ctrl+S and hiding included. It ends in
+//  time, and the text goes to the queue as it does for a gone ship.
+cases.settleHang = async () => {
+  const x = await up({ 'n/a': LINES }, '?name=n/a');
+  const p = x.page;
+  x.S.put('n/a', LINES.replace('line1', 'line1 THEIRS'));
+  let hung = false;
+  const never = new Promise(() => {});
+  x.S.hook = async (ev) => { if (hung && !/dump|tree-job/.test(ev.path)) await never; return null; };
+  await typeEnd(p, 'MINE1');
+  await waitFor(() => x.S.saves().some((e) => e.res && e.res.code === 409), 15000, 5);
+  hung = true;
+  await sleep(300);
+  await p.keyboard.type(' MINE2');
+  const q = await waitFor(async () => (await queue(p)).find((r) => r.name === 'n/a' && r.body.includes('MINE2')), 90000, 500);
+  check('the text typed after the refusal is in the queue', !!q, JSON.stringify(await queue(p)));
+  check('on the rev the refused save claimed', !!q && q.baseRev === 1, q && q.baseRev);
+  check('and the editor still holds it', (await ed(p)).endsWith('MINE1 MINE2'), await ed(p));
+  await x.done();
+};
+
+//  Typing goes on while a stale settle's merged save is out, on a rich
+//  page. The editor is rebuilt over the merged text, and the keystrokes
+//  the view had not written yet must be written first, then kept.
+cases.settleRich = async () => {
+  const FODT = readFileSync(new URL('../tests/writer/corpus/01-paragraphs.fodt', import.meta.url), 'utf8');
+  let x = await up({ 'w/doc': [FODT, 'fodt'], 'n/b': 'beta\n' }, '?name=w/doc');
+  let p = x.page;
+  const PM = 'lat-writer:not([hidden]) .ProseMirror';
+  await waitFor(() => p.$(PM), 20000, 100);
+  await sleep(500);
+  const toEnd = async (txt) => {
+    const h = await p.evaluateHandle((PM, txt) => [...document.querySelector(PM).querySelectorAll('p')].find((e) => e.textContent.includes(txt)), PM, txt);
+    await h.click(); await p.keyboard.press('End');
+  };
+  await toEnd('The first paragraph'); await p.keyboard.type(' MINE1');
+  await waitFor(() => (body(x, 'w/doc') || '').includes('MINE1'), 15000, 100);
+  x.S.put('w/doc', body(x, 'w/doc').replace('The last paragraph.', 'The last paragraph THEIRS.'));
+  const theirsRev = String(x.S.pages.get('w/doc').rev);
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  x.S.hook = async (ev) => { if (ev.path === 'page-save' && ev.q.name === 'w/doc' && ev.q.base === theirsRev) await gate; return null; };
+  x.S.delay = 200;
+  await toEnd('The first paragraph'); await p.keyboard.type(' MINE2');
+  await waitFor(() => x.S.saves().some((e) => e.res && e.res.code === 409), 15000, 50);
+  await waitFor(() => x.S.saves().some((e) => e.q.base === theirsRev), 15000, 20);
+  await p.keyboard.type(' MINE3');
+  await sleep(900);
+  await p.keyboard.type(' MINE4');
+  release();
+  await sleep(1500);
+  const pm = await p.$eval(PM, (e) => e.textContent);
+  check('the writer still shows the text typed during the settle', pm.includes('MINE4') && pm.includes('MINE3'), pm.slice(0, 120));
+  check('with their change merged in', pm.includes('THEIRS'), pm.slice(-80));
+  await waitFor(() => (body(x, 'w/doc') || '').includes('MINE4'), 15000, 200);
+  const b = body(x, 'w/doc') || '';
+  check('and all of it reaches the page without another keystroke', ['MINE1', 'MINE2', 'MINE3', 'MINE4', 'THEIRS'].every((m) => b.includes(m)), b.slice(-200));
+  await x.done();
+  //  a sheet: a cell committed and another being typed while the save is out
+  const FODS = readFileSync(new URL('../tests/sheet/corpus/01-values.fods', import.meta.url), 'utf8');
+  x = await up({ 's/s': [FODS, 'fods'], 'n/b': 'beta\n' }, '?name=s/s');
+  p = x.page;
+  const C = (r, c) => `lat-sheet:not([hidden]) .ls-c[data-r="${r}"][data-c="${c}"]`;
+  await waitFor(() => p.$(C(1, 2)), 20000, 100);
+  await sleep(500);
+  await p.click(C(1, 2)); await p.keyboard.type('MINE1'); await p.keyboard.press('Enter');
+  await waitFor(() => (body(x, 's/s') || '').includes('MINE1'), 15000, 100);
+  x.S.put('s/s', body(x, 's/s').replace('<text:p>false</text:p>', '<text:p>falseTHEIRS</text:p>'), 'fods');
+  const sRev = String(x.S.pages.get('s/s').rev);
+  let rel2;
+  const gate2 = new Promise((r) => { rel2 = r; });
+  x.S.hook = async (ev) => { if (ev.path === 'page-save' && ev.q.name === 's/s' && ev.q.base === sRev) await gate2; return null; };
+  x.S.delay = 200;
+  await p.click(C(2, 2)); await p.keyboard.type('MINE2'); await p.keyboard.press('Enter');
+  await waitFor(() => x.S.saves().some((e) => e.res && e.res.code === 409), 15000, 50);
+  await waitFor(() => x.S.saves().some((e) => e.q.base === sRev), 15000, 20);
+  await p.click(C(3, 2)); await p.keyboard.type('AAA'); await p.keyboard.press('Enter'); await sleep(800);
+  await p.click(C(4, 2)); await p.keyboard.type('777');
+  rel2();
+  await sleep(2000);
+  await p.keyboard.press('Enter');
+  await waitFor(() => (body(x, 's/s') || '').includes('777'), 15000, 200);
+  const sb = body(x, 's/s') || '';
+  check('a sheet keeps the cell committed and the cell being typed', ['MINE2', 'AAA', '777', 'THEIRS'].every((m) => sb.includes(m)), sb.length);
+  await x.done();
+};
+
+//  A settle that finds a real conflict keeps a copy of the text. What was
+//  typed while it ran is in that copy, and "Show theirs" asks before it
+//  drops text no copy holds.
+cases.settleCopy = async () => {
+  const x = await up({ 'n/a': LINES, 'n/b': 'beta\n' }, '?name=n/a');
+  const p = x.page;
+  x.S.put('n/a', LINES + 'THEIRS');
+  x.S.delay = 1500;
+  await typeEnd(p, 'MINE1');
+  await waitFor(() => x.S.saves().some((e) => e.res && e.res.code === 409), 15000, 10);
+  await typeEnd(p, ' MINE2');
+  await waitFor(async () => await p.evaluate(() => !document.querySelector('#casbar').hidden), 20000, 100);
+  const copies = () => [...x.S.pages].filter(([k]) => k.startsWith('conflicts/')).map(([, v]) => v.body);
+  check('the copy holds the text typed while the settle ran', copies().some((b) => b.endsWith('MINE1 MINE2')), JSON.stringify(copies()));
+  //  typed after the copy: Show theirs must ask
+  x.S.delay = 20;
+  await typeEnd(p, ' MINE3');
+  await p.click('#castheirs');
+  await waitFor(async () => !!(await appDlg(p)), 5000, 100);
+  check('Show theirs asks when the editor holds text no copy has', /no copy/.test(await appDlg(p)), await appDlg(p));
+  await p.click('#dlgcancel');
+  await sleep(500);
+  check('and a cancel keeps it', (await ed(p)).endsWith('MINE1 MINE2 MINE3'), await ed(p));
+  check('with the bar up', await p.evaluate(() => !document.querySelector('#casbar').hidden));
+  await x.done();
+  //  the page moves again while the settle runs: it settles once more
+  const y = await up({ 'n/a': LINES, 'n/b': 'beta\n' }, '?name=n/a');
+  const q = y.page;
+  y.S.put('n/a', LINES.replace('line1', 'line1 THEIRS'));
+  y.S.delay = 600;
+  await typeEnd(q, 'MINE1');
+  await waitFor(() => y.S.saves().some((e) => e.res && e.res.code === 409), 15000, 10);
+  await q.keyboard.type(' MINE2');
+  await sleep(900);
+  y.S.put('n/a', body(y, 'n/a').replace('line2', 'line2 THEIRS-B'));
+  await q.keyboard.type(' MINE3');
+  await sleep(2500);
+  y.S.put('n/a', body(y, 'n/a').replace('line3', 'line3 THEIRS-C'));
+  await q.keyboard.type(' MINE4');
+  let n = -1;
+  await waitFor(async () => {
+    const k = y.S.log.length;
+    if (k === n && y.S.saves().every((e) => e.res)) return true;
+    n = k; await sleep(2500); return false;
+  }, 40000, 10);
+  const head = body(y, 'n/a');
+  check('three changes elsewhere, each apart from ours: all merged', ['THEIRS', 'THEIRS-B', 'THEIRS-C', 'MINE1 MINE2 MINE3 MINE4'].every((m) => head.includes(m)), JSON.stringify(head));
+  check('no bar and no copy was made', !(await p2bar(q)) && ![...y.S.pages.keys()].some((k) => k.startsWith('conflicts/')), [...y.S.pages.keys()].join(' '));
+  await y.done();
+};
+const p2bar = (p) => p.evaluate(() => !document.querySelector('#casbar').hidden);
+
 //  A rich view holds what is being typed (a map's detail field, a cell)
 //  outside the buffer until it is left. Closing its tab is leaving it, and
 //  the tab shown next owns the buffer by then: the typed text must reach

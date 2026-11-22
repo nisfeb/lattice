@@ -6701,14 +6701,15 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     applyPage(name, d);
     return true;
   }
-  const bodyRead = async (name) => {
+  const bodyRead = async (name, o = {}) => {
     try {
-      const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name));
+      const r = await tfetch(api + '/page-source?name=' + encodeURIComponent(name), {}, o.ms || 20000);
+      if (shipGone(r)) { o.gone = true; return null; }
       if (!r.ok) return null;
       const d = await r.json();
       if (typeof d.body !== 'string' || d.link) return null;
       return { body: d.body, kind: d.kind, rev: d.rev, share: d.share, comments: d.comments };
-    } catch { return null; }
+    } catch { o.gone = true; return null; }
   };
   function applyPage(name, d, quiet) {
     if (name !== current) writerNewDoc();
@@ -7161,6 +7162,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   casBar.querySelector('#castheirs').onclick = async () => {
     const name = current;
+    if (editorText() !== cfKept.get(name) && editorText() !== (shipText.get(name) || '\n')
+        && !(await askConfirm('some of your text is in no copy. show theirs and drop it?', 'drop it'))) return;
+    cfKept.delete(name);
     casHold.delete(name);
     dirty = false;
     paintCas();
@@ -7200,7 +7204,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     casHold.set(name, isRev(d.rev) ? d.rev : null);
     paintCas();
     keepAside({ name, kind, body: mine }, keptName('mine', name)).then((alt) => {
-      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
+      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); cfKept.set(name, mine); }
       st(name + ' changed elsewhere, so your text was not saved over it. '
         + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
     });
@@ -7232,8 +7236,19 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     src.value = text;
     src.setSelectionRange(a > p ? Math.max(p, a + d) : a, b > p ? Math.max(p, b + d) : b);
   };
-  async function settleRun(name, kind, sent, base, here) {
-    const th = await bodyRead(name);
+  const SETTLE_MS = 30000;
+  const editorText = () => { writerSync(); return src.value; };
+  const cfKept = new Map();
+  async function settleRun(name, kind, sent, base, here, until = Date.now() + SETTLE_MS, tries = 0) {
+    const left = () => Math.max(1, until - Date.now());
+    const gone = async () => {
+      if (!(await enqueueSave(name, kind, sent, false, null, base))) return;
+      if (here() && src.value === sent) dirty = false;
+      else tabLanded('page', name, sent);
+    };
+    const nog = { ms: left() };
+    const th = await bodyRead(name, nog);
+    if (!th && nog.gone) return gone();
     const known = pageRevs.get(name);
     const moved = isRev(known) && isRev(base) && known > base;
     pageRevs.delete(name);
@@ -7244,16 +7259,23 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       let bt = moved ? null : shipText.get(name);
       if (typeof bt !== 'string') {
         try {
-          const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base);
+          const r = await tfetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base, {}, left());
+          if (shipGone(r)) return gone();
           if (r.ok) bt = (await r.json()).body;
-        } catch {}
+        } catch { return gone(); }
       }
       if (typeof bt === 'string') mb = merge3(bt, sent, th.body);
       if (typeof mb === 'string') {
-        const r = await fetch(api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
-          + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);
-        let j = null;
-        if (r && r.ok) { try { j = await r.json(); } catch {} }
+        let r = null, j = null;
+        try {
+          r = await tfetch(api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
+            + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }, left());
+        } catch { return gone(); }
+        if (shipGone(r)) return gone();
+        if (r.ok) { try { j = await r.json(); } catch {} }
+        if (r.status === 409 && tries < 3 && /^: stale/.test(await errText(r))) {
+          return settleRun(name, kind, sent, base, here, until, tries + 1);
+        }
         if (j && isRev(j.rev)) {
           knowRev(name, j.rev);
           res = { rev: j.rev, body: mb, how: bt === th.body ? 'saved' : 'saved, merged with a change made elsewhere' };
@@ -7264,7 +7286,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       let alt = null;
       if (keep) {
         alt = await keepAside({ name, kind, body: text }, keptName('mine', name));
-        if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
+        if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); cfKept.set(name, text); }
       }
       casHold.set(name, rev);
       st(name + ' changed elsewhere, so your text was not saved over it. '
@@ -7272,7 +7294,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (here()) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
       paintCas();
     };
-    if (!res) { await hold(sent, th && isRev(th.rev) ? th.rev : null, !!th); return; }
+    if (!res) { await hold(here() ? editorText() : sent, th && isRev(th.rev) ? th.rev : null, !!th); return; }
     patchLocal(name, null, res.body, res.rev);
     const rebase = (text) => (text === sent ? res.body : res.body === sent ? text : merge3(sent, text, res.body));
     const apart = [];
@@ -7283,12 +7305,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       Object.assign(t.snap, t.snap.body === sent ? { dirty: false } : {}, { body: nb, rev: res.rev });
     }
     if (here()) {
+      const ok = writerSync();
       const was = src.value, nb = rebase(was);
-      if (typeof nb !== 'string') apart.push(was);
+      if (!ok || typeof nb !== 'string') apart.push(was);
       else {
         if (nb !== was) { srcSwap(nb); render(); refreshPreview(); }
         curRev = res.rev;
         if (was === sent) { dirty = false; cerr.textContent = 'saved'; cerr.className = 'ok'; }
+        else if (dirty && autosaveOn()) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 2000); }
       }
     }
     for (const text of apart) await hold(text, res.rev, true);
