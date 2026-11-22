@@ -91,7 +91,19 @@ console.log('==> a table keeps its shape');
       return [r(tds[0]), r(tds[1]), tds[0].textContent, tds[2].textContent];
     });
     await page.mouse.move(box[0].x, box[0].y); await page.mouse.down();
-    await page.mouse.move(box[1].x + 10, box[1].y, { steps: 8 }); await page.mouse.up();
+    await page.mouse.move(box[1].x + 10, box[1].y, { steps: 8 });
+    //  The browser reports the selection each move made a task later, and
+    //  the editor keeps the cells over it only while the button is down.
+    //  A release sent before the last report was read left a text
+    //  selection, on a busy machine. So the release waits until the cells
+    //  are selected and two frames have been drawn since.
+    await page.evaluate(() => new Promise((ok) => {
+      const end = Date.now() + 10000;
+      const go = () => (window.ctl.view.state.selection.$anchorCell || Date.now() > end
+        ? requestAnimationFrame(() => requestAnimationFrame(ok)) : setTimeout(go, 20));
+      go();
+    }));
+    await page.mouse.up();
     check.eq('a drag from one cell into the next selects the two cells', await page.evaluate(() => (window.ctl.view.state.selection.$anchorCell ? 'cells ' : 'text ') + document.querySelectorAll('lat-writer td.selectedCell').length), 'cells 2');
     await page.keyboard.press('Delete');
     check.eq('Delete over them leaves every row its cells', await page.evaluate(() => window.shape()), shape0);
@@ -337,7 +349,9 @@ console.log('==> the print frame');
     const real = HTMLIFrameElement.prototype.__lookupGetter__('contentWindow');
     Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', { get() { const w = real.call(this); if (w && this.hasAttribute('data-lw-print')) w.print = () => { printed++; }; return w; } });
     window.ctl.print();
-    await new Promise((ok) => setTimeout(ok, 300));
+    //  the frame prints when it has loaded, which on a busy machine is
+    //  not within any fixed time: wait for the print itself
+    for (const end = Date.now() + 20000; !printed && Date.now() < end;) await new Promise((ok) => setTimeout(ok, 20));
     const before = document.querySelectorAll('iframe[data-lw-print]').length;
     window.ctl.destroy();
     return { printed, before, after: document.querySelectorAll('iframe[data-lw-print]').length };

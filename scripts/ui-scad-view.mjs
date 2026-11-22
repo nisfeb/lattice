@@ -519,33 +519,43 @@ await page.evaluate(() => {
   });
   window.ctl.destroy();
   window.ctl = window.LatScad.mount(document.getElementById('h'), { ...window.opts, readPage: window.g.readPage });
+  //  every render ends by writing the status line, so a count of those
+  //  writes says when the render of an update is done
+  window.stN = 0;
+  new MutationObserver(() => { window.stN++; }).observe(document.querySelector('.lscad-st'), { childList: true });
 });
+//  the new view's first render is over before anything is changed, or
+//  its end would be taken for the end of the next one
+await waitFor(() => page.evaluate(() => window.stN > 0), 90000, 50);
+await settled(page);
 const askd = (n) => asks.filter((x) => x === n).length;
+//  update the page and wait for the render of that text. A fixed wait
+//  read the part of the render before on a busy machine: the reads of the
+//  includes come first, and the view says it is busy only 150 ms into the
+//  render itself.
+const drawn = async (act, arg) => {
+  const n = await page.evaluate(() => window.stN);
+  await page.evaluate(act, arg);
+  await waitFor(() => page.evaluate((n) => window.stN > n, n), 90000, 50);
+  return settled(page);
+};
 const N = 4;
 for (let i = 0; i < N; i++) {
-  await page.evaluate((t) => window.ctl.update(t), INC + '// ' + i + '\n');
-  await sleep(500);
-  s = await settled(page);
+  s = await drawn((t) => window.ctl.update(t), INC + '// ' + i + '\n');
 }
 check(`${N} renders of a page with two includes read each once`, askd('parts/lib/a') === 1 && askd('parts/lib/b') === 1 && /^10 × 10 × 5 mm/.test(await dims(page)), `${asks.join(' ')} | ${await dims(page)}`);
 check('  and a missing include is not asked for again', askd('parts/lib/none') === 1, asks.join(' '));
 //  a page edited elsewhere: the tree's rev moves
 ship['parts/lib/a'] = 'module a() { cube([20, 20, 2]); }\n';
-await page.evaluate((t) => { window.revs['parts/lib/a'] = 2; window.ctl.update(t); }, INC + '// a\n');
-await sleep(500);
-s = await settled(page);
+s = await drawn((t) => { window.revs['parts/lib/a'] = 2; window.ctl.update(t); }, INC + '// a\n');
 check('a page whose rev moved is read again, and drawn as it is now', askd('parts/lib/a') === 2 && askd('parts/lib/b') === 1 && /^20 × 20 × 5 mm/.test(await dims(page)), `${asks.join(' ')} | ${await dims(page)}`);
 //  a page saved here: forget()
 ship['parts/lib/b'] = 'module b() { translate([0, 0, 2]) cube([10, 10, 8]); }\n';
-await page.evaluate((t) => { window.g.forget('parts/lib/b'); window.ctl.update(t); }, INC + '// b\n');
-await sleep(500);
-s = await settled(page);
+s = await drawn((t) => { window.g.forget('parts/lib/b'); window.ctl.update(t); }, INC + '// b\n');
 check('a page forgotten is read again, and drawn as it is now', askd('parts/lib/b') === 2 && askd('parts/lib/a') === 2 && /^20 × 20 × 10 mm/.test(await dims(page)), `${asks.join(' ')} | ${await dims(page)}`);
 //  the missing page is made: it comes into the tree
 ship['parts/lib/none'] = 'translate([0, 0, 10]) cube([1, 1, 5]);\n';
-await page.evaluate((t) => { window.revs['parts/lib/none'] = 1; window.ctl.update(t); }, INC + '// none\n');
-await sleep(500);
-s = await settled(page);
+s = await drawn((t) => { window.revs['parts/lib/none'] = 1; window.ctl.update(t); }, INC + '// none\n');
 check('a page made after a miss is found', askd('parts/lib/none') === 2 && /^20 × 20 × 15 mm/.test(await dims(page)), `${asks.join(' ')} | ${await dims(page)}`);
 await page.close();
 
