@@ -530,6 +530,69 @@ fn with_mount(tag: &str, ship: &Arc<Ship>, secs: u64, body: impl FnOnce(&Path) +
     }
 }
 
+/// The mounter as an app starts it: its stderr is a pipe whose reading end
+/// is let go once the folder is a mount. A word on stderr then fails, and it
+/// must not end the mounter: on SIGTERM it says "unmounting" before it
+/// drains the lick socket, and a socket dropped mid-write crashes the ship.
+#[test]
+fn a_mounter_whose_stderr_is_gone_still_stops_cleanly() {
+    use std::net::TcpListener;
+    use std::process::{Command, Stdio};
+    // a ship that answers every read with an empty tree
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { continue };
+            std::thread::spawn(move || {
+                let mut b = [0u8; 8192];
+                let _ = s.read(&mut b);
+                let body = r#"{"nodes":[],"since":"s"}"#;
+                let _ = write!(s, "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            });
+        }
+    });
+    let dir = std::env::temp_dir().join(format!("lattice-fs-epipe-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let (home, mnt) = (dir.join("home"), dir.join("mnt"));
+    fs::create_dir_all(home.join(".config/lattice-fs")).unwrap();
+    fs::create_dir_all(&mnt).unwrap();
+    fs::write(home.join(format!(".config/lattice-fs/cookie-http-127.0.0.1-{port}")), "urbauth-~zod=0v1.x").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lattice-fs"))
+        .args(["mount", mnt.to_str().unwrap()])
+        .env("HOME", &home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env("LATTICE_URL", format!("http://127.0.0.1:{port}"))
+        .env_remove("LATTICE_SOCK")
+        .env_remove("LATTICE_ROOT")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let said = child.stderr.take().unwrap();
+    let is_mount = |mnt: &Path| fs::read_to_string("/proc/self/mounts").is_ok_and(|t| t.lines().any(|l| l.split(' ').nth(1) == mnt.to_str()));
+    let until = std::time::Instant::now() + Duration::from_secs(15);
+    while !is_mount(&mnt) && child.try_wait().unwrap().is_none() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !is_mount(&mnt) {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = fs::remove_dir_all(&dir);
+        eprintln!("skipped: no usable FUSE here");
+        return;
+    }
+    // nobody reads what it says from here on
+    drop(said);
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    let status = child.wait().unwrap();
+    let left = is_mount(&mnt);
+    let _ = fs::remove_dir_all(&dir);
+    assert!(status.success(), "the mounter must reach its drain and unmount, and ended with {status}");
+    assert!(!left, "and the folder is no longer a mount");
+}
+
 /// A page with pages under it shows as a folder holding its own file. The
 /// ship's delete of a name takes everything under it, so unlinking that file
 /// must not be sent while anything is still under the page.

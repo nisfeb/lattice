@@ -703,7 +703,7 @@ impl GrubberyFs {
             Err(e) if e.errno == libc::EEXIST => {
                 let copy = conflict_name(&rel);
                 if self.proj.write_based(&copy, &kind, &buf, true, None).is_ok() {
-                    eprintln!(
+                    crate::say!(
                         "lattice-fs: the ship refused the save of {rel} as a conflict ({}). \
                          Your text is kept as the page {copy}",
                         e.msg
@@ -796,13 +796,13 @@ impl GrubberyFs {
             f.sync_all()
         })();
         match r {
-            Ok(()) => eprintln!(
+            Ok(()) => crate::say!(
                 "lattice-fs: could not save {} ({}). Your text is kept at {}",
                 h.rel,
                 why.msg,
                 path.display()
             ),
-            Err(io) => eprintln!(
+            Err(io) => crate::say!(
                 "lattice-fs: could not save {} ({}), and could not keep it at {} ({io}). \
                  {} bytes are lost",
                 h.rel,

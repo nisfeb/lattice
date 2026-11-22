@@ -1,6 +1,19 @@
 //! lattice-fs as a library: everything the desktop shell needs to auth,
 //! build a projection over HTTP, and mount it in-process.
 
+/// A line on stderr from a running mount. `eprintln!` panics when stderr
+/// cannot be written to, as when it is a pipe whose reader has gone, and a
+/// mount must outlive that: its way out drains the lick socket first, and a
+/// FUSE worker that panics takes a save with it. So a line that cannot be
+/// written is dropped.
+#[macro_export]
+macro_rules! say {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 #[path = "core.rs"]
 pub mod vfs;
 mod sync;

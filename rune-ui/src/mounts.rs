@@ -5,7 +5,8 @@
 //! `LATTICE_SOCK`. The mounter holds the mount until it is sent
 //! SIGTERM, on which it lets the socket drain before it unmounts. It is
 //! never killed outright: a lick socket dropped mid-write crashes the
-//! ship (`lattice-fs-rs/src/main.rs`, `cmd_mount`).
+//! ship (`lattice-fs-rs/src/main.rs`, `cmd_mount`). What it says on
+//! stderr goes to `mounter.log` beside the list, never to a pipe.
 //!
 //! A mount outlives this app's window, and is found again at the next
 //! launch by the folder still being a mount, with the mounter's process
@@ -219,12 +220,8 @@ pub fn start(spec: &MountSpec, session: Option<&str>) -> Result<u32, String> {
         return Err(why);
     }
     std::fs::create_dir_all(&spec.mountpoint).map_err(|e| format!("{}: {e}", spec.mountpoint))?;
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("the mounter did not start: {e}"))?;
+    let log = log_path();
+    let (mut child, from) = spawn_mounter(&mut cmd, log.as_deref())?;
     let until = Instant::now() + Duration::from_secs(20);
     loop {
         if mounted(&spec.mountpoint) {
@@ -240,10 +237,7 @@ pub fn start(spec: &MountSpec, session: Option<&str>) -> Result<u32, String> {
             return Ok(child.id());
         }
         if let Ok(Some(_)) = child.try_wait() {
-            let mut said = String::new();
-            if let Some(mut e) = child.stderr.take() {
-                let _ = std::io::Read::read_to_string(&mut e, &mut said);
-            }
+            let said = log.as_deref().map(|l| said_since(l, from)).unwrap_or_default();
             return Err(format!("the mounter stopped: {}", said.trim().trim_start_matches("error: ")));
         }
         if Instant::now() > until {
@@ -253,6 +247,46 @@ pub fn start(spec: &MountSpec, session: Option<&str>) -> Result<u32, String> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Where the mounters say what they have to say: one file beside the list, for them all.
+fn log_path() -> Option<PathBuf> {
+    Some(list_path()?.with_file_name("mounter.log"))
+}
+
+/// Starts a mounter with its stderr added to the end of `log`, and answers it with where in the
+/// log its own words begin. Never a pipe: a mounter outlives the call that started it, and the
+/// window, and a pipe nobody reads fails its next word on stderr. That word is said on its way
+/// out, before it drains the lick socket, so failing there is what must not happen. With no log
+/// to write to, what it says is dropped.
+fn spawn_mounter(cmd: &mut Command, log: Option<&Path>) -> Result<(std::process::Child, u64), String> {
+    let open = |p: &Path| -> std::io::Result<(std::fs::File, u64)> {
+        if let Some(dir) = p.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut o = std::fs::OpenOptions::new();
+        o.append(true).create(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        let f = o.open(p)?;
+        // a few lines a mount, and it starts again when it has grown large. Those still writing add at its end, wherever that is
+        if f.metadata()?.len() > 1024 * 1024 {
+            f.set_len(0)?;
+        }
+        let from = f.metadata()?.len();
+        Ok((f, from))
+    };
+    let (err, from) = match log.map(open) {
+        Some(Ok((f, from))) => (Stdio::from(f), from),
+        _ => (Stdio::null(), 0),
+    };
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(err).spawn().map(|c| (c, from)).map_err(|e| format!("the mounter did not start: {e}"))
+}
+
+/// What was added to the log from `from` on: what a mounter that stopped said of why.
+fn said_since(log: &Path, from: u64) -> String {
+    let all = std::fs::read(log).unwrap_or_default();
+    String::from_utf8_lossy(all.get(from as usize..).unwrap_or_default()).into_owned()
 }
 
 fn term(pid: u32) {
@@ -321,6 +355,87 @@ pub fn resume(list: Vec<MountSpec>, session: impl Fn(&str) -> Option<String>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn a_mounter_let_go_of_can_still_say_things_and_what_it_said_is_read_from_its_log() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("lr-mnt-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (log, mark) = (dir.join("deeper/mounter.log"), dir.join("mark"));
+        // a stand-in that says a word on stderr well after it was started, as the mounter does when it is told to unmount, and only then does its work
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 0.3; echo late >&2 && echo fine > \"$0\"", &mark.to_string_lossy()]);
+        let (child, from) = spawn_mounter(&mut cmd, Some(&log)).unwrap();
+        // as `start` does once the folder is a mount: the process is let go of
+        drop(child);
+        let until = Instant::now() + Duration::from_secs(10);
+        while !mark.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(std::fs::read_to_string(&mark).unwrap_or_default().trim(), "fine", "the word on stderr did not end it");
+        assert_eq!((from, said_since(&log, from).as_str()), (0, "late\n"));
+        assert_eq!(std::fs::metadata(&log).unwrap().permissions().mode() & 0o777, 0o600);
+        // the next one's words follow in the same file, and only its own are read as why it stopped
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "echo 'error: no such ship' >&2; exit 3"]);
+        let (mut child, from) = spawn_mounter(&mut cmd, Some(&log)).unwrap();
+        assert_eq!((child.wait().unwrap().code(), from, said_since(&log, from).as_str()), (Some(3), 5, "error: no such ship\n"));
+        // with nowhere to keep a log it still starts, and still outlives its words
+        let _ = std::fs::remove_file(&mark);
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 0.3; echo late >&2 && echo fine > \"$0\"", &mark.to_string_lossy()]);
+        drop(spawn_mounter(&mut cmd, None).unwrap());
+        let until = Instant::now() + Duration::from_secs(10);
+        while !mark.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(std::fs::read_to_string(&mark).unwrap_or_default().trim(), "fine");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The real mounter, started and stopped as the app does it, at a folder reached through a
+    /// link. Run with `LATTICE_FS` naming a built `lattice-fs`, where FUSE can be used.
+    #[test]
+    #[ignore = "needs FUSE, and LATTICE_FS naming a built lattice-fs"]
+    fn a_real_mounter_is_started_at_a_linked_folder_and_stopped_cleanly() {
+        use std::io::{Read, Write};
+        let dir = std::env::temp_dir().join(format!("lr-mnt-real-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
+        crate::api::TEST_CONFIG.with(|t| *t.borrow_mut() = Some(dir.join("config/lattice-rune")));
+        // a ship that answers every read with an empty tree
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { continue };
+                std::thread::spawn(move || {
+                    let mut b = [0u8; 8192];
+                    let _ = s.read(&mut b);
+                    let body = r#"{"nodes":[],"since":"s"}"#;
+                    let _ = write!(s, "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                });
+            }
+        });
+        let mut spec = MountSpec { mountpoint: format!("{}//link/mnt", dir.display()), url, ship: "~zod".into(), ..MountSpec::default() };
+        spec.pid = start(&spec, Some("urbauth-~zod=0v1.x")).expect("the folder is seen to become a mount, though the system spells it another way");
+        assert!(mounted(&spec.mountpoint) && mounted(&dir.join("real/mnt").to_string_lossy()));
+        assert!(refusal(&spec.mountpoint).unwrap().ends_with("is a mount already"));
+        stop(&spec).unwrap();
+        assert!(!mounted(&spec.mountpoint));
+        // it said its word on the way out and went on to unmount: its stderr is a file, not a pipe let go of
+        let until = Instant::now() + Duration::from_secs(10);
+        while std::path::Path::new(&format!("/proc/{}/cmdline", spec.pid)).exists() && !std::fs::read_to_string(format!("/proc/{}/stat", spec.pid)).is_ok_and(|t| t.contains(") Z ")) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let said = said_since(&log_path().unwrap(), 0);
+        assert!(said.contains("unmounting") && !said.contains("panicked"), "{said}");
+        crate::api::TEST_CONFIG.with(|t| *t.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     #[cfg(unix)]

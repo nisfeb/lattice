@@ -311,7 +311,7 @@ impl Projection for LatticeProjection {
             .filter(|v| v.get("conflicted").and_then(|c| c.as_bool()) == Some(true))
             .and_then(|v| v.get("kept").and_then(|k| k.as_str()))
         {
-            eprintln!(
+            crate::say!(
                 "lattice-fs: {name} changed on the ship since it was opened. \
                  Saved over it, and the other copy is kept at {kept}"
             );
