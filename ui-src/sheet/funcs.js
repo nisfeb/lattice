@@ -417,7 +417,9 @@ export const FUNCS = {
   RADIANS: (a) => num1((n) => n * Math.PI / 180)(a[0]),
   EVEN: (a) => num1((n) => { const s = n < 0 ? -1 : 1; return s * 2 * Math.ceil(Math.abs(n) / 2 - 1e-12); })(a[0]),
   ODD: (a) => num1((n) => { const s = n < 0 ? -1 : 1; const m = Math.ceil(Math.abs(n) - 1e-12); return s * (m % 2 ? m : m + 1); })(a[0]),
-  FACT: (a) => num1((n) => { if (n < 0) return E.arg; let f = 1; for (let i = 2; i <= Math.floor(n); i++) f *= i; return fin(f); })(a[0]),
+  //  170! is the largest a number holds: past it Calc answers #VALUE!, and
+  //  the loop must not run on to 1E15
+  FACT: (a) => num1((n) => { if (n < 0) return E.illegal; if (!(n < 171)) return E.value; let f = 1; for (let i = 2; i <= Math.floor(n); i++) f *= i; return f; })(a[0]),
   CEILING: (a) => num2((n, s) => (s === 0 ? 0 : n < 0 && s < 0 ? Math.floor(n / s + 1e-12) * s : Math.ceil(n / s - 1e-12) * s))(a[0], a[1] ?? 1),
   FLOOR: (a) => num2((n, s) => (s === 0 ? E.div0 : n < 0 && s < 0 ? Math.ceil(n / s - 1e-12) * s : Math.floor(n / s + 1e-12) * s))(a[0], a[1] ?? 1),
   MROUND: (a) => num2((n, s) => (s === 0 ? 0 : Math.round(n / s) * s))(a[0], a[1]),

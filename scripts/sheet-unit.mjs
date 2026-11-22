@@ -544,6 +544,16 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   check('a formula retyped 400 times is found once', again.engine.checks < 200 && again.cell(0, 49, 0).v === 150, `${again.engine.checks} checks, ${again.cell(0, 49, 0).v}`);
 }
 {
+  //  one typed formula must not hang the tab
+  const b = new Book(blankText);
+  b.enter(0, 0, 0, '=FACT(1E15)');
+  check.eq('FACT of a huge number is an error at once, as in Calc', b.cell(0, 0, 0).text, '#VALUE!');
+  b.enter(0, 0, 1, '1E300');
+  b.enter(0, 0, 2, '=FACT(B1)');
+  const vals = ['=FACT(170)/1E306', '=FACT(171)', '=FACT(170.9)/1E306', '=FACT(0)', '=FACT(5)', '=FACT(-1)'].map((f) => { b.enter(0, 1, 0, f); return b.cell(0, 1, 0).text; });
+  check.eq('FACT at its edges', b.cell(0, 0, 2).text + ' ' + vals.join(' '), '#VALUE! 7.25741561530799 #VALUE! 7.25741561530799 1 120 Err:502');
+}
+{
   //  a few hundred bytes of file, and formulas over all of it: each stops
   //  at the walk budget, keeps its cached value and is marked
   const bomb = (f) => new Book(HEAD + '<table:table table:name="B"><table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="16384" office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>'
