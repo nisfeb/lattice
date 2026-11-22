@@ -377,17 +377,20 @@ section_exposure() {
   is "A links it at notes/doc" 200 "$(code -H "$AK" -X POST -G --data-urlencode "host=$BSHIP" --data-urlencode "path=$(jq -r .path <<<"$e")" --data-urlencode "to=notes/doc" "$A/link-make")"
   is "A makes notes/real" 200 "$(code -H "$AK" -X POST "$A/page-save?name=notes/real&type=md&new=1" --data-binary 'real page')"
 
-  # A grants B the whole notes/ folder (a dir road, the ACL editor's way).
-  # Its absolute base comes from the page grant share-file makes.
+  # A grants B the whole notes/ folder from the group panel. That grants
+  # the folder's pages and its index, not the folder's dir, so B lists
+  # the folder through its index, as any folder share is read. Its
+  # absolute base comes from the page grant share-file makes.
   is "A shares notes/real with B" true "$(share_a notes/real | jq -r .ok)"
   local AB; AB=$(grant_base notes/real)
   [ -n "$AB" ] && [ "$AB" != null ] || { fail "A's base from its grant"; return; }
   is "A grants B notes/" 200 "$(code -H "$AK" -X POST "$A/share-group-save?name=${BSHIP#\~}" \
     --data-binary "{\"ships\":[\"$BSHIP\"],\"peek\":[\"$AB/page/notes\"],\"make\":[]}")"
   bb() { B_ -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$1" "$B/$2"; }
-  local ls; ls=$(bb "$AB/page/notes" browse)
-  is "B lists A's notes/: the real page" 1 "$(jq '[.children[] | select(.name=="real")] | length' <<<"$ls")"
-  is "  ...and not the link" 0 "$(jq '[.children[] | select(.name=="doc")] | length' <<<"$ls")"
+  idx() { B_ -G --data-urlencode "url=urb://$ASHIP/notes/" "$B" | grep -o '<ul class="dindex">.*</ul>'; }
+  local ls; ls=$(wait_for 30 idx)
+  is "B lists A's notes/: the real page" 1 "$(grep -o 'notes%2Freal"' <<<"$ls" | wc -l)"
+  is "  ...and not the link" 0 "$(grep -o 'notes%2Fdoc"' <<<"$ls" | wc -l)"
   is "B reads A's real page (the grant works)" "real page" "$(bb "$AB/page/notes/real/code" browse-file | jq -r .body)"
   local c
   c=$(curl -s -m 60 -o /dev/null -w '%{http_code}' -H "$BK" -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$AB/page/notes/doc" "$B/browse")
