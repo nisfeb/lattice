@@ -91,11 +91,16 @@ export function stubShip(seed = {}) {
       case 'streams': return S.base ? fin(200, { base: S.base }) : undefined;
       //  the permission editor's groups, as the ship lists them: S.groups
       case 'legacy-groups': return fin(200, []);
-      case 'share-groups': return fin(200, S.groups || []);
+      case 'share-groups': return fin(200, S.v2 ? { v: 2, groups: S.groups || [] } : S.groups || []);
       case 'share-group-save': {
         const g = (S.groups || []).find((x) => x.name === q.name);
         if (!g) return fin(404, { error: 'no such group' });
-        Object.assign(g, JSON.parse(body));
+        //  with v 2 the list sent is the whole list. Without it a line left
+        //  out stays, as the ship does for a client that does not know v 2
+        const b = JSON.parse(body);
+        if (!b.v) for (const k of ['peek', 'make']) b[k] = [...new Set([...b[k], ...g[k]])];
+        delete b.v;
+        Object.assign(g, b);
         return fin(200, {});
       }
       default: return /stream|beacon/.test(ev.path) ? undefined : fin(200, {});

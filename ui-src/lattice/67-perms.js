@@ -10,6 +10,9 @@
   // non-directory rules are real but dojo territory. The server preserves
   // them verbatim on every save, and the ACL pane reports how many exist.
   let permGroups = [];
+  //  2 when the ship says its list is authoritative: a save then removes every
+  //  line it does not send back, and an empty list removes every grant
+  let permVer = 0;
   // the groups from before lattice kept its own (72-acl.js renderLegacy)
   let permLegacy = [];
   // "no groups yet" and "not loaded yet" are different claims, and the group
@@ -38,7 +41,10 @@
       renderGroupAccess();
       return;
     }
-    permGroups = await r.json();
+    //  the groups, bare or in an object with the list's version
+    const gj = await r.json();
+    permGroups = Array.isArray(gj) ? gj : (gj && gj.groups) || [];
+    permVer = (Array.isArray(gj) ? (permGroups[0] && permGroups[0].v) : gj && gj.v) === 2 ? 2 : 0;
     permsLoaded = true;
     permsErr = null;
     // optional: a ship that refused lattice the usergroups read lists none
@@ -54,7 +60,9 @@
   async function permSave(g) {
     const r = await busyFetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {
       method: 'POST',
-      body: JSON.stringify({ ships: g.ships, peek: g.peek, make: g.make }),
+      body: JSON.stringify(permVer === 2
+        ? { v: 2, ships: g.ships, peek: g.peek, make: g.make }
+        : { ships: g.ships, peek: g.peek, make: g.make }),
     }).catch(() => null);
     if (!r || !r.ok) st('permissions' + await errText(r), false);
     // re-read either way: the server is the authority, and a failed save must

@@ -9187,7 +9187,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       const canEdit = g.make.some(names);
       mk('read', canRead, () => {
         if (canRead) {
-          g.peek = g.peek.filter((x) => !names(x));
+          g.peek = g.peek.filter((x) => !names(x) && !(curFolder && x === path + '/dir-index'));
           g.make = g.make.filter((x) => !names(x));
         } else g.peek.push(grant);
         permSave(g);
@@ -9212,6 +9212,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
 // ── src/67-perms.js ───────────────────────────────────────────────────────
   let permGroups = [];
+  let permVer = 0;
   let permLegacy = [];
   let permsLoaded = false;
   let permsErr = null;
@@ -9230,7 +9231,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       renderGroupAccess();
       return;
     }
-    permGroups = await r.json();
+    const gj = await r.json();
+    permGroups = Array.isArray(gj) ? gj : (gj && gj.groups) || [];
+    permVer = (Array.isArray(gj) ? (permGroups[0] && permGroups[0].v) : gj && gj.v) === 2 ? 2 : 0;
     permsLoaded = true;
     permsErr = null;
     try {
@@ -9244,7 +9247,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   async function permSave(g) {
     const r = await busyFetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {
       method: 'POST',
-      body: JSON.stringify({ ships: g.ships, peek: g.peek, make: g.make }),
+      body: JSON.stringify(permVer === 2
+        ? { v: 2, ships: g.ships, peek: g.peek, make: g.make }
+        : { ships: g.ships, peek: g.peek, make: g.make }),
     }).catch(() => null);
     if (!r || !r.ok) st('permissions' + await errText(r), false);
     loadPerms();
@@ -10203,7 +10208,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     card.appendChild(aclHead(g));
     aclShips(card, g);
     aclSection(card, 'read', g.peek.filter((x) => !x.endsWith('/dir-index')), (v) => {
-      g.peek = g.peek.filter((x) => x !== v);
+      g.peek = g.peek.filter((x) => x !== v && x !== v + '/dir-index');
       g.make = g.make.filter((x) => x !== v);
       permSave(g);
     }, disp);

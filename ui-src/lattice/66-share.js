@@ -441,7 +441,7 @@
       mk('read', canRead, () => {
         if (canRead) {
           // dropping read drops edit. Edit without read cannot be exercised
-          g.peek = g.peek.filter((x) => !names(x));
+          g.peek = g.peek.filter((x) => !names(x) && !(curFolder && x === path + '/dir-index'));
           g.make = g.make.filter((x) => !names(x));
         } else g.peek.push(grant);
         permSave(g);

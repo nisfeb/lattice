@@ -931,6 +931,57 @@ cases.shareFolderPage = async () => {
   await x.done();
 };
 
+//  A ship that lists its groups as version 2 takes a save's lists as the
+//  whole truth: a line not sent back is removed, folder lines and their
+//  index lines together, and an empty list removes every grant.
+cases.shareV2 = async () => {
+  const BASE = '/apps/lattice.lattice_app', P = BASE + '/page/';
+  const seed = () => [{ name: 'crew', ships: [], peek: [P + 'a', P + 'a/dir-index', P + 'b', P + 'b/dir-index', P + 'solo'], make: [P + 'b'], poke: [], opaque: 0 }];
+  const start = async (v2) => {
+    const x = await up({ 'a': 'a\n', 'a/x': 'x\n', 'b': 'b\n', 'b/y': 'y\n', 'solo': 's\n' });
+    x.S.base = BASE; x.S.v2 = v2; x.S.groups = seed();
+    await x.page.reload({ waitUntil: 'domcontentloaded' });
+    await waitFor(() => x.page.evaluate(() => !!document.querySelector('#treelist a.pg')), 15000, 100);
+    await x.page.evaluate(() => document.getElementById('aclopen').click());
+    await waitFor(() => x.page.evaluate(() => !!document.querySelector('#aclgrid .chips a')), 15000, 100);
+    return x;
+  };
+  const saves = (x) => x.S.log.filter((e) => e.path === 'share-group-save');
+  const lastBody = (x) => JSON.parse(saves(x)[saves(x).length - 1].body);
+  const chip = (p, t) => p.evaluate((t) => { const a = [...document.querySelectorAll('#aclgrid .chips a')].find((e) => e.title === 'remove ' + t); if (a) a.click(); return !!a; }, t);
+  //  remove one folder
+  let x = await start(true);
+  check('the access pane did not offer the index line', !(await x.page.evaluate(() => [...document.querySelectorAll('#aclgrid .chips a')].some((e) => /dir-index/.test(e.title)))), '');
+  await chip(x.page, P + 'a');
+  await waitFor(() => saves(x).length === 1, 5000, 100);
+  check.eq('removing a folder sends v 2 without either of its lines', JSON.stringify(lastBody(x)), JSON.stringify({ v: 2, ships: [], peek: [P + 'b', P + 'b/dir-index', P + 'solo'], make: [P + 'b'] }));
+  await waitFor(() => !x.S.groups[0].peek.includes(P + 'a'), 3000, 50);
+  check.eq('and the ship holds that', JSON.stringify(x.S.groups[0].peek), JSON.stringify([P + 'b', P + 'b/dir-index', P + 'solo']));
+  //  remove everything
+  for (let i = 0; i < 12 && await x.page.evaluate(() => !!document.querySelector('#aclgrid .chips a')); i++) {
+    const n = saves(x).length;
+    await x.page.evaluate(() => document.querySelector('#aclgrid .chips a').click());
+    await waitFor(() => saves(x).length > n, 5000, 100);
+    await sleep(300);
+  }
+  check.eq('removing every line saves empty lists, and the ship holds none', JSON.stringify([lastBody(x).v, lastBody(x).peek, lastBody(x).make, x.S.groups[0].peek, x.S.groups[0].make]), JSON.stringify([2, [], [], [], []]));
+  await x.done();
+  //  keep everything: a page turned on and off again leaves every line
+  x = await start(true);
+  await x.page.evaluate(() => window.latTabs.openIn('page', 'a', {}));
+  await waitFor(() => x.page.evaluate(() => !![...document.querySelectorAll('#grouplist .grow-row button')].length), 15000, 100);
+  const tog = (n) => x.page.evaluate(() => [...document.querySelectorAll('#grouplist .grow-row button')].find((e) => e.textContent === 'read').click()).then(() => waitFor(() => saves(x).length >= n, 5000, 100)).then(() => sleep(400));
+  await tog(1); await tog(2);
+  check.eq('a page toggled on and off sends every line back with v 2', JSON.stringify(lastBody(x)), JSON.stringify({ v: 2, ships: [], peek: seed()[0].peek, make: seed()[0].make }));
+  await x.done();
+  //  a ship that does not say v 2 gets no v
+  x = await start(false);
+  await chip(x.page, P + 'a');
+  await waitFor(() => saves(x).length === 1, 5000, 100);
+  check('a save to a ship without version 2 carries no v', !('v' in lastBody(x)), JSON.stringify(lastBody(x)));
+  await x.done();
+};
+
 //  Not a race, but it needs the real editor and real keys, and no ship:
 //  vim mode on characters outside the BMP (an emoji is two UTF-16 units).
 //  No command may leave half of one in the text or rest the caret inside it.
