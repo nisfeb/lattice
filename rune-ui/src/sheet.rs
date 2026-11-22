@@ -189,7 +189,8 @@ fn numeric(t: &str) -> bool {
         let mut parts = s.split(',');
         parts.next().is_some_and(|p| digits(p) && p.len() <= 3) && parts.clone().count() > 0 && parts.all(|p| digits(p) && p.len() == 3)
     };
-    (whole.is_empty() || digits(whole) || grouped(whole)) && frac.is_none_or(digits) && exp.is_none_or(|e| digits(e.strip_prefix(['+', '-']).unwrap_or(e))) && t.bytes().any(|b| b.is_ascii_digit())
+    // a figure before the exponent: `e4` is a word, however many figures follow its `e`
+    (whole.is_empty() || digits(whole) || grouped(whole)) && frac.is_none_or(digits) && exp.is_none_or(|e| digits(e.strip_prefix(['+', '-']).unwrap_or(e))) && mant.bytes().any(|b| b.is_ascii_digit())
 }
 
 /// What typed text becomes in a cell, with dates counted from the usual null date. See `typed_on`.
@@ -212,8 +213,8 @@ pub fn typed_on(text: &str, null_date: f64) -> Result<Typed, String> {
     if t.len() > 1 && t.starts_with('=') {
         return Err("formulas are not written here yet".into());
     }
-    if numeric(t) {
-        let n: f64 = t.replace(',', "").parse().map_err(|_| "that number cannot be read".to_owned())?;
+    // what does not read as a number after all is not refused: it is the text that was typed
+    if let Some(n) = numeric(t).then(|| t.replace(',', "").parse::<f64>().ok()).flatten() {
         // more than a number can hold is kept as the text it was typed as, never as a nought
         return Ok(if n.is_finite() { Typed::Number(n) } else { Typed::Text(text.to_owned()) });
     }
@@ -244,8 +245,9 @@ pub fn typed_on(text: &str, null_date: f64) -> Result<Typed, String> {
     }
     let d: Vec<&str> = t.split('-').collect();
     if d.len() == 3 && digits(d[0], 4, 4) && digits(d[1], 1, 2) && digits(d[2], 1, 2) {
-        let (m, day): (i64, i64) = (d[1].parse().unwrap_or(0), d[2].parse().unwrap_or(0));
-        if (1..=12).contains(&m) && (1..=31).contains(&day) {
+        let (y, m, day): (i64, i64, i64) = (d[0].parse().unwrap_or(0), d[1].parse().unwrap_or(0), d[2].parse().unwrap_or(0));
+        // only a day the calendar has: the 30th of February would run on into March, and is the text that was typed
+        if (1..=12).contains(&m) && day >= 1 && civil_from_days(days_from_civil(y, m, day)) == (y, m, day) {
             if let Some(v) = date_serial(&format!("{}-{m:02}-{day:02}", d[0]), null_date) {
                 return Ok(Typed::Special("date", v));
             }
@@ -1292,6 +1294,32 @@ mod tests {
         }
         assert_eq!(typed("=A1+1").unwrap_err(), "formulas are not written here yet");
         assert_eq!(typed("="), Ok(Typed::Text("=".into())));
+    }
+
+    #[test]
+    fn letters_and_figures_that_are_no_number_are_text_and_never_refused() {
+        // a chess move, a seat, a part number: an `e` with figures after it and none before is no number
+        for t in ["e4", "E5", "E100", "-e5", "+E3", "e-5", "e+5", ".e5", "-.e3", "e", "E", "1e", "ee5", "e4 e5", "1e+", ".", "-", "+", "1.2.3", "1,00", ",5", "1e5e5"] {
+            assert_eq!(typed(t), Ok(Typed::Text(t.into())), "{t}");
+        }
+        // and what is a number still is
+        for (t, n) in [("1e4", 1e4), ("1E-2", 0.01), (".5e1", 5.0), ("-.5", -0.5), ("+1,000.5e1", 10005.0), ("0e0", 0.0), ("5.0", 5.0)] {
+            assert_eq!(typed(t), Ok(Typed::Number(n)), "{t}");
+        }
+        // typed into a sheet, it is stored as the text it is
+        let after = crate::calc::enter(BOOK, 0, 5, 0, "e4").unwrap().body;
+        assert_eq!(book(&after).unwrap().at(0, 5, 0).map(|c| (c.vt.as_str(), c.text.as_str())), Some(("string", "e4")));
+    }
+
+    #[test]
+    fn a_typed_date_that_does_not_exist_is_text() {
+        for t in ["2024-02-30", "2023-02-29", "2024-04-31", "2024-2-30", "2024-06-31", "1900-02-29", "2024-00-10", "2024-13-01", "2024-01-00", "2024-01-32"] {
+            assert_eq!(typed(t), Ok(Typed::Text(t.into())), "{t}");
+        }
+        for t in ["2024-02-29", "2023-02-28", "2024-04-30", "2024-2-9", "2024-12-31", "2000-02-29", "2024-01-01"] {
+            assert!(matches!(typed(t), Ok(Typed::Special("date", _))), "{t}");
+        }
+        assert_eq!(typed("2024-02-29"), Ok(Typed::Special("date", 45351.0)));
     }
 
     #[test]
