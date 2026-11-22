@@ -57,12 +57,24 @@
   }
 
   // ── tar reader (verifies the checksum; refuses a truncated archive) ──────────
-  const td = new TextDecoder();
+  // A byte order mark at the head of a page is the page's own: kept.
+  const td = new TextDecoder('utf-8', { ignoreBOM: true });
   function untar(buf) {
     const u = new Uint8Array(buf);
     const out = [];
     let off = 0;
     let longName = null;
+    // An archive ends with two blocks of zeros, and one that does not was
+    // cut short: by a copy that stopped, or a full disk. Reading up to the
+    // cut and calling that the archive restored the first pages and none of
+    // what the export writes last: which pages are sensitive, which are
+    // shared, their display names, the memories.
+    let ended = false;
+    const zeros = (at) => {
+      if (at + 512 > u.length) return false;
+      for (let i = at; i < at + 512; i++) if (u[i]) return false;
+      return true;
+    };
     const str = (at, len) => {
       const s = u.subarray(at, at + len);
       const e = s.indexOf(0);
@@ -70,9 +82,7 @@
     };
     while (off + 512 <= u.length) {
       const h = u.subarray(off, off + 512);
-      let zero = true;
-      for (const b of h) if (b) { zero = false; break; }
-      if (zero) break;
+      if (zeros(off)) { ended = zeros(off + 512); break; }
       let sum = 0;
       for (let i = 0; i < 512; i++) sum += (i >= 148 && i < 156) ? 32 : h[i];
       const want = parseInt(str(off + 148, 8).replace(/[^0-7]/g, '') || '-1', 8);
@@ -92,6 +102,7 @@
         text: td.decode(data) });
       longName = null;
     }
+    if (!ended) throw new Error('the archive was cut short: it does not reach its end marker');
     return out;
   }
 

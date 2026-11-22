@@ -217,4 +217,37 @@ console.log('\nrefusing a corrupt archive');
   eq('a flipped byte is caught by the checksum', /checksum/.test(threw), true);
 }
 
+console.log('\nrefusing an archive that was cut short');
+{
+  // An interrupted copy or a full disk cuts the file anywhere. The files
+  // that say which pages are sensitive or shared sit at the END, so a cut
+  // archive read as whole brings pages back without their marks.
+  const files = [];
+  for (let i = 0; i < 11; i++) files.push({ name: 'pages/notes/p' + i + '.md', body: 'page ' + i + '\n'.repeat(i * 40), mtime: MT });
+  files.push({ name: 'sensitive.json', body: '["notes/p1"]', mtime: MT });
+  const whole = new Uint8Array(await tarBlob(files).arrayBuffer());
+  eq('the whole archive reads', untar(whole.buffer).length, 12);
+  let taken = [];
+  for (let cut = 0; cut < whole.length; cut += 64) {
+    try { untar(whole.slice(0, cut).buffer); taken.push(cut); } catch {}
+  }
+  for (const cut of [whole.length - 1, whole.length - 512, whole.length - 1024]) {
+    try { untar(whole.slice(0, cut).buffer); taken.push(cut); } catch {}
+  }
+  eq('every cut is refused, on an entry boundary and inside the end marker too', JSON.stringify(taken), '[]');
+  let said = '';
+  try { untar(whole.slice(0, 1024).buffer); } catch (e) { said = e.message; }
+  eq('and the refusal says it was cut short', /cut short/.test(said), true);
+  // what other tools write after the end marker (tar pads to 10 KB) still reads
+  const padded = new Uint8Array(whole.length + 4096);
+  padded.set(whole);
+  eq('zero padding after the end marker is fine', untar(padded.buffer).length, 12);
+}
+
+console.log('\na byte order mark is content');
+{
+  const buf = await tarBlob([{ name: 'pages/b.md', body: '﻿has bom\n', mtime: MT }]).arrayBuffer();
+  eq('a leading U+FEFF comes back', untar(buf)[0].text, '﻿has bom\n');
+}
+
 done();
