@@ -1442,7 +1442,9 @@ mod tests {
     #[test]
     fn numbers_are_shown_by_their_cells_format_as_on_the_web() {
         // a sheet with eleven number formats, typed into. The expected grid is what the web client's
-        // Book gives for the same sheet and the same typing, from node: each cell's text and type
+        // Book gives for the same sheet and the same typing, from node: each cell's text and type.
+        // But for money that is owed, in a format with no form of its own for it: the web client writes
+        // $-1,234.50, and here it is -$1,234.50, as LibreOffice writes it
         let mut body = include_str!("formats_fixture.fods").to_owned();
         for line in include_str!("formats_edits.txt").lines() {
             let p: Vec<&str> = line.splitn(4, ',').collect();
@@ -1780,11 +1782,12 @@ mod tests {
         for typed in ["Mon, 21 Nov 2026", "Sun, 24 Nov 2026"] {
             assert_eq!(cell(&enter(FORMATTED, 0, 0, 4, typed).unwrap().body, 4), ("string".to_owned(), typed.to_owned()), "{typed}");
         }
-        // a negative number is typed back as the format writes it, the sign at the number, or before the symbol
+        // a negative number is read with its sign before the symbol, as the format writes it, or at the number,
+        // and is written the first way, as LibreOffice writes it
         for typed in ["$-5.00", "-$5.00", "$-1,234.50"] {
             let got = enter(FORMATTED, 0, 0, 5, typed).unwrap().body;
             let (vt, text) = cell(&got, 5);
-            assert_eq!((vt.as_str(), text.starts_with("$-")), ("currency", true), "{typed}: {text}");
+            assert_eq!((vt.as_str(), text.starts_with("-$")), ("currency", true), "{typed}: {text}");
         }
         assert!(enter(FORMATTED, 0, 0, 5, "$-1,234.50").unwrap().body.contains("office:currency=\"USD\" office:value=\"-1234.5\""));
         assert_eq!(cell(&enter(FORMATTED, 0, 0, 5, "-$-5.00").unwrap().body, 5).0, "string");
@@ -1794,6 +1797,31 @@ mod tests {
         for typed in ["($6.00)", "-($6.00)"] {
             assert_eq!(cell(&enter(&owed, 0, 0, 5, typed).unwrap().body, 5), ("string".to_owned(), typed.to_owned()));
         }
+    }
+
+    #[test]
+    fn a_number_typed_into_a_cell_whose_format_has_a_form_for_negatives_shows_as_libreoffice_shows_it() {
+        // a file LibreOffice wrote, one number format to a column. Its toolbar's money format, `[$$-409]#,##0.00;[RED]-[$$-409]#,##0.00`,
+        // is written as a format for the negative numbers that hands the others on to a second format
+        let src = include_str!("lo_formats.fods");
+        let typed = |column: usize, text: &str| {
+            let b = sheet::book(&enter(src, 0, 1, column, text).unwrap().body).unwrap();
+            let c = b.at(0, 1, column).cloned().unwrap();
+            (c.vt, c.text)
+        };
+        let money = |text: &str| ("currency".to_owned(), text.to_owned());
+        let number = |text: &str| ("float".to_owned(), text.to_owned());
+        // money with the negative in red, and money with it in brackets
+        assert_eq!((typed(0, "7"), typed(0, "-7"), typed(0, "0")), (money("$7.00"), money("-$7.00"), money("$0.00")));
+        assert_eq!((typed(1, "7"), typed(1, "-7"), typed(1, "1234.5")), (money("$7.00"), money("($7.00)"), money("$1,234.50")));
+        // and what a formula there comes to
+        assert_eq!((typed(0, "=3+4").1, typed(0, "=3-10").1, typed(1, "=3-10").1, typed(1, "=3+4").1), ("$7.00".to_owned(), "-$7.00".to_owned(), "($7.00)".to_owned(), "$7.00".to_owned()));
+        // a number with the negative in red, one with it in brackets, and one with a form each for more, less and nought
+        assert_eq!((typed(16, "7"), typed(16, "-7")), (number("7.00"), number("-7.00")));
+        assert_eq!((typed(17, "7"), typed(17, "-7"), typed(17, "-1234.567")), (number("7"), number("(7)"), number("(1,235)")));
+        assert_eq!((typed(18, "7"), typed(18, "-7"), typed(18, "0")), (number("7.0 up"), number("7.0 down"), number("zero")));
+        // money with no form of its own for what is owed: the sign goes before the symbol
+        assert_eq!((typed(2, "7"), typed(2, "-7")), (money("$7.00"), money("-$7.00")));
     }
 
     /// What a formula typed into A3 of a small sheet shows.
