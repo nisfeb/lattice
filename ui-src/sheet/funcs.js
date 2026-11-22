@@ -224,21 +224,28 @@ function pairs(test, other, ok, fn) {
 //  n to d decimal places, half away from zero, or away from zero ('up')
 //  or toward it ('down'), as Calc rounds
 const round = (n, d, mode) => {
+  //  places are a whole number, cut toward zero, as in Calc
+  d = Math.trunc(d);
   const f = 10 ** d;
   //  more places than a number can have: there is nothing to round
   if (!Number.isFinite(f)) return n;
   //  fewer than it has digits: nothing is left
   if (f === 0) return 0;
+  //  Calc's power of ten is nothing below 1E-308
+  if (d < -308) return 0;
   const x = Math.abs(n) * f;
   //  too large to have a fraction at this place
   if (!(x < 4503599627370496)) return n;
+  //  a fraction far under one whole unit of the place rounds up to nothing
+  if (mode === 'up' && x < 1e-297 && !Number.isInteger(n)) return 0;
   //  a product a hair off a whole number through binary arithmetic is
   //  that number: 0.29*100 is 29. The allowance is relative, about the
   //  last of a double's digits, as in styles.js +fixed. An absolute one
   //  rounded 1.4999999999 up.
   const fuzz = x * 4 * Number.EPSILON;
   const y = mode === 'up' ? Math.ceil(x - fuzz) : mode === 'down' ? Math.floor(x + fuzz) : Math.round(x + fuzz);
-  return (n < 0 ? -y : y) / f;
+  //  scaled back by a power of ten, which is exact where its inverse is not
+  return d < 0 ? (n < 0 ? -y : y) * 10 ** -d : (n < 0 ? -y : y) / f;
 };
 
 const num1 = (f) => (a) => { const n = toNum(scalar(a)); return isErr(n) ? n : f(n); };

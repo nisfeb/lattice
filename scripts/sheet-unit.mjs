@@ -784,6 +784,8 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
     ['=ROUND(1234.5678,-2)', '1200'], ['=ROUNDUP(1234.5678,-2)', '1300'], ['=ROUNDDOWN(-1234.5678,-2)', '-1200'],
     ['=ROUND(2.5,400)', '2.5'], ['=ROUND(-2.5,400)', '-2.5'], ['=ROUNDUP(2.5,400)', '2.5'], ['=ROUNDDOWN(2.5,400)', '2.5'], ['=TRUNC(2.5,400)', '2.5'], ['=ROUND(123.456,300)', '123.456'],
     ['=ROUND(2.5,-400)', '0'], ['=ROUND(-2.5,-400)', '0'], ['=ROUNDUP(2.5,-400)', '0'], ['=ROUNDDOWN(2.5,-400)', '0'], ['=TRUNC(2.5,-400)', '0'], ['=ROUND(1E300,-300)', '1E+300'], ['=ROUND(1E300,2)', '1E+300'],
+    ['=ROUND(324.55,2.7)', '324.55'], ['=ROUND(324.55,2.2)', '324.55'], ['=ROUNDUP(845.651,1.5)', '845.7'], ['=ROUNDDOWN(3375.999,-1.5)', '3370'], ['=ROUND(4567.876,-0.5)', '4568'], ['=ROUND(2.5,0.9)', '3'],
+    ['=ROUNDUP(640.0005,-300)', '0'], ['=ROUNDUP(640.0005,-299)', '1E+299'], ['=ROUNDUP(640.0005,-320)', '0'], ['=ROUNDUP(0.5,-298)', '0'], ['=ROUNDUP(1.5,-297)', '1E+297'], ['=ROUNDUP(1,-300)', '1E+300'], ['=ROUNDUP(12345.6789,-300)', '1E+300'],
     ['=SUBSTITUTE("hello","l","X",0)', 'Err:502'], ['=SUBSTITUTE("hello","l","X",-1)', 'Err:502'], ['=SUBSTITUTE("hello","l","X",0.5)', 'Err:502'], ['=SUBSTITUTE("hello","","X",0)', 'Err:502'],
     ['=SUBSTITUTE("hello","l","X",1)', 'heXlo'], ['=SUBSTITUTE("hello","l","X",2.9)', 'helXo'], ['=SUBSTITUTE("hello","l","X",3)', 'hello'], ['=SUBSTITUTE("hello","l","X")', 'heXXo'],
     ['=REPLACE("abc",0,1,"x")', 'Err:502'], ['=REPLACE("abc",-1,1,"x")', 'Err:502'], ['=REPLACE("abc",1,-1,"x")', 'Err:502'], ['=REPLACE("abc",0.5,1,"x")', 'Err:502'],
