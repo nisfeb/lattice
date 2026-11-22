@@ -212,7 +212,7 @@ for (const u of ['/\\evil.example/p.png', '\\\\evil.example/p.png', '\\/evil.exa
   hasnt('none with outside content allowed either: ' + u.replace('//', '/\\'), '![x](' + u.replace('//', '/\\') + ')', '<img');
   setOutside(false);
 }
-has('an image on this ship still draws', '![x](/apps/lattice/file?name=a%2Fb.png)', '<img alt="x" src="/apps/lattice/file?name=a%2Fb.png">');
+has('an image on this ship still draws', '![x](/apps/lattice/a/b.png?data)', '<img alt="x" src="/apps/lattice/a/b.png?data">');
 has('a backslash later in a path is left alone', '[x](/a/b\\c)', '<a href="/a/b\\c">');
 
 console.log('\ngemtext agrees with the ship (code/lib/lattice-gmi.hoon)');
@@ -230,6 +230,51 @@ eqj('the outline reads a heading with no space', outline('#One\n##Two', 'gmi'),
   [{ level: 1, text: 'One', line: 1 }, { level: 2, text: 'Two', line: 2 }]);
 eqj('the outline reads CRLF gemtext', outline('# a\r\n```x\r\n# b\r\n```\r\n', 'gmi'), [{ level: 1, text: 'a', line: 1 }]);
 eqj('gemtext links inside a fence with a language are not links', outLinks('```x\n=> https://e.com a\n```', 'gmi'), []);
+
+check.eq('a link line needs no space after the arrow', gmi('=>http://x y'), '<p><a href="http://x" target="_blank" rel="noopener noreferrer">y</a></p>');
+check.eq('a tab ends the address', gmi('=> http://x\tlab'), '<p><a href="http://x" target="_blank" rel="noopener noreferrer">lab</a></p>');
+check.eq('a tab after the arrow, blanks before the label', gmi('=>\thttp://x  two words'), '<p><a href="http://x" target="_blank" rel="noopener noreferrer">two words</a></p>');
+check.eq('a tab ends an urb address too', gmi('=> urb://~zod/a&b#c\tlabel'), '<p><a href="/apps/lattice?url=urb%3A%2F%2F~zod%2Fa%26b%23c">label</a></p>');
+check.eq('a link with no label shows its address', gmi('=> http://x '), '<p><a href="http://x" target="_blank" rel="noopener noreferrer">http://x</a></p>');
+check.eq('an arrow alone is a paragraph', gmi('=>\n=> '), '<p>=&gt;</p>\n<p>=&gt; </p>');
+check.eq('a run of bullets is one list', gmi('* a\n*   b\nc\n* d'), '<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n<p>c</p>\n<ul>\n<li>d</li>\n</ul>');
+check.eq('a star with no space is a paragraph', gmi('*a'), '<p>*a</p>');
+eqj('gemtext links with a tab or no space', outLinks('=>https://e.com/a one\n=> urb://~zod/x\ttwo', 'gmi'), ['https://e.com/a', 'urb://~zod/x']);
+
+console.log('\nmarkdown agrees with the ship (code/lib/lattice-md.hoon)');
+// An <img> is loaded as the page is drawn, with the reader's session. A
+// source on this host with a query is a request to a route, so it is
+// drawn as a link (+safe-img, +route-url). Only the bare ?data of a
+// file's raw view still draws.
+const CLIP = '![x](/apps/lattice/clip?url=https://evil.example/t?id=1)';
+hasnt('a same-host image with a query is no image', CLIP, '<img');
+has('it is a link to the same address', CLIP, '<a href="/apps/lattice/clip?url=https://evil.example/t?id=1">x</a>');
+has('with no alt the link shows the address', '![](/apps/lattice?url=urb://~zod/p)', '<a href="/apps/lattice?url=urb://~zod/p">/apps/lattice?url=urb://~zod/p</a>');
+for (const u of ['/a.png?data=1', '/a.png?data&url=http://e', '/a.png?', '/a.png#f?q=1', '/apps/lattice/share?text=http://e.example'])
+  hasnt('no image for ' + u, '![x](' + u + ')', '<img');
+has('the alt of such a link is still escaped', '![a "b <i>](/a?b=1)', '<a href="/a?b=1">a &quot;b &lt;i&gt;</a>');
+has('a raw view still draws', '![x](/apps/lattice/x/~zod/p/pic.png?data)', '<img alt="x" src="/apps/lattice/x/~zod/p/pic.png?data">');
+has('and so does a plain path', '![x](/pic.png)', '<img alt="x" src="/pic.png">');
+setOutside(true);
+hasnt('outside content allowed does not lift it', CLIP, '<img');
+has('a remote image keeps its query', '![a](https://x.example/i.png?w=2)', '<img alt="a" src="https://x.example/i.png?w=2">');
+setOutside(false);
+check.eq('two spaces before a line end are a break', mdToHtml('a  \nb'), '<p>a<br>\nb</p>');
+check.eq('more than two as well', mdToHtml('a    \nb'), '<p>a<br>\nb</p>');
+check.eq('one space is not', mdToHtml('a \nb'), '<p>a \nb</p>');
+check.eq('emphasis runs across a break', mdToHtml('*a  \nb*'), '<p><em>a<br>\nb</em></p>');
+check.eq('a code span keeps its spaces', mdToHtml('`a  \nb`'), '<p><code>a  \nb</code></p>');
+hasnt('nothing breaks at the end of a paragraph', 'a  ', '<br>');
+check.eq('a link address cannot hold "]("', mdToHtml('[a](/u](/v)'), '<p>[a](/u](/v)</p>');
+check.eq('nor can an image source', mdToHtml('![a](/u](/v)'), '<p>![a](/u](/v)</p>');
+check.eq('a bracket alone in an address is fine', mdToHtml('[a](/u]v)'), '<p><a href="/u]v">a</a></p>');
+// A byte past ASCII is a word character on the ship, so an underscore
+// beside one opens or closes nothing.
+for (const t of ['é_a_é', '_a_é', 'é_a_', '—_a_—', 'a_b_c', '_a_b_', 'a__b__c', '__a__é'])
+  check.eq('no emphasis in ' + t, mdToHtml(t), '<p>' + t + '</p>');
+check.eq('underscores at word edges are emphasis', mdToHtml('é _a_ é (_b_)'), '<p>é <em>a</em> é (<em>b</em>)</p>');
+check.eq('two underscores at word edges are bold', mdToHtml('__a__ x __b c__.'), '<p><strong>a</strong> x <strong>b c</strong>.</p>');
+check.eq('and may hold one inside a word', mdToHtml('__a_b__'), '<p><strong>a_b</strong></p>');
 
 console.log('\noutgoing links and outline (76-outline.js)');
 eqj('an empty body has no links', outLinks('', 'md'), []);

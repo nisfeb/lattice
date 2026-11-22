@@ -64,6 +64,17 @@
   };
   //  Either slash may be written as a backslash: the browser reads both.
   const remoteUrl = (u) => /^(https?:)?[\/\\]{2}/i.test(mdUnesc(u).trim());
+  //  An image on this host whose address carries a query is a request to
+  //  a route, and the browser loads an <img> as the page is drawn, with
+  //  the reader's session: /apps/lattice/clip?url=.. made the ship fetch
+  //  that url and file a page. Such an image is drawn as a link. Only the
+  //  bare ?data of a file's raw view still draws, and allowing outside
+  //  content does not lift it. The ship's +route-url and +safe-img
+  //  (code/lib/lattice-md.hoon).
+  const routeUrl = (u) => {
+    const s = mdUnesc(u), q = s.indexOf('?');
+    return q >= 0 && s.slice(q + 1) !== 'data';
+  };
 
   // The test for a wikilink to a page not written yet (ghostTest,
   // 60-preview.js). Only the live preview sets it, around its own paint:
@@ -89,12 +100,17 @@
   const SCAN = 2048, LSCAN = 512;
   //  (url "title"): the paren must close within LSCAN, looked for once, so
   //  the two runs after it never walk further than that
-  const PAREN = '\\((?=[^)]{0,' + LSCAN + '}\\))([^)\\s]+)(?:\\s[^)]*)?\\)';
+  //  and the address never holds "](", the next link's opener (the ship's
+  //  +find-stop)
+  const PAREN = '\\((?=[^)]{0,' + LSCAN + '}\\))((?:[^)\\s\\]]|\\](?!\\())+)(?:\\s[^)]*)?\\)';
   //  an image's alt stops at the next "![", a link's text at the next "["
   const IMG_RE = new RegExp('!\\[((?:[^\\]!]|!(?!\\[)){0,' + SCAN + '})\\]' + PAREN, 'g');
   const LINK_RE = new RegExp('\\[([^\\]\\[]{1,' + SCAN + '})\\]' + PAREN, 'g');
   //  a wikilink's target and label stop at the next "[["
   const WIKI_RE = /\[\[((?:[^\]|[]|\[(?!\[))+)(?:\|((?:[^\][]|\[(?!\[))+))?\]\]/g;
+  const NW = '[^\\w\\u0080-\\uffff]';
+  const UBOLD_RE = new RegExp('(^|' + NW + ')__((?:[^_]|_(?!_))+)__(?=' + NW + '|$)', 'g');
+  const UEM_RE = new RegExp('(^|' + NW + ')_([^_]+)_(?=' + NW + '|$)', 'g');
   const mdInline = (t) => {
     let s = mdEsc(t);
     // code first: its (already-escaped) contents must not be re-processed for
@@ -117,6 +133,7 @@
         return tag('<span class="ximg">[image from another site' + (alt ? ': ' + alt : '') + ']</span>');
       }
       const h = mdHref(u);
+      if (h && !remoteUrl(u) && routeUrl(u)) return tag('<a href="' + h + '">') + (alt || h) + '</a>';
       return h ? tag('<img alt="' + alt + '" src="' + h + '">') : m;
     });
     s = s.replace(LINK_RE, (m, txt, u) => {
@@ -138,9 +155,22 @@
         + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>';
     });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    s = s.replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
+    //  underscores open and close only at a word's edge, and a character
+    //  past ASCII is a word character, as on the ship: é_a_é is text
+    s = s.replace(UBOLD_RE, '$1<strong>$2</strong>');
+    s = s.replace(UEM_RE, '$1<em>$2</em>');
     s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+    //  two or more spaces before a line end are a hard break, as on the
+    //  ship. Code spans are still tokens here, so theirs are left alone.
+    //  Line by line, with no pattern that walks a run of spaces from each
+    //  of its positions.
+    if (s.includes('  \n')) s = s.split('\n').map((l, i, a) => {
+      if (i === a.length - 1 || !l.endsWith('  ')) return l;
+      let e = l.length;
+      while (l[e - 1] === ' ') e--;
+      return l.slice(0, e) + '<br>';
+    }).join('\n');
     // restore code spans. They were escaped when the whole string was, so no
     // re-escape here (that would double-escape). Only extractor-minted tokens
     // match; a forged one was mangled to '&amp;CD…;' by the escaper.
@@ -318,7 +348,7 @@
   const GMI_H = /^(#{1,3}) *(.*)$/;
   const gmiToHtml = (input) => {
     const out = [];
-    let pre = null;
+    let pre = null, list = false;
     for (const raw of String(input == null ? '' : input).split('\n')) {
       //  a CRLF document's CR is not content (the ship's +strip-cr)
       const ln = raw.replace(/\r$/, '');
@@ -331,15 +361,26 @@
         else pre.push(ln);
         continue;
       }
+      //  any line that is not a bullet closes an open list
+      if (list && !ln.startsWith('* ')) { list = false; out.push('</ul>'); }
       if (ln.startsWith('```')) { pre = []; continue; }
       //  blanks after the hashes are optional, so #Heading is one
       const h = ln.match(GMI_H);
       if (h) { out.push('<h' + h[1].length + '>' + mdEsc(h[2]) + '</h' + h[1].length + '>'); continue; }
-      if (ln.startsWith('=> ')) {
-        const rest = ln.slice(3).replace(/^\s+/, '');
-        const sp = rest.indexOf(' ');
-        const raw = sp < 0 ? rest : rest.slice(0, sp);
-        const desc = mdEsc((sp < 0 ? rest : rest.slice(sp + 1)).replace(/^\s+/, ''));
+      //  a run of "* " lines is one list
+      if (ln.startsWith('* ')) {
+        if (!list) { list = true; out.push('<ul>'); }
+        out.push('<li>' + mdEsc(ln.slice(2).replace(/^ +/, '')) + '</li>');
+        continue;
+      }
+      //  a link line: "=>", optional blanks, the address up to the next
+      //  space or tab, then the label. With no label it shows its address,
+      //  and an arrow with nothing after it is a paragraph.
+      const lk = ln.startsWith('=>') && ln.slice(2).replace(/^[ \t]+/, '');
+      if (lk) {
+        const sp = lk.search(/[ \t]/);
+        const raw = sp < 0 ? lk : lk.slice(0, sp);
+        const desc = mdEsc((sp < 0 ? '' : lk.slice(sp).replace(/^[ \t]+/, '')) || raw);
         if (raw.startsWith('urb://'))
           out.push('<p><a href="/apps/lattice?url=' + mdEsc(encodeURIComponent(raw)) + '">' + desc + '</a></p>');
         else if (/^https?:\/\//.test(raw))
@@ -351,6 +392,7 @@
       if (!ln.trim()) continue;
       out.push('<p>' + mdEsc(ln) + '</p>');
     }
+    if (list) out.push('</ul>');
     if (pre !== null) out.push('<pre>' + mdEsc(pre.join('\n')) + '</pre>');
     return out.join('\n');
   };
