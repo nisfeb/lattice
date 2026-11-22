@@ -640,7 +640,8 @@ fn reads_a_file(tag: &str) -> bool {
             continue;
         };
         let value = value.trim_start().trim_start_matches(['"', '\'']).trim_start();
-        let held = ["data:image/png", "data:image/jpeg", "data:image/jpg", "data:image/gif", "data:image/webp"].iter().any(|p| value.len() >= p.len() && value[..p.len()].eq_ignore_ascii_case(p));
+        // by bytes: the address may be in letters of more than one byte, and a slice of a prefix's length would cut one in two
+        let held = ["data:image/png", "data:image/jpeg", "data:image/jpg", "data:image/gif", "data:image/webp"].iter().any(|p| value.as_bytes().get(..p.len()).is_some_and(|v| v.eq_ignore_ascii_case(p.as_bytes())));
         if !held && !value.starts_with('#') {
             return true;
         }
@@ -884,6 +885,106 @@ mod tests {
         let t = std::time::Instant::now();
         let _ = to_markdown(&"<svg></svg>".repeat(80_000));
         assert!(t.elapsed().as_secs() < 8);
+    }
+
+    #[test]
+    fn an_address_in_letters_of_many_bytes_does_not_end_the_app() {
+        // each prefix a held picture may start with is 14 or 15 bytes long: a letter of two, three or four bytes across that length is not cut in two
+        for page in ["<image href=\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}>", "<svg><image xlink:href=\"\u{65e5}\u{672c}\u{8a9e}\u{65e5}\u{672c}\u{8a9e}\"/></svg>", "<feImage href='aaaaaaaaaaaaa\u{1f469}'>", "<image href=data:image/pn\u{e9}>", "<image href=\"data:image/jpe\u{1f469}\">"] {
+            assert!(tamed(page).contains("<x-"), "{page}");
+            assert!(!fetched_ok(format!("<svg>{page}</svg>").as_bytes()), "{page}");
+        }
+        // a held picture is still let be, whatever follows its prefix
+        assert!(matches!(tamed("<svg><image href=\"data:image/png;base64,\u{e9}\u{e9}\"/></svg>"), std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(tamed("<svg><image href='DATA:IMAGE/WEBP\u{1f469}'/></svg>"), std::borrow::Cow::Borrowed(_)));
+    }
+
+    /// Every text made from `seed` by putting a letter of two, three or four bytes (or a joining mark) in at each place, by writing one over each byte, and by cutting the seed off there.
+    fn with_wide_letters(seed: &str, mut f: impl FnMut(&str)) {
+        assert!(seed.is_ascii());
+        for at in 0..=seed.len() {
+            f(&seed[..at]);
+            for wide in ["\u{e9}", "\u{65e5}", "\u{1f469}", "\u{301}", "\u{e9}\u{65e5}\u{1f469}"] {
+                f(&format!("{}{wide}{}", &seed[..at], &seed[at..]));
+                if at < seed.len() {
+                    f(&format!("{}{wide}{}", &seed[..at], &seed[at + 1..]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn letters_of_many_bytes_anywhere_in_a_tag_do_not_end_the_app() {
+        let seeds = [
+            "<svg><image href=\"data:image/png;base64,AAAA\"/></svg>",
+            "<svg><image href=data:image/jpeg;base64,AAAA></svg>",
+            "<svg><feImage xlink:href = 'data:image/webp;base64,AA' result='>'/></svg>",
+            "<IMAGE HREF=/dev/zero><feimage href='#a'/><image-gallery href=x>",
+            "<image href href= href=\"\" href='data:image/gif' />",
+            "<svg><circle r=\"1\"/><path d='M0 0'/></svg><math><mi/></math>",
+            "<script>if(a<b){}</script><style>p{}</style><div><p>x</p></div>",
+            "<SCRIPT src=x></SCRIPT ><style>a</style x><textarea>t</textarea>",
+            "<a href=\"x y\" title='a>b' =c d = e>t</a><img src=a.png alt=\"A\">",
+            "<!-- note --><!doctype html><?xml version='1.0'?><p/></p></>",
+            "a &amp; b &#233; &#x263A; &bogus; &#; &#x; &lt",
+            "<pre><code class=\"language-rust lang-x\">a ` b</code></pre>",
+            "<ol start=3><li>c<li>d</ol><table><caption>C</caption><tr><th>a<td>b</table>",
+            "<math display=\"block\"><semantics><annotation encoding=\"application/x-tex\">x^2</annotation></semantics></math>",
+            "<h1>T</h1><blockquote><p>1. said</p></blockquote><hr><b> x </b>",
+        ];
+        for seed in seeds {
+            with_wide_letters(seed, |page| {
+                let _ = tamed(page);
+                let _ = fetched_ok(page.as_bytes());
+                let _ = fetched_ok(format!("<svg>{page}").as_bytes());
+                let _ = deeper_than(page, 2);
+                let _ = to_markdown(page);
+                let _ = decode(page);
+            });
+        }
+        for seed in ["# One\n## Two\n### Three\n#### four\n#no", "=> https://x.org A page\n=>  urb://~zod/p\n=> gemini://x y\n=>x", "```\ncode\n``` \n> said\n* item"] {
+            with_wide_letters(seed, |page| {
+                let _ = gemtext(page);
+            });
+        }
+    }
+
+    #[test]
+    fn letters_of_many_bytes_anywhere_in_markdown_do_not_end_the_app() {
+        let seeds = [
+            "# T\n\nsee [[a/b|label]] and [[c]] and [[ | ]] `[[code]]` [[open\n",
+            "![alt](a.png) ![b](https://x.org/b.png \"t\") ![c]( ) ![d\n",
+            "[t](lattice:a%20b%2Fc#h) [u](/apps/lattice/page/x%zz?q) [v](http://x)\n",
+            "**b** *i* ~~s~~ `c` ``d ` e`` ***bi*** \\* [l\\]](u) [a [b](c)\n",
+            "- one\n  - two\n1. three\n   1. four\n> quote\n```\ncode\n```\n",
+            "> > > > > > > > > > deep\n- - - - - - - - - - - - list\n1. 2. 3. 4. 5. 6. 7. 8. 9. 10. n\n",
+            "a<br>b <b>bold</b> <i>soft</i> <kbd>k</kbd> </b>\n\n<div class=\"x\">\n<p>block</p>\n</div>\n\n| a | b |\n| --- | --- |\n| c<br>d | e \\| f |\n",
+            "[ref]: http://x\n\n12. item\n12) item\n- [ ] task\n\n---\n",
+        ];
+        for seed in seeds {
+            with_wide_letters(seed, |page| {
+                let _ = crate::md::exact(page);
+                let _ = crate::md::parse(page);
+                let _ = crate::md::html_shown(page);
+                let _ = crate::md::html_made(page);
+                let _ = crate::md::shallow(page);
+                let _ = crate::md::wikilinks(page, &|n| n.len() % 2 == 0);
+                let _ = crate::md::images(page);
+                let _ = crate::md::links(page);
+                let _ = crate::md::page_of(page.trim());
+                let _ = crate::md::label_escapes(page);
+                // the caret may be handed in anywhere, inside a letter too
+                for caret in 0..=page.len() + 1 {
+                    let _ = crate::md::link_query(page, caret);
+                }
+                let _ = crate::scrub::blocks(page);
+                let _ = crate::scrub::source_md("rust", page);
+            });
+        }
+        let doc = "<office:body><text:h text:outline-level=\"1\">T</text:h><text:list><text:list-item><text:p>1. a &amp; b</text:p></text:list-item></text:list><text:p text:style-name='x'>p<text:s/>q</text:p><text:p/></office:body>";
+        with_wide_letters(doc, |page| {
+            let _ = crate::scrub::doc_md(page);
+        });
     }
 
     #[test]
