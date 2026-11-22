@@ -659,6 +659,40 @@ console.log('==> a field keeps the cursor when the shell says editable again');
   await m.close();
 }
 
+console.log('==> a detail field in use is saved, and kept');
+{
+  const m = await open(body([pt(-71, 42, { name: 'a' }), pt(-70, 42, { name: 'b' })]));
+  await m.click(-71, 42);
+  await m.page.focus('.lm-detail textarea');
+  await m.page.keyboard.type('an important note');
+  check('typed text is not in the body before the field is left', !(await m.page.evaluate(() => window.buf)).includes('an important note'));
+  const ok = await m.page.evaluate(() => window.ctl.sync());
+  check('sync() puts the text of the field in use into the body', ok === true && (await m.doc()).features[0].properties.note === 'an important note');
+  check('and leaves the field as it was, with the cursor in it', await m.page.evaluate(() => { const t = document.querySelector('.lm-detail textarea'); return document.activeElement === t && t.value === 'an important note'; }));
+  await m.page.focus('.lm-detail [data-k="kind"]');
+  await m.page.keyboard.type('pla');
+  check('sync() from a field that repaints the pane leaves the cursor in that field', await m.page.evaluate(() => window.ctl.sync()) === true
+    && (await m.doc()).features[0].properties.kind === 'pla'
+    && await m.page.evaluate(() => { const a = document.activeElement; return a.dataset.k === 'kind' && a.value === 'pla' && a.selectionStart === 3; }));
+  await m.page.keyboard.type('ce');
+  await m.page.evaluate(() => window.ctl.sync());
+  check.eq('typing goes on, and the next sync has it', (await m.doc()).features[0].properties.kind, 'place');
+  await m.page.focus('.lm-detail [data-k="time"]');
+  await m.page.keyboard.type('not a date');
+  check('sync() says no for a field it cannot save', await m.page.evaluate(() => window.ctl.sync()) === false && (await m.note()).includes('not a date') && !(await m.doc()).features[0].properties.time);
+  await m.page.$eval('.lm-detail [data-k="time"]', (e) => { e.value = ''; });
+  check('with no field in use sync() is yes', await m.page.evaluate(() => { document.activeElement.blur(); return window.ctl.sync(); }) === true);
+  //  an outside text arrives while a field holds unsaved typing
+  await m.page.focus('.lm-detail [data-k="name"]');
+  await m.page.keyboard.type(' renamed');
+  const outside = body([pt(-71, 42, { name: 'a', kind: 'place', note: 'an important note' }), pt(-70, 42, { name: 'b' }), pt(-69, 42, { name: 'c' })]);
+  check('update() takes the outside text', await m.page.evaluate((t) => { window.buf = t; return window.ctl.update(t); }, outside) && (await m.list()).length === 3);
+  check('and the field in use keeps its typing and the cursor', await m.page.evaluate(() => { const i = document.querySelector('.lm-detail [data-k="name"]'); return document.activeElement === i && i.value === 'a renamed'; }));
+  await m.page.evaluate(() => window.ctl.sync());
+  check.eq('which the next sync saves over the outside text', JSON.stringify((await m.doc()).features.map((f) => f.properties.name)), '["a renamed","b","c"]');
+  await m.close();
+}
+
 check('no page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
 await browser.close();
 check.done();
