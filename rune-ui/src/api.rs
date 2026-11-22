@@ -1839,6 +1839,25 @@ pub fn ops_over(mut nodes: Vec<Node>, ops: &[QueuedOp]) -> Vec<Node> {
     nodes
 }
 
+/// What a save sent straight from the editor, once the ship has it at `rev`, means for the save of
+/// that page that waits. The same text is done with. One put by since that save was sent (`at` no
+/// earlier than `sent_at`) is newer: it stays, and claims `rev`, so it goes over the one that landed
+/// and is not taken for a change made elsewhere. One put by before it is another window's, which
+/// this window never held (its own would have sent the save behind it): it stays as it is, and when
+/// it is sent the ship keeps whichever text it replaces as a page of its own.
+pub fn landed_over(q: &mut Queue, name: &str, body: &str, sent_at: u64, rev: u64) {
+    let Some(w) = q.get_mut(name) else { return };
+    if w.body == body {
+        q.remove(name);
+    } else if w.at >= sent_at {
+        // a memory has no revision to claim
+        if queued_know(name).is_none() {
+            w.base = Some(rev);
+        }
+        w.is_new = false;
+    }
+}
+
 /// Whether a waiting save must go after the deletes and moves that wait: it is at or under a path
 /// one of them changes. Sent before it, it would be written to a page the delete then takes, or
 /// where the move then finds a page in its way. Any other save does not depend on them, and goes

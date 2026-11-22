@@ -1116,3 +1116,96 @@ fn a_waiting_list_that_cannot_be_written_stops_the_sending_and_is_said() {
     r.settle();
     assert!(c.ops().is_empty() && ship.body("gone") == "made again\n");
 }
+
+#[test]
+fn a_save_landing_in_one_window_keeps_another_windows_later_save_of_the_page() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/p", "md", "one\n");
+    ship.write("a-other", "md", "x\n");
+    let mut w1 = Run::new(&ship);
+    let mut w2 = Run::new(&ship);
+    w1.open("notes/p");
+    w2.open("notes/p");
+    ship.st().slow = 1.0;
+    // window one saves the page straight to the ship: on its way for a second
+    start_edit(&mut w1.s);
+    w1.typ(" and from window one");
+    save(&mut w1.s);
+    assert!(saving(&w1.s));
+    // window two took the ship to be away a moment ago: its edit of the same page, and one of another page, wait in the file
+    w2.s.offline = Some(String::new());
+    start_edit(&mut w2.s);
+    w2.typ(" and from window two");
+    save(&mut w2.s);
+    w2.tick();
+    open_page(&mut w2.s, "a-other");
+    w2.tick();
+    start_edit(&mut w2.s);
+    w2.typ(" more");
+    save(&mut w2.s);
+    w2.tick();
+    let c = ship.conn();
+    assert!(c.queue().get("notes/p").is_some_and(|q| q.body.contains("window two")));
+    // window two sends what waits, the other page first, slowly
+    w2.s.offline = None;
+    drain(&mut w2.s);
+    std::thread::sleep(Duration::from_millis(100));
+    // window one's next look at what waits reads the file, which holds window two's edit of the page
+    drain(&mut w1.s);
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(6) {
+        w1.tick();
+        w2.tick();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    w1.settle();
+    w2.settle();
+    let sent: Vec<String> = ship.saves_of("notes/p").into_iter().map(|s| s.body).collect();
+    let waits = c.queue().get("notes/p").map(|q| q.body.clone());
+    assert!(sent.iter().any(|b| b.contains("window two")) || waits.as_deref().is_some_and(|b| b.contains("window two")), "window two's edit is neither on the ship nor waiting: sent {sent:?}, waiting {waits:?}");
+    assert!(sent.iter().any(|b| b.contains("window one")), "and window one's went: {sent:?}");
+}
+
+#[test]
+fn a_save_landing_keeps_the_later_save_of_the_page_put_by_while_it_was_out() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/p", "md", "one\n");
+    let mut r = Run::new(&ship);
+    r.open("notes/p");
+    ship.st().slow = 1.0;
+    start_edit(&mut r.s);
+    r.typ(" first");
+    save(&mut r.s);
+    assert!(saving(&r.s) && r.s.editing, "Save pressed: on its way, the editor open until it lands");
+    // a read of the tree failed meanwhile: the window takes the ship to be away
+    r.s.offline = Some(String::new());
+    r.typ(" second");
+    save(&mut r.s);
+    r.tick();
+    let c = ship.conn();
+    assert!(c.queue().get("notes/p").is_some_and(|q| q.body == "one first second\n") && !r.s.editing, "{:?}", r.s.note);
+    // the first save's answer lands
+    r.until("the first answer", |s| !saving(s));
+    r.tick();
+    assert_eq!(ship.body("notes/p"), "one first\n");
+    let w = c.queue().get("notes/p").cloned();
+    assert!(w.as_ref().is_some_and(|q| q.body == "one first second\n" && q.base == Some(2)), "the later text still waits, over the revision the first landed at: {w:?}");
+    assert!(r.s.open.as_ref().is_some_and(|p| p.body == "one first second\n"), "and the page shows it, not the text before it: {:?}", r.s.open.as_ref().map(|p| p.body.clone()));
+    // a near neighbour: the same text put by again is done with once it lands
+    let mut q = api::Queue::new();
+    api::enqueue(&mut q, &Page { name: "n".into(), body: "same\n".into(), kind: "md".into(), rev: 1 }, Some(1), false, 5);
+    api::landed_over(&mut q, "n", "same\n", 9, 2);
+    assert!(q.is_empty());
+    // and one put by before the save was sent, which this window never held, keeps its claim: when it goes the ship keeps aside what it replaces
+    api::enqueue(&mut q, &Page { name: "n".into(), body: "older\n".into(), kind: "md".into(), rev: 1 }, Some(1), false, 5);
+    api::landed_over(&mut q, "n", "newer\n", 9, 2);
+    assert_eq!(q["n"].base, Some(1));
+    r.s.offline = None;
+    r.sync();
+    r.sync();
+    assert_eq!(ship.body("notes/p"), "one first second\n");
+    assert!(!ship.st().pages.keys().any(|n| n.starts_with("conflicts/")), "the window's own earlier text is not kept as a conflict");
+    assert!(c.queue().is_empty());
+}

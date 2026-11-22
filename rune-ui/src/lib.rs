@@ -968,8 +968,8 @@ struct App {
     offline: Option<String>,
     /// The saves that could not reach the ship and wait to be sent, one for each page, as the file beside the session holds them.
     queue: api::Queue,
-    /// The page a save on its way carries, and the revision it was written over: put by if the ship does not answer.
-    save_sent: Option<(Page, u64, bool)>,
+    /// The page a save on its way carries, the revision it was written over, whether it is a memory, and when it was sent, in seconds: put by if the ship does not answer.
+    save_sent: Option<(Page, u64, bool, u64)>,
     /// The saves that waited, on their way to the ship: each as it was sent, and how it came out.
     /// In turn, so it is on its way until its answer is taken: a `Latest` that has landed and not yet been looked at reads as done, and what waited was then sent a second time
     drain_req: inturn::InTurn<Drained>,
@@ -5542,7 +5542,8 @@ fn write(s: &mut App) {
     let fresh = own && !memory && base == 0 && !s.names.contains(&p.name);
     match s.conn.clone() {
         Some(c) => {
-            s.save_sent = own.then(|| (p.clone(), base, memory));
+            let at = api::since_epoch().map_or(0, |d| d.as_secs());
+            s.save_sent = own.then(|| (p.clone(), base, memory, at));
             (s.save_for, s.save_half) = (Some(p.name.clone()), own.then_some(memory));
             s.save_req.request((c, p), move |(c, mut p)| {
                 if let Some(sh) = &remote {
@@ -6850,13 +6851,19 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             None
         };
         match r {
-            Ok(p) => {
-                // the ship has this page's text now: an older save of it that waited is done with
-                let memory = sent.as_ref().is_some_and(|x| x.2);
+            Ok(mut p) => {
+                // the ship has this text of the page now. What waits for the page is done with only when it is this text: one put by since this save was sent is newer and goes over it, and one put by before it is another window's
+                let (memory, sent_at) = sent.as_ref().map_or((false, 0), |x| (x.2, x.3));
                 let waited_as = if memory { api::know_queue_name(&p.name) } else { p.name.clone() };
-                if s.queue.contains_key(&waited_as) {
-                    if let Err(e) = change_waiting(s, |_, q| drop(q.remove(&waited_as))) {
+                if sent.is_some() && s.queue.contains_key(&waited_as) {
+                    let (body, rev) = (p.body.clone(), p.rev);
+                    if let Err(e) = change_waiting(s, |_, q| api::landed_over(q, &waited_as, &body, sent_at, rev)) {
                         s.note = format!("saved, but the list of what waits could not be written: {e}");
+                    }
+                    // a newer text waits: it stays the page's text here, as when it was put by, unless an editor is open on what was saved
+                    if let Some(newer) = s.queue.get(&waited_as).filter(|w| w.at >= sent_at && w.body != p.body && !s.editing) {
+                        p.body = newer.body.clone();
+                        stale_views(s, &p.name);
                     }
                 }
                 // a read of the tree on its way may have been made before this save
@@ -6867,7 +6874,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
             // the ship did not answer: the save waits here for it
             Err(e) if api::gone(&e) && sent.is_some() => {
-                let (p, base, memory) = sent.expect("just checked");
+                let (p, base, memory, _) = sent.expect("just checked");
                 // a link's host that did not answer is not the ship being away: the save waits for the host, and every other save goes on
                 let away_ship = ship_away(&e, !memory && s.links.contains_key(&p.name));
                 if away_ship {
