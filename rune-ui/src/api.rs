@@ -3159,6 +3159,27 @@ impl Conn {
         self.call("POST", &format!("know-move?from={}&to={}", enc(from), enc(to)), Some("")).map(drop)
     }
 
+    /// What a form's answer says of it. The ship answers a form it took by sending the browser on
+    /// to one of its own pages, which is not followed. Sent anywhere else, the form was not taken:
+    /// to the sign-in page while lattice is being put in or started, or by something in front of
+    /// the ship whose own session ended. A refusal is the ship's own word for it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn form_answer(&self, res: Result<ureq::Response, ureq::Error>) -> Result<ureq::Response, String> {
+        match res {
+            Ok(r) if (300..400).contains(&r.status()) => {
+                let to = r.header("location").unwrap_or("");
+                let path = to.strip_prefix(self.url.as_str()).unwrap_or(to);
+                match path.strip_prefix("/apps/lattice") {
+                    Some(rest) if rest.is_empty() || rest.starts_with(['/', '?', '#']) => Ok(r),
+                    _ => Err(format!("{}: the ship sent this elsewhere. Lattice may be starting", r.status())),
+                }
+            }
+            Ok(r) => Ok(r),
+            Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     /// Sends one of the forum's own forms, as the ship's forum pages do: `path` under `/forum/`, and the
     /// fields. The ship answers by sending the browser on to a page, which is not followed, and it
     /// answers the same when its rules refuse what was sent: the board is read again to see.
@@ -3178,12 +3199,7 @@ impl Conn {
             // a board on another ship (`~ship/board`) has the same forms under its own route, which the ship sends on to that ship
             let root = if path.starts_with('~') { "forum-remote" } else { "forum" };
             let res = agent.post(&format!("{}/apps/lattice/{root}/{path}", self.url)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&body);
-            match res {
-                Ok(_) => Ok(()),
-                Err(ureq::Error::Status(code, _)) if (300..400).contains(&code) => Ok(()),
-                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-                Err(e) => Err(e.to_string()),
-            }
+            self.form_answer(res).map(drop)
         }
     }
 
@@ -3230,12 +3246,7 @@ impl Conn {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
-            match agent.post(&format!("{}/apps/lattice/forum-notes/clear", self.url)).set("cookie", &self.cookie).set("origin", &self.url).send_string("") {
-                Ok(_) => Ok(()),
-                Err(ureq::Error::Status(code, _)) if (300..400).contains(&code) => Ok(()),
-                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-                Err(e) => Err(e.to_string()),
-            }
+            self.form_answer(agent.post(&format!("{}/apps/lattice/forum-notes/clear", self.url)).set("cookie", &self.cookie).set("origin", &self.url).send_string("")).map(drop)
         }
     }
 
@@ -3607,11 +3618,8 @@ impl Conn {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(40)).build();
-            match agent.post(&url).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&form) {
-                Ok(res) => Ok(res.header("location").is_some_and(|l| l.contains("&sent="))),
-                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-                Err(e) => Err(e.to_string()),
-            }
+            let res = self.form_answer(agent.post(&url).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&form))?;
+            Ok(res.header("location").is_some_and(|l| l.contains("&sent=")))
         }
     }
 
@@ -3642,7 +3650,7 @@ impl Conn {
 
     /// Posts the owner's comment on a page. The ship answers a form post
     /// with a redirect to the reader, which is not followed: that it
-    /// answered so is the success.
+    /// answered so is the success (`form_answer`).
     pub fn comment(&self, page: &str, body: &str) -> Result<(), String> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -3657,11 +3665,7 @@ impl Conn {
                 .set("origin", &self.url)
                 .set("content-type", "application/x-www-form-urlencoded")
                 .send_string(&format!("body={}", enc(body)));
-            match res {
-                Ok(_) => Ok(()),
-                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-                Err(e) => Err(e.to_string()),
-            }
+            self.form_answer(res).map(drop)
         }
     }
 
@@ -4045,6 +4049,31 @@ mod tests {
         assert!(format!("waiting-{}.json", ship_key(&long("a"), "~sampel-palnet-sampel-palnet")).len() < 255);
         // and no name made now is one made before
         assert!(!ship_key("http://x", "~zod").chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    }
+
+    #[test]
+    fn a_form_the_ship_sends_to_its_sign_in_page_is_not_taken_as_posted() {
+        // as a ship answers while lattice is being put in or started, and as whatever stands in front of it answers when its own session ends
+        for to in ["/~/login?redirect=/apps/lattice/comment", "https://elsewhere.example/apps/lattice/x", "/apps/latticework", ""] {
+            let to = to.to_owned();
+            let (url, _) = serve(move |_| answer("307 Temporary Redirect", &if to.is_empty() { String::new() } else { format!("location: {to}\r\n") }, b""));
+            let c = conn(&url, "~zod");
+            for r in [c.comment("p", "my long comment"), c.forum_comment("chat", 1, None, "a reply"), c.forum_submit("chat", "T", "", "body", &[]), c.forum_board_delete("chat"), c.forum_notes_clear(), c.forum_comment("~bus/chat", 1, None, "x"), c.comment_remote("~bus", "p", "x").map(drop)] {
+                assert!(r.as_ref().is_err_and(|e| e.starts_with("307")), "{r:?}");
+            }
+        }
+        // the ship's own answer to a form it took: on to one of its own pages
+        let (url, _) = serve(|r| {
+            let host = r.head.lines().find_map(|h| h.strip_prefix("Host: ")).unwrap_or("");
+            // one of them with the whole address, as something in front of the ship may write it
+            let to = if r.path.contains("forum-notes") { format!("http://{host}/apps/lattice/forum-notes?u=1") } else if r.path.contains("comment-remote") { "/apps/lattice?url=urb%3A%2F%2F~bus%2Fp&sent=x&u=1".into() } else { "/apps/lattice/forum/chat?u=7".into() };
+            answer("303 See Other", &format!("location: {to}\r\n"), b"")
+        });
+        let c = conn(&url, "~zod");
+        assert_eq!((c.comment("p", "x"), c.forum_comment("chat", 1, None, "a reply"), c.forum_notes_clear(), c.comment_remote("~bus", "p", "x")), (Ok(()), Ok(()), Ok(()), Ok(true)));
+        // and a refusal is still one
+        let (url, _) = serve(|_| answer("403 Forbidden", "", b"no"));
+        assert_eq!(conn(&url, "~zod").comment("p", "x"), Err("403: no".into()));
     }
 
     #[test]
