@@ -326,4 +326,12 @@
     (expect-eq !>("<p><strong>a_b</strong></p>") !>((r '**a_b**')))
     (expect-eq !>("<p><em>snake_case</em> here</p>") !>((r '*snake_case* here')))
   ==
+::  a list item or a quote above a rule is not a heading
+++  test-setext-not-over-list-or-quote
+  ;:  weld
+    (expect-eq !>("<ul><li>item</li></ul><hr>") !>((r '- item\0a---')))
+    (expect-eq !>("<ol><li>item</li></ol><hr>") !>((r '1. item\0a---')))
+    (expect-eq !>("<blockquote><p>q</p></blockquote><hr>") !>((r '> q\0a---')))
+    (expect-eq !>("<h2>Title</h2>") !>((r 'Title\0a---')))
+  ==
 --

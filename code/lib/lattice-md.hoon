@@ -785,8 +785,13 @@
     =/  txt=tape  (trim (hash-strip (sl (lead aft) aft)))
     =/  tag=tape  (weld "h" (a-co:co n))
     (weld :(weld "<" tag ">" (ib txt refs) "</" tag ">") (rb t.lines refs))
-  ::  setext heading
-  ?:  &(?=(^ t.lines) (gth (setext-under (trim i.t.lines)) 0))
+  ::  setext heading. A quote or a list item over a line of dashes is
+  ::  that block and then a rule, not a heading made of its marker.
+  ?:  ?&  ?=(^ t.lines)
+          (gth (setext-under (trim i.t.lines)) 0)
+          !=('>' i.s)
+          ?=(~ (list-mark ln))
+      ==
     =/  lvl=@ud  (setext-under (trim i.t.lines))
     =/  tag=tape  ?:(=(1 lvl) "h1" "h2")
     (weld :(weld "<" tag ">" (ib s refs) "</" tag ">") (rb t.t.lines refs))
