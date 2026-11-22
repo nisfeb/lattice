@@ -30,18 +30,20 @@
   // the next open's number. Whatever an open before it still owed the
   // loading line (busy, 10-shell.js) is let go with it: a later open, a
   // tab switch and a blank page all supersede it.
-  function openNext() { busyEnd('open'); openDrawers = drawerSeq; return ++openSeq; }
+  // `bg`: an open the user did not ask for (a refresh found the page
+  // changed) leaves the drawers as they are, or it shuts one just opened
+  function openNext(bg) { busyEnd('open'); openDrawers = bg ? -1 : drawerSeq; return ++openSeq; }
   //  `start`: the open is the user going to a name (a link, an Outgoing
   //  row, the address, quick open, the tree), so a page not written yet
   //  is started (tabStart). A same-tab reopen of the page already shown
   //  (History's back, Show theirs, the edit lock) starts nothing, and a
   //  page that vanished elsewhere fails to open as it always has.
-  async function openPage(name, start = false) {
+  async function openPage(name, start = false, bg) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
     if (!(await guardDirty())) return false;
-    const my = openNext();
+    const my = openNext(bg);
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
     grubPath = null;

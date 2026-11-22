@@ -6506,10 +6506,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   let openSeq = 0;
   let openDrawers = 0;
-  function openNext() { busyEnd('open'); openDrawers = drawerSeq; return ++openSeq; }
-  async function openPage(name, start = false) {
+  function openNext(bg) { busyEnd('open'); openDrawers = bg ? -1 : drawerSeq; return ++openSeq; }
+  async function openPage(name, start = false, bg) {
     if (!(await guardDirty())) return false;
-    const my = openNext();
+    const my = openNext(bg);
     grubPath = null;
     if (mode === 'know') setMode('pages');
     src.readOnly = false;
@@ -11652,8 +11652,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
       return;
     }
-    if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent); return; }
-    if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
+    if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent, false, 1); return; }
+    if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent, false, 1); return; }
     if (mode !== 'know' && isRev(d.rev) && (!isRev(curRev) || d.rev >= curRev)) {
       curRev = d.rev; shipText.set(wasCurrent, d.body); freshPending.delete(wasCurrent);
     }
