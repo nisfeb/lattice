@@ -14,7 +14,7 @@ import { readFileSync, readdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { makeCheck } from './lib/check.mjs';
-import { parseParams, rewriteLine, fmtValue, defineArg, parseLiteral } from '../ui-src/scad/customizer.js';
+import { parseParams, rewriteLine, fmtValue, defineArg, parseLiteral, readNumber, readVector, fieldText, readField } from '../ui-src/scad/customizer.js';
 import { scanIncludes, resolveRef, collect, CAPS } from '../ui-src/scad/includes.js';
 import { parseStl, smoothNormals, MAX_TRIS } from '../ui-src/scad/stl.js';
 
@@ -88,6 +88,44 @@ console.log('\ncustomizer: a change rewrites only the value');
   const huge = 'x = 1; // [' + '['.repeat(200000) + '\n' + '/*'.repeat(50000) + '\n' + '"'.repeat(100001) + '\n';
   parseParams(huge);
   check('a hostile 450 KB source parses in under a second', Date.now() - t0 < 1000, `${Date.now() - t0} ms`);
+}
+
+console.log('\ncustomizer: the value written is the value picked');
+{
+  const one = (src, v) => { const p = parseParams(src)[0]; return rewriteLine(src.split('\n')[0], p, v); };
+  //  a slider or a field off the step's grid: the number as it is, never
+  //  rounded to the step's decimals
+  check.eq('a slider stop between the step\'s decimals', one('w = 0.25; // [0.25:0.5:10]', 0.75), 'w = 0.75; // [0.25:0.5:10]');
+  check.eq('  and the next', one('w = 0.25; // [0.25:0.5:10]', 1.25), 'w = 1.25; // [0.25:0.5:10]');
+  check.eq('a typed value finer than the step', one('x = 1; // 0.5', 2.25), 'x = 2.25; // 0.5');
+  check.eq('a vector element nobody touched', one('v = [10.25, 20.5, 5]; // [0:0.5:100]', [10.25, 20.5, 6]), 'v = [10.25, 20.5, 6]; // [0:0.5:100]');
+  check.eq('a long number with no step', one('x = 1;', 1234567890123.5), 'x = 1234567890123.5;');
+  check.eq('float noise from a step is still snapped', [0.1 + 0.2, 0.8 + 0.2 * 7, 0.1 * 3, 1.1 * 1.1].map((v) => fmtValue(v, 0.1)).join(), '0.3,2.2,0.3,1.21');
+  check.eq('small, large and negative numbers', [1e-7, -0.000125, 1e21, -3, 2 ** 53].map((v) => fmtValue(v)).join(), '1e-7,-0.000125,1e+21,-3,9007199254740992');
+  check('  and each reads back as itself', [0.75, 1e-7, 1e21, 1234567890123.5, -0.000125].every((v) => parseLiteral(fmtValue(v)) === v));
+  check.eq('the -D form is the same number', defineArg(parseParams('w = 0.25; // [0.25:0.5:10]')[0], 0.75), 'w=0.75');
+  //  a field: empty or not a number is no value at all, never 0
+  check.eq('an empty number field is no value', [readNumber(''), readNumber('   '), readNumber('abc'), readNumber('1e'), readNumber(null)].join(), ',,,,');
+  check.eq('a number field is its number', [readNumber('0'), readNumber(' 2.5 '), readNumber('-1e3'), readNumber('.5')].join(), '0,2.5,-1000,0.5');
+  check.eq('a vector with an empty element is no value', [readVector('1,,3', 3), readVector('', 3), readVector(' , , ', 3), readVector('[1, 2]', 3), readVector('1,2,x', 3), readVector('1 2 3', 3)].map((v) => v === null).join(), 'true,true,true,true,true,true');
+  check.eq('a vector field is its numbers', JSON.stringify([readVector('[1, 2.5, -3]', 3), readVector('0,0,0', 3), readVector(' 4 , 5 ', 2)]), '[[1,2.5,-3],[0,0,0],[4,5]]');
+  //  a string with a line break or a tab: written as escapes, and shown
+  //  and read in that form, so a text field cannot drop it
+  check.eq('a line break, a tab and a return are written as escapes', fmtValue('a\nb\tc\rd "q" \\'), '"a\\nb\\tc\\rd \\"q\\" \\\\"');
+  check.eq('  and read back', parseLiteral(fmtValue('a\nb\tc\rd "q" \\')), 'a\nb\tc\rd "q" \\');
+  const nl = fieldText('line one\nline two');
+  check.eq('a string with a line break is shown escaped', JSON.stringify(nl), JSON.stringify({ text: 'line one\\nline two', escaped: true }));
+  check.eq('  an edit of it keeps the break', readField(nl.text + '!', true), 'line one\nline two!');
+  check.eq('  and one that is not a string is no value', [readField('a"b', true), readField('a\\', true)].join(), ',');
+  check.eq('a plain string is shown and read as it is', JSON.stringify([fieldText('C:\\new\\table "x"'), readField('C:\\new\\table "x"', false)]), JSON.stringify([{ text: 'C:\\new\\table "x"', escaped: false }, 'C:\\new\\table "x"']));
+  check.eq('  and written so it reads back', parseLiteral(fmtValue('C:\\new\\table "x"')), 'C:\\new\\table "x"');
+  //  choices in quotes may hold the separators
+  const ch = (src) => parseParams(src)[0].options.map((o) => `${o.value}=${o.name}`).join(' | ');
+  check.eq('a quoted choice keeps its comma and its colon', ch('s = "a"; // ["a:b", "c,d", e]'), 'a=a | a:b=a:b | c,d=c,d | e=e');
+  check.eq('  a quoted label too', ch('s = "x"; // [x:"one, two", y:"a:b"]'), 'x=one, two | y=a:b');
+  check.eq('  and plain choices read as before', ch('s = "S"; // [S:Small, L:Large]') + ' / ' + ch('n = 10; // [10:Small, 20:Large]') + ' / ' + ch('n = 2; // [1, 2, 3]'), 'S=Small | L=Large / 10=Small | 20=Large / 1=1 | 2=2 | 3=3');
+  check.eq('  a choice written back is one of them', one('s = "a"; // ["a:b", "c,d", e]', 'c,d'), 's = "c,d"; // ["a:b", "c,d", e]');
+  check.eq('  a quote that never closes is still a choice list', ch('s = "a"; // [a, "b, c]'), 'a=a | "b="b | c=c');
 }
 
 console.log('\nincludes: resolved as lattice pages, inside lattice');

@@ -111,6 +111,23 @@ function assignments(line) {
 //  a number OpenSCAD reads from a widget comment
 const num = (s) => (NUM.test(s.trim()) ? Number(s.trim()) : NaN);
 
+//  `s` cut at each `sep` that is not inside double quotes, so a quoted
+//  choice may hold a comma or a colon. A quote that never closes is an
+//  ordinary character.
+function cut(s, sep) {
+  const out = [];
+  let from = 0, i = 0;
+  while (i < s.length) {
+    if (s[i] === '"') {
+      const e = s.indexOf('"', i + 1);
+      if (e >= 0) { i = e + 1; continue; }
+    } else if (s[i] === sep) { out.push(s.slice(from, i)); from = i + 1; }
+    i++;
+  }
+  out.push(s.slice(from));
+  return out;
+}
+
 //  the widget a comment names for a value
 function widget(val, comment) {
   const w = {};
@@ -136,11 +153,12 @@ function widget(val, comment) {
   }
   //  a list: [a, b, c] or [value:label, ...]
   if (typeof val === 'number' || typeof val === 'string') {
-    const items = body.split(',').map((s) => s.trim()).filter((s) => s !== '');
+    const items = cut(body, ',').map((s) => s.trim()).filter((s) => s !== '');
     if (!items.length) return w;
     const opts = [];
     for (const it of items) {
-      const k = it.indexOf(':');
+      const parts = cut(it, ':');
+      const k = parts.length > 1 ? parts[0].length : -1;
       //  a quoted choice is its text
       const uq = (x) => (/^".*"$/.test(x) ? x.slice(1, -1) : x);
       const v = uq(k < 0 ? it : it.slice(0, k).trim());
@@ -203,25 +221,51 @@ export function parseParams(src) {
   return out.filter((p) => last.get(p.name) === p);
 }
 
-//  a value as OpenSCAD source
-export function fmtValue(v, step) {
+//  a value as OpenSCAD source. A number is written as it is, to the
+//  shortest text that reads back as it: never rounded to a step, so the
+//  source holds what the slider or the field showed. Only the noise of
+//  float arithmetic goes (2.3000000000000003 is 2.3). A string's line
+//  break, tab and return are written as escapes.
+const ESC = { '\\': '\\\\', '"': '\\"', '\n': '\\n', '\t': '\\t', '\r': '\\r' };
+export function fmtValue(v) {
   if (typeof v === 'boolean') return v ? 'true' : 'false';
-  if (typeof v === 'string') return '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
-  if (Array.isArray(v)) return '[' + v.map((x) => fmtValue(x, step)).join(', ') + ']';
+  if (typeof v === 'string') return '"' + v.replace(/[\\"\n\t\r]/g, (c) => ESC[c]) + '"';
+  if (Array.isArray(v)) return '[' + v.map((x) => fmtValue(x)).join(', ') + ']';
   if (!Number.isFinite(v)) return '0';
-  //  as many decimals as the step has, so a 0.1 slider writes 2.3, not
-  //  2.3000000000000003
-  const d = step && !Number.isInteger(step) ? Math.min(10, (String(step).split('.')[1] || '').length) : 0;
-  const r = d ? Number(v.toFixed(d)) : (Number.isInteger(v) ? v : Number(v.toPrecision(12)));
-  return String(r);
+  return String(Number.isInteger(v) ? v : Number(v.toPrecision(15)));
+}
+
+//  what a customizer field holds, or null when it holds no value: an
+//  empty field is not 0, and a vector with an empty or missing element is
+//  not a vector
+export function readNumber(t) {
+  const s = String(t ?? '').trim();
+  return NUM.test(s) ? Number(s) : null;
+}
+export function readVector(t, n) {
+  const x = String(t ?? '').trim().replace(/^\[|\]$/g, '').split(',').map(readNumber);
+  return x.length === n && x.every((v) => v !== null) ? x : null;
+}
+//  a string in a one-line text field. A field drops line breaks, so a
+//  string holding a break, a tab or a return is shown as its source text
+//  (`escaped`) and read back from that. Any other string is shown as it
+//  is, and a backslash typed into it is a backslash.
+export function fieldText(v) {
+  const escaped = /[\n\t\r]/.test(v);
+  return { text: escaped ? fmtValue(v).slice(1, -1) : v, escaped };
+}
+export function readField(t, escaped) {
+  if (!escaped) return t;
+  const v = parseLiteral('"' + t + '"');
+  return typeof v === 'string' ? v : null;
 }
 
 //  the line with this parameter's value replaced, or null when the line no
 //  longer holds the value the parameter was read from
 export function rewriteLine(line, p, v) {
   if (line.slice(p.vs, p.ve) !== p.raw) return null;
-  return line.slice(0, p.vs) + fmtValue(v, p.step) + line.slice(p.ve);
+  return line.slice(0, p.vs) + fmtValue(v) + line.slice(p.ve);
 }
 
 //  OpenSCAD's -D argument for a value
-export const defineArg = (p, v) => p.name + '=' + fmtValue(v, p.step);
+export const defineArg = (p, v) => p.name + '=' + fmtValue(v);

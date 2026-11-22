@@ -10,7 +10,7 @@
 import { makeRunner } from './runner.js';
 import { parseStl, MAX_TRIS } from './stl.js';
 import { collect } from './includes.js';
-import { parseParams, rewriteLine, defineArg, fmtValue } from './customizer.js';
+import { parseParams, rewriteLine, defineArg, fmtValue, readNumber, readVector, fieldText, readField } from './customizer.js';
 import { makeViewer } from './viewer.js';
 
 const STYLE = `
@@ -117,6 +117,7 @@ export function mount(host, opts) {
   const runner = makeRunner(o.runtime);
   let text = o.text || '', ps = [], defs = new Map(), job = null, timer = 0, busyT = 0, seq = 0, ask = 0;
   let lastKey = null, lastStl = null, jobKey = null, asked = !o.askFirst, dead = false, pending = false, jobAt = 0;
+  const ids = new Set();
   const setSt = (t, bad) => { st.textContent = t; st.className = 'lscad-st' + (bad ? ' err' : ''); st.title = t; };
 
   //  ── console ──
@@ -146,7 +147,8 @@ export function mount(host, opts) {
 
   //  ── customizer ──
   function paintParams() {
-    const keep = document.activeElement && pbody.contains(document.activeElement) ? document.activeElement.dataset.p : null;
+    const on = document.activeElement && pbody.contains(document.activeElement) ? document.activeElement.dataset : null;
+    const keep = on && on.p !== undefined ? [on.p, on.g] : null;
     pbody.replaceChildren();
     params.hidden = !ps.length;
     if (!ps.length) return;
@@ -154,18 +156,26 @@ export function mount(host, opts) {
     const groups = new Map();
     for (const p of ps) { if (!groups.has(p.group)) groups.set(p.group, []); groups.get(p.group).push(p); }
     const global = groups.get('Global') || [];
+    let gi = 0;
+    ids.clear();
     for (const [g, list] of groups) {
       if (g === 'Global' && groups.size > 1) continue;
       const box = el('div', 'lscad-pg');
       if (groups.size > 1 || g !== 'Parameters') box.append(el('h4', '', g));
-      for (const p of (g === 'Global' ? list : list.concat(global))) box.append(row(p));
+      for (const p of (g === 'Global' ? list : list.concat(global))) box.append(row(p, gi));
       pbody.append(box);
+      gi++;
     }
-    if (keep) { const f = pbody.querySelector(`[data-p="${CSS.escape(keep)}"]`); if (f) f.focus(); }
+    if (keep) { const f = pbody.querySelector(`[data-p="${CSS.escape(keep[0])}"][data-g="${keep[1]}"]`); if (f) f.focus(); }
   }
-  function row(p) {
+  //  `gi` is the group the row is drawn in: a Global parameter has a row
+  //  in every group, and each after the first has an id of its own (a
+  //  name holds no hyphen, so none can be another parameter's)
+  function row(p, gi) {
     const r = el('div', 'lscad-p');
-    const id = 'lscad-' + p.name;
+    let id = 'lscad-' + p.name;
+    if (ids.has(id)) id += '-' + gi;
+    ids.add(id);
     const lab = el('label', '', p.name.replace(/_/g, ' '));
     lab.htmlFor = id; lab.title = p.name;
     const cur = defs.has(p.name) ? defs.get(p.name) : p.value;
@@ -179,20 +189,25 @@ export function mount(host, opts) {
       f.onchange = () => commit(p, p.options[Number(f.value)].value);
     } else if (p.type === 'number' && !Array.isArray(p.value) && p.min !== undefined && p.max !== undefined && p.max > p.min) {
       f = el('input'); f.type = 'range'; f.min = p.min; f.max = p.max; f.step = p.step || 1; f.value = cur;
-      v.textContent = fmtValue(cur, p.step);
-      f.oninput = () => { const x = Number(f.value); v.textContent = fmtValue(x, p.step); live(p, x); };
+      v.textContent = fmtValue(cur);
+      f.oninput = () => { const x = Number(f.value); v.textContent = fmtValue(x); live(p, x); };
       f.onchange = () => commit(p, Number(f.value));
     } else if (p.type === 'number' && !Array.isArray(p.value)) {
+      //  a field that is emptied, or holds no number, changes nothing and
+      //  shows its value again: it is never read as 0
       f = el('input'); f.type = 'number'; f.step = p.step || 'any'; f.value = cur;
-      f.onchange = () => { const x = Number(f.value); if (Number.isFinite(x)) commit(p, x); };
+      f.onchange = () => { const x = readNumber(f.value); if (x === null) f.value = cur; else commit(p, x); };
     } else if (Array.isArray(p.value)) {
       f = el('input'); f.type = 'text'; f.value = fmtValue(cur);
-      f.onchange = () => { const x = f.value.replace(/^\[|\]$/g, '').split(',').map((s) => Number(s.trim())); if (x.length === p.value.length && x.every(Number.isFinite)) commit(p, x); else f.value = fmtValue(cur); };
+      f.onchange = () => { const x = readVector(f.value, p.value.length); if (x === null) f.value = fmtValue(cur); else commit(p, x); };
     } else {
-      f = el('input'); f.type = 'text'; f.value = cur; if (p.maxLength) f.maxLength = p.maxLength;
-      f.onchange = () => commit(p, f.value);
+      const ft = fieldText(String(cur));
+      f = el('input'); f.type = 'text'; f.value = ft.text;
+      if (ft.escaped) f.title = 'This text holds a line break or a tab, shown as \\n or \\t. Write \\\\ for a backslash and \\" for a quote.';
+      else if (p.maxLength) f.maxLength = p.maxLength;
+      f.onchange = () => { const x = readField(f.value, ft.escaped); if (x === null) f.value = ft.text; else commit(p, x); };
     }
-    f.id = id; f.dataset.p = p.name;
+    f.id = id; f.dataset.p = p.name; f.dataset.g = gi;
     r.append(lab, f, v);
     if (p.description) r.append(el('div', 'd', p.description));
     return r;
@@ -203,14 +218,17 @@ export function mount(host, opts) {
   //  keep it as a -D for this view only
   function commit(p, x) {
     defs.set(p.name, x);
+    let written = false;
     if (o.editable && o.onEdit) {
       const lines = text.split('\n');
       const old = lines[p.line];
       const nl = old === undefined ? null : rewriteLine(old, p, x);
-      if (nl === null || !o.onEdit(p.line, nl, old)) {
-        setSt('that line changed since it was read, so it was not written', true);
-      }
+      written = nl !== null && !!o.onEdit(p.line, nl, old);
+      if (!written) setSt('that line changed since it was read, so it was not written', true);
     }
+    //  a value kept for this view only reaches no update(): its other
+    //  rows (a Global parameter has one in each group) are drawn here
+    if (!written) paintParams();
     schedule(0);
   }
 
@@ -329,7 +347,7 @@ export function mount(host, opts) {
     //  that went away takes its -D with it
     for (const [n, x] of [...defs]) {
       const p = ps.find((q) => q.name === n);
-      if (!p || fmtValue(p.value, p.step) === fmtValue(x, p.step)) defs.delete(n);
+      if (!p || fmtValue(p.value) === fmtValue(x)) defs.delete(n);
     }
     paintParams();
     schedule(was === '' ? 0 : 350);

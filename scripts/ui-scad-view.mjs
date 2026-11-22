@@ -226,6 +226,52 @@ check('a read-only pane draws the change', /^44 × 54 × 20 mm/.test(await dims(
 check('  and writes nothing', (await page.evaluate(() => window.edits.length)) === 0);
 await page.close();
 
+console.log('\ncustomizer fields');
+{
+  page = await open('wall = 2.5;\nv = [1, 2, 3];\nlabel = "line one\\nline two";\nw = 0.25; // [0.25:0.5:10]\ncube([wall, v[0], w]);\n');
+  await settled(page);
+  //  what a person does to a field: its text, then a change
+  const set = (n, v) => page.evaluate((n1, v1) => { const f = document.querySelector('#lscad-' + n1); f.value = v1; f.dispatchEvent(new Event('change')); }, n, v);
+  const shown = (n) => page.$eval('#lscad-' + n, (f) => f.value);
+  const edits = () => page.evaluate(() => window.edits.map((e) => e[1]));
+  check.eq('a number is a number field', await page.$eval('#lscad-wall', (f) => f.type), 'number');
+  await set('wall', '');
+  await set('v', '1,,3');
+  await set('v', ' , , ');
+  await set('v', '');
+  await sleep(300);
+  check.eq('an emptied number or vector field writes nothing', JSON.stringify(await edits()), '[]');
+  check.eq('  and shows its value again', (await shown('wall')) + ' ' + (await shown('v')), '2.5 [1, 2, 3]');
+  await set('wall', '0');
+  await sleep(300);
+  check.eq('a typed 0 is still written', JSON.stringify(await edits()), '["wall = 0;"]');
+  check.eq('a string with a line break shows it as an escape', await shown('label'), 'line one\\nline two');
+  await set('label', 'line one\\nline two!');
+  await sleep(300);
+  check.eq('  and an edit keeps the break in the source', (await edits())[1], 'label = "line one\\nline two!";');
+  await set('label', 'a "bare" quote');
+  await sleep(300);
+  check.eq('  and text that is not a string in that form writes nothing', (await edits()).length + ' ' + await shown('label'), '2 line one\\nline two!');
+  //  one stop up the slider, as the arrow key does: 0.75 is off the grid
+  //  of the step's one decimal
+  await page.evaluate(() => { const f = document.querySelector('#lscad-w'); f.stepUp(); f.dispatchEvent(new Event('input')); f.dispatchEvent(new Event('change')); });
+  await sleep(300);
+  check.eq('a slider stop is written as the slider shows it', (await edits())[2] + ' | ' + (await shown('w')), 'w = 0.75; // [0.25:0.5:10] | 0.75');
+  await page.close();
+
+  page = await open('/* [Global] */\ng = 1;\n/* [A] */\na = 2;\n/* [B] */\nb = 3;\ncube([g, a, b]);\n', { editable: false });
+  await settled(page);
+  const ids = await page.$$eval('.lscad-p input', (e) => e.map((f) => f.id));
+  check('a Global parameter shown in two groups has two ids', new Set(ids).size === ids.length && ids.length === 4, ids.join(' '));
+  check('  and each label is for its own field', await page.$$eval('.lscad-p', (rows) => rows.every((r) => r.querySelector('label').htmlFor === r.querySelector('input').id)));
+  await page.evaluate(() => { const f = document.querySelector('[data-p="g"]'); f.value = '5'; f.dispatchEvent(new Event('change')); });
+  await sleep(300);
+  await settled(page);
+  check.eq('on a read-only page a change to one shows in the other', (await page.$$eval('[data-p="g"]', (e) => e.map((f) => f.value))).join(), '5,5');
+  check('  and is drawn', /^5 × 2 × 3 mm/.test(await dims(page)), await dims(page));
+  await page.close();
+}
+
 console.log('\na page and its child page, both included without .scad');
 {
   page = await open('include <a>\ninclude <a/b>\ncube([x, 2, 1]);\n', { pages: { 'parts/a': 'x = 3;', 'parts/a/b': 'y = 4;' } });
