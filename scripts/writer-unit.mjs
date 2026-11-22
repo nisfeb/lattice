@@ -580,6 +580,29 @@ console.log('# a table keeps its shape');
   check.eq('a table selected whole is still deleted', tables(whole.doc), tables(p.doc) - 1);
   const typed = run(TextSelection.create(p.doc, cells[0] + 2), type);
   check('typing in a cell still works', typed.changed && typed.again === kinds(p.doc));
+  //  a table of one column or one row has no ragged leftover to show a
+  //  deletion that begins before it
+  {
+    const S = schema.nodes, P = (t) => S.paragraph.create(null, schema.text(t));
+    const cell = (t) => S.table_cell.create(null, P(t));
+    const mk = (rows) => S.table.create(null, rows.map((r) => S.table_row.create(null, r.map(cell))));
+    const shapeOf = (d) => { const o = []; d.forEach((n) => { if (n.type.name === 'table') n.forEach((r) => o.push(r.childCount)); }); return o.join(); };
+    const cellAt = (doc, k) => { let at = -1, seen = 0; doc.descendants((n, pos) => { if (n.type.name === 'table_cell' && ++seen === k) at = pos; return true; }); return at; };
+    for (const [what, rows] of [['one column', [['h'], ['1'], ['2'], ['3']]], ['one row', [['a', 'b', 'c']]]]) {
+      const doc = S.doc.create(null, [P('before'), mk(rows), P('after')]);
+      const from = TextSelection.create(doc, 3, cellAt(doc, 2) + 3);
+      const st = EditorState.create({ doc, plugins: [guard], selection: from });
+      let del = st, typed = st;
+      deleteSelection(st, (tr) => { del = st.apply(tr); });
+      typed = st.apply(st.tr.insertText('x'));
+      check(what + ': a delete from the paragraph above into the second cell leaves every cell', shapeOf(del.doc) === shapeOf(doc) && del.doc === doc, shapeOf(del.doc));
+      check(what + ': and so does typing over it', shapeOf(typed.doc) === shapeOf(doc) && typed.doc === doc, shapeOf(typed.doc));
+      const one = EditorState.create({ doc, plugins: [guard], selection: TextSelection.create(doc, 3, cellAt(doc, 1) + 3) });
+      let d1 = one;
+      deleteSelection(one, (tr) => { d1 = one.apply(tr); });
+      check(what + ': one that ends in the first cell keeps its shape', shapeOf(d1.doc) === shapeOf(doc), shapeOf(d1.doc));
+    }
+  }
   //  some columns of a table, pasted as a table of their own, are written
   //  under column declarations of their own width
   const narrow = table.copy(Fragment.from(table.content.content.map((r) => r.copy(Fragment.from([r.child(0), r.child(1)])))));
@@ -605,6 +628,17 @@ console.log('# what a paste may bring');
   const names = []; out.content.descendants((n) => { names.push(n.type.name); });
   check.eq('a slice from outside loses its table, its opaque nodes and their attributes', names.join(), 'paragraph,text');
   check.eq('  and is open as deep as what is left', out.openStart + ',' + out.openEnd, '1,0');
+  //  a context naming a text block around a list item is not placed whole
+  for (const wrap of [S.heading.create({ level: 3 }, S.list_item.create(null, P(null, schema.text('item')))), S.paragraph.create(null, S.list_item.create(null, P(null, schema.text('item'))))]) {
+    let threw = null, got = null;
+    try {
+      const d = S.doc.create(null, [P(null, schema.text('abc'))]);
+      const sl = core.fromOutside(new Slice(Fragment.from(wrap), 1, 1));
+      const stt = EditorState.create({ doc: d });
+      got = stt.apply(stt.tr.replaceSelection(sl)).doc.textContent;
+    } catch (e) { threw = e; }
+    check('a slice context that puts a list item in a ' + wrap.type.name + ' is pasted without throwing', !threw && /item/.test(got), String(threw || got));
+  }
   const brk = S.hard_break.create({ src: [1, 2] }, schema.text('inside'));
   const leaf = core.fromOutside(new Slice(Fragment.from(P(null, brk)), 2, 2));
   check('a leaf given content is a plain leaf', leaf.content.firstChild.firstChild.content.size === 0 && leaf.openStart === 1 && leaf.openEnd === 1);
