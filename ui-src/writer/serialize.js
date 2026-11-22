@@ -356,8 +356,11 @@ function text(t, ws) {
     } else {
       let j = i;
       while (j < t.length && t[j] !== ' ' && t[j] !== '\t' && t[j] !== '\n' && t[j] !== '\r' && t[j] !== '\v') j++;
-      out += escText(t.slice(i, j));
-      ws.prevSpace = false; ws.atStart = false;
+      //  a run of nothing but characters XML cannot hold writes nothing,
+      //  so it is not text between the spaces around it
+      const e = escText(t.slice(i, j));
+      out += e;
+      if (e) { ws.prevSpace = false; ws.atStart = false; }
       i = j;
     }
   }

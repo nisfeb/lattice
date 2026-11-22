@@ -181,6 +181,36 @@ console.log('# white space as LibreOffice reads it');
   check('rewriting LibreOffice\'s own white space layout is byte-identical', r.text === t2, r.error || firstDiff(t2, r.text || ''));
 }
 
+{
+  //  a character XML cannot hold is never written, and must not count as
+  //  text between two spaces: saved and reopened, the paragraph reads as
+  //  typed, less that character
+  const base = '<?xml version="1.0" encoding="UTF-8"?>\n<office:document xmlns:office="o" xmlns:text="t">\n <office:body>\n  <office:text>\n   <text:p>seed</text:p>\n  </office:text>\n </office:body>\n</office:document>\n';
+  const S = schema.nodes;
+  const strip = (x) => x.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, '');
+  const trip = (x) => {
+    const o = serializeFodt({ doc: S.doc.create(null, [S.paragraph.create(null, schema.text(x))]) }, base);
+    const back = o.text && parseFodt(o.text);
+    return o.error || back.error || back.doc.firstChild.textContent;
+  };
+  for (const x of ['two \u000c words', '\u0001 indented', 'a \u0008 b', ' \u0001 x', 'x \u0001 ', 'a  \u0002\u0003  b', '\u0001', 'a\u0001 b', 'a \ufffe b', 'tab\t\u0001 x', '\u0001\u0002 \u0003 \u0004 z']) {
+    check.eq(`${JSON.stringify(x)} reopens as typed, less what XML cannot hold`, trip(x), strip(x));
+  }
+  //  and split over text nodes with different marks, as a paste leaves it
+  const bold = schema.marks.strong.create();
+  const o = serializeFodt({ doc: S.doc.create(null, [S.paragraph.create(null, [schema.text('two '), schema.text('\u000c', [bold]), schema.text(' words')])]) }, base);
+  check.eq('a stripped character alone in a span leaves the spaces around it', o.error || parseFodt(o.text).doc.firstChild.textContent, 'two  words');
+  //  a seeded sweep over short strings of spaces, letters and such characters
+  let seed = 7, bad = null;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  for (let i = 0; i < 3000 && !bad; i++) {
+    let x = '';
+    for (let k = rnd(9) + 1; k > 0; k--) x += [' ', ' ', 'a', '\u0001', '\u000c', '\t', 'b'][rnd(7)];
+    if (trip(x) !== strip(x)) bad = x;
+  }
+  check('3000 random strings with such characters reopen as typed', !bad, JSON.stringify(bad));
+}
+
 console.log('# paired markers');
 {
   const t = read('10-unknown.fodt');
