@@ -382,4 +382,26 @@
     (ok (fc (reap 20.000 f)))
     (expect-eq !>(`(unit @t)``'that map is not valid JSON') !>((gj-check:gj four)))
   ==
+::  a polygon with a hole is one path with a sub-path for each ring, so
+::  no edge joins the rings and the hole is cut out, not filled
+++  test-polygon-hole
+  =/  holed=@t
+    '{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]],[[4,4],[6,4],[6,6],[4,6],[4,4]]]},"properties":{"name":"ring"}}'
+  =/  multi=@t
+    '{"type":"Feature","geometry":{"type":"MultiPolygon","coordinates":[[[[0,0],[10,0],[10,10],[0,0]],[[4,2],[6,2],[6,3],[4,2]]],[[[20,0],[30,0],[30,10],[20,0]]]]},"properties":{}}'
+  =/  h=tape  (gj-html:gj (fc ~[holed]))
+  =/  m=tape  (gj-html:gj (fc ~[multi]))
+  ;:  weld
+    (expect-eq !>(1) !>((hits "<path" h)))
+    (expect-eq !>(2) !>((hits " Z" h)))
+    (expect-eq !>(2) !>((hits "M " h)))
+    (yes (has " Z M " h))
+    (yes (has "fill-rule=\"evenodd\"" h))
+    ::  two polygons, the first with a hole: two paths, three rings
+    (expect-eq !>(2) !>((hits "<path" m)))
+    (expect-eq !>(3) !>((hits " Z" m)))
+    (expect-eq !>(1) !>((hits "fill-rule=\"evenodd\"" m)))
+    ::  a polygon of one ring is drawn as before
+    (yes !(has "evenodd" (gj-html:gj (fc ~[poly]))))
+  ==
 --
