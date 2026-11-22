@@ -9675,6 +9675,11 @@ fn backup_run(s: &mut App, id: &str) {
     if b.ship.is_empty() {
         // made before schedules named a ship: from this run on it is the ship in front's. The archives it wrote before keep their names, and are no longer counted or pruned as its own
         (b.ship, b.url) = (c.ship().to_owned(), c.url.clone());
+        // unless a schedule made since for that ship has its label: the two would prune each other's archives
+        if backups::clashes(&s.backups, &b) {
+            s.bk_said = format!("{} was made before schedules named a ship, and another schedule called {} already backs up {}. Remove one of them, and add it again under another name, to run it", b.label, b.label, b.ship);
+            return;
+        }
         if let Some(kept) = s.backups.iter_mut().find(|x| x.id == b.id) {
             (kept.ship, kept.url) = (b.ship.clone(), b.url.clone());
         }
@@ -9685,6 +9690,10 @@ fn backup_run(s: &mut App, id: &str) {
     } else if !backups::runs_for(&b, &c.url, c.ship(), false) {
         // never another ship's store under this schedule's name
         s.bk_said = format!("{} backs up {} at {}. Bring that ship to the front to run it", b.label, b.ship, b.url);
+        return;
+    } else if backups::clashes(&s.backups, &b) {
+        // two that name their archives alike (a list edited by hand) would prune each other's
+        s.bk_said = format!("another schedule names its archives as {} does. Remove one of them, and add it again under another name, to run it", b.label);
         return;
     }
     s.bk_said = format!("{}: reading the store\u{2026}", b.label);
