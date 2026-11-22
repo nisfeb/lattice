@@ -418,4 +418,16 @@
   =/  o=tape  (zing (reap 30.000 "[a]["))
   =/  h=tape  (r (crip :(weld o " [x][k] " o "\0a\0a[k]: /u")))
   (yes (has "<a href=\"/u\"" h))
+::  a fenced block's lines are the block's to the byte: a line of more
+::  than 32 quote marks in one is not cut, at the top or in a quote. A
+::  quote outside a fence is still cut at 32.
+++  test-fence-keeps-quote-marks
+  =/  q=tape  (reap 40 '>')
+  =/  gt=tape  (zing (reap 40 "&gt;"))
+  ;:  weld
+    (yes (has (weld "<code>" gt) (r (crip :(weld "```\0a" q " x\0a```")))))
+    (yes (has (weld "<code>" gt) (r (crip :(weld "> ```\0a> " q " x\0a> ```")))))
+    (yes (has (weld "<code>" gt) (r (crip :(weld "~~~\0a" q "\0a" q "\0a~~~")))))
+    (expect-eq !>(32) !>((lent (fand "<blockquote>" (r (crip (weld q " x")))))))
+  ==
 --

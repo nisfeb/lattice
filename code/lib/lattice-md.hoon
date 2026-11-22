@@ -411,9 +411,14 @@
 ::  in a list item or a table row, opens nothing. +rb reads them with the
 ::  definitions taken out, so the walk does too, and a definition inside
 ::  a fenced block is code and stays.
+::
+::  Every line comes back with its quote markers capped (+cap-quote-depth)
+::  but a line inside a fenced block, which is the block's to the byte.
+::  The walk reads the capped lines, so it costs what +rb does.
 ++  mark-code
-  |=  lines=(list tape)
+  |=  raw=(list tape)
   ^-  (list [v=? l=tape])
+  =/  lines=(list tape)  (turn raw cap-quote-depth)
   =/  vis=(list [n=@ud l=tape])
     =|  [n=@ud out=(list [n=@ud l=tape])]
     |-  ^-  (list [n=@ud l=tape])
@@ -421,28 +426,31 @@
     ?:  |(?=(^ (is-foot-def i.lines)) ?=(^ (is-ref-def i.lines)))
       $(lines t.lines, n +(n))
     $(lines t.lines, n +(n), out [[n i.lines] out])
-  =/  st=(list @ud)  (code-walk (turn vis tail) &)
-  ::  a definition line taken out is code when the fence around it
-  ::  goes on past it (the last line walked says 1)
+  =/  st=(list @ud)  (code-walk (turn vis tail))
+  ::  a definition line taken out is code when the fence around it goes
+  ::  on past it: the last line walked opened it or is inside it, at the
+  ::  top (1 or 3)
   =|  [n=@ud last=@ud out=(list [v=? l=tape])]
   |-  ^-  (list [v=? l=tape])
   ?~  lines  (flop out)
+  ?~  raw  (flop out)
   ?:  &(?=(^ vis) ?=(^ st) =(n n.i.vis))
     %=  $
       lines  t.lines
+      raw    t.raw
       n      +(n)
       vis    t.vis
       st     t.st
       last   i.st
-      out    [[!=(0 i.st) i.lines] out]
+      out    [[!=(0 i.st) ?:((gte i.st 3) i.raw i.lines)] out]
     ==
-  $(lines t.lines, n +(n), out [[=(1 last) i.lines] out])
+  =/  c=?  |(=(1 last) =(3 last))
+  $(lines t.lines, raw t.raw, n +(n), out [[c ?:(c i.raw i.lines)] out])
 ::  +code-walk: the blocks of `lines` as +rb takes them, a state a line:
-::  0 not code, 1 a fence line or a fenced line with more of the block
-::  after it (at the top, `top`), 2 any other code (a closing fence, or
-::  code inside a quote).
+::  0 not code, 1 a fence's opening line, 3 a line inside it, 2 its
+::  closing line. In a quote, 1 and 2 read 2, and 3 reads 4.
 ++  code-walk
-  |=  [lines=(list tape) top=?]
+  |=  lines=(list tape)
   ^-  (list @ud)
   =|  out=(list @ud)
   |-  ^-  (list @ud)
@@ -452,13 +460,12 @@
   ?:  |((has "```" s) (has "~~~" s))
     ::  the opener, then +take-fence's body and closing line
     =/  fence=tape  (sc 3 s)
-    =/  o=@ud  ?:(top 1 2)
     =/  r=(list tape)  t.lines
-    =.  out  [o out]
+    =.  out  [1 out]
     |-  ^-  (list @ud)
     ?~  r  (flop out)
     ?:  (has fence (trim i.r))  ^$(lines t.r, out [2 out])
-    $(r t.r, out [o out])
+    $(r t.r, out [3 out])
   ?:  |((allrun s "-" 3) (allrun s "*" 3) (allrun s "_" 3))
     $(lines t.lines, out [0 out])
   ?:  (gth (atx i.lines) 0)  $(lines t.lines, out [0 out])
@@ -476,7 +483,8 @@
     ?:  ?&(?=(^ r) =('>' (trim-head i.r)))
       $(r t.r, q [(ltrm (sl 1 (ltrm i.r))) q])
     =/  qs=(list @ud)
-      (turn (code-walk (flop q) |) |=(c=@ud ?:(=(0 c) 0 2)))
+      %+  turn  (code-walk (flop q))
+      |=(c=@ud ?:(=(0 c) 0 ?:(|(=(3 c) =(4 c)) 4 2)))
     ^$(lines r, out (weld (flop qs) out))
   ?:  &(?=(^ (find "|" s)) ?=(^ t.lines) (table-sep (trim i.t.lines)))
     =/  tr  (take-table-rows t.t.lines)
@@ -936,7 +944,9 @@
 ::  the depth bounds it at 32 passes and is byte-identical below the cap.
 ::  Spaced markers nest too ("> > >" is three levels), so spaces and tabs
 ::  between them are skipped. Counting only an unbroken run let spaced
-::  nesting through uncapped (security audit run-1).
+::  nesting through uncapped (security audit run-1). +mark-code caps every
+::  line but those inside a fenced block: +take-fence reads those raw, so
+::  they cost no pass, and their bytes are the block's.
 ++  cap-quote-depth
   |=  l=tape
   ^-  tape
@@ -1138,7 +1148,7 @@
   ^-  tape
   =/  lines0=(list tape)
     %+  turn  (to-wain:format body)
-    |=(l=@t (cap-quote-depth (strip-cr (trip l))))
+    |=(l=@t (strip-cr (trip l)))
   =/  fn=[footm (list [v=? l=tape])]  (collect-footnotes (mark-code lines0))
   =/  foot=footm  -.fn
   =/  lines1=(list [v=? l=tape])
