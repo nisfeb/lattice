@@ -1183,7 +1183,7 @@ fn init() -> App {
         autosaving: false,
         save_again: false,
         auto_held: false,
-        prefs: Prefs::load_for(conn.as_ref().map_or("", |c| c.url.as_str())),
+        prefs: conn.as_ref().map_or_else(Prefs::load, |c| Prefs::load_for(&c.url, c.ship())),
         ships: api::ships(),
         ships_open: false,
         seen: Default::default(),
@@ -6541,7 +6541,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 if let Err(e) = c.remember() {
                     s.note = format!("signed in, but the session was not kept: {e}");
                 }
-                s.prefs = Prefs::load_for(&c.url);
+                s.prefs = Prefs::load_for(&c.url, c.ship());
                 s.ships = api::ships();
                 s.code = TextEdit::new("");
                 s.queue = c.queue();
@@ -6666,7 +6666,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         let now = backups::now();
         // one that failed, or came out incomplete, stays due: it is tried again in an hour, not at the next minute. Each try reads the whole store from the ship and writes it all to disk
         let rested = |id: &str| s.bk_tried.get(id).is_none_or(|t| now.saturating_sub(*t) >= 3600);
-        if let Some(id) = s.backups.iter().find(|b| backups::is_due(b, now) && rested(&b.id)).map(|b| b.id.clone()).filter(|_| s.conn.is_some() && !s.bk_req.is_pending()) {
+        // a schedule runs against its own ship, when that ship is the one in front. One made before schedules named a ship is given this one only when it is the only ship signed in
+        let (front, alone) = (s.conn.as_ref().map(|c| (c.url.clone(), c.ship().to_owned())), s.ships.len() <= 1);
+        let mine = |b: &backups::Schedule| front.as_ref().is_some_and(|(url, ship)| backups::runs_for(b, url, ship, alone));
+        if let Some(id) = s.backups.iter().find(|b| backups::is_due(b, now) && rested(&b.id) && mine(b)).map(|b| b.id.clone()).filter(|_| !s.bk_req.is_pending()) {
             s.bk_tried.insert(id.clone(), now);
             backup_run(s, &id);
         }
@@ -9572,13 +9575,28 @@ struct BkDone {
 
 /// Writes one schedule's archive now, whatever its period says.
 fn backup_run(s: &mut App, id: &str) {
-    let Some(b) = s.backups.iter().find(|b| b.id == id).cloned() else { return };
+    let Some(mut b) = s.backups.iter().find(|b| b.id == id).cloned() else { return };
     let Some(c) = s.conn.clone() else {
         s.bk_said = "a backup reads the whole store, so it needs the ship".into();
         return;
     };
     if s.bk_req.is_pending() {
         s.bk_said = "a backup is being written. Try again when it is done".into();
+        return;
+    }
+    if b.ship.is_empty() {
+        // made before schedules named a ship: from this run on it is the ship in front's. The archives it wrote before keep their names, and are no longer counted or pruned as its own
+        (b.ship, b.url) = (c.ship().to_owned(), c.url.clone());
+        if let Some(kept) = s.backups.iter_mut().find(|x| x.id == b.id) {
+            (kept.ship, kept.url) = (b.ship.clone(), b.url.clone());
+        }
+        if let Err(e) = backups::save(&s.backups) {
+            s.bk_said = format!("the schedules were not kept: {e}");
+            return;
+        }
+    } else if !backups::runs_for(&b, &c.url, c.ship(), false) {
+        // never another ship's store under this schedule's name
+        s.bk_said = format!("{} backs up {} at {}. Bring that ship to the front to run it", b.label, b.ship, b.url);
         return;
     }
     s.bk_said = format!("{}: reading the store\u{2026}", b.label);
@@ -9628,7 +9646,8 @@ fn backup_do(s: &mut App, act: BkAct) {
             let Some(st) = s.settings.as_mut() else { return };
             let dir = mounts::expand(&st.bk_dir.text, &std::env::var("HOME").unwrap_or_default());
             let id = format!("bk{:x}", crate::api::since_epoch().map_or(0, |d| d.as_nanos()));
-            match backups::new_schedule(&s.backups, &st.bk_label.text, &dir, st.bk_every, &st.bk_keep.text, id) {
+            let (ship, url) = s.conn.as_ref().map(|c| (c.ship().to_owned(), c.url.clone())).unwrap_or_default();
+            match backups::new_schedule(&s.backups, &st.bk_label.text, &dir, st.bk_every, &st.bk_keep.text, id, &ship, &url) {
                 Ok(b) => {
                     s.backups.push(b);
                     st.bk_label = TextEdit::new("");
@@ -9671,7 +9690,7 @@ fn backups_view(st: &Settings, list: &[backups::Schedule], said: &str, busy: boo
                 .key(format!("bk-{i}"))
                 .w_full()
                 .gap(2.0)
-                .child(text(format!("{}: {}, {keep}{}", b.label, backups::period(b.every_hours), if b.enabled { "" } else { " (paused)" })).key(format!("bk-head-{i}")).font(k.ty.small).color(c.text_base).wrap())
+                .child(text(format!("{}: {}{}, {keep}{}", b.label, if b.ship.is_empty() { String::new() } else { format!("{} at {}, ", b.ship, b.url) }, backups::period(b.every_hours), if b.enabled { "" } else { " (paused)" })).key(format!("bk-head-{i}")).font(k.ty.small).color(c.text_base).wrap())
                 .child(text(format!("{} \u{b7} {}{}", b.dir, backups::ago(b.last_run, now), if late { ". The last run did not complete" } else { "" })).key(format!("bk-sub-{i}")).font(k.ty.small).color(if late { c.danger.icon } else { c.text_muted }).wrap())
                 .child(
                     row()
@@ -15324,7 +15343,7 @@ pub fn run() {
     // where its tables are wrong, before Rune looks for the family itself. A font first worn in this
     // run is found by Rune, and is read this way from the next launch
     #[cfg(not(target_arch = "wasm32"))]
-    let worn = api::Prefs::load_for(Conn::load().as_ref().map_or("", |c| c.url.as_str())).worn;
+    let worn = Conn::load().as_ref().map_or_else(api::Prefs::load, |c| api::Prefs::load_for(&c.url, c.ship())).worn;
     #[cfg(not(target_arch = "wasm32"))]
     let fonts: &'static [&'static [u8]] = match (worn.font(), worn.font_ids()) {
         (Some(theme::Font::Named(f)), ids) => {

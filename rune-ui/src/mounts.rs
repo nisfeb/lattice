@@ -5,7 +5,8 @@
 //! `LATTICE_SOCK`. The mounter holds the mount until it is sent
 //! SIGTERM, on which it lets the socket drain before it unmounts. It is
 //! never killed outright: a lick socket dropped mid-write crashes the
-//! ship (`lattice-fs-rs/src/main.rs`, `cmd_mount`).
+//! ship (`lattice-fs-rs/src/main.rs`, `cmd_mount`). What it says on
+//! stderr goes to `mounter.log` beside the list, never to a pipe.
 //!
 //! A mount outlives this app's window, and is found again at the next
 //! launch by the folder still being a mount, with the mounter's process
@@ -60,15 +61,59 @@ pub fn default_mountpoint(ship: &str) -> String {
     format!("~/{}", ship.trim_start_matches('~'))
 }
 
-/// Whether a folder is a mount, from the system's list of them (`/proc/self/mounts`: device, folder, kind, and more, with a space in a folder written `\040`).
+/// A folder as the system's list writes it, read back: a space, a tab, a newline and a backslash are each written as a backslash and three digits in base eight.
+fn unescaped(m: &str) -> String {
+    let (b, mut out, mut i) = (m.as_bytes(), Vec::with_capacity(m.len()), 0);
+    while i < b.len() {
+        let digits = b.get(i + 1..i + 4).filter(|d| b[i] == b'\\' && d[0] <= b'3' && d.iter().all(|c| (b'0'..=b'7').contains(c)));
+        match digits {
+            Some(d) => {
+                out.push((d[0] - b'0') * 64 + (d[1] - b'0') * 8 + (d[2] - b'0'));
+                i += 4;
+            }
+            None => {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Whether a folder is a mount, from the system's list of them (`/proc/self/mounts`: device, folder, kind, and more). `folder` is spelled as the system spells it (`resolved`).
 pub fn in_mounts(list: &str, folder: &str) -> bool {
     let want = folder.trim_end_matches('/');
-    list.lines().filter_map(|l| l.split(' ').nth(1)).any(|m| m.replace("\\040", " ").trim_end_matches('/') == want)
+    list.lines().filter_map(|l| l.split(' ').nth(1)).any(|m| unescaped(m).trim_end_matches('/') == want)
+}
+
+/// A folder as the system spells it in its list of mounts: with no link on the way to it, no
+/// doubled slash and no `.`. The folder itself is never looked into, only read as a link and its
+/// parent resolved: it may be a mount whose mounter does not answer, and asking after it would
+/// wait on that. A folder not there yet, under a parent not there yet, stays as typed.
+fn resolved(folder: &str) -> String {
+    // a slash at the end would have a link followed where it is only to be read
+    let mut p = PathBuf::from(match folder.trim_end_matches('/') {
+        "" => "/",
+        f => f,
+    });
+    // the folder itself a link, or a short run of them
+    for _ in 0..8 {
+        match std::fs::read_link(&p) {
+            Ok(to) => p = p.parent().unwrap_or(Path::new("/")).join(to),
+            Err(_) => break,
+        }
+    }
+    let whole = match (p.parent(), p.file_name()) {
+        (Some(dir), Some(name)) => std::fs::canonicalize(dir).map(|d| d.join(name)),
+        // the root, or a path that ends in `..`: nothing of a mount's own is asked by these
+        _ => std::fs::canonicalize(&p),
+    };
+    whole.map_or_else(|_| folder.to_owned(), |w| w.to_string_lossy().into_owned())
 }
 
 pub fn mounted(folder: &str) -> bool {
     // ponytail: Linux's list. A Mac has none at this path and would say no: its `mount` is asked when a Mac is where this runs
-    std::fs::read_to_string("/proc/self/mounts").is_ok_and(|l| in_mounts(&l, folder))
+    std::fs::read_to_string("/proc/self/mounts").is_ok_and(|l| in_mounts(&l, &resolved(folder)))
 }
 
 /// Why a folder cannot be mounted on, if it cannot: it is a mount already, a file, or has things in it.
@@ -116,7 +161,7 @@ pub fn cookie_file_name(url: &str) -> Result<String, String> {
 }
 
 /// Puts the session where the mounter will read it: a home of its own under this app's files, so the mounter's own files in the owner's home are never touched. Answers that home.
-fn hand_session(url: &str, cookie: &str) -> Result<PathBuf, String> {
+pub(crate) fn hand_session(url: &str, cookie: &str) -> Result<PathBuf, String> {
     // nothing is mounted from a browser
     #[cfg(target_arch = "wasm32")]
     return {
@@ -146,6 +191,13 @@ fn hand_session(url: &str, cookie: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// Takes away the session handed to a mounter for the ship at `url`, when it is signed out of.
+pub fn forget_session(url: &str) {
+    if let (Some(home), Ok(name)) = (list_path().map(|p| p.with_file_name("fs-home")), cookie_file_name(url)) {
+        let _ = std::fs::remove_file(home.join(".config").join("lattice-fs").join(name));
+    }
+}
+
 /// Mounts a ship at a folder and answers the mounter's process, once the folder is a mount. A ship reached over HTTP is mounted with the session given.
 pub fn start(spec: &MountSpec, session: Option<&str>) -> Result<u32, String> {
     let fs = locate().ok_or("the lattice-fs mounter was not found: build it from lattice-fs-rs, and put it on the path or name it in LATTICE_FS")?;
@@ -168,12 +220,8 @@ pub fn start(spec: &MountSpec, session: Option<&str>) -> Result<u32, String> {
         return Err(why);
     }
     std::fs::create_dir_all(&spec.mountpoint).map_err(|e| format!("{}: {e}", spec.mountpoint))?;
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("the mounter did not start: {e}"))?;
+    let log = log_path();
+    let (mut child, from) = spawn_mounter(&mut cmd, log.as_deref())?;
     let until = Instant::now() + Duration::from_secs(20);
     loop {
         if mounted(&spec.mountpoint) {
@@ -189,10 +237,7 @@ pub fn start(spec: &MountSpec, session: Option<&str>) -> Result<u32, String> {
             return Ok(child.id());
         }
         if let Ok(Some(_)) = child.try_wait() {
-            let mut said = String::new();
-            if let Some(mut e) = child.stderr.take() {
-                let _ = std::io::Read::read_to_string(&mut e, &mut said);
-            }
+            let said = log.as_deref().map(|l| said_since(l, from)).unwrap_or_default();
             return Err(format!("the mounter stopped: {}", said.trim().trim_start_matches("error: ")));
         }
         if Instant::now() > until {
@@ -202,6 +247,46 @@ pub fn start(spec: &MountSpec, session: Option<&str>) -> Result<u32, String> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Where the mounters say what they have to say: one file beside the list, for them all.
+fn log_path() -> Option<PathBuf> {
+    Some(list_path()?.with_file_name("mounter.log"))
+}
+
+/// Starts a mounter with its stderr added to the end of `log`, and answers it with where in the
+/// log its own words begin. Never a pipe: a mounter outlives the call that started it, and the
+/// window, and a pipe nobody reads fails its next word on stderr. That word is said on its way
+/// out, before it drains the lick socket, so failing there is what must not happen. With no log
+/// to write to, what it says is dropped.
+fn spawn_mounter(cmd: &mut Command, log: Option<&Path>) -> Result<(std::process::Child, u64), String> {
+    let open = |p: &Path| -> std::io::Result<(std::fs::File, u64)> {
+        if let Some(dir) = p.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut o = std::fs::OpenOptions::new();
+        o.append(true).create(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        let f = o.open(p)?;
+        // a few lines a mount, and it starts again when it has grown large. Those still writing add at its end, wherever that is
+        if f.metadata()?.len() > 1024 * 1024 {
+            f.set_len(0)?;
+        }
+        let from = f.metadata()?.len();
+        Ok((f, from))
+    };
+    let (err, from) = match log.map(open) {
+        Some(Ok((f, from))) => (Stdio::from(f), from),
+        _ => (Stdio::null(), 0),
+    };
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(err).spawn().map(|c| (c, from)).map_err(|e| format!("the mounter did not start: {e}"))
+}
+
+/// What was added to the log from `from` on: what a mounter that stopped said of why.
+fn said_since(log: &Path, from: u64) -> String {
+    let all = std::fs::read(log).unwrap_or_default();
+    String::from_utf8_lossy(all.get(from as usize..).unwrap_or_default()).into_owned()
 }
 
 fn term(pid: u32) {
@@ -270,6 +355,111 @@ pub fn resume(list: Vec<MountSpec>, session: impl Fn(&str) -> Option<String>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn a_mounter_let_go_of_can_still_say_things_and_what_it_said_is_read_from_its_log() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("lr-mnt-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (log, mark) = (dir.join("deeper/mounter.log"), dir.join("mark"));
+        // a stand-in that says a word on stderr well after it was started, as the mounter does when it is told to unmount, and only then does its work
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 0.3; echo late >&2 && echo fine > \"$0\"", &mark.to_string_lossy()]);
+        let (child, from) = spawn_mounter(&mut cmd, Some(&log)).unwrap();
+        // as `start` does once the folder is a mount: the process is let go of
+        drop(child);
+        let until = Instant::now() + Duration::from_secs(10);
+        while !mark.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(std::fs::read_to_string(&mark).unwrap_or_default().trim(), "fine", "the word on stderr did not end it");
+        assert_eq!((from, said_since(&log, from).as_str()), (0, "late\n"));
+        assert_eq!(std::fs::metadata(&log).unwrap().permissions().mode() & 0o777, 0o600);
+        // the next one's words follow in the same file, and only its own are read as why it stopped
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "echo 'error: no such ship' >&2; exit 3"]);
+        let (mut child, from) = spawn_mounter(&mut cmd, Some(&log)).unwrap();
+        assert_eq!((child.wait().unwrap().code(), from, said_since(&log, from).as_str()), (Some(3), 5, "error: no such ship\n"));
+        // with nowhere to keep a log it still starts, and still outlives its words
+        let _ = std::fs::remove_file(&mark);
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 0.3; echo late >&2 && echo fine > \"$0\"", &mark.to_string_lossy()]);
+        drop(spawn_mounter(&mut cmd, None).unwrap());
+        let until = Instant::now() + Duration::from_secs(10);
+        while !mark.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(std::fs::read_to_string(&mark).unwrap_or_default().trim(), "fine");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The real mounter, started and stopped as the app does it, at a folder reached through a
+    /// link. Run with `LATTICE_FS` naming a built `lattice-fs`, where FUSE can be used.
+    #[test]
+    #[ignore = "needs FUSE, and LATTICE_FS naming a built lattice-fs"]
+    fn a_real_mounter_is_started_at_a_linked_folder_and_stopped_cleanly() {
+        use std::io::{Read, Write};
+        let dir = std::env::temp_dir().join(format!("lr-mnt-real-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
+        crate::api::TEST_CONFIG.with(|t| *t.borrow_mut() = Some(dir.join("config/lattice-rune")));
+        // a ship that answers every read with an empty tree
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { continue };
+                std::thread::spawn(move || {
+                    let mut b = [0u8; 8192];
+                    let _ = s.read(&mut b);
+                    let body = r#"{"nodes":[],"since":"s"}"#;
+                    let _ = write!(s, "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                });
+            }
+        });
+        let mut spec = MountSpec { mountpoint: format!("{}//link/mnt", dir.display()), url, ship: "~zod".into(), ..MountSpec::default() };
+        spec.pid = start(&spec, Some("urbauth-~zod=0v1.x")).expect("the folder is seen to become a mount, though the system spells it another way");
+        assert!(mounted(&spec.mountpoint) && mounted(&dir.join("real/mnt").to_string_lossy()));
+        assert!(refusal(&spec.mountpoint).unwrap().ends_with("is a mount already"));
+        stop(&spec).unwrap();
+        assert!(!mounted(&spec.mountpoint));
+        // it said its word on the way out and went on to unmount: its stderr is a file, not a pipe let go of
+        let until = Instant::now() + Duration::from_secs(10);
+        while std::path::Path::new(&format!("/proc/{}/cmdline", spec.pid)).exists() && !std::fs::read_to_string(format!("/proc/{}/stat", spec.pid)).is_ok_and(|t| t.contains(") Z ")) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let said = said_since(&log_path().unwrap(), 0);
+        assert!(said.contains("unmounting") && !said.contains("panicked"), "{said}");
+        crate::api::TEST_CONFIG.with(|t| *t.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_mount_is_seen_however_its_folder_is_spelled() {
+        let dir = std::env::temp_dir().join(format!("lr-mnt-spell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real/plain")).unwrap();
+        // through a link, as a home directory under a linked /home is
+        std::os::unix::fs::symlink("/proc", dir.join("link")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("to-real")).unwrap();
+        let at = |n: &str| dir.join(n).to_string_lossy().into_owned();
+        assert!(mounted("/proc") && mounted(&at("link")) && mounted(&format!("{}/", at("link"))), "the folder itself a link");
+        assert!(mounted("//proc") && mounted("/proc/.") && mounted("/proc/"));
+        assert!(refusal(&at("link")).unwrap().ends_with("is a mount already"));
+        // a folder that is no mount is not one by any spelling, there or not
+        assert!(!mounted(&at("real/plain")) && !mounted(&at("to-real/plain")) && !mounted(&at("to-real/not-there-yet")) && !mounted(&at("real/../real/plain")));
+        assert_eq!(refusal(&at("to-real/plain")), None);
+        // every character the system writes its own way is read back: a tab, a backslash, a letter of more than one byte
+        let list = "lattice /home/x/my\\011ship fuse rw 0 0\nlattice /home/x/caf\\303\\251 fuse rw 0 0\nlattice /home/x/back\\134slash fuse rw 0 0\nlattice /home/x/odd\\9 fuse rw 0 0\n";
+        assert!(in_mounts(list, "/home/x/my\tship") && in_mounts(list, "/home/x/caf\u{e9}") && in_mounts(list, "/home/x/back\\slash"));
+        assert!(!in_mounts(list, "/home/x/back\\134slash"), "a name is not read through the system's way of writing another");
+        assert!(in_mounts(list, "/home/x/odd\\9"), "a backslash that starts no number is itself");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn a_folder_is_read_as_typed_and_told_from_a_mount() {

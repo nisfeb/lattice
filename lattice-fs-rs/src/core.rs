@@ -560,6 +560,17 @@ impl GrubberyFs {
         Ok(fh)
     }
 
+    /// Whether the page behind the file at `path` has anything under it
+    /// besides that file. The ship's delete of a name takes every page and
+    /// folder under the name, and it has no call for the page alone, so a
+    /// file's unlink must not be sent for such a page. Editor temp files are
+    /// the mount's own and are not counted.
+    fn holds_others(&self, s: &State, path: &str) -> bool {
+        let (rel, _) = self.rel_kind_of(s, path);
+        let under = format!("/{rel}/");
+        s.vt.keys().any(|k| k.starts_with(&under) && k != path && !s.scratch.contains_key(k))
+    }
+
     /// FS vpath -> (projection rel, kind). Strips the extension; maps a
     /// page-with-children body file (<dir>/<leaf>.<ext>) back to the parent rel.
     fn rel_kind_of(&self, s: &State, path: &str) -> (String, String) {
@@ -692,7 +703,7 @@ impl GrubberyFs {
             Err(e) if e.errno == libc::EEXIST => {
                 let copy = conflict_name(&rel);
                 if self.proj.write_based(&copy, &kind, &buf, true, None).is_ok() {
-                    eprintln!(
+                    crate::say!(
                         "lattice-fs: the ship refused the save of {rel} as a conflict ({}). \
                          Your text is kept as the page {copy}",
                         e.msg
@@ -785,13 +796,13 @@ impl GrubberyFs {
             f.sync_all()
         })();
         match r {
-            Ok(()) => eprintln!(
+            Ok(()) => crate::say!(
                 "lattice-fs: could not save {} ({}). Your text is kept at {}",
                 h.rel,
                 why.msg,
                 path.display()
             ),
-            Err(io) => eprintln!(
+            Err(io) => crate::say!(
                 "lattice-fs: could not save {} ({}), and could not keep it at {} ({io}). \
                  {} bytes are lost",
                 h.rel,
@@ -1813,6 +1824,13 @@ impl Filesystem for GrubberyFs {
                 s.vt.remove(&path);
                 drop(s);
                 reply.ok();
+                return;
+            }
+            // rm of one file must never take other pages with it. As for
+            // rmdir, what is under it goes first.
+            if self.holds_others(&s, &path) {
+                drop(s);
+                reply.error(err(libc::ENOTEMPTY));
                 return;
             }
             let (rel, _) = self.rel_kind_of(&s, &path);
@@ -2844,6 +2862,33 @@ mod tests {
         assert!(!s.handles[&3].dirty);
         assert_eq!(s.write_gen, 0, "a scratch commit is not a ship mutation");
         assert_eq!(s.read_cache["note"], b"old", "the shadowed page is untouched");
+    }
+
+    #[test]
+    fn a_pages_own_file_is_held_while_anything_is_under_the_page() {
+        let f = Fake::new(
+            vec![
+                page("demo", "md", 1),
+                page("demo/hello", "gmi", 1),
+                page("top", "md", 1),
+                page("topper", "md", 1),
+                page("deep", "md", 1),
+                page("deep/a/b", "md", 1),
+            ],
+            &[],
+        );
+        let fs = warm_fs(f.clone());
+        let mut s = fs.st.lock().unwrap();
+        assert!(fs.holds_others(&s, "/demo/demo.md"), "a page under it");
+        assert!(!fs.holds_others(&s, "/demo/hello.gmi"), "a page with nothing under it");
+        assert!(!fs.holds_others(&s, "/top.md"), "a name that only begins the same is not under it");
+        // with no page directly under it, the page is a file beside the folder of its name
+        assert!(fs.holds_others(&s, "/deep.md"), "a page two levels down is under it too");
+        // an editor's temp file is the mount's alone, and the ship's delete takes nothing of it
+        s.vt.retain(|k, _| k != "/demo/hello.gmi");
+        s.scratch.insert("/demo/demo.md~".into(), b"x".to_vec());
+        s.vt.insert("/demo/demo.md~".into(), VEntry { kind: VKind::File, node: None });
+        assert!(!fs.holds_others(&s, "/demo/demo.md"));
     }
 
     #[test]
