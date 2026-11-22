@@ -308,4 +308,22 @@
     ::  with no ']' at all the text is unchanged
     (expect-eq !>("<p>[ a [ b</p>") !>((r '[ a [ b')))
   ==
+::  an underscore inside a word is an underscore
+++  test-underscore-in-word
+  ;:  weld
+    (expect-eq !>("<p>a_b_c</p>") !>((r 'a_b_c')))
+    (expect-eq !>("<p>set max_size and min_size</p>") !>((r 'set max_size and min_size')))
+    (expect-eq !>("<p>a__b__c</p>") !>((r 'a__b__c')))
+    (expect-eq !>("<p>x _a_b</p>") !>((r 'x _a_b')))
+    (expect-eq !>("<p>x __a__b</p>") !>((r 'x __a__b')))
+    (expect-eq !>("<p>_a_b_</p>") !>((r '_a_b_')))
+    (expect-eq !>("<p>9_a_</p>") !>((r '9_a_')))
+    ::  at a word boundary it is still emphasis
+    (expect-eq !>("<p>x <em>a</em> y</p>") !>((r 'x _a_ y')))
+    (expect-eq !>("<p>(<em>a</em>)</p>") !>((r '(_a_)')))
+    (expect-eq !>("<p><em>a b</em>.</p>") !>((r '_a b_.')))
+    (expect-eq !>("<p>x <strong>a</strong>, y</p>") !>((r 'x __a__, y')))
+    (expect-eq !>("<p><strong>a_b</strong></p>") !>((r '**a_b**')))
+    (expect-eq !>("<p><em>snake_case</em> here</p>") !>((r '*snake_case* here')))
+  ==
 --

@@ -202,6 +202,18 @@
   =/  hit  (~(get by refs) (cass key))
   ?~  hit  ~
   `[url.u.hit title.u.hit rest]
+::  +word-char: a letter, a digit, or a byte of a character past ASCII.
+::  An underscore beside one is part of a word, not emphasis.
+++  word-char
+  |=  c=@tD
+  ^-  ?
+  ?|  &((gte c 'a') (lte c 'z'))
+      &((gte c 'A') (lte c 'Z'))
+      &((gte c '0') (lte c '9'))
+      (gte c 128)
+  ==
+++  word-next  |=(t=tape ^-(? &(?=(^ t) (word-char i.t))))
+++  lead-under  |=(t=tape =|(n=@ud |-(^-(@ud ?~(t n ?:(=('_' i.t) $(t t.t, n +(n)) n))))))
 ::  +ib: render inline markdown to HTML (with reference map).
 ++  ib
   |=  [t=tape refs=refm]
@@ -230,7 +242,12 @@
   ::  that one character at a time, through every test and a weld, which
   ::  was about 15 s of a 1.5 MB page's 20 s render.
   =/  n=@ud  (stop-run t ib-stop)
-  ?.  =(0 n)  (weld (sc n t) (ib-in (sl n t) refs no))
+  ?.  =(0 n)
+    ::  underscores right after a word character are inside a word
+    ::  ("max_size"), and open nothing: they pass with the run
+    =/  aft=tape  (sl n t)
+    =/  u=@ud  ?:((word-char (sn (dec n) t)) (lead-under aft) 0)
+    (weld (sc (add n u) t) (ib-in (sl u aft) refs no))
   =/  c=@tD  i.t
   ::  a hard line break, as +join-para marks it. A line never holds a
   ::  line feed of its own, so document text cannot spell one.
@@ -300,6 +317,9 @@
     =/  aft=tape  (sl 2 t)
     =/  cl  (find-cap d aft scan-cap)
     ?~  cl  (weld (esc ~[c]) (ib-in t.t refs no))
+    ?:  &(=('_' c) (word-next (sl (add u.cl 2) aft)))
+      =/  u=@ud  (lead-under t)
+      (weld (sc u t) (ib-in (sl u t) refs no))
     %+  weld  :(weld "<strong>" (ib-in (sc u.cl aft) refs no) "</strong>")
     (ib-in (sl (add u.cl 2) aft) refs no)
   ::  strikethrough ~~text~~
@@ -316,11 +336,14 @@
     ?:  =(0 u.cl)  (weld "*" (ib-in t.t refs no))
     %+  weld  :(weld "<em>" (ib-in (sc u.cl t.t) refs no) "</em>")
     (ib-in (sl +(u.cl) t.t) refs no)
-  ::  italic _text_ (underscore: only at a left word boundary)
+  ::  italic _text_ (underscore: only at word boundaries. An opener
+  ::  after a word character never gets here: the plain run above took
+  ::  it. A closer with a word character after it closes nothing.)
   ?:  =('_' c)
     =/  cl  (find-cap "_" t.t scan-cap)
     ?~  cl  (weld "_" (ib-in t.t refs no))
     ?:  =(0 u.cl)  (weld "_" (ib-in t.t refs no))
+    ?:  (word-next (sl +(u.cl) t.t))  (weld "_" (ib-in t.t refs no))
     %+  weld  :(weld "<em>" (ib-in (sc u.cl t.t) refs no) "</em>")
     (ib-in (sl +(u.cl) t.t) refs no)
   ::  literal char
