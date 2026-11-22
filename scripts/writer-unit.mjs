@@ -440,6 +440,52 @@ console.log('# copy and paste within Writer');
   check('one it does not define goes', para('No_20_Such') === 0);
 }
 
+console.log('# a table keeps its shape');
+{
+  //  the editor's guard (view.js) over the editor's own keymap: a replace
+  //  that joins cells or rows is refused, so the saved table opens as a
+  //  table again
+  const { Plugin, TextSelection, NodeSelection } = await import('prosemirror-state');
+  const { deleteSelection } = await import('prosemirror-commands');
+  const t = read('08-tables.fodt');
+  const p = parseFodt(t);
+  let tpos = -1, table = null;
+  p.doc.descendants((n, pos) => { if (tpos < 0 && n.type.name === 'table') { tpos = pos; table = n; } return tpos < 0; });
+  const cells = [];
+  table.descendants((n, pos) => { if (n.type.name === 'table_cell') cells.push(tpos + 1 + pos); return n.type.name !== 'table_cell'; });
+  const w = table.firstChild.childCount;
+  const shape = (doc) => { let tb = null; doc.descendants((n) => { if (!tb && n.type.name === 'table') tb = n; return !tb; }); const s = []; if (tb) tb.forEach((r) => s.push(r.childCount)); return s.join(); };
+  const kinds = (doc) => { const k = []; doc.forEach((n) => k.push(n.type.name)); return k.join(); };
+  const guard = new Plugin({ filterTransaction: (tr) => core.tablesKept(tr) });
+  const run = (sel, f) => {
+    const st = EditorState.create({ doc: p.doc, plugins: [guard], selection: sel });
+    let next = st;
+    f(st, (tr) => { next = st.apply(tr); });
+    const o = serializeFodt({ ...p, doc: next.doc }, t);
+    return { doc: next.doc, changed: next.doc !== st.doc, again: o.error || kinds(parseFodt(o.text).doc) };
+  };
+  const text = (a, b) => TextSelection.create(p.doc, a + 3, b + 3);
+  const type = (s, d) => d(s.tr.insertText('x'));
+  for (const [what, sel, f] of [
+    ['Delete from one cell into the next', text(cells[w], cells[w + 1]), deleteSelection],
+    ['typing over that selection', text(cells[w], cells[w + 1]), type],
+    ['Delete from one row into the next', text(cells[w], cells[2 * w]), deleteSelection],
+    ['Delete from the paragraph above into a cell', TextSelection.create(p.doc, tpos - 2, cells[w + 1] + 3), deleteSelection],
+    ['Delete from a cell to the paragraph below', TextSelection.create(p.doc, cells[w + 1] + 3, tpos + table.nodeSize + 2), deleteSelection],
+  ]) {
+    const r = run(sel, f);
+    check(what + ' leaves the table as it was', shape(r.doc) === shape(p.doc) && !r.changed, shape(r.doc));
+    check('  and it opens as a table again', r.again === kinds(p.doc), r.again);
+  }
+  const inCell = run(TextSelection.create(p.doc, cells[w] + 2, cells[w] + 4), deleteSelection);
+  check('a selection inside one cell is still deleted', inCell.changed && shape(inCell.doc) === shape(p.doc) && inCell.again === kinds(p.doc));
+  const whole = run(NodeSelection.create(p.doc, tpos), deleteSelection);
+  const tables = (doc) => kinds(doc).split(',').filter((k) => k === 'table').length;
+  check.eq('a table selected whole is still deleted', tables(whole.doc), tables(p.doc) - 1);
+  const typed = run(TextSelection.create(p.doc, cells[0] + 2), type);
+  check('typing in a cell still works', typed.changed && typed.again === kinds(p.doc));
+}
+
 console.log('# speed');
 {
   const t = read('13-large.fodt');

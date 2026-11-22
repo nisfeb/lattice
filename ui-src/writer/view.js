@@ -22,6 +22,7 @@ import { EditorView } from 'prosemirror-view';
 import { history } from 'prosemirror-history';
 import { dropCursor } from 'prosemirror-dropcursor';
 import { gapCursor } from 'prosemirror-gapcursor';
+import { tableEditing } from 'prosemirror-tables';
 import { attr, elements } from './xml.js';
 import { schema, safeHref } from './schema.js';
 import { parseFodt } from './parse.js';
@@ -127,6 +128,7 @@ lat-writer{display:flex;flex-direction:column;min-height:0;height:100%;overflow:
 .lw-doc li.lw-lh{list-style:none}
 .lw-doc table{border-collapse:collapse;width:100%;margin:4px 0}
 .lw-doc td{border:1px solid #888;padding:2px 5px;vertical-align:top}
+.lw-doc td.selectedCell{background:#4a90d933}
 .lw-doc a[data-href]{color:#000080;text-decoration:underline;cursor:text}
 .lw-doc .fodt-quote{margin-left:1cm;margin-right:1cm}
 .lw-doc .lw-pb{border-top:1px dashed #888;margin-top:18px;padding-top:4px;position:relative}
@@ -225,6 +227,31 @@ export function keepHidden() {
 
 const PAIR_WHAT = 'one half of a bookmark, reference mark, comment or tracked change';
 
+//  A table is saved as its rows of cells under the column declarations it
+//  came with, and opens as a table only while every row has the same
+//  number of cells. So no step may leave a table ragged, or change the
+//  rows or the cells per row of one that is still there: a replace across
+//  cells would join them, and across rows would drop the cells between.
+//  Whole tables come and go freely.
+const rowsOf = (t) => { const s = []; t.forEach((r) => s.push(r.childCount)); return s.join(); };
+export function tablesKept(tr) {
+  if (!tr.docChanged) return true;
+  let ok = true;
+  tr.doc.descendants((n) => {
+    if (n.type === S.table) n.forEach((r) => { if (r.childCount !== n.firstChild.childCount) ok = false; });
+    return ok && !n.isTextblock;
+  });
+  if (ok) tr.before.descendants((n, pos) => {
+    if (n.type === S.table) {
+      const m = tr.mapping.mapResult(pos, 1);
+      const now = m.deleted ? null : tr.doc.nodeAt(m.pos);
+      if (now && now.type === S.table && rowsOf(now) !== rowsOf(n)) ok = false;
+    }
+    return ok && !n.isTextblock;
+  });
+  return ok;
+}
+
 // ---------------------------------------------------------------- mount
 //  mount(host, opts): the controller, or { error } when the body cannot be
 //  opened (the shell then shows Source view with the reason).
@@ -321,8 +348,10 @@ export function mount(host, opts = {}) {
   let refusedAt = 0, dirty = false, syncTimer = 0, base = text;
   const guard = new Plugin({
     filterTransaction(tr, state) {
-      if (pairGuard(tr, state)) return true;
-      if (Date.now() - refusedAt > 500) ctl.say('Not deleted: that would leave ' + PAIR_WHAT + ' without its other end. Select both ends to delete it.');
+      const why = !pairGuard(tr, state) ? 'Not deleted: that would leave ' + PAIR_WHAT + ' without its other end. Select both ends to delete it.'
+        : !tablesKept(tr) ? 'Not done: that would add or remove cells of a table. Select whole cells to empty them, or the whole table to delete it.' : null;
+      if (!why) return true;
+      if (Date.now() - refusedAt > 500) ctl.say(why);
       refusedAt = Date.now();
       return false;
     },
@@ -333,7 +362,11 @@ export function mount(host, opts = {}) {
   const state = EditorState.create({
     doc: parsed.doc,
     selection: TextSelection.findFrom(parsed.doc.resolve(0), 1, true) || undefined,
-    plugins: [guard, dedupe(), keepHidden(), ...buildKeys(ctl), history(), dropCursor(), gapCursor(), pastePlugin(ctl, st)],
+    //  the table plugin goes last, its keys and mouse after everyone's: a
+    //  drag or Shift+arrow across cells selects cells, and Delete or
+    //  typing over them empties them, as LibreOffice does
+    plugins: [guard, dedupe(), keepHidden(), ...buildKeys(ctl), history(), dropCursor(), gapCursor(), pastePlugin(ctl, st),
+      tableEditing({ allowTableNodeSelection: true })],
   });
   const view = new EditorView(sheet, {
     state,

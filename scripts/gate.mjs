@@ -254,7 +254,7 @@ async function live(url, cookie, stamp, secs = 900) {
 //  --- the suites ---
 const browser = (f) => /puppeteer|lib\/harness\.mjs/.test(readFileSync(S + '/' + f, 'utf8'));
 const uis = readdirSync(S).filter((f) => /^ui-.*\.mjs$/.test(f)).sort();
-const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs', 'ui-sheet-grid.mjs', 'ui-map-view.mjs', 'ui-scad-view.mjs'];
+const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs', 'ui-sheet-grid.mjs', 'ui-map-view.mjs', 'ui-scad-view.mjs', 'ui-writer-view.mjs'];
 const TWO_SHIP = ['ui-links.mjs', 'ui-shares-live.mjs', 'ui-follow-live.mjs'];
 const allShip = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
@@ -296,6 +296,7 @@ const allLocal = [
   ['ui-sheet-grid.mjs', 'node', [S + '/ui-sheet-grid.mjs']],
   ['ui-map-view.mjs', 'node', [S + '/ui-map-view.mjs']],
   ['ui-scad-view.mjs', 'node', [S + '/ui-scad-view.mjs']],
+  ['ui-writer-view.mjs', 'node', [S + '/ui-writer-view.mjs']],
   ['ui-reader-loading.mjs', 'node', [S + '/ui-reader-loading.mjs']],
   ['offline-tests', 'bash', [S + '/offline-tests.sh']],
   ['code-closure', 'python3', [S + '/code-closure.py', 'code']],
