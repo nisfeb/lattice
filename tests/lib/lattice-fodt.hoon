@@ -523,4 +523,27 @@
     (expect-eq !>(peer-cap:fo) !>((lent full)))
     (expect-eq !>(~) !>((peer-get:fo full 1 7)))
   ==
+::  +tree at depth: a close tag that matches nothing is dropped, one that
+::  matches far down closes what is above it, a name open twice stays
+::  open after one close, and the depth count follows the stack
+++  test-tree-closes-at-depth
+  =/  tk  |=(s=tape =/(r (scan:fo (crip s)) ?>(?=(%& -.r) p.r)))
+  =/  spans=tape  `tape`(zing `(list tape)`(reap 200 "<s>"))
+  =/  junk=tape  `tape`(zing `(list tape)`(reap 3.000 "</q>"))
+  =/  pairs=tape  `tape`(zing `(list tape)`(reap 3.000 "<b>x</b>"))
+  ;:  weld
+    ::  unmatched closes and matched pairs under 200 open elements leave
+    ::  one tree, with every pair in the innermost element
+    %+  expect-eq  !>((tree:fo (tk :(weld "<r>" spans pairs "</r>"))))
+    !>((tree:fo (tk :(weld "<r>" spans junk pairs junk "</r>"))))
+    ::  a close of the outer of two elements with one name
+    %+  expect-eq  !>((tree:fo (tk "<a><a>x</a>y</a>z")))
+    !>((tree:fo (tk "<a><a>x</a>y</a></a></a>z")))
+    %+  expect-eq  !>((tree:fo (tk "<a><b><a>x</a></b></a>")))
+    !>((tree:fo (tk "<a><b><a>x</b></a>")))
+    ::  after a close that pops many, the cap counts what is still open
+    =/  half=tape  `tape`(zing `(list tape)`(reap 60 "<s>"))
+    =/  more=tape  `tape`(zing `(list tape)`(reap 130 "<s>"))
+    (expect-eq !>(3) !>((lent (tree:fo (tk :(weld "<r>" half "</r><r>" half "</r>" more))))))
+  ==
 --
