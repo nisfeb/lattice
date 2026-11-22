@@ -1862,7 +1862,11 @@ pub fn knows_with(mut knows: Vec<Know>, q: &Queue) -> Vec<Know> {
 /// reverse. Pages and folders only.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum QueuedOp {
+    /// A folder, with everything in it. Also any delete put by before a page was deleted alone.
     Del(String),
+    /// A page alone: the pages under it stay, as the ship keeps them (`+page-del-run` in app.hoon,
+    /// a page-del with no `tree`). Both are sent as the one request the window sends at once.
+    DelPage(String),
     /// From a path to a path, with the names to show for it (`RealName`).
     Move { from: String, to: String, dname: String, dnames: String },
 }
@@ -1875,18 +1879,20 @@ fn moved(path: &str, at: &str, to: &str) -> Option<String> {
 
 /// Puts a delete or a move by, and settles now what it means for the
 /// saves that wait, so that when the ship answers every one of these can
-/// go before every save and still be right. A delete drops the saves
-/// under its path. A move carries them to their new names, and they then
+/// go before every save and still be right. A folder's delete drops the
+/// saves under its path, and a page's delete the page's own save. A move carries them to their new names, and they then
 /// name no revision: the page they go over is the moved one, whatever
 /// the ship numbers it. Memories are not under any page's path.
 pub fn enqueue_op(ops: &mut Vec<QueuedOp>, saves: &mut Queue, op: QueuedOp) {
     match &op {
         // a page made away and deleted away was never the ship's: its save goes, and there is nothing to send
-        QueuedOp::Del(name) if saves.get(name).is_some_and(|q| q.is_new) => {
+        QueuedOp::Del(name) | QueuedOp::DelPage(name) if saves.get(name).is_some_and(|q| q.is_new) => {
             saves.remove(name);
             return;
         }
         QueuedOp::Del(name) => saves.retain(|k, _| queued_know(k).is_some() || moved(k, name, "").is_none()),
+        // the page's own save goes with it, and those of the pages under it stay: so do those pages
+        QueuedOp::DelPage(name) => drop(saves.remove(name)),
         QueuedOp::Move { from, to, .. } => {
             let carried: Vec<(String, String)> = saves.keys().filter(|k| queued_know(k).is_none()).filter_map(|k| Some((k.clone(), moved(k, from, to)?))).collect();
             for (old, new) in carried {
@@ -1906,6 +1912,7 @@ pub fn ops_over(mut nodes: Vec<Node>, ops: &[QueuedOp]) -> Vec<Node> {
     for op in ops {
         match op {
             QueuedOp::Del(name) => nodes.retain(|n| moved(&n.path, name, "").is_none()),
+            QueuedOp::DelPage(name) => nodes.retain(|n| !(n.page && n.path == *name)),
             QueuedOp::Move { from, to, dname, .. } => {
                 for n in &mut nodes {
                     if let Some(new) = moved(&n.path, from, to) {
@@ -1949,6 +1956,7 @@ pub fn held_by(ops: &[QueuedOp], name: &str) -> bool {
     queued_know(name).is_none()
         && ops.iter().any(|op| match op {
             QueuedOp::Del(at) => moved(name, at, "").is_some(),
+            QueuedOp::DelPage(at) => name == at,
             QueuedOp::Move { from, to, .. } => moved(name, from, "").is_some() || moved(name, to, "").is_some(),
         })
 }
@@ -2645,7 +2653,7 @@ impl Conn {
     /// Sends one delete or move that waited, as it would have gone at the time.
     pub fn send_op(&self, op: &QueuedOp) -> Result<(), String> {
         match op {
-            QueuedOp::Del(name) => self.delete(name),
+            QueuedOp::Del(name) | QueuedOp::DelPage(name) => self.delete(name),
             QueuedOp::Move { from, to, dname, dnames } => self.rename_as(from, &RealName { name: to.clone(), dname: dname.clone(), dnames: dnames.clone() }),
         }
     }

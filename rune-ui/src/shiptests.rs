@@ -152,7 +152,11 @@ fn answer(st: &Mutex<Stub>, method: &str, route: &str, q: &BTreeMap<String, Stri
                 return (s.op_fail, "the ship says no".into());
             }
             let at = get(if route == "page-del" { "name" } else { "from" });
-            let hit: Vec<String> = s.pages.keys().filter(|n| is_under(n, &at)).cloned().collect();
+            let mut hit: Vec<String> = s.pages.keys().filter(|n| is_under(n, &at)).cloned().collect();
+            // a page is deleted alone and what is under it stays, unless tree=1 asks for all of it. A name with no page is a folder, and all of it goes (`+page-del-run`)
+            if route == "page-del" && !q.contains_key("tree") && s.pages.contains_key(&at) {
+                hit = vec![at.clone()];
+            }
             // a delete of nothing is answered as done, a move of nothing is refused
             if hit.is_empty() && route == "page-move" {
                 return (404, json!({"error": "no such page or folder"}).to_string());
@@ -1345,4 +1349,46 @@ fn a_schedule_from_before_is_not_given_a_ship_another_schedule_names_its_archive
     backup_run(&mut r.s, "old");
     assert!(r.s.backups[1].ship.is_empty() && !r.s.bk_req.is_pending(), "it was given the ship, and its run would prune the other's archives");
     assert!(r.s.bk_said.contains("daily"), "and that is said: {:?}", r.s.bk_said);
+}
+
+#[test]
+fn a_page_deleted_keeps_the_waiting_saves_of_the_pages_under_it_and_a_folder_does_not() {
+    let _one = one();
+    let ship = Ship::start();
+    for (name, body) in [("p", "parent\n"), ("p/k", "kid\n"), ("q", "parent\n"), ("q/k", "kid\n"), ("f/x", "in a folder\n")] {
+        ship.write(name, "md", body);
+    }
+    let c = ship.conn();
+    let page = |name: &str, body: &str| Page { name: name.into(), body: body.into(), kind: "md".into(), rev: 1 };
+    c.change_waiting(|_, q| {
+        for (name, body) in [("p/k", "kid edited\n"), ("q/k", "kid edited\n"), ("f/x", "x edited\n")] {
+            api::enqueue(q, &page(name, body), Some(1), false, 0);
+        }
+    })
+    .unwrap();
+    // the ship takes no save for now and answers all else: the saves wait
+    ship.st().save_fail = 503;
+    let mut r = Run::new(&ship);
+    r.settle();
+    // a page deleted with the ship answering: the ship deletes it alone, and what waits under it is still for a page that is there
+    r.s.prompt = Some(Prompt::Delete("q".into()));
+    confirm(&mut r.s);
+    r.settle();
+    assert_eq!(ship.body("q"), "<none>");
+    assert!(c.queue().contains_key("q/k"), "the waiting edit of a page under the deleted one was dropped: {:?}", c.queue().keys().collect::<Vec<_>>());
+    // the same with the ship away: the delete waits, and the edits of the pages under the page stay. A folder's delete takes what waits in it
+    ship.st().fail = 502;
+    r.s.offline = Some(String::new());
+    r.s.prompt = Some(Prompt::Delete("p".into()));
+    confirm(&mut r.s);
+    r.s.prompt = Some(Prompt::Delete("f".into()));
+    confirm(&mut r.s);
+    assert_eq!(c.ops().len(), 2, "{:?}", r.s.note);
+    assert_eq!(c.queue().keys().collect::<Vec<_>>(), ["p/k", "q/k"]);
+    assert!(r.s.names.iter().any(|n| n == "p/k"), "and the page under it is still listed");
+    (ship.st().fail, ship.st().save_fail) = (0, 0);
+    r.sync();
+    r.sync();
+    assert_eq!((ship.body("p"), ship.body("p/k"), ship.body("q/k"), ship.body("f/x")), ("<none>".into(), "kid edited\n".into(), "kid edited\n".into(), "<none>".into()));
+    assert!(c.queue().is_empty() && c.ops().is_empty(), "{:?}", r.s.note);
 }

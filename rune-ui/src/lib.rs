@@ -2149,11 +2149,13 @@ fn confirm(s: &mut App) {
             Op::Created(n) => Some(Page { name: n.clone(), body: format!("# {}\n", if rn.dname.is_empty() { n.rsplit('/').next().unwrap_or(n) } else { rn.dname.as_str() }), kind: "md".into(), rev: 0 }),
             _ => None,
         };
+        // a page's delete takes the page alone, and a folder's all in it: as the ship does with the one request the window sends at once
+        let page = matches!(&op, Op::Deleted(n) if s.names.contains(n));
         // put into what the files hold now: another window on this ship keeps what waits there too
         let kept = change_waiting(s, |ops, saves| match (&op, &made) {
             (_, Some(made)) => api::enqueue(saves, made, None, true, 0),
             (Op::Renamed(a, b), _) => api::enqueue_op(ops, saves, api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
-            (Op::Deleted(n), _) => api::enqueue_op(ops, saves, api::QueuedOp::Del(n.clone())),
+            (Op::Deleted(n), _) => api::enqueue_op(ops, saves, if page { api::QueuedOp::DelPage(n.clone()) } else { api::QueuedOp::Del(n.clone()) }),
             _ => unreachable!("matched above"),
         });
         if let Err(e) = kept {
@@ -2216,6 +2218,8 @@ fn applied(s: &mut App, op: Op) {
         let waits = |at: &str| s.queue.keys().any(|k| api::queued_know(k).is_none() && is_under(k, at));
         let goes = match &op {
             Op::Renamed(a, b) if a != b && waits(a) => Some(api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: String::new(), dnames: String::new() }),
+            // a page goes alone, and the saves of the pages under it still wait: the ship keeps those pages (`+page-del-run`). A folder takes all in it
+            Op::Deleted(n) if s.names.contains(n) => s.queue.contains_key(n).then(|| api::QueuedOp::DelPage(n.clone())),
             Op::Deleted(n) if waits(n) => Some(api::QueuedOp::Del(n.clone())),
             _ => None,
         };
@@ -2515,12 +2519,14 @@ fn applied(s: &mut App, op: Op) {
             if s.memory {
                 load_trash(s);
             }
-            for old in under(&s.names, &n) {
-                s.cache.remove(&old);
-                s.names.retain(|x| *x != old);
+            // a page of this ship's goes alone, and the pages under it stay (`+page-del-run`). A folder, or a memory, goes with all under it
+            let gone = if !s.memory && s.names.contains(&n) { vec![n.clone()] } else { under(&s.names, &n) };
+            for old in &gone {
+                s.cache.remove(old);
+                s.names.retain(|x| x != old);
             }
             // only the page or folder that went is closed: an edit of another page is not touched
-            if s.open.as_ref().is_some_and(|p| is_under(&p.name, &n)) {
+            if s.open.as_ref().is_some_and(|p| gone.contains(&p.name)) {
                 (s.open, s.editing, s.capture) = (None, false, false);
             }
             if s.folder.as_deref().is_some_and(|f| is_under(f, &n)) {
@@ -5759,7 +5765,7 @@ fn drained(s: &mut App, (did, out, unwritten): Drained) {
     }
     for (op, r) in did {
         let what = match &op {
-            api::QueuedOp::Del(n) => format!("the delete of {n}"),
+            api::QueuedOp::Del(n) | api::QueuedOp::DelPage(n) => format!("the delete of {n}"),
             api::QueuedOp::Move { from, to, .. } => format!("the move of {from} to {to}"),
         };
         match r {
