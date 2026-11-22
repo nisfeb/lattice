@@ -1957,6 +1957,11 @@ fn confirm(s: &mut App) {
                 s.prompt = Some(p);
             }
             Some(k) if k == open.kind => s.note = format!("{} is {} already", open.name, kind_said(k)),
+            // sent beside a save on its way, it would go with the text from before that save. The question stays, to be answered in a moment
+            Some(_) if saving(s) => {
+                s.note = "A save is on its way. Try again in a moment".into();
+                s.prompt = Some(p);
+            }
             Some(k) => {
                 // the same text, kept as another kind: the ship takes the kind a save names
                 s.note = format!("{} is now {}", open.name, kind_said(k));
@@ -3036,10 +3041,18 @@ const SHEET_COLS: usize = 52;
 /// The empty rows shown under a sheet's last, to type into.
 const SHEET_SPARE: usize = 20;
 
+/// Whether a save is on its way: asked for, and its answer not yet taken.
+/// Rune's `Latest` calls a request pending only until its answer lands,
+/// and the answer is taken at the next look. A save sent in between would
+/// go from the revision before that answer, and would take its place.
+fn saving(s: &App) -> bool {
+    s.save_for.is_some()
+}
+
 /// Whether the page in front may be changed where it is read: one of
 /// the owner's own, not open in the editor, with no save on its way.
 fn page_changes(s: &App) -> bool {
-    usable(s, "delete") && !s.editing && !s.save_req.is_pending()
+    usable(s, "delete") && !s.editing && !saving(s)
 }
 
 /// Picks a cell of the sheet showing, with its text ready to be typed over.
@@ -3106,6 +3119,11 @@ fn format_picked(s: &mut App, change: calc::Fmt) {
 /// takes `-n` out from there, and saves the page. Columns the same,
 /// counted from the picked cell's column.
 fn shift_picked(s: &mut App, rows: bool, off: usize, n: i64) {
+    // not while a save is on its way: this one would be worked out from the text before it, and sent beside it
+    if s.sheet.is_some() && !page_changes(s) {
+        s.note = "this spreadsheet is not changed here".into();
+        return;
+    }
     let (Some(p), Some(v)) = (s.open.clone(), &mut s.sheet) else { return };
     let Some((r, c)) = v.cursor else { return };
     if v.name != p.name {
@@ -3341,6 +3359,10 @@ fn params_view(params: &[scad::Param], k: &Kit) -> El {
 
 /// Adds a sheet after the last, named as the web client names one, and shows it.
 fn add_sheet(s: &mut App) {
+    if s.sheet.is_some() && !page_changes(s) {
+        s.note = "this spreadsheet is not changed here".into();
+        return;
+    }
     let (Some(p), Some(v)) = (s.open.clone(), &mut s.sheet) else { return };
     if v.name != p.name {
         return;
@@ -3358,12 +3380,14 @@ fn add_sheet(s: &mut App) {
 fn save_body(s: &mut App, p: Page, body: String) {
     let base = p.rev;
     let page = Page { body, ..p };
-    s.save_for = Some(page.name.clone());
     match s.conn.clone() {
-        Some(c) => s.save_req.request((c, page), move |(c, mut p)| {
-            p.rev = c.save(&p, Some(base))?;
-            Ok(p)
-        }),
+        Some(c) => {
+            s.save_for = Some(page.name.clone());
+            s.save_req.request((c, page), move |(c, mut p)| {
+                p.rev = c.save(&p, Some(base))?;
+                Ok(p)
+            })
+        }
         None => landed(s, Page { rev: base + 1, ..page }),
     }
 }
@@ -4124,7 +4148,7 @@ fn last_added(feats: &[map::Feature]) -> Option<usize> {
 
 /// Picks the feature just added: now, or when the page comes back from the ship with it.
 fn pick_added(s: &mut App) {
-    let coming = s.save_req.is_pending();
+    let coming = saving(s);
     if let Some(m) = &mut s.map {
         if coming { m.pick_new = true } else { m.picked = last_added(&m.feats) }
     }
@@ -4189,7 +4213,7 @@ fn orrery_or_source(f: &map::Feature) -> bool {
 /// Whether the map in front may be changed here: one of the owner's own
 /// pages, being read, and not the map orrery keeps.
 fn map_changes(s: &App) -> bool {
-    usable(s, "map-base") && !kept_by_orrery(s) && !s.save_req.is_pending()
+    usable(s, "map-base") && !kept_by_orrery(s) && !saving(s)
 }
 
 /// What a pin chosen here is kept by: the body a feature of orrery's map names.
@@ -4824,6 +4848,11 @@ fn view_rev(s: &mut App, rev: u64) {
 /// Saves the old revision on screen as the page's newest. Nothing is
 /// lost: what it replaces stays in the history.
 fn restore(s: &mut App) {
+    // a page's old revision is saved over the newest, which a save on its way is about to change: the old revision stays on screen, to be restored in a moment
+    if !s.memory && saving(s) {
+        s.note = "A save is on its way. Try again in a moment".into();
+        return;
+    }
     let (Some(c), Some(old), Some(cur)) = (s.conn.clone(), s.old.take(), &s.open) else { return };
     if s.memory {
         // the ship makes the old revision the newest itself, with its tags, and the lists are read again
@@ -5093,6 +5122,11 @@ fn start_edit(s: &mut App) {
         return;
     }
     let Some(p) = &s.open else { return };
+    // a change made where this page is read (a sheet's cell, a map's feature, the page's kind) is being saved: the editor would be filled with the text from before it, and saving that would take the change out again
+    if !s.editing && s.save_for.as_deref() == Some(p.name.as_str()) {
+        s.note = "A save is on its way. Try again in a moment".into();
+        return;
+    }
     s.note.clear();
     // rich only when the page comes back from it unchanged (md::exact)
     match (p.kind == "md").then(|| md::exact(&p.body)).flatten() {
@@ -5341,7 +5375,7 @@ fn leave_edit(s: &mut App) -> bool {
         return false;
     }
     // ponytail: a save on its way would land over this one's place in the list, so it is waited for. Carry the newer text behind it if this is met in use
-    if s.save_req.is_pending() {
+    if saving(s) {
         s.note = "A save is on its way. Try again in a moment".into();
         return false;
     }
@@ -5385,7 +5419,7 @@ fn autosave_tick(s: &mut App, clock: f64) -> bool {
     let same = s.open.as_ref().is_none_or(|p| p.body == body);
     let empty = s.capture && body.trim().is_empty();
     s.auto_seen = Some(body);
-    if !rested || same || empty || s.save_req.is_pending() {
+    if !rested || same || empty || saving(s) {
         return false;
     }
     s.autosaving = true;
@@ -5401,7 +5435,7 @@ fn autosave_tick(s: &mut App, clock: f64) -> bool {
 /// cannot be left that way is saved in the open, as before: another
 /// ship's page, a page that changed elsewhere, and a save already on its way.
 fn to_read(s: &mut App) {
-    if s.remote.is_some() || s.stale || s.save_req.is_pending() {
+    if s.remote.is_some() || s.stale || saving(s) {
         return save(s);
     }
     // Read is a save made on purpose: autosave that was waiting for one goes on again
@@ -5420,7 +5454,7 @@ fn to_read(s: &mut App) {
 fn save(s: &mut App) {
     s.auto_held = false;
     // a save of autosave's is on the wire: this one follows it, on its rev
-    if s.autosaving && s.save_req.is_pending() {
+    if s.autosaving && saving(s) {
         s.save_again = true;
         return;
     }
@@ -5451,7 +5485,7 @@ fn write(s: &mut App) {
         return;
     }
     // a save of this page already on its way is followed, on its rev: sent beside it, the second would be refused as a change made elsewhere
-    if own && s.save_req.is_pending() {
+    if own && saving(s) {
         // whichever way that save was sent: a change made where the page is read (a sheet's cell, a map's feature, the page's kind) is a save of this page too
         if s.save_for.as_deref() == Some(p.name.as_str()) {
             s.save_again = true;
@@ -5473,20 +5507,22 @@ fn write(s: &mut App) {
     }
     // a page this window has never seen on the ship is saved only if the ship has none of that name
     let fresh = own && !memory && base == 0 && !s.names.contains(&p.name);
-    s.save_sent = own.then(|| (p.clone(), base, memory));
-    s.save_for = Some(p.name.clone());
     match s.conn.clone() {
-        Some(c) => s.save_req.request((c, p), move |(c, mut p)| {
-            if let Some(sh) = &remote {
-                // an unconfirmed write keeps the rev it was based on
-                p.rev = c.remote_save(sh, &p.body, base)?.unwrap_or(base);
-            } else if memory {
-                c.know_save(&format!("/{}", p.name), &p.body)?;
-            } else {
-                p.rev = c.save_as(&p, Some(base), fresh)?;
-            }
-            Ok(p)
-        }),
+        Some(c) => {
+            s.save_sent = own.then(|| (p.clone(), base, memory));
+            s.save_for = Some(p.name.clone());
+            s.save_req.request((c, p), move |(c, mut p)| {
+                if let Some(sh) = &remote {
+                    // an unconfirmed write keeps the rev it was based on
+                    p.rev = c.remote_save(sh, &p.body, base)?.unwrap_or(base);
+                } else if memory {
+                    c.know_save(&format!("/{}", p.name), &p.body)?;
+                } else {
+                    p.rev = c.save_as(&p, Some(base), fresh)?;
+                }
+                Ok(p)
+            })
+        }
         // sample pages: kept for the session, each save a new rev as on a ship
         None => {
             p.rev += 1;
@@ -6681,7 +6717,17 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         drained(s, out);
     }
-    if let Some(r) = s.save_req.take() {
+    // asked before the answer is looked for: a save that lands between the two looks is then taken at the next
+    let ended = saving(s) && !s.save_req.is_pending();
+    let saved = s.save_req.take();
+    if saved.is_none() && ended {
+        // a save that ended with no answer is not waited on for ever: nothing could be saved or left while it was
+        changed = true;
+        (s.save_for, s.save_sent) = (None, None);
+        (s.save_again, s.autosaving) = (false, false);
+        s.note = "not saved: the save ended with no answer".into();
+    }
+    if let Some(r) = saved {
         changed = true;
         let sent = s.save_sent.take();
         s.save_for = None;
@@ -14038,7 +14084,7 @@ fn update_restart(s: &mut App) {
     if !leave_edit(s) {
         return;
     }
-    if s.save_req.is_pending() || s.drain_req.is_pending() {
+    if saving(s) || s.drain_req.is_pending() {
         s.note = "Saving first. Press Restart again in a moment".into();
         return;
     }

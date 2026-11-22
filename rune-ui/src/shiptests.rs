@@ -422,6 +422,47 @@ fn ctrl_e(r: &mut Run) {
 }
 
 #[test]
+fn edit_pressed_while_a_cell_is_being_saved_does_not_write_the_old_text_back() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("budget", "fods", &budget());
+    let mut r = Run::new(&ship);
+    r.open("budget");
+    ship.st().slow = 0.5;
+    type_cell(&mut r, "Oat milk");
+    assert!(r.s.save_req.is_pending(), "the cell's save is on its way");
+    // Ctrl+E, with nothing typed after it
+    ctrl_e(&mut r);
+    r.settle();
+    // autosave has every chance to take the editor's text for a change
+    r.autosave();
+    r.autosave();
+    assert!(ship.body("budget").contains("Oat milk"), "the cell was written over by an editor nobody typed in: {:?}", ship.saves().iter().map(|s| (s.base.clone(), s.body.contains("Oat milk"))).collect::<Vec<_>>());
+    // once the save is answered the editor opens, on the page with the cell in it
+    if !r.s.editing {
+        ctrl_e(&mut r);
+    }
+    assert!(r.s.editing && r.s.edit.text.contains("Oat milk"), "the editor opens on the page as saved. The note is {:?}", r.s.note);
+}
+
+#[test]
+fn edit_pressed_while_a_cell_is_being_saved_and_then_left_keeps_the_cell() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("budget", "fods", &budget());
+    ship.write("other", "md", "other\n");
+    let mut r = Run::new(&ship);
+    r.open("budget");
+    ship.st().slow = 0.5;
+    type_cell(&mut r, "Oat milk");
+    ctrl_e(&mut r);
+    r.settle();
+    open_page(&mut r.s, "other");
+    r.settle();
+    assert!(ship.body("budget").contains("Oat milk"), "leaving the editor sent the text from before the cell");
+}
+
+#[test]
 fn a_renamed_page_edited_on_is_saved_under_its_new_name_once_its_revision_is_read() {
     let _one = one();
     let ship = Ship::start();
@@ -439,6 +480,71 @@ fn a_renamed_page_edited_on_is_saved_under_its_new_name_once_its_revision_is_rea
     r.settle();
     assert!(ship.body("notes/b").contains("one two") && !r.s.stale && ship.body("notes/a") == "<none>");
     assert!(ship.conn().queue().is_empty(), "nothing is left waiting");
+}
+
+#[test]
+fn a_change_where_a_page_is_read_waits_for_the_save_before_it() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("budget", "fods", &budget());
+    let mut r = Run::new(&ship);
+    r.open("budget");
+    ship.st().slow = 0.5;
+    type_cell(&mut r, "Oat milk");
+    assert!(r.s.save_req.is_pending());
+    // a row put in, a sheet added, the page's kind changed and an old revision restored, each before the cell's save is answered
+    shift_picked(&mut r.s, true, 0, 1);
+    assert!(r.s.note.contains("not changed here"), "the row is refused, and that is said: {:?}", r.s.note);
+    add_sheet(&mut r.s);
+    r.s.prompt = Some(Prompt::Kind(TextEdit::new("text")));
+    confirm(&mut r.s);
+    r.s.old = Some(Page { name: "budget".into(), body: "old".into(), kind: "fods".into(), rev: 1 });
+    restore(&mut r.s);
+    assert!(r.s.old.is_some(), "the old revision stays on screen to be restored in a moment");
+    r.s.old = None;
+    r.settle();
+    assert_eq!(ship.saves_of("budget").len(), 1, "only the cell's save was sent");
+    assert!(ship.body("budget").contains("Oat milk"));
+    let open = r.s.open.clone().expect("the sheet is open");
+    assert!(open.rev == 2 && open.body.contains("Oat milk"), "and its answer was taken: the window holds the page as saved");
+    // with the save answered the row goes in, over the cell
+    pick_cell(&mut r.s, 1, 0);
+    shift_picked(&mut r.s, true, 0, 1);
+    r.settle();
+    assert_eq!(ship.saves_of("budget").len(), 2);
+    assert!(ship.body("budget").contains("Oat milk") && r.s.open.as_ref().is_some_and(|p| p.rev == 3));
+}
+
+#[test]
+fn a_save_answered_and_not_yet_looked_at_is_still_a_save_on_its_way() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "first\n");
+    let mut r = Run::new(&ship);
+    r.open("notes/a");
+    start_edit(&mut r.s);
+    r.typ("one");
+    ship.st().slow = 0.3;
+    for _ in 0..2 {
+        r.s.next_auto = 0.0;
+        r.tick();
+    }
+    assert!(r.s.save_req.is_pending(), "the autosave is on its way");
+    r.typ(" two");
+    // one look that sees the new text, so the next finds it rested
+    r.s.next_auto = 0.0;
+    r.tick();
+    // the answer lands with nobody looking, and the next look is also when autosave is due
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(!r.s.save_req.is_pending(), "the answer is in and not taken");
+    ship.st().slow = 0.0;
+    r.s.next_auto = 0.0;
+    r.tick();
+    r.settle();
+    r.autosave();
+    r.sync();
+    assert!(!r.s.stale && !r.s.auto_held, "the window's own save was taken for a change made elsewhere: {:?}", r.s.note);
+    assert_eq!(ship.body("notes/a"), "firstone two\n");
 }
 
 #[test]
