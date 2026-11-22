@@ -227,6 +227,7 @@ export class Book {
       const own = setStyle(sheet, r, c, st2);
       own.vt = KIND_VT[kind];
       own.text = this.styles.text(st2, own.v, own.vt);
+      own.ps = null;
     }
     return { changed: [[s, r, c], ...changed] };
   }
@@ -275,6 +276,7 @@ export class Book {
           own.vt = KIND_VT[kind] || 'float';
           if (own.vt === 'currency') own.cur = own.cur || 'USD'; else delete own.cur;
           own.text = this.styles.text(st, own.v, own.vt);
+          own.ps = null;
         }
         out.push([s, r, c]);
       }
@@ -506,7 +508,6 @@ export class Book {
       const i = splitAt(row.cells, at, cloneCell);
       if (i < 0) continue;
       row.dirty = true;
-      for (const c of row.cells) c.dirty = true;
       if (n > 0) {
         //  the new cells take the look of the column to their left
         const left = row.cells[i - 1];

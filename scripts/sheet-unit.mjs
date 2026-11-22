@@ -434,6 +434,51 @@ check.eq('toOf: and what toUser shows types back', toOf(toUser('of:=SUM([.2:.5])
 check.eq('serialDate carries into the next day', [serialDate(46023.999999, 25569 - 25569), serialDate(1.5, 0), serialDate(2, 0), serialDate(0.9999999, 0)].join(' '), [serialDate(46024, 0), '1970-01-02T12:00:00', '1970-01-03', '1970-01-02'].join(' '));
 check('and never writes hour 24', !/T24/.test(serialDate(46023.999999, 0)));
 
+console.log('==> the review of release 145');
+const HEAD = '<?xml version="1.0"?>\n<office:document xmlns:office="o" xmlns:table="t" xmlns:text="x" xmlns:xlink="l" xmlns:calcext="c" office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet>';
+const TAIL = '</office:spreadsheet></office:body></office:document>';
+const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods'), 'utf8');
+{
+  //  a cell whose content was not edited keeps its paragraphs: links,
+  //  spans and paragraph attributes
+  const A = '<table:table-cell office:value-type="string"><text:p>see <text:a xlink:href="https://example.org/doc" xlink:type="simple">the doc</text:a></text:p></table:table-cell>';
+  const C = '<table:table-cell office:value-type="string"><text:p text:style-name="P1">a <text:span text:style-name="T1">bold</text:span> word</text:p><text:p>second</text:p></table:table-cell>';
+  const row = (n) => `<table:table-row${n}>${A}<table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell>${C}</table:table-row>`;
+  const src = HEAD + `<table:table table:name="S">${row('')}${row(' table:number-rows-repeated="3"')}</table:table>` + TAIL;
+  const LINK = '<text:p>see <text:a xlink:href="https://example.org/doc" xlink:type="simple">the doc</text:a></text:p>';
+  const SPAN = '<text:p text:style-name="P1">a <text:span text:style-name="T1">bold</text:span> word</text:p>';
+  //  how many of the sheet's rows still hold the link and the span, each row counted as often as it repeats
+  const kept = (b) => {
+    const d = parseFods(b.text());
+    let links = 0, spans = 0;
+    for (const r of d.sheets[0].rows) {
+      const t = d.text.slice(r.src[0], r.src[1]);
+      if (t.includes(LINK)) links += r.rep;
+      if (t.includes(SPAN) && t.includes('<text:p>second</text:p>')) spans += r.rep;
+    }
+    return links + ',' + spans;
+  };
+  const after = (fn) => { const b = new Book(src); fn(b); return b; };
+  check.eq('the fixture: four rows with a link and a span each', kept(new Book(src)), '4,4');
+  check.eq('a column insert keeps every link and span', kept(after((b) => b.shift(0, 'c', 1, 1))), '4,4');
+  check.eq('a column insert before them too', kept(after((b) => b.shift(0, 'c', 0, 2))), '4,4');
+  check.eq('a column delete keeps them', kept(after((b) => b.shift(0, 'c', 1, -1))), '4,4');
+  check('and copies the untouched cells byte for byte', (() => { const t = after((b) => b.shift(0, 'c', 1, 1)).text(); return t.split(A).length === 3 && t.split(C).length === 3; })());
+  check.eq('typing into a row of a repeated run keeps them', kept(after((b) => b.enter(0, 2, 1, '5'))), '4,4');
+  check.eq('a row insert inside a repeated run keeps them', kept(after((b) => b.shift(0, 'r', 2, 1))), '4,4');
+  check.eq('a row delete inside a repeated run keeps the rest', kept(after((b) => b.shift(0, 'r', 2, -1))), '3,3');
+  check.eq('bold on a linked cell keeps its link', kept(after((b) => b.format(0, 0, 0, 0, 2, { bold: true }))), '4,4');
+  check.eq('a number format over text cells keeps them', kept(after((b) => b.format(0, 0, 0, 3, 2, { number: 'percent' }))), '4,4');
+  check.eq('a row height keeps them', kept(after((b) => b.resize(0, 'r', 0, 40))), '4,4');
+  const typed = after((b) => b.enter(0, 0, 0, 'new text'));
+  check.eq('typing over a linked cell replaces it, and only it', kept(typed) + ' ' + typed.cell(0, 0, 0).text, '3,4 new text');
+  const twice = after((b) => { b.shift(0, 'c', 1, 1); b.format(0, 1, 0, 1, 0, { italic: true }); b.shift(0, 'r', 0, 1); b.shift(0, 'c', 0, -1); });
+  check.eq('several edits in a row, each from the text of the last', (() => { const d = parseFods(twice.text()); let n = 0; for (const r of d.sheets[0].rows) if (d.text.slice(r.src[0], r.src[1]).includes(SPAN)) n += r.rep; return n; })(), 4);
+  const num = after((b) => b.format(0, 0, 1, 0, 1, { number: 'percent' }));
+  check.eq('a number format still rewrites the shown text of a number', num.cell(0, 0, 1).text, '100.00%');
+  check('and the saved cell holds the new text', num.text().includes('<text:p>100.00%</text:p>'));
+}
+
 console.log('==> hostile input');
 {
   const head = '<?xml version="1.0"?>\n<office:document xmlns:office="o" xmlns:table="t" xmlns:text="x" office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet>';

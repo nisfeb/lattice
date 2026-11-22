@@ -133,6 +133,11 @@ function parseCell(src, el, nullDate) {
     } else c.keep += src.slice(k.start, k.end);
   }
   c.text = cellText(src, ps);
+  //  where the paragraphs are in the source. A cell rewritten for its
+  //  style, its place or its formula copies them from there, so a
+  //  hyperlink or a span inside is kept. Only new content (+setCell)
+  //  drops them.
+  if (ps.length) c.ps = ps.map((k) => [k.start, k.end]);
   if (c.vt === 'string') c.v = c.sv !== undefined && !c.err ? c.sv : c.text;
   if (c.vt && c.vt !== 'string' && c.vt !== 'boolean' && (c.v === null || Number.isNaN(c.v))) c.v = 0;
   delete c.sv;
@@ -322,6 +327,7 @@ export function setCell(sheet, r, c, val) {
   if (val.cur !== undefined) cell.cur = val.cur;
   if (cell.vt !== 'currency') delete cell.cur;
   cell.rich = false;
+  cell.ps = null;
   cell.dirty = true;
   return cell;
 }
@@ -414,7 +420,7 @@ function cellXml(doc, cell, ind) {
   for (const [k, raw] of cell.attrs) {
     if (!VALUE_ATTRS.has(k) && k !== 'table:content-validation-name') a += ` ${k}="${raw}"`;
   }
-  const ps = textPs(cell.text);
+  const ps = cell.ps ? cell.ps.map(([s, e]) => doc.text.slice(s, e)) : textPs(cell.text);
   if (!ps.length && !cell.keep) return `<${name}${a}/>`;
   const pad = '\n' + ' '.repeat(ind + 1);
   return `<${name}${a}>${cell.keep ? pad + cell.keep : ''}${ps.map((p) => pad + p).join('')}\n${' '.repeat(ind)}</${name}>`;
