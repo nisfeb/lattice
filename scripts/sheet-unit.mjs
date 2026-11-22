@@ -863,6 +863,18 @@ console.log('==> a bound is never a wrong value shown as right');
   again.enter(0, 0, 0, '101');
   const second = judge(again, N, 101);
   check('what one recalculation did not reach is computed first by the next', second.unmarked === 0 && tail.length > 0 && tail.every((r) => !again.stale(0, r, 1) && again.cell(0, r, 1).v === r + 101), JSON.stringify(second));
+  //  a stopped formula recomputed to the very value it shows is sure again, and is saved with it
+  const back = running(N);
+  back.engine.maxTotal = 30000;
+  back.mark();
+  back.enter(0, 0, 0, '100');
+  back.engine.maxTotal = 1e9;
+  back.mark();
+  back.enter(0, 0, 0, '1');
+  const valueless = (t) => { const d = parseFods(t); let n = 0; for (let r = 0; r < N; r++) if (!cellAt(d.sheets[0], r, 1).vt) n++; return n; };
+  const reback = new Book(back.text());
+  const marked = (x) => { let m = 0; for (let r = 0; r < N; r++) if (x.stale(0, r, 1)) m++; return m; };
+  check('an edit back to the first value clears every mark, in the save and when read again', marked(back) === 0 && valueless(back.text()) === 0 && marked(reback) === 0, `${marked(back)} ${valueless(back.text())} ${marked(reback)}`);
 }
 {
   //  a formula that stopped, read through a range, taints its reader

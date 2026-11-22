@@ -444,9 +444,11 @@ export class Engine {
     }
     const same = was.vt === val.vt && !!was.err === !!val.err && was.f === f
       && (typeof v === 'number' ? was.v === v : isErr(v) ? was.text === val.text : was.v === val.v);
-    if (same && !blank) return;
+    //  a cell that stopped at a bound still shows its old value: computing
+    //  that same value again makes it sure, so it is written, not skipped
+    if (same && !blank && !was.unsure) return;
     if (val.text === '' && typeof v === 'number' && !blank) val.text = this.format(s, r, c, v, val.vt);
-    if (blank && same && was.text === '') return;
+    if (blank && same && was.text === '' && !was.unsure) return;
     setCell(sheet, r, c, val);
     this.usedCache.delete(s);
     this.changed.push([s, r, c]);
