@@ -115,26 +115,29 @@
 ::  +self-closed: is a tag written as an empty element, <svg ../>? The
 ::  `/` must stand alone, or follow an attribute's name or quoted value:
 ::  after an unquoted value it is the value's last byte (`a=/`, `a=b/`).
+::  The attributes are read from their start, so a quoted value that
+::  holds blanks, `=` or `/` is one value.
 ++  self-closed
   |=  att=tape
   ^-  ?
   =/  a=tape  (lead-strip (flop att))
   ?.  &(?=(^ a) =('/' i.a))  |
-  ::  the word the `/` ends, back to the blank before it
-  =/  w=tape
-    =|  acc=tape
-    =/  r=tape  t.a
-    |-  ^-  tape
-    ?~  r  acc
-    ?:  (lth `@`i.r 33)  acc
-    $(r t.r, acc [i.r acc])
-  =/  e=(unit @ud)  (find "=" w)
-  ?~  e  &
-  =/  v=tape  (slag +(u.e) w)
-  ?&  ?=([@ @ *] v)
-      |(=('"' i.v) =('\'' i.v))
-      =(i.v (rear v))
-  ==
+  ::  0 outside a value, 1 after `=`, 2 in an unquoted value, 3 in a
+  ::  double-quoted one, 4 in a single-quoted one
+  =/  st=@ud  0
+  =/  r=tape  (flop t.a)
+  |-  ^-  ?
+  ?~  r  =(0 st)
+  =/  blank=?  (lth `@`i.r 33)
+  =.  st
+    ?+  st  0
+      %0  ?:(=('=' i.r) 1 0)
+      %1  ?:(blank 1 ?:(=('"' i.r) 3 ?:(=('\'' i.r) 4 2)))
+      %2  ?:(blank 0 2)
+      %3  ?:(=('"' i.r) 0 3)
+      %4  ?:(=('\'' i.r) 0 4)
+    ==
+  $(r t.r)
 ::  +md-url: an address as markdown's ( ) can hold it. A ')' ends the
 ::  address there, and a space or a quote starts a title, so those are
 ::  percent-encoded. Control bytes go: a browser drops them from a url.
