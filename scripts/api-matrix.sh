@@ -187,6 +187,32 @@ sleep 2
 r=$(G "$B/page-source?name=$P/mvq/guide")
 has "  a renamed page keeps its prose" "Call GET /$P/mvp/users (see /$P/mvp) and" "$r"
 has "  and its link to itself follows" "[[$P/mvq/guide]]" "$r"
+
+echo "==> create-only (?new=1) is decided where the write lands"
+# two creates of one name at once: one makes the page, the other is told
+# it exists, and the page holds one revision
+T=$(mktemp -d)
+both=0; lost=0; extra=0
+for i in 1 2 3 4 5 6; do
+  for k in a b; do
+    sc -X POST "$B/page-save?name=$P/race/n$i&type=md&new=1" --data-binary "body $k $i" > "$T/$k" &
+  done
+  wait
+  cs="$(sort "$T/a" "$T/b" | tr '\n' ' ')"
+  [ "$cs" = "200 409 " ] || both=$((both+1))
+  w=a; [ "$(cat "$T/b")" = 200 ] && w=b
+  G "$B/page-source?name=$P/race/n$i" | grep -qF "body $w $i" || lost=$((lost+1))
+  n=$(G "$B/page-history?name=$P/race/n$i" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["revisions"]))')
+  [ "$n" = 1 ] || extra=$((extra+1))
+done
+rm -rf "$T"
+is "one of two racing creates is refused, every round" 0 "$both"
+is "  the page holds the body of the create that was answered 200" 0 "$lost"
+is "  and one revision, not the loser's under it" 0 "$extra"
+is "a create at a taken name is still refused" 409 "$(sc -X POST "$B/page-save?name=$P/race/n1&type=md&new=1" --data-binary 'late')"
+is "a plain save over it still lands" 200 "$(sc -X POST "$B/page-save?name=$P/race/n1&type=md" --data-binary 'plain')"
+has "  with its body" 'plain' "$(G "$B/page-source?name=$P/race/n1")"
+has "a lone create answers its rev" '"rev":0' "$(G -X POST "$B/page-save?name=$P/race/solo&type=md&new=1" --data-binary 'solo')"
 is "page-move gated"       403 "$(code -X POST "$B/page-move?from=$P/mvdir2&to=$P/free")"
 
 echo "==> public forms: the unauthenticated write surface"

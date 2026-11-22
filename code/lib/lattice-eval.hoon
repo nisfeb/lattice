@@ -32,6 +32,10 @@
       ::  not written over it. A page gone since has moved past it too.
       ::  ~ claims nothing.
       [%make-by pax=path src=@t who=@t base=(unit @ud)]
+      ::  +make-by with no base, for a page that must not exist yet (a
+      ::  create-only save). Checked here in the writer, so of two
+      ::  creates of one name the second leaves the first as it is.
+      [%make-new pax=path src=@t who=@t]
       ::  N pages in ONE writer transaction. An upload used to be one HTTP
       ::  request (and one poke) per file, and every request pays the pier's
       ::  ~0.5s floor serially. A 20-file drop was ~20 round-trips of pure

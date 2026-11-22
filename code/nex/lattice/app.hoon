@@ -1490,6 +1490,8 @@
   ::  base check below reads the page as those saves left it.
   ;<  ~  bind:m  writer-drain
   ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of u.name))
+  ::  a page made while this create waited for the writer
+  ?:  &((~(has by args) 'new') ?=(^ src.pc))  (send-err eyre-id 409 'page exists')
   ::  a save into a folder move under way, or an overwrite of a page
   ::  that moved away, would be deleted or make the old folder again.
   ::  ?mount=1 (lattice-fs) puts its creates through the same check: a
@@ -1545,7 +1547,13 @@
   ::  this check and the write is not written over. A save that claims
   ::  nothing, or makes a page, is written as before.
   =/  claim=(unit @ud)  ?.(&(?=(^ base) ?=(^ src.pc)) ~ `prev)
-  ;<  ~  bind:m  (poke-eval [%make-by (pax-of u.name) src wid claim])
+  ::  a create-only save is checked again where it lands (%make-new):
+  ::  two creates of one name can both pass the checks above
+  =/  new=?  (~(has by args) 'new')
+  ;<  ~  bind:m
+    %-  poke-eval
+    ?:  new  [%make-new (pax-of u.name) src wid]
+    [%make-by (pax-of u.name) src wid claim]
   ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
   ::  client only when the typed name was not a valid path and the path is
   ::  its slug. Absent on every ordinary save, so autosave never touches them.
@@ -1565,6 +1573,9 @@
   =/  mine=?  =(src.ph `src)
   ?:  &(!mine ?=(^ claim))
     (send-err eyre-id 409 (crip "stale: the page is at rev {(num-tape:pg rev.ph)}"))
+  ::  a create that finds another body at its name lost the race for it,
+  ::  and the writer left that page as it was
+  ?:  &(!mine new)  (send-err eyre-id 409 'page exists')
   ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
   %+  send-json  eyre-id
   %-  pairs:enjs:format
@@ -8930,6 +8941,12 @@
     ;<  ~  bind:m  (prune-page pax.act)
     ?:  old  (pure:m ~)
     (grant-new root pax.act)
+      %make-new
+    ::  create-only: a name taken since the route looked is left as it is
+    ;<  taken=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
+    ?.  taken  $(act [%make-by pax.act src.act who.act ~])
+    %-  (say 1 ~[leaf+"lattice: a create of {(spud pax.act)} found a page there and was not written"])
+    (pure:m ~)
       %make-marked
     ;<  old=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
     ;<  ~  bind:m  (write-page root pax.act src.act |)
@@ -10016,7 +10033,7 @@
   ^-  form:m
   ?.  =([/lattice %eval-action] p.sage)  (pure:m |)
   =/  act=eval-action:le  !<(eval-action:le q.sage)
-  ?.  ?=(?(%make %make-marked %make-by) -.act)  (pure:m |)
+  ?.  ?=(?(%make %make-marked %make-by %make-new) -.act)  (pure:m |)
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
   =/  w=(unit pub-wait:lp)  (~(get by pen) (spat pax.act))
   (pure:m &(?=(^ w) |(dirty.u.w (gte sent.u.w now))))
@@ -12725,7 +12742,17 @@
     ?:  cx  (pure:(fiber:fiber:nexus ,(unit path)) ~)
     (link-above (pax-of name))
   ?^  la  (pure:m [409 (link-above-msg u.la)])
-  ;<  ~  bind:m  (poke-eval [%make (pax-of name) src])
+  ?.  new
+    ;<  ~  bind:m  (poke-eval [%make (pax-of name) src])
+    (pure:m [200 ''])
+  ::  a create is checked again where it lands (%make-new), since an
+  ::  HTTP create of the same name can pass the peek above beside this
+  ::  one. So wait for the writer and read the page back: a page that
+  ::  holds another body was made first.
+  ;<  ~  bind:m  (poke-eval [%make-new (pax-of name) src ''])
+  ;<  ~  bind:m  writer-drain
+  ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of name))
+  ?.  =(src.ph `src)  (pure:m [409 'page exists'])
   (pure:m [200 ''])
 ::  +fs-mkdir / +fs-del: folder create / page-or-folder delete.
 ++  fs-mkdir
