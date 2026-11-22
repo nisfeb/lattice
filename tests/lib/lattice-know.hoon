@@ -614,4 +614,13 @@
     (expect-eq !>('x\0a') !>(rest:(front (front-set y 'verified' 'd'))))
     (expect-eq !>(`(unit @t)`~) !>((meta-get meta:(front (front-set (front-set y 'kept' 'd') 'kept' '')) 'kept')))
   ==
+::  an empty superseded-by line names no successor: the entry is live
+++  test-empty-superseded-by
+  =/  e=know-entry  ['---\0asuperseded-by:\0a---\0athe fact' ~2026.1.1 ~ ~]
+  ;:  weld
+    (expect-eq !>(`(unit @t)`~) !>((superseded e)))
+    (expect-eq !>(`(unit @t)``'/a') !>((superseded ['---\0asuperseded-by: /a\0a---\0ax' ~2026.1.1 ~ ~])))
+    (expect-eq !>(1) !>((lent (search ~[[/k e]] ~ 'fact' |))))
+    (expect-eq !>(|) !>(sup:(row-of /k e)))
+  ==
 --

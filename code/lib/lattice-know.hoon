@@ -623,11 +623,15 @@
 ::  +weak-at: a best hit under this strength is reported as weak, the way to
 ::  say "probably nothing stored about this" without hiding what there is.
 ++  weak-at  ^-(@ud 35)
-::  +superseded: where an entry says its fact now lives.
+::  +superseded: where an entry says its fact now lives. An empty
+::  `superseded-by:` line (a hand edit, an import) names nowhere, and
+::  the entry is live: read as superseded it left search, recall and
+::  the index with nothing in its place.
 ++  superseded
   |=  e=know-entry
   ^-  (unit @t)
-  (meta-get meta:(front body.e) 'superseded-by')
+  =/  v=(unit @t)  (meta-get meta:(front body.e) 'superseded-by')
+  ?:(=(`'' v) ~ v)
 ::  +search: the query path the tools and the routes share. Words rank by
 ::  BM25; a query in double quotes must appear verbatim (key or body) and
 ::  ranks by its words. Superseded entries are left out unless old. tc is
