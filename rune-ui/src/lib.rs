@@ -5581,7 +5581,9 @@ fn change_waiting(s: &mut App, change: impl FnOnce(&mut Vec<api::QueuedOp>, &mut
 /// Sends the saves that wait, now that the ship answers: the pages made
 /// here first, then the edits, one request each. A ship that stops
 /// answering, or a session it has ended, ends the sending. A save it
-/// refuses for now is passed, and the ones after it still go.
+/// refuses for now is passed, and the ones after it still go. A delete or
+/// move it refuses for now waits, with those made after it, and so do the
+/// saves at or under the paths they change. The other saves still go.
 // ponytail: one request for each page. The ship's batch route is for when a queue of hundreds shows up
 fn drain(s: &mut App) {
     bg_taken(s);
@@ -5605,15 +5607,27 @@ fn drain(s: &mut App) {
         let mut did = Vec::new();
         while let Some(op) = c.ops().first().cloned() {
             let r = c.send_op(&op);
-            // one the ship refuses for good no longer applies, and is passed. Anything else stops here, saves and all
-            // and so does one that cannot be taken out of the file: it would be read from there again, and sent without end
-            let stop = r.as_ref().is_err_and(|e| !api::replay_drop(e)) || c.change_waiting(|ops, _| api::drop_first(ops, &op)).is_err();
+            // one the ship refuses for good no longer applies, and is passed. The ship away, or the session ended, stops everything here
+            let refused = r.as_ref().err().filter(|e| !api::replay_drop(e)).cloned();
+            if refused.as_ref().is_some_and(|e| api::gone(e) || e.starts_with("401")) {
+                did.push((op, r));
+                return (did, Vec::new());
+            }
+            // refused for now: it and the deletes and moves after it wait, in their order. The saves they do not change still go
+            if refused.is_some() {
+                did.push((op, r));
+                break;
+            }
+            // one that cannot be taken out of the file stops here: it would be read from there again, and sent without end
+            let stop = c.change_waiting(|ops, _| api::drop_first(ops, &op)).is_err();
             did.push((op, r));
             if stop {
                 return (did, Vec::new());
             }
         }
-        let mut all: Vec<(String, api::Queued)> = c.queue().into_iter().collect();
+        // a save at or under a path a waiting delete or move changes goes after it
+        let ops = c.ops();
+        let mut all: Vec<(String, api::Queued)> = c.queue().into_iter().filter(|(name, _)| !api::held_by(&ops, name)).collect();
         all.sort_by_key(|(_, q)| !q.is_new);
         let mut out = Vec::new();
         for (name, q) in all {

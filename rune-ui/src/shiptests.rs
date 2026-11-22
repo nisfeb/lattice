@@ -56,6 +56,8 @@ struct Stub {
     link_fail: u16,
     /// A status a save of a memory is answered with.
     know_fail: u16,
+    /// A status every delete and move is answered with, the ship answering all else.
+    op_fail: u16,
 }
 
 struct Ship {
@@ -146,6 +148,9 @@ fn answer(st: &Mutex<Stub>, method: &str, route: &str, q: &BTreeMap<String, Stri
         }
         ("POST", "page-move") | ("POST", "page-del") => {
             let mut s = lock();
+            if s.op_fail > 0 {
+                return (s.op_fail, "the ship says no".into());
+            }
             let at = get(if route == "page-del" { "name" } else { "from" });
             let hit: Vec<String> = s.pages.keys().filter(|n| is_under(n, &at)).cloned().collect();
             // a delete of nothing is answered as done, a move of nothing is refused
@@ -998,4 +1003,66 @@ fn a_ship_test_leaves_nothing_for_a_later_one_given_its_address() {
     assert!(!dir.exists(), "the test's folder is left");
     assert_eq!(shared(), before, "this test's files were kept among everyone's");
     assert!(c.kept_tree().is_none_or(|(d, _)| !d.nodes.iter().any(|n| n.path == "left-behind")) && !c.queue().contains_key("left-behind"));
+}
+
+#[test]
+fn a_delete_the_ship_refuses_for_now_holds_back_only_what_is_under_it() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("gone", "md", "x\n");
+    ship.write("z-last", "md", "z\n");
+    let c = ship.conn();
+    let page = |name: &str, body: &str| Page { name: name.into(), body: body.into(), kind: "md".into(), rev: 1 };
+    c.change_waiting(|ops, q| {
+        api::enqueue_op(ops, q, api::QueuedOp::Del("gone".into()));
+        // a page made under the deleted one since: it waits for the delete
+        api::enqueue(q, &page("gone/new", "made after\n"), None, true, 0);
+        api::enqueue(q, &page("z-last", "z more\n"), Some(1), false, 0);
+    })
+    .unwrap();
+    ship.st().op_fail = 500;
+    let mut r = Run::new(&ship);
+    for _ in 0..3 {
+        r.sync();
+        drain(&mut r.s);
+        r.settle();
+    }
+    assert_eq!(ship.body("z-last"), "z more\n", "a save of another page waits behind a refused delete");
+    assert!(ship.saves_of("gone/new").is_empty(), "one under the delete's path went before it");
+    assert_eq!(c.ops(), [api::QueuedOp::Del("gone".into())]);
+    assert_eq!(c.queue().keys().collect::<Vec<_>>(), ["gone/new"]);
+    assert!(r.s.note.contains("the delete of gone is still waiting"), "and it is said: {:?}", r.s.note);
+    // the ship takes it: the delete goes first, then what waited under it
+    ship.st().op_fail = 0;
+    r.sync();
+    r.sync();
+    assert_eq!((ship.body("gone"), ship.body("gone/new")), ("<none>".to_owned(), "made after\n".to_owned()));
+    assert!(c.ops().is_empty() && c.queue().is_empty());
+}
+
+#[test]
+fn a_move_the_ship_refuses_for_now_holds_back_only_what_is_under_it_for_the_watcher_too() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("a/one", "md", "a\n");
+    ship.write("z-last", "md", "z\n");
+    let c = ship.conn();
+    let page = |name: &str, body: &str| Page { name: name.into(), body: body.into(), kind: "md".into(), rev: 1 };
+    c.change_waiting(|ops, q| {
+        api::enqueue(q, &page("a/one", "a more\n"), Some(1), false, 0);
+        api::enqueue_op(ops, q, api::QueuedOp::Move { from: "a".into(), to: "b".into(), dname: String::new(), dnames: String::new() });
+        api::enqueue(q, &page("z-last", "z more\n"), Some(1), false, 0);
+    })
+    .unwrap();
+    ship.st().op_fail = 500;
+    let go = std::sync::atomic::AtomicBool::new(false);
+    c.send_waiting(&go);
+    assert_eq!(ship.body("z-last"), "z more\n", "the watcher sent the save of another page");
+    assert!(ship.saves_of("b/one").is_empty() && ship.body("a/one") == "a\n", "and kept the one the move carried");
+    assert_eq!(c.queue().keys().collect::<Vec<_>>(), ["b/one"]);
+    ship.st().op_fail = 0;
+    c.send_waiting(&go);
+    assert_eq!(ship.body("b/one"), "a more\n");
+    assert!(c.ops().is_empty() && c.queue().is_empty());
+    let _ = api::bg_sent(&c.url, true);
 }

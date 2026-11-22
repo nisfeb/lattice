@@ -1838,6 +1838,18 @@ pub fn ops_over(mut nodes: Vec<Node>, ops: &[QueuedOp]) -> Vec<Node> {
     nodes
 }
 
+/// Whether a waiting save must go after the deletes and moves that wait: it is at or under a path
+/// one of them changes. Sent before it, it would be written to a page the delete then takes, or
+/// where the move then finds a page in its way. Any other save does not depend on them, and goes
+/// while one the ship refuses for now waits.
+pub fn held_by(ops: &[QueuedOp], name: &str) -> bool {
+    queued_know(name).is_none()
+        && ops.iter().any(|op| match op {
+            QueuedOp::Del(at) => moved(name, at, "").is_some(),
+            QueuedOp::Move { from, to, .. } => moved(name, from, "").is_some() || moved(name, to, "").is_some(),
+        })
+}
+
 /// Takes a delete or move out of the front of those that wait, if it is still the first there.
 pub fn drop_first(ops: &mut Vec<QueuedOp>, op: &QueuedOp) {
     if ops.first() == Some(op) {
@@ -2769,7 +2781,8 @@ impl Conn {
 
     /// Sends what waits for this ship while it is not in front, as the window sends it for the ship
     /// in front: the deletes and moves first in the order made, then the saves, the new pages
-    /// before the edits, stopping at the first the ship neither takes nor refuses for good. Each
+    /// before the edits. A ship that does not answer, or a session it has ended, stops it. A
+    /// delete or move refused for now waits with those after it, and so do the saves it changes. Each
     /// one is sent under the senders' lock and taken out of the kept list as soon as the ship has
     /// it, and is noted for the window, so going to the ship mid-way sends nothing twice. `stop`
     /// ends it between two sends. The number the ship refused for good and kept as pages of their own.
@@ -2785,15 +2798,20 @@ impl Conn {
             let _file = self.sending_lock();
             let ops = self.ops();
             let Some(op) = ops.first().cloned() else { break };
-            if self.send_op(&op).is_err_and(|e| !replay_drop(&e)) {
-                return 0;
+            match self.send_op(&op) {
+                // the ship away, or the session ended: nothing else goes either
+                Err(e) if !replay_drop(&e) && stops_all(&e) => return 0,
+                // refused for now: it and the deletes and moves after it wait, in their order, and so do the saves they change
+                Err(e) if !replay_drop(&e) => break,
+                _ => {}
             }
             if self.change_waiting(|ops, _| drop_first(ops, &op)).is_err() {
                 return 0;
             }
             note(BgSent::Op(op));
         }
-        let mut names: Vec<(String, bool)> = self.queue().iter().map(|(n, q)| (n.clone(), q.is_new)).collect();
+        let ops = self.ops();
+        let mut names: Vec<(String, bool)> = self.queue().iter().filter(|(n, _)| !held_by(&ops, n)).map(|(n, q)| (n.clone(), q.is_new)).collect();
         names.sort_by_key(|(_, new)| !new);
         let mut aside = 0;
         for (name, _) in names {
