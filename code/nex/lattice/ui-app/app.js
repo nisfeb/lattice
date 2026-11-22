@@ -157,13 +157,18 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return d.invoke(cmd, args || {});
   };
 
+  const qClaim = new Map();
+  const qSee = (q) => {
+    if (q && q.name && !q.op && q.kind !== 'know' && !q.isNew && isRev(qBase(q))) qClaim.set(q.name, qBase(q));
+    return q;
+  };
   const offGet = async (name) => {
-    if (!qrust()) return idbGet(name);
-    try { return (await qcall('queue_get', { name })) || null; } catch { return null; }
+    if (!qrust()) return qSee(await idbGet(name));
+    try { return qSee((await qcall('queue_get', { name })) || null); } catch { return null; }
   };
   const offAll = async () => {
-    if (!qrust()) return idbAll();
-    try { return (await qcall('queue_list')) || []; } catch { return []; }
+    if (!qrust()) return (await idbAll()).map(qSee);
+    try { return ((await qcall('queue_list')) || []).map(qSee); } catch { return []; }
   };
   const offPut = async (rec) => {
     let ok = false;
@@ -173,6 +178,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return ok;
   };
   const offDel = async (name) => {
+    qClaim.delete(name);
     if (!qrust()) await idbDel(name);
     else { try { await qcall('queue_del', { name }); } catch {} }
     bustPages(name);
@@ -189,6 +195,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     let v = null;
     try { v = await offGet(q.name); } catch {}
     const kept = !!v && !sameRec(v, q);
+    if (!v) qClaim.delete(q.name);
     if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: null, bv: 1 });
     if (kept) offKept = true;
     bustPages(q.name);
@@ -363,24 +370,27 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     let prev = null;
     try { prev = await offGet(name); } catch {}
     const create = !!isNew || !!(prev && prev.isNew);
-    const none = jobWait || replaying;
+    const none = jobWait || (replaying && !!prev);
     const from = isRev(rev) ? baseFor(name, rev)
       : prev && !prev.isNew && isRev(qBase(prev)) ? qBase(prev) : baseFor(name, paintRev.get(name));
     const base = none || !isRev(from) ? null : from;
     const queued = await offPut({ name, kind, body, baseRev: base, bv: 1,
-      ...(base === null && !none && !create && { blind: 1 }),
+      ...(base === null && !none && !create && !(prev && !prev.isNew && !prev.blind) && { blind: 1 }),
       ...(stash && (!prev || prev.stash) && { stash: 1 }),
       isNew: create, queuedAt: Date.now(), ...qStamp(),
       drawn: !!drawn || !!(prev && prev.drawn),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
+    if (queued) { if (isRev(base)) qClaim.set(name, base); else qClaim.delete(name); }
     return { queued, base };
   }
   let stashed = false;
+  const ownStashed = new Map();
   const ownStash = (q) => !!q.stash && q.win === winId;
   async function stashSave(name, kind, body, rev) {
     if (tooBig(body)) return;
     stashed = true;
+    ownStashed.set(name, body);
     const { queued, base } = await queueEdit(name, kind, body, false, null, rev, false, true);
     if (queued) snapPage(name, { body, kind, rev: base });
   }
@@ -6720,7 +6730,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
     curRev = quiet || !isRev(d.rev) ? null : d.rev;
-    if (isRev(d.rev)) paintRev.set(name, d.rev); else paintRev.delete(name);
+    if (isRev(d.rev)) paintRev.set(name, d.rev);
     if (quiet) shipText.delete(name); else { shipText.set(name, d.body); freshPending.delete(name); }
     refreshTexButton();
     src.value = d.body;
@@ -6893,7 +6903,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     } else pageCache.delete(name);
     if (scadG) scadG.forget(name);
     const nd = nodes.find((n) => n.page && n.path === name);
-    if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
+    if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; if (isRev(rev)) nd.rev = rev; persistTree(); }
+    ownStashed.delete(name);
   };
   window.addEventListener('beforeunload', (e) => {
     if (!window.__latUnsaved()) return;
@@ -7139,8 +7150,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return isRev(k) ? Math.max(rev, k) : rev;
   };
   const casQ = (name, rev) => {
+    if (linkOf(name)) return '';
     const b = baseFor(name, rev);
-    return linkOf(name) ? '' : '&by=' + winId + (isRev(b) ? '&base=' + b + '&cas=1' : '');
+    if (isRev(b)) return '&by=' + winId + '&base=' + b + '&cas=1';
+    const soft = isRev(qClaim.get(name)) ? qClaim.get(name) : paintRev.get(name);
+    return '&by=' + winId + (isRev(soft) ? '&base=' + soft : '');
   };
   const takeRev = async (name, w) => {
     if (!w || !w.r || !w.r.ok) return;
@@ -7257,6 +7271,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (th && !res && isRev(base)) {
       let mb = null;
       let bt = moved ? null : shipText.get(name);
+      if (th.body === ownStashed.get(name)) bt = th.body;
       if (typeof bt !== 'string') {
         try {
           const r = await tfetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base, {}, left());

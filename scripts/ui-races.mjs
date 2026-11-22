@@ -11,6 +11,9 @@
 //      when the page was opened offline and when it was left and reopened
 //    a queued edit with no rev to claim still gets their text kept
 //    text typed before the fresh read lands is on the device when hidden
+//    a queued or live save claims the rev of the text it was made on, however
+//      the page was reached (reload, reopen, a drain on the wire, an old
+//      record, a stash replayed by another window)
 //    vim mode never splits a two-unit character (not a race: see the case)
 //    a map whose field in use cannot be written: what is written still
 //      goes out, and the page stays unsaved
@@ -30,9 +33,9 @@ const browser = await launchBrowser();
 const only = process.argv.slice(2);
 
 //  a ship with `seed`, and the editor open on it at `q`
-async function up(seed, q = '') {
-  const ship = await stubShip(seed);
-  const ctx = await browser.createBrowserContext();
+async function up(seed, q = '', again = null) {
+  const ship = again ? again.ship : await stubShip(seed);
+  const ctx = again ? again.ctx : await browser.createBrowserContext();
   const page = await ctx.newPage();
   page.on('dialog', (d) => d.accept());
   await page.setViewport({ width: 1300, height: 850 });
@@ -41,7 +44,7 @@ async function up(seed, q = '') {
   //  open, and the fresh read behind the first paint answered
   if (name) await waitFor(() => ship.S.log.some((e) => e.path === 'page-source' && e.q.render && e.res), 15000, 50);
   await sleep(300);
-  return { ...ship, page, done: async () => { await ctx.close(); ship.close(); } };
+  return { ...ship, ship, ctx, page, done: async () => { await ctx.close(); ship.close(); } };
 }
 const ed = (p) => p.evaluate(() => document.querySelector('#src').value);
 const status = (p) => p.evaluate(() => document.querySelector('#status').textContent);
@@ -556,6 +559,158 @@ cases.settleCopy = async () => {
   await y.done();
 };
 const p2bar = (p) => p.evaluate(() => !document.querySelector('#casbar').hidden);
+
+//  The queue's claims, by the ways a page reaches an offline edit.
+//  A page saved three times, left, and the tab reloaded with the ship
+//  away: the tree's copy must carry the rev of its own text.
+cases.treeRev = async () => {
+  const x = await up({ 'n/a': 'alpha\n', 'n/b': 'beta\n' }, '?name=n/a');
+  const p = x.page;
+  for (const t of ['one ', 'two ', 'three ']) {
+    await typeEnd(p, t);
+    await waitFor(() => (body(x, 'n/a') || '').endsWith(t), 8000, 100);
+  }
+  await clickRow(p, 'n/b');
+  await waitFor(async () => (await ed(p)) === 'beta\n', 5000, 50);
+  await sleep(1500);
+  x.S.down = true;
+  await p.reload({ waitUntil: 'domcontentloaded' });
+  await sleep(1500);
+  await clickRow(p, 'n/a');
+  await waitFor(async () => (await ed(p)).startsWith('alpha'), 5000, 50);
+  await typeEnd(p, 'OFFLINE');
+  const q = await waitFor(() => queued(p, 'n/a'), 25000, 200);
+  check.eq('the queued edit claims the rev of the text it was made on', q && q.baseRev, x.S.pages.get('n/a').rev);
+  await comeBack(x);
+  check.eq('and lands', body(x, 'n/a'), 'alpha\none two three OFFLINE');
+  check('with no conflict made of our own last save', !kept(x), kept(x));
+  await x.done();
+};
+//  A page edited offline, reopened, and typed into when the ship is back
+//  before the queue drains: the save claims what the queued edit claims,
+//  so their text from meanwhile is kept. Likewise a page opened offline
+//  from the tree that changed elsewhere.
+cases.reopenLive = async () => {
+  let x = await up({ 'n/a': 'alpha\n', 'n/b': 'beta\n' }, '?name=n/a');
+  let p = x.page;
+  x.S.down = true;
+  await typeEnd(p, 'MINE1 ');
+  await waitFor(() => queued(p, 'n/a'), 10000, 100);
+  x.S.put('n/a', 'THEIRS\nalpha\n');
+  await clickRow(p, 'n/b'); await waitFor(async () => (await ed(p)) === 'beta\n', 5000, 50);
+  await clickRow(p, 'n/a'); await waitFor(async () => (await ed(p)).startsWith('alpha'), 5000, 50);
+  await sleep(1500);
+  x.S.down = false;
+  await typeEnd(p, 'MINE2');
+  await waitFor(() => (body(x, 'n/a') || '').includes('MINE2'), 30000, 100);
+  await sleep(2000);
+  check('a live save after a reopen keeps their text', kept(x).includes('THEIRS'), kept(x) + ' | head ' + JSON.stringify(body(x, 'n/a')));
+  await x.done();
+  x = await up({ 'n/a': 'alpha\n', 'n/b': 'beta\n' }, '?name=n/a');
+  p = x.page;
+  x.S.down = true;
+  await clickRow(p, 'n/b'); await waitFor(async () => (await ed(p)) === 'beta\n', 5000, 50);
+  x.S.put('n/b', 'THEIRS\nbeta\n');
+  await sleep(1000);
+  x.S.down = false;
+  await typeEnd(p, 'MINE');
+  await waitFor(() => (body(x, 'n/b') || '').includes('MINE'), 30000, 100);
+  await sleep(1500);
+  check('a page opened while the ship was away: their edit is kept', kept(x).includes('THEIRS'), kept(x) + ' | head ' + JSON.stringify(body(x, 'n/b')));
+  await x.done();
+};
+//  An edit queued while a drain of the queue is on the wire, for a page
+//  with no record of its own, claims the rev its editor read.
+cases.replayClaim = async () => {
+  const x = await up({ 'n/a': 'alpha\n', 'n/b': 'beta\n' }, '?name=n/a');
+  const p = x.page;
+  let go;
+  const gate = new Promise((r) => { go = r; });
+  let mode = 'down';
+  x.S.hook = async (ev) => {
+    if (mode === 'up') return null;
+    if (ev.path === 'page-save-batch' && mode === 'slow') { await gate; return { code: 502, body: { error: 'bridge' } }; }
+    if (/page-save|page-source/.test(ev.path)) return { code: 502, body: { error: 'bridge' } };
+    return null;
+  };
+  await clickRow(p, 'n/b'); await waitFor(async () => (await ed(p)) === 'beta\n', 5000, 50);
+  await typeEnd(p, 'B1'); await waitFor(() => queued(p, 'n/b'), 25000, 100);
+  await clickRow(p, 'n/a'); await waitFor(async () => (await ed(p)) === 'alpha\n', 5000, 50);
+  mode = 'slow';
+  await p.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await waitFor(() => x.S.log.some((e) => e.path === 'page-save-batch' && !e.res), 40000, 100);
+  await typeEnd(p, 'MINE');
+  const q = await waitFor(() => queued(p, 'n/a'), 25000, 100);
+  check.eq('the edit queued behind a drain claims its editor\'s rev', q && q.baseRev, 1);
+  x.S.put('n/a', 'THEIRS\nalpha\n');
+  go(); mode = 'up';
+  await sleep(500);
+  await comeBack(x);
+  check('their edit meanwhile is kept', kept(x).includes('THEIRS'), kept(x));
+  await x.done();
+};
+//  Another window replays this window's stash. This window's later save,
+//  made on the rev from before, is its own text on top of it: no conflict.
+cases.stashReplayed = async () => {
+  const x = await up({ 'n/a': 'alpha\n', 'n/b': 'beta\n' }, '?name=n/a');
+  const p = x.page;
+  let go, held = null;
+  const gate = new Promise((r) => { go = r; });
+  x.S.hook = async (ev, S) => {
+    if (ev.path === 'page-source' && ev.q.name === 'n/b' && !held) {
+      const was = S.pages.get('n/b');
+      held = { body: was.body, kind: was.kind, rev: was.rev, share: 'private', comments: false };
+      await gate; return { code: 200, body: held };
+    }
+    return null;
+  };
+  await clickRow(p, 'n/b'); await waitFor(async () => (await ed(p)) === 'beta\n', 5000, 50);
+  await typeEnd(p, 'NOTE');
+  const hide = (on) => p.evaluate((on) => {
+    Object.defineProperty(document, 'hidden', { get: () => on, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    if (on) window.dispatchEvent(new Event('pagehide'));
+  }, on);
+  await hide(true);
+  await waitFor(() => queued(p, 'n/b'), 3000, 100);
+  const B = await up(null, '?name=n/a', x);
+  await B.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await waitFor(async () => !(await queue(B.page)).length, 30000, 200);
+  check.eq('the other window replayed the stash', body(x, 'n/b'), 'beta\nNOTE');
+  await p.bringToFront(); await hide(false);
+  await typeEnd(p, ' more'); go();
+  await waitFor(() => (body(x, 'n/b') || '').includes('more'), 20000, 100);
+  await sleep(1500);
+  check.eq('the later text lands on top', body(x, 'n/b'), 'beta\nNOTE more');
+  check('with no copy and no bar', !kept(x) && await p.evaluate(() => document.querySelector('#casbar').hidden), kept(x));
+  await B.page.close();
+  await x.done();
+};
+//  A record the previous build queued, with no claim: edited again
+//  offline after the upgrade, it stays a record with no claim.
+cases.oldRecord = async () => {
+  const x = await up({ 'n/a': 'alpha\n', 'n/b': 'beta\n' }, '?name=n/b');
+  const p = x.page;
+  await p.evaluate(() => new Promise((res) => {
+    const r = indexedDB.open('lattice-offline');
+    r.onsuccess = () => {
+      const s = r.result.transaction('saves', 'readwrite').objectStore('saves');
+      s.put({ name: 'n/a', kind: 'md', body: 'alpha\nOLD\n', baseRev: null, bv: 1, isNew: false, queuedAt: Date.now() - 5000,
+        id: 'zzold-1', win: 'zzold', seq: 1, drawn: false, dname: '', dnames: '' }).onsuccess = () => { r.result.close(); res(); };
+    };
+  }));
+  x.S.down = true;
+  await p.goto(x.url + '?name=n/a', { waitUntil: 'domcontentloaded' });
+  await waitFor(async () => (await ed(p)).includes('OLD'), 15000, 100);
+  await sleep(500);
+  await typeEnd(p, 'MINE\n');
+  const q = await waitFor(async () => (await queue(p)).find((r) => r.body.includes('MINE')), 15000, 200);
+  check('the edit on top of it is not marked blind', !!q && !q.blind, JSON.stringify(q && { base: q.baseRev, blind: q.blind }));
+  await comeBack(x);
+  check.eq('it lands', body(x, 'n/a'), 'alpha\nOLD\nMINE\n');
+  check('with no copy made of the page nobody else wrote', !kept(x), kept(x));
+  await x.done();
+};
 
 //  A rich view holds what is being typed (a map's detail field, a cell)
 //  outside the buffer until it is left. Closing its tab is leaving it, and

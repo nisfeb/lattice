@@ -146,14 +146,23 @@
     return d.invoke(cmd, args || {});
   };
 
+  //  The rev each queued edit claims, by page, as far as this window has
+  //  seen the queue: a live save that has no rev of its own claims it
+  //  (casQ, 35-pages.js), as the replay of that edit would. Kept in step
+  //  wherever the queue is read, written or emptied of a page.
+  const qClaim = new Map();
+  const qSee = (q) => {
+    if (q && q.name && !q.op && q.kind !== 'know' && !q.isNew && isRev(qBase(q))) qClaim.set(q.name, qBase(q));
+    return q;
+  };
   const offGet = async (name) => {
-    if (!qrust()) return idbGet(name);
+    if (!qrust()) return qSee(await idbGet(name));
     //  one file, not the whole queue: this runs on every page open
-    try { return (await qcall('queue_get', { name })) || null; } catch { return null; }
+    try { return qSee((await qcall('queue_get', { name })) || null); } catch { return null; }
   };
   const offAll = async () => {
-    if (!qrust()) return idbAll();
-    try { return (await qcall('queue_list')) || []; } catch { return []; }
+    if (!qrust()) return (await idbAll()).map(qSee);
+    try { return ((await qcall('queue_list')) || []).map(qSee); } catch { return []; }
   };
   //  the one that must never lie: it reports whether the edit is really down
   const offPut = async (rec) => {
@@ -164,6 +173,7 @@
     return ok;
   };
   const offDel = async (name) => {
+    qClaim.delete(name);
     if (!qrust()) await idbDel(name);
     else { try { await qcall('queue_del', { name }); } catch {} }
     // a queue entry leaves the queue because it LANDED (or was dropped with
@@ -187,6 +197,7 @@
     let v = null;
     try { v = await offGet(q.name); } catch {}
     const kept = !!v && !sameRec(v, q);
+    if (!v) qClaim.delete(q.name);
     //  the create it rode on has landed, so the newer text is a plain edit
     if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: null, bv: 1 });
     if (kept) offKept = true;
@@ -469,18 +480,22 @@
     //  behind a job the timed-out writes still land, so a base would only
     //  flag our own text as a conflict: no base claim, as a live save
     //  so does a replay: the editor's rev is from before the replayed text
-    const none = jobWait || replaying;
+    //  A replay on the wire carries this page's record when there is one
+    //  queued for it: the editor's rev is from before that text, so no
+    //  claim. An edit of another page has its own editor's rev.
+    const none = jobWait || (replaying && !!prev);
     const from = isRev(rev) ? baseFor(name, rev)
       : prev && !prev.isNew && isRev(qBase(prev)) ? qBase(prev) : baseFor(name, paintRev.get(name));
     const base = none || !isRev(from) ? null : from;
     const queued = await offPut({ name, kind, body, baseRev: base, bv: 1,
-      ...(base === null && !none && !create && { blind: 1 }),
+      ...(base === null && !none && !create && !(prev && !prev.isNew && !prev.blind) && { blind: 1 }),
       //  a real queued edit stays one: this window's drain passes a stash by
       ...(stash && (!prev || prev.stash) && { stash: 1 }),
       isNew: create, queuedAt: Date.now(), ...qStamp(),
       drawn: !!drawn || !!(prev && prev.drawn),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
+    if (queued) { if (isRev(base)) qClaim.set(name, base); else qClaim.delete(name); }
     return { queued, base };
   }
   // The open page's unsaved text, put in the queue without a word: the
@@ -491,10 +506,15 @@
   // replay beside that would be a second writer. Back in front, the copy
   // is dropped (unstash).
   let stashed = false;
+  //  the text this window put in the queue as a stash, by page: another
+  //  window may replay it, and then the page's head is this window's own
+  //  text, not a change by someone else (settleRun)
+  const ownStashed = new Map();
   const ownStash = (q) => !!q.stash && q.win === winId;
   async function stashSave(name, kind, body, rev) {
     if (tooBig(body)) return;
     stashed = true;
+    ownStashed.set(name, body);
     const { queued, base } = await queueEdit(name, kind, body, false, null, rev, false, true);
     //  the boot snapshot too: the next launch paints from it
     if (queued) snapPage(name, { body, kind, rev: base });

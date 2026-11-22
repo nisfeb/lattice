@@ -299,7 +299,10 @@
     //  follows (or the next save's answer) sets the rev saves claim.
     curRev = quiet || !isRev(d.rev) ? null : d.rev;
     //  the offline queue may claim it all the same (paintRev)
-    if (isRev(d.rev)) paintRev.set(name, d.rev); else paintRev.delete(name);
+    //  a paint with no rev (a tab's snapshot of a page not read fresh yet)
+    //  leaves what was known: that rev may be a little old for this text,
+    //  and the queue's claim only costs a kept copy for it, not their edit
+    if (isRev(d.rev)) paintRev.set(name, d.rev);
     if (quiet) shipText.delete(name); else { shipText.set(name, d.body); freshPending.delete(name); }
     refreshTexButton();
     src.value = d.body;
@@ -605,7 +608,10 @@
     const nd = nodes.find((n) => n.page && n.path === name);
     // not a link's: its text is the host's, read live, and the rev beside
     // a body here would be a base the next save claims falsely
-    if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
+    //  with the rev it was saved at, so the copy painted from it later
+    //  claims the rev of its text and not an older one
+    if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; if (isRev(rev)) nd.rev = rev; persistTree(); }
+    ownStashed.delete(name);
   };
   // an accidental tab close is the same data-loss shape as the grub-discard
   // guard up in openPage: a dirty edit, grub or page, exists only here
@@ -995,9 +1001,17 @@
     if (!isRev(rev)) return isRev(k) ? k : null;
     return isRev(k) ? Math.max(rev, k) : rev;
   };
+  //  With no rev of its own the save claims what the queued edit of the
+  //  page claims, else the rev of the copy painted, and asks for no refusal:
+  //  the page may have moved on since that copy (a read that failed while
+  //  the ship was away), and the ship then keeps the other text where it
+  //  would have written over it.
   const casQ = (name, rev) => {
+    if (linkOf(name)) return '';
     const b = baseFor(name, rev);
-    return linkOf(name) ? '' : '&by=' + winId + (isRev(b) ? '&base=' + b + '&cas=1' : '');
+    if (isRev(b)) return '&by=' + winId + '&base=' + b + '&cas=1';
+    const soft = isRev(qClaim.get(name)) ? qClaim.get(name) : paintRev.get(name);
+    return '&by=' + winId + (isRev(soft) ? '&base=' + soft : '');
   };
   //  a page-save's answer, read while the save still holds the writer slot
   const takeRev = async (name, w) => {
@@ -1166,6 +1180,9 @@
     if (th && !res && isRev(base)) {
       let mb = null;
       let bt = moved ? null : shipText.get(name);
+      //  the head is this window's own stash, replayed by another window:
+      //  the text the editor built on, and no one else's change
+      if (th.body === ownStashed.get(name)) bt = th.body;
       if (typeof bt !== 'string') {
         try {
           const r = await tfetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base, {}, left());
