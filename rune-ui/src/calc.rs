@@ -90,9 +90,11 @@ const DEEP: usize = 64;
 const GRID_MOST: usize = 200_000;
 /// The most cells one formula may read, with whatever it pulls in.
 const WALK_ONE: usize = 5_000_000;
-/// The most cells one change to a sheet may read, in all the formulas it reaches: four formulas' worth. The
-/// work is done where the typing is, so this is what keeps a small hostile page from holding the window.
-const WALK_ALL: usize = 20_000_000;
+/// The most cells one change to a sheet may read, in all the formulas it reaches. The work is done where the
+/// typing is, so this is what keeps a small hostile page from holding the window. It is well above what the
+/// 5,000 rows the sheet shows can make of an ordinary sheet: a share of the total, a rank and a running total
+/// down every row read about 25 million cells each.
+const WALK_ALL: usize = 100_000_000;
 
 /// Spans along one column or one row, each with the formula that reads it, kept so that
 /// the spans over one place are found without looking at the rest.
@@ -414,6 +416,8 @@ pub struct Engine<'a> {
     walked: usize,
     /// The most it may walk so: `WALK_ALL`, but where a test sets less.
     walk_all: usize,
+    /// Whether a formula was left because the walk of a cell budget ran out: what it still holds is old.
+    ran_out: std::cell::Cell<bool>,
     /// Those worked out.
     done: Vec<Key>,
     depth: usize,
@@ -431,7 +435,7 @@ pub struct Engine<'a> {
 
 impl<'a> Engine<'a> {
     pub fn new(book: &'a Book, styles: &'a Styles) -> Engine<'a> {
-        let mut e = Engine { book, styles, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, walked: 0, walk_all: WALK_ALL, done: Vec::new(), depth: 0, first: None, unsure: HashSet::new(), wide: Vec::new(), tainted: false };
+        let mut e = Engine { book, styles, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, walked: 0, walk_all: WALK_ALL, ran_out: Default::default(), done: Vec::new(), depth: 0, first: None, unsure: HashSet::new(), wide: Vec::new(), tainted: false };
         for (s, sh) in book.sheets.iter().enumerate() {
             let mut r = 0usize;
             for row in &sh.rows {
@@ -582,7 +586,11 @@ impl<'a> Engine<'a> {
     /// Whether the formula being worked out has read more cells than one may, or all the formulas of this change
     /// more than they may together. It is then left stale, and so is every formula after it.
     fn over(&self) -> bool {
-        self.steps > WALK_ONE || self.walked > self.walk_all
+        let over = self.steps > WALK_ONE || self.walked > self.walk_all;
+        if over {
+            self.ran_out.set(true);
+        }
+        over
     }
 
     /// Counts work that reads no cell: an operator over a grid of values.
@@ -1297,7 +1305,23 @@ pub fn enter_knowing(src: &str, s: usize, r: usize, c: usize, typed: &str, stale
             }
         }
     }
+    let results = if eng.ran_out.get() { with_blanks(&book, results, &stale) } else { results };
     Ok(Entered { body: write(body, results)?, stale, done })
+}
+
+/// The results of a change, and with them a blank for each formula that was left stale for want of a budget of
+/// cells to read: it still says what it worked out to before the change, and saved with that value it would read
+/// as current. With none, LibreOffice works it out when the page is opened, as it does for a formula typed in
+/// here that cannot be worked out. A formula left stale for a function not known here keeps its value, as it
+/// does in the web client, whose pages this one is held to.
+fn with_blanks(book: &Book, mut results: Vec<(Key, Put)>, stale: &[Key]) -> Vec<(Key, Put)> {
+    let done: HashSet<Key> = results.iter().map(|(k, _)| *k).collect();
+    for &k in stale.iter().filter(|k| !done.contains(k)) {
+        if let Some(cell) = book.at(k.0, k.1, k.2).filter(|c| c.f.is_some() && !c.array && !c.covered) {
+            results.push((k, Put { f: cell.f.clone(), vt: String::new(), v: Val::Blank, text: String::new(), err: false, st: None }));
+        }
+    }
+    results
 }
 
 /// The page with each sheet's results written, in one pass over the page for each sheet.
@@ -2128,14 +2152,15 @@ mod tests {
                 assert!(eng.stale.len() >= n - 1 || most > 1, "{formula}");
             }
         }
-        // with the bound as it is set: a formula may read five million cells, and a change twenty
-        let page = sheet::put_cell(&full(20, "SUM([$One.A1:.XFD1048576])"), 0, 0, 0, &Typed::Number(2.0).into(), Care::Typed).unwrap();
+        // with the bound as it is set: a formula may read five million cells, and a change a hundred million (the
+        // formulas that go past their own five are what is left stale)
+        let page = sheet::put_cell(&full(3, "SUM([$One.A1:.XFD1048576])"), 0, 0, 0, &Typed::Number(2.0).into(), Care::Typed).unwrap();
         let book = sheet::book(&page).unwrap();
         let styles = Styles::read(&page, book.null_date);
         let mut eng = Engine::new(&book, &styles);
         let changed = eng.recalc(&[(0, 0, 0)], None);
         assert!(eng.walked <= WALK_ALL + 21 && eng.walked > WALK_ONE, "{} cells read", eng.walked);
-        assert_eq!((eng.stale.len(), eng.done.len(), changed.len()), (20, 0, 0));
+        assert_eq!((eng.stale.len(), eng.done.len(), changed.len()), (3, 0, 0));
         // a sheet of many light formulas is worked out whole
         let light = doc(&[&["1"; 1], &["=A1+1|2"; 200]]);
         let book = sheet::book(&light).unwrap();
@@ -2143,6 +2168,35 @@ mod tests {
         let mut eng = Engine::new(&book, &styles);
         eng.recalc(&[(0, 0, 0)], None);
         assert_eq!((eng.done.len(), eng.stale.len()), (200, 0));
+    }
+
+    #[test]
+    fn a_formula_left_for_want_of_cells_to_read_is_not_saved_with_the_value_it_had() {
+        // two formulas that each read more than a formula may: they keep nothing that passes for what they work out to
+        let got = enter(&full(2, "SUM([$One.A1:.XFD1048576])"), 0, 0, 0, "2").unwrap();
+        assert_eq!((got.stale.len(), got.done.len()), (2, 0));
+        let book = sheet::book(&got.body).unwrap();
+        for c in 0..2 {
+            let cell = book.at(1, 0, c).unwrap();
+            assert!(cell.f.is_some() && cell.vt.is_empty(), "{cell:?}");
+        }
+        // one that was left stale for a function not known here keeps its value, as it does in the web client
+        let got = enter(&doc(&[&["2", "=NOPE(A1:A1)+3|5"]]), 0, 0, 0, "100").unwrap();
+        assert_eq!((grid(&got.body)[0][1].as_str(), got.stale), ("5", vec![(0, 0, 1)]));
+    }
+
+    #[test]
+    fn an_ordinary_sheet_of_five_thousand_rows_is_worked_out_whole() {
+        // a share of the total down 4,600 rows reads the whole column in every row: 21 million cells, which a
+        // bound of 20 million once left stale, and saved with the numbers it had before
+        let rows = 4_600;
+        let cells: String = (1..=rows).map(|i| format!("<table:table-row><table:table-cell office:value-type=\"float\" office:value=\"{i}\"><text:p>{i}</text:p></table:table-cell><table:table-cell table:formula=\"of:=[.A{i}]/SUM([.A$1:.A${rows}])\" office:value-type=\"float\" office:value=\"0\"><text:p>0</text:p></table:table-cell></table:table-row>")).collect();
+        let src = format!("<?xml version=\"1.0\"?>\n<office:document xmlns:calcext=\"urn:c\">\n <office:body>\n  <office:spreadsheet>\n   <table:table table:name=\"One\">{cells}</table:table>\n  </office:spreadsheet>\n </office:body>\n</office:document>\n");
+        let got = enter(&src, 0, 0, 0, "100").unwrap();
+        assert_eq!((got.stale.len(), got.done.len()), (0, rows));
+        // the shares come to the whole
+        let total: f64 = grid(&got.body).iter().map(|r| r[1].parse::<f64>().unwrap()).sum();
+        assert!((total - 1.0).abs() < 1e-3, "{total}");
     }
 
     #[test]
