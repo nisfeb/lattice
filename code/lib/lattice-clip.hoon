@@ -105,6 +105,13 @@
   ^-  ?
   ?=  ?(%script %style %head %noscript %iframe %template %textarea)
   (crip n)
+::  +url-of: an attribute's value as the url a browser reads: entities
+::  decoded, and the control bytes it drops (a tab or line break inside,
+::  blanks in front) gone, so +safe-url tests the scheme that is written
+++  url-of
+  |=  v=tape
+  ^-  tape
+  (lead-strip (skip (unent v) |=(c=@tD (lth c 32))))
 ::  +self-closed: is a tag written as an empty element, <svg ../>?
 ++  self-closed
   |=  att=tape
@@ -367,11 +374,11 @@
       ::  the address is the attribute's VALUE: entities decoded first, so
       ::  "a=1&amp;b=2" is archived as the url it names and a scheme spelled
       ::  with entities is tested as the scheme it is
-      =/  src=tape  (lead-strip (unent (attr att.g "src")))
+      =/  src=tape  (url-of (attr att.g "src"))
       ?.  (safe-url src)  $(t r)
       $(t r, acc (emit acc :(weld "![" (alt-text (attr att.g "alt")) "](" (md-url src) ")")), sp |)
     ?:  =("a" n)
-      =/  href=tape  (lead-strip (unent (attr att.g "href")))
+      =/  href=tape  (url-of (attr att.g "href"))
       ::  an unsafe or missing href keeps the link TEXT and drops the link
       ?.  (safe-url href)  $(t r, lnk ~)
       $(t r, lnk `(md-url href), acc (emit flu "["), sp |)

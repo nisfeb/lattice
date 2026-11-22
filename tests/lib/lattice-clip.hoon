@@ -288,4 +288,20 @@
     (yes (has "<p>after" (crip (render-md:md o))))
     (yes (has "> after" (m '<blockquote><pre>code</pre>after</blockquote>')))
   ==
+::  a browser drops tabs and line breaks inside a url, so the scheme is
+::  tested on the url with them gone, as it is written
+++  test-url-control-bytes
+  ;:  weld
+    (no (has "](" (m '<a href="java&#9;script:alert(1)">x</a>')))
+    (no (has "](" (m '<a href="java\09script:alert(1)">x</a>')))
+    (no (has "](" (m '<a href="java&#10;script:alert(1)//">x</a>')))
+    (no (has "](" (m '<a href="j&#x0D;avascript:alert(1)">x</a>')))
+    (no (has "](" (m '<a href="java&#1;script:alert(1)">x</a>')))
+    (no (has "![" (m '<img src="da&#9;ta:image/png,x" alt="a">')))
+    (no (has "![" (m '<img src="java&#9;script:x" alt="a">')))
+    (yes (has "x" (m '<a href="java&#9;script:alert(1)">x</a>')))
+    ::  a safe url keeps its link, written without the byte
+    (yes (has "[t](http://x/ab)" (m '<a href="http://x/a&#9;b">t</a>')))
+    (yes (has "![p](/a.png)" (m '<img src="/a&#10;.png" alt="p">')))
+  ==
 --
