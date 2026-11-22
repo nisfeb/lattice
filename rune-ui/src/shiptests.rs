@@ -703,6 +703,24 @@ fn a_save_answered_after_going_to_the_memories_is_kept_among_the_pages() {
 }
 
 #[test]
+fn a_late_answer_to_an_address_does_not_take_the_page_opened_since() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "first\n");
+    let mut r = Run::new(&ship);
+    ship.st().urb_slow = 0.5;
+    urb_go(&mut r.s, Some("urb://~sampel-palnet/notes/plan".to_owned()));
+    r.secs(0.1);
+    r.open("notes/a");
+    r.secs(1.0);
+    assert_eq!((r.s.open.as_ref().map(|p| p.name.as_str()), r.s.remote.is_some()), (Some("notes/a"), false), "the page gone to was taken away by the answer to an older request");
+    // an address asked for and waited on is still shown
+    urb_go(&mut r.s, Some("urb://~sampel-palnet/notes/plan".to_owned()));
+    r.until("the address", |s| s.remote.is_some());
+    assert_eq!(r.s.open.as_ref().map(|p| p.name.as_str()), Some("~sampel-palnet/notes/plan"));
+}
+
+#[test]
 fn a_save_answered_and_not_yet_looked_at_is_still_a_save_on_its_way() {
     let _one = one();
     let ship = Ship::start();

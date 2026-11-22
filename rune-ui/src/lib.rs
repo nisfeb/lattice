@@ -1470,6 +1470,7 @@ fn flip(s: &mut App) {
     if !leave_edit(s) {
         return;
     }
+    remote_cancel(s);
     flip_quiet(s);
     s.open = None;
     s.want = None;
@@ -4897,6 +4898,7 @@ fn restore(s: &mut App) {
 }
 
 fn show_page(s: &mut App, name: &str) {
+    remote_cancel(s);
     s.remote = None;
     s.shared_open = false;
     s.inbox = false;
@@ -7207,6 +7209,7 @@ fn land_on(s: &mut App, name: &str) {
         s.files.select(&index);
         open_page(s, &index);
     } else if !under(&s.names, name).is_empty() && leave_edit(s) {
+        remote_cancel(s);
         (s.open, s.remote, s.access, s.shared_open, s.inbox) = (None, None, false, false, false);
         s.forum = None;
         s.folder = Some(name.to_owned());
@@ -7786,6 +7789,7 @@ fn load_tab(s: &mut App, to: usize) {
     s.tab = to;
     let Tab { trail, at } = std::mem::take(&mut s.tabs[to]);
     (s.trail, s.trail_at) = (trail, at);
+    remote_cancel(s);
     (s.open, s.folder, s.remote, s.old, s.want) = (None, None, None, None, None);
     (s.access, s.shared_open, s.inbox) = (false, false, false);
     s.forum = None;
@@ -11014,6 +11018,18 @@ fn id_section(s: &App, k: &Kit) -> El {
         )
 }
 
+/// Lets go of every read of another ship's page that is on its way, asked for by an address or
+/// from shared with me. The reader has gone to something of this ship's since: the answer would
+/// land over it, with the tab still saying where the reader went.
+fn remote_cancel(s: &mut App) {
+    urb_cancel(s);
+    s.remote_req.cancel();
+    // that it is being read was said, and is so no longer
+    if s.note.starts_with("reading ") {
+        s.note.clear();
+    }
+}
+
 /// Lets go of a read on its way: what it answers is not wanted any more.
 fn urb_cancel(s: &mut App) {
     s.urb_req.cancel();
@@ -12866,6 +12882,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
             } else if s.files.get(id).is_some_and(|n| !n.dir) {
                 open_page(s, id);
             } else if leave_edit(s) {
+                remote_cancel(s);
                 // a folder shows what it holds, and can be renamed, moved or deleted there
                 s.access = false;
     s.settings = None;
