@@ -378,4 +378,25 @@
     ::  a remote image the reader chose to load keeps its query
     (yes (has "<img src=\"https://x.example/i.png?w=2\"" (~(render-md md &) '![a](https://x.example/i.png?w=2)')))
   ==
+::  a line that only looks like a fence, in a list item or a table row,
+::  opens no code block: the footnotes and reference links below it are
+::  read. A definition +rb never sees (it is taken out first) does not
+::  change which lines are code.
+++  test-fence-look-in-blocks
+  =/  lnk=tape  "<a href=\"/u\""
+  ;:  weld
+    (yes (has "<sup" (r 'p[^1]\0a\0a- item\0a  ```sh npm i```\0a\0apara [t][r]\0a\0a[^1]: note\0a[r]: /u')))
+    (yes (has lnk (r 'p[^1]\0a\0a- item\0a  ```sh npm i```\0a\0apara [t][r]\0a\0a[^1]: note\0a[r]: /u')))
+    (yes (has "<sup" (r 'p[^1]\0a\0a- item\0a  ```not closed\0a\0apara [^1]\0a\0a[^1]: note')))
+    (yes (has "<sup" (r 'p[^1]\0a\0a1. a\0a   ```\0a   x\0a\0a2. b[^1]\0a\0a[^1]: note')))
+    (yes (has "<sup" (r 'a | b\0a--|--\0a``` | [^1]\0a\0ap[^1]\0a\0a[^1]: note')))
+    (yes (has "<sup" (r 'x[^1]\0a\0a- item\0a[r]: /u\0a  ```sh\0a\0apara[^1]\0a\0a[^1]: note')))
+    ::  a real fence is still code, at the top and in a quote
+    (yes (has "<code>[^1]: no\0a</code>" (r 'p[^1]\0a\0a```\0a[^1]: no\0a```\0a\0a[^1]: note')))
+    (yes (has "<sup" (r 'p[^1]\0a\0a```\0a[^1]: no\0a```\0a\0a[^1]: note')))
+    (yes (has "[^1]: no" (r 'p[^1]\0a\0a> ```\0a> [^1]: no\0a> ```\0a\0a[^1]: note')))
+    (yes (has "<sup" (r 'p[^1]\0a\0a> ```\0a> [^1]: no\0a> ```\0a\0a[^1]: note')))
+    ::  an unclosed fence is code to the end
+    (yes (has "<code>unclosed\0a\0a[^1]: note" (r 'p[^1]\0a\0a```\0aunclosed\0a\0a[^1]: note')))
+  ==
 --
