@@ -548,6 +548,13 @@
   |=  [body=@t q=@t]
   ^-  @t
   =/  qs=(set @t)  (silt (terms q))
+  ::  for a quoted query, the first line that holds the phrase
+  =/  ph=(unit tape)  (phrase-of q)
+  =/  pl=(list @t)
+    ?~  ph  ~
+    %+  skim  (to-wain:format body)
+    |=(l=@t ?=(^ (find u.ph (cass (trip l)))))
+  ?:  &(?=(^ ph) ?=(^ pl))  (clip-around i.pl (silt ~[(crip u.ph)]))
   =/  ls=(list @t)  (skip (to-wain:format rest:(front body)) |=(l=@t =('' l)))
   ?~  ls  ''
   =/  best=[n=@ud l=@t]
@@ -639,11 +646,7 @@
 ++  search
   |=  [es=(list [key=path e=know-entry]) tc=term-cache q=@t old=?]
   ^-  (list hit)
-  =/  qt=tape  (trip q)
-  =/  phrase=(unit tape)
-    ?.  ?=([%'"' * * *] qt)  ~
-    ?.  =(`@`34 `@`(rear `tape`qt))  ~
-    `(cass (snip `tape`t.qt))
+  =/  phrase=(unit tape)  (phrase-of q)
   =/  live=(list [key=path e=know-entry])
     %+  skim  es
     |=  [key=path e=know-entry]
@@ -652,7 +655,26 @@
         =/  hay=tape  (cass :(weld (trip (spat key)) " " (trip body.e)))
         ?=(^ (find u.phrase hay))
     ==
-  (rank (docs-of live tc) ?~(phrase q (crip u.phrase)))
+  =/  ranked=(list hit)  (rank (docs-of live tc) ?~(phrase q (crip u.phrase)))
+  ?~  phrase  ranked
+  ::  every live entry holds the phrase. The ranker scores whole words
+  ::  outside the front matter, and gives nothing for "C++", "to be" or
+  ::  part of a word: those entries follow the ranked ones as full
+  ::  matches rather than being dropped.
+  =/  got=(set path)  (silt (turn ranked |=(h=hit key.h)))
+  %+  weld  ranked
+  %+  murn  live
+  |=  [key=path e=know-entry]
+  ^-  (unit hit)
+  ?:((~(has in got) key) ~ `[0 100 key])
+::  +phrase-of: the lower-cased text of a query in double quotes
+++  phrase-of
+  |=  q=@t
+  ^-  (unit tape)
+  =/  qt=tape  (trip q)
+  ?.  ?=([%'"' * * *] qt)  ~
+  ?.  =(`@`34 `@`(rear `tape`qt))  ~
+  `(cass (snip `tape`t.qt))
 ::  +source-of: an entry's front-matter source (agent, user or ''). The
 ::  plugins quote what an agent wrote when they show it.
 ++  source-of

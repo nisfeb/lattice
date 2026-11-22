@@ -623,4 +623,32 @@
     (expect-eq !>(1) !>((lent (search ~[[/k e]] ~ 'fact' |))))
     (expect-eq !>(|) !>(sup:(row-of /k e)))
   ==
+::  a quoted query returns every entry that holds the phrase, also when
+::  the phrase is made of no ranked word: punctuation, stop words, part
+::  of a word, or text in the front matter
+++  test-phrase-search-keeps-matches
+  =/  es=(list [key=path e=know-entry])
+    :~  [/a ['we use C++ here' ~2026.1.1 ~ ~]]
+        [/b ['to be or not to be' ~2026.1.1 ~ ~]]
+        [/c ['the released build' ~2026.1.1 ~ ~]]
+        [/d ['---\0aauthor: sam\0a---\0anotes' ~2026.1.1 ~ ~]]
+        [/e ['nothing relevant' ~2026.1.1 ~ ~]]
+        [/f ['the build was released, and a released build ships' ~2026.1.1 ~ ~]]
+    ==
+  =/  ks  |=(q=@t (turn (search es ~ q |) |=(h=hit key.h)))
+  ;:  weld
+    (expect-eq !>(`(list path)`~[/a]) !>((ks '"C++"')))
+    (expect-eq !>(`(list path)`~[/b]) !>((ks '"to be"')))
+    (expect-eq !>(`(list path)`~[/c /f]) !>((sort (ks '"relea"') aor)))
+    (expect-eq !>(`(list path)`~[/d]) !>((ks '"author: sam"')))
+    (expect-eq !>(`(list path)`~) !>((ks '"absent phrase"')))
+    ::  an entry found only verbatim is a full match, not a weak one
+    (expect-eq !>(`(list @ud)`~[100]) !>((turn (search es ~ '"C++"' |) |=(h=hit strength.h))))
+    ::  ranked matches still come first, in rank order
+    (expect-eq !>(2) !>((lent (ks '"released build"'))))
+    ::  an unquoted query is ranked only
+    (expect-eq !>(`(list path)`~) !>((ks 'relea')))
+    ::  the snippet is the line that holds the phrase
+    (expect-eq !>('we use C++ here') !>((snippet 'first line\0awe use C++ here\0alast' '"c++"')))
+  ==
 --
