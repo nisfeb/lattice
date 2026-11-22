@@ -7,12 +7,13 @@
 
 import {
   parseFods, serializeFods, cellAt, setCell, setStyle, ownRow, bumpRows, extent, rowCount, MAX_ROWS, MAX_COLS, dateSerial, serialDate,
+  attrText,
 } from './model.js';
 import { Engine } from './engine.js';
 import { Styles, fixed } from './styles.js';
 import { toOf, toUser, FormulaError, moveFormula, moveRefs, moveAddrs, offsetFormula, cutFormula, bodyOf, quoteSheet, renameInFormula, parseAddrs } from './formula.js';
 import { general } from './funcs.js';
-import { attr, escAttr } from '../writer/xml.js';
+import { attr } from '../writer/xml.js';
 
 const HISTORY_CHARS = 24 * 1024 * 1024;
 
@@ -436,7 +437,7 @@ export class Book {
           const at0 = open.indexOf(` ${a}="${raw[1]}"`);
           if (at0 < 0) continue;
           const vs = k.start + at0 + a.length + 3;
-          edits.push([vs, vs + raw[1].length, escAttr(next)]);
+          edits.push([vs, vs + raw[1].length, attrText(next)]);
         }
         if (k.name !== 'table:table-row') fix(k, table);
       }

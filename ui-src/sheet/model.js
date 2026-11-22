@@ -382,6 +382,11 @@ export function extent(sheet) {
 
 // ── serializing ──────────────────────────────────────────────────────────
 
+//  an attribute value as written. A line break or a tab in one is a
+//  character reference: a reader turns a literal one into a space (XML
+//  1.0, 3.3.3), which would change the text inside a formula.
+export const attrText = (s) => escAttr(s).replace(/\t/g, '&#9;').replace(/\n/g, '&#10;').replace(/\r/g, '&#13;');
+
 //  the text of a cell as <text:p> elements, as LibreOffice writes it:
 //  one per line, runs of spaces as text:s, tabs as text:tab
 function textPs(t) {
@@ -416,7 +421,7 @@ function textPs(t) {
 function cellXml(doc, cell, ind) {
   const name = cell.covered ? 'table:covered-table-cell' : 'table:table-cell';
   let a = '';
-  const put = (k, v) => { a += ` ${k}="${escAttr(String(v))}"`; };
+  const put = (k, v) => { a += ` ${k}="${attrText(String(v))}"`; };
   if (cell.st) put('table:style-name', cell.st);
   for (const [k, raw] of cell.attrs) if (k === 'table:content-validation-name') a += ` ${k}="${raw}"`;
   if (cell.rep > 1) put('table:number-columns-repeated', cell.rep);

@@ -736,6 +736,24 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   }
 }
 {
+  //  a line break inside a formula's text is written as a character reference
+  const b = new Book(blankText);
+  b.enter(0, 0, 0, '="a\nb\tc"&"\r"');
+  const t = b.text();
+  check('a line break, a tab and a return in a formula are written as references', t.includes('table:formula="of:=&quot;a&#10;b&#9;c&quot;&amp;&quot;&#13;&quot;"') && t.includes('office:string-value="a&#10;b&#9;c&#13;"'), (/table:formula="[^"]*"/.exec(t) || [''])[0]);
+  check('no attribute holds a raw line break', !/="[^"]*[\n\r\t][^"]*"/.test(t.slice(t.indexOf('<office:body'))));
+  const back = new Book(t);
+  check.eq('and read back as they were', JSON.stringify([back.cell(0, 0, 0).f, back.cell(0, 0, 0).v]), JSON.stringify(['of:="a\nb\tc"&"\r"', 'a\nb\tc\r']));
+  check('the text read back serializes to the same bytes', back.text() === t);
+  //  and in a rule moved by a row insert
+  const src = corpus('07-ranges');
+  const i = src.indexOf('<table:table ');
+  const rule = '<table:content-validations><table:content-validation table:name="v" table:condition="of:cell-content-is-in-list(&quot;a&#10;b&quot;;[.B2])" table:base-cell-address="Ranges.A2"/></table:content-validations>';
+  const m = new Book(src.slice(0, i) + rule + src.slice(i));
+  m.shift(0, 'r', 0, 1);
+  check('a moved rule keeps the line break in its text as a reference', m.text().includes('table:condition="of:cell-content-is-in-list(&quot;a&#10;b&quot;;[.B3])"'), (/table:condition="[^"]*"/.exec(m.text()) || [''])[0]);
+}
+{
   //  results Calc gives, each run in LibreOffice
   const b = new Book(blankText);
   const at = (f) => { b.enter(0, 0, 0, f); return b.cell(0, 0, 0).text; };
