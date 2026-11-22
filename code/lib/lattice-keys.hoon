@@ -346,6 +346,23 @@
         ?~(e | (check u.e))
     ==
   ==
+::  +dname-cap: the most bytes of a display name a key may store.
+++  dname-cap  256
+::  +dname-ok: may key k store the display name `name` on the folder `at`?
+::  A display name is a write to that folder, so it passes what a save
+::  there passes: the key's write scope, clearance when the folder is
+::  sensitive (`sens`), and for a tainted key a sensitive, unshared
+::  destination (`dest`, +taint-dest:ls). Otherwise a key scoped to
+::  /a/b could rename /a, and a tainted key could carry what it read into
+::  the name of a folder every key lists.
+++  dname-ok
+  |=  [k=key-row now=@da at=path name=@t sens=? dest=?]
+  ^-  ?
+  ?&  (lte (met 3 name) dname-cap)
+      (may-path k %local at %write)
+      |(!sens sensitive.scope.k)
+      |(!(tainted k now) dest)
+  ==
 ::  +page-type-ok: may a key save a page of this ?type=? Only the kinds
 ::  that render escaped. Hoon would run with lattice's own authority, and
 ::  html or js would run in the owner's browser. An absent type is hoon.

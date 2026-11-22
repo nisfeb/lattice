@@ -3928,6 +3928,9 @@
     ::  the key's write grant is explicit consent from the owner.
     ?.  (may-path:ky u.key %local (pax-of u.name) %write)
       (send-err eyre-id 403 'outside this key\'s scope')
+    ::  the scope check above is on the leaf. ?dnames= would also name the
+    ::  folders above it, so keep only the names this key may write
+    ;<  args=(map @t @t)  bind:m  (key-dname-args u.key rnow args (pax-of u.name))
     ;<  wf=(unit rich)  bind:m  (fodt-at (pax-of u.name))
     ?:  &(?=(^ wf) !=(`@t`u.wf (~(gut by args) 'type' 'hoon')))
       (send-err eyre-id 403 (fodt-key-msg u.wf))
@@ -12570,6 +12573,36 @@
   =/  rest  $(segs t.segs, i +(i))
   ?:  =('' i.segs)  rest
   [[%dname (scag i pax) i.segs] rest]
+::  +key-dname-args: a keyed save's args with only the display names the
+::  key may write. Each folder ?dnames= would name must pass what a save
+::  there passes (+dname-ok:ky): the route checked the leaf alone, and
+::  +dname-acts-of writes a name on every ancestor. A refused entry is
+::  blanked, which +dname-acts-of skips. The leaf's own name (the last
+::  entry, and ?dname=) is only held to the size cap.
+++  key-dname-args
+  |=  [k=key-row:ky now=@da args=(map @t @t) pax=path]
+  =/  m  (fiber:fiber:nexus ,(map @t @t))
+  ^-  form:m
+  =?  args  (gth (met 3 (~(gut by args) 'dname' '')) dname-cap:ky)
+    (~(del by args) 'dname')
+  =/  ds=(unit @t)  (~(get by args) 'dnames')
+  ?~  ds  (pure:m args)
+  =/  segs=(list @t)  (split-fas u.ds)
+  =/  n=@ud  (lent pax)
+  =/  i=@ud  1
+  =|  out=(list @t)
+  |-  ^-  form:m
+  ?:  |(?=(~ segs) (gth i n))
+    (pure:m (~(put by args) 'dnames' (rap 3 (join '/' (flop out)))))
+  ?:  =('' i.segs)  $(segs t.segs, i +(i), out ['' out])
+  ?:  =(i n)
+    $(segs t.segs, i +(i), out [?:((gth (met 3 i.segs) dname-cap:ky) '' i.segs) out])
+  =/  at=path  (scag i pax)
+  ;<  sens=?  bind:m  (page-sensitive at)
+  ;<  dest=?  bind:m
+    ?.  (tainted:ky k now)  (pure:(fiber:fiber:nexus ,?) &)
+    (taint-dest-at at)
+  $(segs t.segs, i +(i), out [?:((dname-ok:ky k now at i.segs sens dest) i.segs '') out])
 ::  +poke-dnames: apply +dname-acts-of, one writer poke each, in order.
 ++  poke-dnames
   |=  [args=(map @t @t) pax=path]
