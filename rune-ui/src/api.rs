@@ -1201,7 +1201,9 @@ pub fn write_private(p: &std::path::Path, body: &[u8]) -> Result<(), String> {
     let wrote = {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(body).and_then(|()| f.sync_all())).map_err(|e| e.to_string())
+        // made new, never opened: a link planted at this name in a folder others write to would else be written through, into a file of theirs. What is there is taken away first, and one put back in that instant fails the write
+        let _ = std::fs::remove_file(&tmp);
+        std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(body).and_then(|()| f.sync_all())).map_err(|e| e.to_string())
     };
     #[cfg(not(unix))]
     let wrote = std::fs::write(&tmp, body).map_err(|e| e.to_string());
@@ -4133,6 +4135,34 @@ mod tests {
         let kept = crate::accounts::Accounts::parse(r#"{"list":[{"url":"http://a","cookie":"urbauth-~zod/../x=0v1"},{"url":"http://b","cookie":"urbauth-~zod=0v1"}],"front":"http://a"}"#);
         assert_eq!((kept.list.len(), kept.list[0].url.as_str(), kept.front), (1, "http://b", None));
         assert!(crate::accounts::Accounts::from_session(r#"{"url":"http://a","cookie":"urbauth-~zod/../x=0v1"}"#, 1).is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_file_is_never_written_through_a_link_planted_where_it_is_first_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("lr-plant-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("shared")).unwrap();
+        let theirs = dir.join("theirs.txt");
+        std::fs::write(&theirs, "").unwrap();
+        std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let file = dir.join("shared/lattice-daily-20261122-140304.tar");
+        // whoever else writes to the folder plants links at the names the file is first written under: this program and a count. Other tests write files too, so a wide run of counts
+        for turn in 0..20_000 {
+            let _ = std::os::unix::fs::symlink(&theirs, file.with_extension(format!("{}-{turn}.part", std::process::id())));
+        }
+        // the name itself a link too: the file takes its place, and is not written through it
+        std::os::unix::fs::symlink(&theirs, &file).unwrap();
+        write_private(&file, b"every page of the store").unwrap();
+        assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "", "nothing reached the other's file");
+        let m = std::fs::symlink_metadata(&file).unwrap();
+        assert!(m.file_type().is_file() && m.permissions().mode() & 0o777 == 0o600);
+        assert_eq!(std::fs::read(&file).unwrap(), b"every page of the store");
+        // written again over itself, as every kept file is
+        write_private(&file, b"again").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"again");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
