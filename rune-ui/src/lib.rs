@@ -12007,7 +12007,7 @@ fn access_view(s: &App, k: &Kit) -> El {
                         .min_w(0.0)
                         .child(text(g.name.clone()).font(k.ty.ui_medium).color(c.text_base))
                         .child(text(ships).font(k.ty.mono).color(c.text_muted).truncate())
-                        .child(text(format!("reads {} paths, edits {}", g.peek.len(), g.make.len())).font(k.ty.small).color(c.text_faint)),
+                        .child(text(format!("reads {} paths, edits {}", api::Group::shown(&g.peek), api::Group::shown(&g.make))).font(k.ty.small).color(c.text_faint)),
                 )
                 .child(Button::new("Ships").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| {
                     let mut t = TextEdit::new(edit_ships.clone());

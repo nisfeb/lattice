@@ -219,16 +219,38 @@ impl Group {
         format!("{base}/page/{name}/code")
     }
 
-    /// Whether `path` names the page `name` under the lattice at `base`.
-    fn names_page(path: &str, base: &str, name: &str) -> bool {
-        *path == Group::road(base, name) || *path == Group::code_road(base, name)
+    /// Whether this group holds the folder at the page's own path whole: the ship lists such a
+    /// folder as its path and as `<path>/dir-index`, and a save that leaves the path out but keeps
+    /// the index line unshares the folder.
+    fn holds_folder(&self, base: &str, name: &str) -> bool {
+        let index = format!("{}/dir-index", Group::road(base, name));
+        self.peek.iter().chain(&self.make).any(|p| *p == index)
+    }
+
+    /// Whether `path` names the page `name` under the lattice at `base`. Where the group holds a
+    /// folder at that path, the plain path is the folder's line, and only the page's text path
+    /// is the page's.
+    fn names_page(&self, path: &str, base: &str, name: &str) -> bool {
+        *path == Group::code_road(base, name) || (*path == Group::road(base, name) && !self.holds_folder(base, name))
+    }
+
+    /// The path that grants the page `name` to this group: the page's path, or its text path
+    /// where the plain path is a folder's line.
+    fn grant_road(&self, base: &str, name: &str) -> String {
+        if self.holds_folder(base, name) { Group::code_road(base, name) } else { Group::road(base, name) }
+    }
+
+    /// The paths a group holds that are its own to show: the ship's index lines (`<folder>/dir-index`)
+    /// are sent back as they came and not counted.
+    pub fn shown(paths: &[String]) -> usize {
+        paths.iter().filter(|p| !p.ends_with("/dir-index")).count()
     }
 
     /// What this group may do with the page `name` by the page's own grant.
     pub fn level(&self, base: &str, name: &str) -> Level {
-        if self.make.iter().any(|p| Group::names_page(p, base, name)) {
+        if self.make.iter().any(|p| self.names_page(p, base, name)) {
             Level::Edit
-        } else if self.peek.iter().any(|p| Group::names_page(p, base, name)) {
+        } else if self.peek.iter().any(|p| self.names_page(p, base, name)) {
             Level::Read
         } else {
             Level::None
@@ -246,10 +268,10 @@ impl Group {
     /// This group with its grant on the page `name` set to `level`. Every
     /// other path it holds is kept as it is.
     pub fn with_level(&self, base: &str, name: &str, level: Level) -> Group {
-        let road = Group::road(base, name);
+        let road = self.grant_road(base, name);
         let mut g = self.clone();
-        g.peek.retain(|p| !Group::names_page(p, base, name));
-        g.make.retain(|p| !Group::names_page(p, base, name));
+        g.peek.retain(|p| !self.names_page(p, base, name));
+        g.make.retain(|p| !self.names_page(p, base, name));
         if level != Level::None {
             g.peek.push(road.clone());
         }
@@ -4574,6 +4596,33 @@ mod tests {
         assert!(old.with_level(base, "a/b", Level::None).peek.is_empty(), "and the old text-path form");
         assert_eq!(g.with_level(base, "a/b", Level::Read).peek, vec![page.clone()], "a grant is sent as the page's path");
         assert_eq!(readers(&[g.clone()], "a/b"), vec![Reader { ship: "~nec".into(), edit: true, via: None }]);
+    }
+
+    #[test]
+    fn a_page_at_a_shared_folders_own_path_is_granted_by_its_text_path_and_the_index_line_goes_back() {
+        // the ship lists a folder shared whole as `<folder>` and `<folder>/dir-index`, and a save that
+        // leaves the first out and keeps the second unshares the folder. The page at the folder's own
+        // path is granted by `<folder>/code` only
+        let base = "/apps/x/lattice";
+        let (folder, index, code) = (format!("{base}/page/trip"), format!("{base}/page/trip/dir-index"), format!("{base}/page/trip/code"));
+        let g = Group { name: "nec".into(), ships: vec!["~nec".into()], peek: vec![folder.clone(), index.clone()], make: vec![] };
+        assert_eq!(g.level(base, "trip"), Level::None, "the folder's line is not the page's grant");
+        let read = g.with_level(base, "trip", Level::Read);
+        assert_eq!(read.peek, vec![folder.clone(), index.clone(), code.clone()]);
+        assert_eq!(read.level(base, "trip"), Level::Read);
+        let edit = read.with_level(base, "trip", Level::Edit);
+        assert_eq!((edit.peek.clone(), edit.make.clone()), (vec![folder.clone(), index.clone(), code.clone()], vec![code.clone()]));
+        // toggled off: the folder's line and its index line are as the ship gave them
+        assert_eq!(edit.with_level(base, "trip", Level::None), g);
+        assert_eq!(g.with_level(base, "trip", Level::None), g);
+        // a page under the folder, and another folder's page, leave both lines alone too
+        assert_eq!(g.with_level(base, "trip/day", Level::Read).peek, vec![folder.clone(), index.clone(), format!("{base}/page/trip/day")]);
+        assert_eq!(g.with_level(base, "trip/day", Level::Read).with_level(base, "trip/day", Level::None), g);
+        // a group that does not hold the folder takes the page as the page's path, as before
+        let other = Group { name: "bud".into(), ships: vec![], peek: vec![], make: vec![] };
+        assert_eq!(other.with_level(base, "trip", Level::Read).peek, vec![folder.clone()]);
+        // index lines are not counted as paths the group reads
+        assert_eq!(Group::shown(&g.peek), 1);
     }
 
     #[test]
