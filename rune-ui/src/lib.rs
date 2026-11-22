@@ -815,6 +815,8 @@ struct App {
     pics_failed: std::collections::HashSet<String>,
     pics_asked: std::collections::HashSet<String>,
     pics_in: std::sync::Arc<std::sync::Mutex<Vec<(String, Result<Vec<u8>, String>)>>>,
+    /// Drawings drawn on the drawing thread (`html::draw_later`), waiting for the window to take them into the cache.
+    drawn_in: std::sync::Arc<std::sync::Mutex<Vec<(String, Result<(u32, u32, Vec<u8>), String>)>>>,
     pics_for: Option<(String, u64)>,
     /// How many of the pictures had were decoded at the last look.
     pics_ready: usize,
@@ -1334,6 +1336,7 @@ fn init() -> App {
         pics_failed: std::collections::HashSet::new(),
         pics_asked: std::collections::HashSet::new(),
         pics_in: Default::default(),
+        drawn_in: Default::default(),
         pics_for: None,
         pics_ready: 0,
         tile_status: None,
@@ -4382,6 +4385,21 @@ fn sync_tiles(s: &mut App) {
 fn take_pics(s: &mut App) -> bool {
     let got: Vec<_> = s.pics_in.lock().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default();
     let mut any = !got.is_empty();
+    // a drawing that was drawn since the last look is put into the cache, and shows at this look
+    let drawn: Vec<_> = s.drawn_in.lock().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default();
+    any |= !drawn.is_empty();
+    for (src, out) in drawn {
+        match (out, &s.image_cache) {
+            (Ok((w, h, px)), Some(cache)) => {
+                s.pics.insert(src, cache.rgba(w, h, px));
+            }
+            (Err(e), _) => {
+                s.note = format!("an image did not load: {e}");
+                s.pics_failed.insert(src);
+            }
+            _ => {}
+        }
+    }
     // a picture's decode ends on another thread and wakes the app: it is drawn at the next look
     let ready = s.pics.values().filter(|i| i.is_ready()).count();
     any |= std::mem::replace(&mut s.pics_ready, ready) != ready;
@@ -4405,19 +4423,21 @@ fn take_pics(s: &mut App) -> bool {
             (Ok(bytes), _) if !html::fetched_ok(&bytes) => {
                 s.pics_failed.insert(src);
             }
-            // a drawing is drawn here, by a reader that resolves no file: the cache's own would read any file the drawing names
-            (Ok(bytes), Some(cache)) => match html::drawing(&bytes) {
-                None => {
-                    s.pics.insert(src, cache.load(bytes));
-                }
-                Some(Ok((w, h, px))) => {
-                    s.pics.insert(src, cache.rgba(w, h, px));
-                }
-                Some(Err(e)) => {
-                    s.note = format!("an image did not load: {e}");
-                    s.pics_failed.insert(src);
-                }
-            },
+            // a drawing is drawn by a reader that resolves no file (the cache's own would read any file the drawing names), and on a thread of its own: a costly one must not hold the window
+            (Ok(bytes), Some(_)) if html::is_drawing(&bytes) => {
+                let (back, waker) = (s.drawn_in.clone(), s.waker.clone());
+                html::draw_later(bytes, move |out| {
+                    if let Ok(mut list) = back.lock() {
+                        list.push((src, out));
+                    }
+                    if let Some(w) = waker {
+                        w();
+                    }
+                });
+            }
+            (Ok(bytes), Some(cache)) => {
+                s.pics.insert(src, cache.load(bytes));
+            }
             (Err(e), _) => {
                 s.note = format!("an image did not load: {e}");
                 s.pics_failed.insert(src);

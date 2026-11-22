@@ -598,7 +598,115 @@ pub fn is_drawing(bytes: &[u8]) -> bool {
 }
 
 /// The longest side, in pixels, a drawing is drawn at.
-const DRAWING_SIDE: u32 = 2048;
+const DRAWING_SIDE: u32 = 4096;
+
+/// The most text, in bytes, a drawing may be once inflated.
+const DRAWING_TEXT: usize = 32 << 20;
+
+/// How many elements a drawing may hold open at once. The thread that draws has a stack sized for this
+/// (`DRAWER_STACK`) with room to spare in a debug build.
+const DRAWING_DEPTH: usize = 1024;
+
+/// The stack of the thread that draws, in bytes. It is address space that is used only as a drawing needs it.
+const DRAWER_STACK: usize = 256 << 20;
+
+/// The bytes of a drawing as plain text: gzip is inflated, to at most `cap` bytes, and anything else is as it came.
+fn inflated(bytes: &[u8], cap: usize) -> Result<std::borrow::Cow<'_, [u8]>, String> {
+    use std::io::Read;
+    if !bytes.starts_with(&[0x1f, 0x8b]) {
+        return Ok(std::borrow::Cow::Borrowed(bytes));
+    }
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(bytes).take(cap as u64 + 1).read_to_end(&mut out).map_err(|e| format!("drawing: {e}"))?;
+    if out.len() > cap {
+        return Err("the drawing is too large once inflated".to_owned());
+    }
+    Ok(std::borrow::Cow::Owned(out))
+}
+
+/// The most elements open at once in XML text, counted in one pass with no recursion: comments, processing
+/// instructions, declarations and CDATA are passed over, and a bracket inside a quoted value is no end of a tag.
+fn nesting(xml: &[u8]) -> usize {
+    let (mut depth, mut deepest, mut i) = (0usize, 0usize, 0usize);
+    let find = |from: usize, pat: &[u8]| xml[from.min(xml.len())..].windows(pat.len()).position(|w| w == pat).map_or(xml.len(), |p| from + p + pat.len());
+    while let Some(at) = xml[i..].iter().position(|c| *c == b'<') {
+        i += at;
+        let rest = &xml[i..];
+        if rest.starts_with(b"<!--") {
+            i = find(i + 4, b"-->");
+        } else if rest.starts_with(b"<![CDATA[") {
+            i = find(i + 9, b"]]>");
+        } else if rest.starts_with(b"<?") {
+            i = find(i + 2, b"?>");
+        } else if rest.starts_with(b"<!") {
+            // a declaration, with an inner subset in brackets when it has one
+            let (mut j, mut inner) = (i + 2, false);
+            while let Some(&c) = xml.get(j) {
+                match c {
+                    b'[' => inner = true,
+                    b']' => inner = false,
+                    b'>' if !inner => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            i = j + 1;
+        } else {
+            let end_tag = rest.get(1) == Some(&b'/');
+            let (mut j, mut quote) = (i + 1, 0u8);
+            while let Some(&c) = xml.get(j) {
+                match (quote, c) {
+                    (0, b'>') => break,
+                    (0, b'"' | b'\'') => quote = c,
+                    (q, c) if q == c => quote = 0,
+                    _ => {}
+                }
+                j += 1;
+            }
+            // a tag that is not ended opens nothing
+            if xml.get(j).is_none() {
+                break;
+            }
+            let selfclosed = j > i + 1 && xml.get(j - 1) == Some(&b'/');
+            if end_tag {
+                depth = depth.saturating_sub(1);
+            } else if !selfclosed {
+                depth += 1;
+                deepest = deepest.max(depth);
+            } else {
+                deepest = deepest.max(depth + 1);
+            }
+            i = j + 1;
+        }
+        if i >= xml.len() {
+            break;
+        }
+    }
+    deepest
+}
+
+/// Draws drawings on one thread of its own, with a stack made for `DRAWING_DEPTH`, and hands each result to
+/// `done` there. The caller is not held for the drawing: a drawing that is costly holds only the drawings after it.
+/// `done` is not called for bytes that are no drawing (`is_drawing`), which the caller decodes as before: `false` then.
+pub fn draw_later(bytes: Vec<u8>, done: impl FnOnce(Result<(u32, u32, Vec<u8>), String>) + Send + 'static) -> bool {
+    use std::sync::{mpsc, OnceLock};
+    type Job = Box<dyn FnOnce() + Send>;
+    static DRAWER: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
+    if !is_drawing(&bytes) {
+        return false;
+    }
+    let job: Job = Box::new(move || {
+        // the engine is a beta: a drawing that panics it is a drawing that failed
+        let out = std::panic::catch_unwind(|| drawing(&bytes)).ok().flatten().unwrap_or_else(|| Err("the drawing could not be drawn".to_owned()));
+        done(out);
+    });
+    let tx = DRAWER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Job>();
+        std::thread::Builder::new().name("drawings".into()).stack_size(DRAWER_STACK).spawn(move || rx.into_iter().for_each(|job| job())).expect("a thread to draw on");
+        tx
+    });
+    tx.send(job).is_ok()
+}
 
 /// A drawing a page shows, drawn as straight RGBA at twice its own size, as Rune's picture cache draws one but
 /// with a reader that resolves no address to a file: a drawing may hold only the pictures written out in it
@@ -612,6 +720,13 @@ pub fn drawing(bytes: &[u8]) -> Option<Result<(u32, u32, Vec<u8>), String>> {
     let draw = || {
         if bytes.len() > 32 << 20 {
             return Err("the drawing is too large".to_owned());
+        }
+        // a gzipped drawing is inflated here, to a bound, and the reader is given the plain text: it inflates without one
+        let plain = inflated(bytes, DRAWING_TEXT)?;
+        let bytes = &plain[..];
+        // the reader and the renderer call themselves once for each level of nesting
+        if nesting(bytes) > DRAWING_DEPTH {
+            return Err("the drawing is nested too deeply".to_owned());
         }
         let options = usvg::Options { image_href_resolver: usvg::ImageHrefResolver { resolve_string: Box::new(|_, _| None), ..Default::default() }, ..Default::default() };
         let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| format!("drawing: {e}"))?;
@@ -1126,4 +1241,90 @@ mod tests {
         let quotes = "<blockquote>".repeat(5_000) + "x";
         let _ = to_markdown(&quotes);
     }
+
+    /// What `draw_later` hands on for these bytes, waited for.
+    fn drawn_later(bytes: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(draw_later(bytes, move |out| tx.send(out).unwrap()));
+        rx.recv().expect("the drawing thread answered")
+    }
+
+    fn gzip(text: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        e.write_all(text).unwrap();
+        e.finish().unwrap()
+    }
+
+    const SVG: &str = "http://www.w3.org/2000/svg";
+
+    #[test]
+    fn a_drawing_is_drawn_on_a_thread_of_its_own_and_the_caller_is_not_held() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        // the drawing is made to wait for the test, so that it cannot have been drawn before the call returned
+        let bytes = format!("<svg xmlns='{SVG}' width='10000' height='5000'><rect width='10000' height='5000' fill='#f00'/></svg>").into_bytes();
+        let caller = std::thread::current().id();
+        // a first job holds the thread until the caller has been seen to return
+        assert!(draw_later(bytes.clone(), move |_| {
+            go_rx.recv().unwrap();
+        }));
+        assert!(draw_later(bytes, move |out| tx.send((std::thread::current().id(), out)).unwrap()));
+        assert!(rx.try_recv().is_err(), "nothing was drawn when the call returned");
+        go_tx.send(()).unwrap();
+        let (on, out) = rx.recv().unwrap();
+        assert_ne!(on, caller, "drawn on the caller's thread");
+        let (w, h, px) = out.unwrap();
+        assert_eq!((w, h, px.len()), (4096, 2048, 4096 * 2048 * 4), "a drawing is drawn up to 4096 on its longer side");
+        // bytes that are no drawing are for the cache, and are not taken
+        assert!(!draw_later(b"\x89PNG\r\n\x1a\n".to_vec(), |_| panic!("not a drawing")));
+    }
+
+    #[test]
+    fn a_drawing_nested_at_the_bound_is_drawn_and_one_past_it_or_far_past_it_is_refused_with_no_stack_used() {
+        let nest = |tag: &str, n: usize, inner: &str| format!("<svg xmlns='{SVG}' width='10' height='10'>{}{inner}{}</svg>", format!("<{tag}>").repeat(n - 1), format!("</{}>", tag.split(' ').next().unwrap()).repeat(n - 1)).into_bytes();
+        // depth counts the root: the bound is of elements open at once
+        for tag in ["g", "g opacity='0.9'", "svg"] {
+            let name = tag.split(' ').next().unwrap();
+            let at = nest(name, DRAWING_DEPTH, "<rect width='10' height='10'/>");
+            assert_eq!(nesting(&at), DRAWING_DEPTH + 1, "{tag}");
+            let at = nest(tag, DRAWING_DEPTH - 1, "<rect width='10' height='10'/>");
+            assert!(drawn_later(at).is_ok(), "{tag} at the bound");
+            let past = nest(tag, DRAWING_DEPTH + 1, "<rect width='10' height='10'/>");
+            assert!(drawn_later(past).unwrap_err().contains("too deeply"), "{tag} past the bound");
+            let far = nest(name, 50_000, "<rect width='10' height='10'/>");
+            assert!(drawn_later(far).unwrap_err().contains("too deeply"), "{tag} far past it");
+        }
+        // gzipped, as an SVGZ the same
+        assert!(drawn_later(gzip(&nest("g", 50_000, "<rect width='10' height='10'/>"))).unwrap_err().contains("too deeply"));
+        assert!(drawn_later(gzip(&nest("g", 100, "<rect width='10' height='10'/>"))).is_ok());
+    }
+
+    #[test]
+    fn what_nests_in_a_drawing_is_counted_as_the_reader_nests_it() {
+        assert_eq!(nesting(b"<a><b/><b></b></a>"), 2);
+        assert_eq!(nesting(b"<?xml version='1.0'?><!DOCTYPE svg [<!ENTITY x '<g><g>'>]><!-- <g><g><g> --><a><![CDATA[<g><g>]]><b a='>' c=\"<d>\"/></a>"), 2);
+        assert_eq!(nesting(b"</x></x><a>"), 1);
+        assert_eq!(nesting(b"<a><a><a></a></a></a><a/>"), 3);
+        assert_eq!(nesting(b""), 0);
+        assert_eq!(nesting(b"<a><"), 1);
+    }
+
+    #[test]
+    fn a_gzipped_drawing_is_inflated_to_a_bound_and_no_more() {
+        let svg = |pad: usize| format!("<svg xmlns='{SVG}' width='10' height='10'><rect width='10' height='10'/>{}</svg>", " ".repeat(pad)).into_bytes();
+        // the cap is kept on what comes out, whatever the gzip was
+        assert_eq!(inflated(&gzip(&svg(100)), 1 << 20).unwrap().len(), svg(100).len());
+        assert!(inflated(&gzip(&svg(2 << 20)), 1 << 20).unwrap_err().contains("too large"));
+        assert!(inflated(&gzip(&svg(2 << 20)), 4 << 20).is_ok());
+        assert_eq!(inflated(b"<svg/>", 1).unwrap().as_ref(), b"<svg/>", "plain text is as it came");
+        // through the drawing: a gzip of more than the cap is refused, one under it is drawn
+        let bomb = gzip(&svg(DRAWING_TEXT + 1));
+        assert!(bomb.len() < 1 << 20);
+        assert!(matches!(drawing(&bomb), Some(Err(e)) if e.contains("too large")));
+        assert!(matches!(drawing(&gzip(&svg(1 << 20))), Some(Ok(_))));
+        // a gzip that is cut short is an error, not a hang
+        assert!(matches!(drawing(&bomb[..bomb.len() / 2]), Some(Err(_))));
+    }
+
 }
