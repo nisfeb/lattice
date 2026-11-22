@@ -310,9 +310,11 @@ impl Ship {
 }
 
 impl Drop for Ship {
-    /// What the window kept for this address goes with it, folder and all.
+    /// What the window kept for this address goes with it, folder and all. The address stays tied
+    /// to the folder: a write the window set going a moment before (the kept tree is written off its
+    /// thread) lands there, and not among the files every test reads. No other test is given the
+    /// port, since the stand-in listens for as long as the run lasts.
     fn drop(&mut self) {
-        api::TEST_SHIP_DIRS.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.conn().url);
         let dir = self.dir();
         // a test that made it read-only gives it back first
         #[cfg(unix)]
