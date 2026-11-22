@@ -6,6 +6,9 @@
 #      grants B a sensitive page, nor lists it in the folder's index;
 #      a page made in the folder and marked sensitive loses B's grant;
 #      a page shared by hand keeps it when marked, and the answer warns
+#      a folder granted from the group panel (/share-group-save) holds
+#      to the same rule, grants no owner-only grub, and a page made in
+#      it later is granted
 #   3. a ban strips a banned planet's moons and, for "comets", every
 #      comet from a group, and B hears a %del for what it loses
 #   4. a ban racing a share: no banned ship is left in a group
@@ -46,7 +49,8 @@ cleanup() {
   A_ -o /dev/null -X POST "$A/unban?ship=comets"
   A_ -o /dev/null -X POST "$A/share-group-del?name=$BG"
   A_ -o /dev/null -X POST "$A/share-group-del?name=inv-fam"
-  for n in f/p f/s f/n f/h f r/p r m/p m x/p x; do
+  A_ -o /dev/null -X POST "$A/share-group-del?name=inv-team"
+  for n in f/p f/s f/n f/h f q/p q/s q/n q r/p r m/p m x/p x; do
     A_ -o /dev/null -X POST "$A/page-del?name=$T/$n"
   done
   A_ -o /dev/null -X POST "$A/page-del?name=$T"
@@ -115,6 +119,56 @@ is-mode f/h edit "1: the page's own share stays"
 A_ -o /dev/null -X POST "$A/page-sensitive?name=$T/f/n&on=0"
 for _ in $(seq 1 30); do [ "$(mode f/n)" = read ] && break; sleep 1; done
 is-mode f/n read "1: unmarking gives the folder's grant back"
+
+# the same rule for a folder granted from the group panel
+# (/share-group-save with the folder's path), which used to store a road
+# on the whole folder: B read the sensitive page and every page's
+# owner-only grubs through it, and with edit could write them
+SB=$(A_ "$A/streams" | jq -r .base)
+mkpage q/p "Panel plain"
+mkpage q/s "Panel secret"
+A_ -o /dev/null -X POST "$A/page-sensitive?name=$T/q/s&on=1"
+gsave() { A_ -X POST "$A/share-group-save?name=inv-team" --data-binary "$1"; }
+bcode() { curl -s -m 90 -o /dev/null -w '%{http_code}' -H "$BK" -G --data-urlencode "ship=$ASHIP" \
+  --data-urlencode "path=$SB/page/$T/q/$1" "$B/browse-file"; }
+breads()  { [ "$(bcode "$1")" = 200 ]; }
+bdenied() { [ "$(bcode "$1")" != 200 ]; }
+panel() { A_ "$A/share-groups" | jq -r '.[] | select(.name=="inv-team") | .peek[]'; }
+r=$(gsave "{\"ships\":[\"$BSHIP\"],\"peek\":[\"$SB/page/$T/q\"],\"make\":[\"$SB/page/$T/q\"]}")
+grep -q '"ok"' <<<"$r" && ok "1: panel folder: the group saves" || fail "1: panel folder: the group saves" "$r"
+wait-for "1: panel folder: listed on B as one folder" 60 listed q/dir-index
+wait-for "1: panel folder: B reads the plain page" 60 breads p/code
+bdenied s/code && ok "1: panel folder: B cannot read the sensitive page" ||
+  fail "1: panel folder: B cannot read the sensitive page" "status $(bcode s/code)"
+bdenied s/sensitive && ok "1: panel folder: B cannot read a page's owner-only grub" ||
+  fail "1: panel folder: B cannot read a page's owner-only grub" "status $(bcode s/sensitive)"
+grep -qx ".*/page/$T/q/s" <<<"$(panel)" && fail "1: panel folder: the group does not list the sensitive page" ||
+  ok "1: panel folder: the group does not list the sensitive page"
+grep -qx ".*/page/$T/q" <<<"$(panel)" && ok "1: panel folder: the group lists the folder" ||
+  fail "1: panel folder: the group lists the folder" "$(panel | tr '\n' ' ')"
+# edit on the folder writes pages, never a page's share setting
+out=$(B_ -X POST -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$SB/page/$T/q/p/share" \
+  "$B/remote-save" --data-binary 'clearweb')
+sleep 3
+shr=$(A_ "$A/page-tree" | jq -r --arg p "$T/q/p" '.nodes[] | select(.path==$p) | .share')
+[ "$shr" = private ] && ok "1: panel folder: B's write of a share grub leaves the page private" ||
+  fail "1: panel folder: B's write of a share grub leaves the page private" "share is $shr, B's save said ${out:0:120}"
+web=$(curl -s -m 30 -o /dev/null -w '%{http_code}' "$A/c/$T/q/p")
+[ "$web" = 404 ] && ok "1: panel folder: and the page is not on the open web" ||
+  fail "1: panel folder: and the page is not on the open web" "status $web"
+# a page made in it later reaches the group, as in a /share-file folder
+mkpage q/n "Panel new"
+wait-for "1: panel folder: a new page in it is granted" 60 breads n/code
+A_ -o /dev/null -X POST "$A/page-sensitive?name=$T/q/n&on=1"
+wait-for "1: panel folder: marking it sensitive takes the grant back" 60 bdenied n/code
+# taking the folder's line out unshares all of it
+g=$(A_ "$A/share-groups" | jq -c --arg p "$SB/page/$T/q" '.[] | select(.name=="inv-team") |
+  {ships, peek: (.peek - [$p]), make: (.make - [$p])}')
+r=$(gsave "$g")
+grep -q '"ok"' <<<"$r" || fail "1: panel folder: the unshare saves" "$r"
+wait-for "1: panel folder: unshared, B's read fails" 60 bdenied p/code
+wait-for "1: panel folder: unshared, B's entry leaves" 60 unlisted q/dir-index
+A_ -o /dev/null -X POST "$A/share-group-del?name=inv-team"
 
 # --- 3. a ban strips the family -------------------------------------------
 mkpage m/p "Family page"

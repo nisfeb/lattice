@@ -798,6 +798,43 @@
   |=  [a=@t b=@t]
   ^-  @t
   ?:((lte (mode-rank a) (mode-rank b)) a b)
+::  +folder-roads: the roads a folder share is made of, as +share-file
+::  makes one: a file road on the code grub of each page under the
+::  folder that is not sensitive, and on the index of the folder and of
+::  each folder under it. `at` is the folder's absolute path, `all` what
+::  is under it (+collect-tree: a path below the folder, and whether it is
+::  a page), `sens` the sensitive pages among them. With `ed` the pages
+::  may be written too. The indexes are read only. Never a dir road: one
+::  would reach the sensitive pages and every page's owner-only grubs,
+::  and a weir has no deny to take them back out.
+++  folder-roads
+  |=  [at=path all=(list [p=path page=?]) sens=(set path) ed=?]
+  ^-  [peek=(set *) make=(set *)]
+  =/  codes=(set *)
+    %-  silt
+    %+  murn  all
+    |=  [p=path page=?]
+    ^-  (unit *)
+    ?.  &(page !(~(has in sens) p))  ~
+    `[%& %& (weld at p) %code]
+  =/  idx=(set *)
+    %-  silt
+    ^-  (list *)
+    :-  [%& %& at %'dir-index']
+    %+  murn  all
+    |=  [p=path page=?]
+    ^-  (unit *)
+    ?:(page ~ `[%& %& (weld at p) %'dir-index'])
+  [(~(uni in codes) idx) ?:(ed codes ~)]
+::  +folder-out: is a folder shared with a group unshared by a save of
+::  that group's paths? When the save took out the last page road under
+::  it (`had` before, `has` after), as before folders were listed. And
+::  when the group list named the folder (`noted`: it has the folder's
+::  note) and the save does not (`named`): the owner took its line out.
+++  folder-out
+  |=  [had=? has=? noted=? named=?]
+  ^-  ?
+  |(&(had !has) &(noted !named))
 ::  +own-infer: a page's own grant in a group (`own-grants`), as a folder
 ::  starts to share it: `own` as noted, never wider than the group now
 ::  grants it (`held`, so a group made again keeps no stale note), and

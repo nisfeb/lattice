@@ -928,6 +928,48 @@
     (expect-eq !>(&) !>((host-full:ls comets comet-b /apps/new)))
     (expect-eq !>(|) !>((host-full:ls comets ~nec /apps/new)))
   ==
+::  a folder share is file roads only: each page's code that is not
+::  sensitive, each folder's index, and never a dir road
+++  test-folder-roads
+  =/  at=path  /apps/lattice/page/work
+  =/  all=(list [p=path page=?])
+    ~[[/plain &] [/secret &] [/sub |] [/sub/deep &] [/sub/hid &]]
+  =/  sens=(set path)  (sy ~[/secret /sub/hid])
+  =/  code  |=(p=path `*`[%& %& (weld at p) %code])
+  =/  ix    |=(p=path `*`[%& %& (weld at p) %'dir-index'])
+  =/  rd  (folder-roads:ls at all sens |)
+  =/  ed  (folder-roads:ls at all sens &)
+  ;:  weld
+    %+  expect-eq
+      !>(`(set *)`(sy ~[(code /plain) (code /sub/deep) (ix ~) (ix /sub)]))
+    !>(peek.rd)
+    (expect-eq !>(`(set *)`~) !>(make.rd))
+    ::  edit writes the pages, never an index
+    (expect-eq !>(peek.rd) !>(peek.ed))
+    (expect-eq !>(`(set *)`(sy ~[(code /plain) (code /sub/deep)])) !>(make.ed))
+    ::  no dir road, and nothing of a sensitive page
+    (expect !>((levy ~(tap in peek.ed) |=(r=* ?=([%& %& *] r)))))
+    (expect !>(!(~(has in peek.ed) (code /secret))))
+    (expect !>(!(~(has in peek.ed) (code /sub/hid))))
+    (expect !>(!(~(has in peek.ed) `*`[%& %| at])))
+    ::  no road reaches a sensitive page, by the rule the grants are read with
+    (expect !>(!(lien ~(tap in peek.ed) |=(r=* (grant-covers:ls r (weld at /secret) |)))))
+    (expect !>(!(lien ~(tap in make.ed) |=(r=* (grant-covers:ls r (weld at /secret) &)))))
+    ::  an empty folder is its index alone
+    (expect-eq !>(`(set *)`(sy ~[(ix ~)])) !>(peek:(folder-roads:ls at ~ ~ &)))
+    (expect-eq !>(`(set *)`~) !>(make:(folder-roads:ls at ~ ~ &)))
+  ==
+::  a group save unshares a folder when its last page went, or its line did
+++  test-folder-out
+  ;:  weld
+    (expect !>((folder-out:ls & | | |)))
+    (expect !>((folder-out:ls & & & |)))
+    (expect !>(!(folder-out:ls & & & &)))
+    (expect !>(!(folder-out:ls & & | |)))
+    (expect !>(!(folder-out:ls | | | |)))
+    (expect !>((folder-out:ls | | & |)))
+    (expect !>(!(folder-out:ls | | & &)))
+  ==
 ++  test-pax-ok
   ;:  weld
     (expect-eq !>(&) !>((pax-ok:ls /apps/lattice/page/a/code)))
