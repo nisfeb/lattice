@@ -77,6 +77,14 @@ const files = {
     + 'html,body{margin:0;height:100%;font:15px system-ui;background:var(--bg)}#h{position:absolute;inset:0}</style></head>'
     + '<body><div id="h"></div><script src="/scad.js"></script></body></html>'), 'text/html'],
 };
+//  stand-ins for the runtime's loader, for failures the real one will not
+//  make on request: one whose OpenSCAD traps, one that does not start,
+//  and one whose wasm cannot be instantiated (it is given no imports)
+files['/fake/noinst.js'] = [Buffer.from('export default function (o) { return new Promise((ok) => o.instantiateWasm({}, ok)); }\n'), 'application/javascript'];
+files['/fake/trap.js'] = [Buffer.from('export default async function () { '
+  + 'return { FS: { mkdir() {}, writeFile() {}, readFile() { throw new Error("ENOENT"); } }, '
+  + 'callMain() { throw new WebAssembly.RuntimeError("memory access out of bounds"); } }; }\n'), 'application/javascript'];
+files['/fake/dead.js'] = [Buffer.from('export default async function () { throw new Error("Aborted(OOM)"); }\n'), 'application/javascript'];
 const hits = [];
 //  the pages /api/page-source answers, for the shell's own reader, and
 //  the names it was asked for
@@ -104,12 +112,21 @@ const TEMPLATE = readFileSync(join(root, 'tests', 'scad', 'customizer', 'box.sca
 const browser = await launchBrowser({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--ignore-gpu-blocklist'] });
 const errors = [];
 
-async function open(text, { editable = true, pages = {}, timeout, fonts = true } = {}) {
+//  runtime: other addresses for the wasm and the loader. name: the page.
+//  askFirst: the question a phone is asked before the first download.
+async function open(text, { editable = true, pages = {}, timeout, fonts = true, runtime = null, name = 'parts/box', askFirst = '' } = {}) {
   const page = await browser.newPage();
   await page.setViewport({ width: 1000, height: 760 });
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.goto(base + '/');
-  await page.evaluate((t, ed, pg, to, fonts) => {
+  await page.evaluate((t, ed, pg, to, fonts, rt, name, askFirst) => {
+    //  the workers made and not yet ended
+    window.workers = { made: 0, live: 0 };
+    const RealWorker = window.Worker;
+    window.Worker = class extends RealWorker {
+      constructor(...a) { super(...a); window.workers.made++; window.workers.live++; }
+      terminate() { if (!this.gone) { this.gone = true; window.workers.live--; } super.terminate(); }
+    };
     window.buf = t;
     window.edits = [];
     window.jumps = [];
@@ -119,8 +136,8 @@ async function open(text, { editable = true, pages = {}, timeout, fonts = true }
     window.fails = 0;
     //  kept, so a section can mount the pane again as the shell does
     window.opts = {
-      text: t, name: 'parts/box', editable: ed, timeout: to,
-      runtime: { wasm: '/rt/openscad.wasm', js: '/rt/openscad.js', fonts },
+      text: t, name, editable: ed, timeout: to, askFirst,
+      runtime: { wasm: '/rt/openscad.wasm', js: '/rt/openscad.js', fonts, ...(rt || {}) },
       readPage: async (n) => (n in window.pages ? window.pages[n] : null),
       onFail: () => { window.fails++; },
       onEdit: (line, nt, old) => {
@@ -134,7 +151,7 @@ async function open(text, { editable = true, pages = {}, timeout, fonts = true }
       onSnapshot: (png) => { window.snap = png; },
     };
     window.ctl = window.LatScad.mount(document.getElementById('h'), window.opts);
-  }, text, editable, pages, timeout, fonts ? FONTS.map((n) => [n, '/rt/' + n]) : []);
+  }, text, editable, pages, timeout, fonts ? FONTS.map((n) => [n, '/rt/' + n]) : [], runtime, name, askFirst);
   return page;
 }
 //  wait for a render to settle: the status says rendered (or an error)
@@ -272,6 +289,59 @@ console.log('\ncustomizer fields');
   await page.close();
 }
 
+console.log('\na render that fails outside OpenSCAD');
+{
+  const state = (pg) => pg.evaluate(() => ({ st: document.querySelector('.lscad-st').textContent, bad: document.querySelector('.lscad-st').classList.contains('err'),
+    sum: document.querySelector('.lscad-con summary').textContent, open: document.querySelector('.lscad-con').open, con: document.querySelector('.lscad-con pre').textContent, fails: window.fails }));
+  page = await open('cube(7);\n', { runtime: { wasm: '/rt/none.wasm', js: '/rt/none.js' } });
+  await settled(page);
+  let f = await state(page);
+  check('a runtime that does not load is said to be that', /could not be loaded/.test(f.st) && f.bad && !/no part/.test(f.st), f.st);
+  check('  with the reason counted and open in the console', /1 error/.test(f.sum) && f.open && /could not load the OpenSCAD runtime/.test(f.con), JSON.stringify(f));
+  check.eq('  and the shell is told', f.fails, 1);
+  await page.close();
+  page = await open('cube(7);\n', { runtime: { js: '/fake/trap.js' } });
+  await settled(page);
+  f = await state(page);
+  check('a trap inside OpenSCAD is a render that stopped, not an empty model', /stopped before it finished/.test(f.st) && f.bad, f.st);
+  check('  with the trap counted and open in the console', /1 error/.test(f.sum) && f.open && /memory access out of bounds/.test(f.con), JSON.stringify(f));
+  await page.close();
+  page = await open('cube(7);\n', { runtime: { js: '/fake/dead.js' } });
+  await settled(page);
+  f = await state(page);
+  check('a runtime that does not start is a render that stopped', /stopped before it finished/.test(f.st) && /1 error/.test(f.sum) && f.open && /runtime failed/.test(f.con), JSON.stringify(f));
+  await page.close();
+  page = await open('cube(7);\n', { runtime: { js: '/fake/noinst.js' }, timeout: 20000 });
+  await settled(page, 40);
+  f = await state(page);
+  check('a wasm that cannot be instantiated is said at once, not at the time limit', /stopped before it finished/.test(f.st) && /runtime failed/.test(f.con) && !/stopped after/.test(f.con), JSON.stringify(f));
+  await page.close();
+  //  the neighbours: OpenSCAD's own answers read as before
+  page = await open('x = 1;\n');
+  await settled(page);
+  f = await state(page);
+  check('a model that draws nothing is still an empty model', /no part/.test(f.st) && !/error/.test(f.sum), JSON.stringify(f));
+  await page.close();
+}
+
+console.log('\nan error, then the text taken back');
+{
+  page = await open('cube(7);\n');
+  await settled(page);
+  await page.evaluate(() => window.ctl.update('cube(7);\nsphere(;\n'));
+  for (let i = 0; i < 300 && !/error/.test(s = await settled(page)); i++) await sleep(100);
+  check('the error is shown', /error/.test(s) && /1 error/.test(await page.$eval('.lscad-con summary', (e) => e.textContent)), s);
+  await page.evaluate(() => window.ctl.update('cube(7);\n'));
+  await sleep(1500);
+  const u = await page.evaluate(() => ({ st: document.querySelector('.lscad-st').textContent, bad: document.querySelector('.lscad-st').classList.contains('err'),
+    sum: document.querySelector('.lscad-con summary').textContent, con: document.querySelector('.lscad-con pre').textContent, made: window.workers.made }));
+  check('with the good text back, the status is the good render\'s', /rendered in/.test(u.st) && !u.bad, u.st);
+  check('  and so is the console', !/error/.test(u.sum) && !/ERROR/.test(u.con), u.sum + ' ' + u.con.slice(0, 120));
+  check.eq('  and nothing was rendered again for it', u.made, 2);
+  check('  and the part is the good one', /^7 × 7 × 7 mm/.test(await dims(page)), await dims(page));
+  await page.close();
+}
+
 console.log('\na page and its child page, both included without .scad');
 {
   page = await open('include <a>\ninclude <a/b>\ncube([x, 2, 1]);\n', { pages: { 'parts/a': 'x = 3;', 'parts/a/b': 'y = 4;' } });
@@ -301,7 +371,8 @@ await page.close();
 
 page = await open('function f(n) = f(n + 1) + 1;\necho(f(0));\ncube(1);\n');
 s = await settled(page);
-check('runaway recursion ends with a message', /error|no part/i.test(s) || /recursion/i.test(await con(page)), s);
+//  the wasm traps on it: a render that stopped, with the trap in the console
+check('runaway recursion ends with a message', /error|stopped before it finished/i.test(s) || /recursion/i.test(await con(page)), s + ' ' + (await con(page)).slice(0, 120));
 await page.close();
 
 //  a one second limit: on a quick machine OpenSCAD gives this model up

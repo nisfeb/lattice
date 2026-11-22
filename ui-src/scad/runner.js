@@ -29,7 +29,12 @@ self.onmessage = async (e) => {
       print: (s) => log.push([0, s]),
       printErr: (s) => log.push([1, s]),
       instantiateWasm: (imports, done) => {
-        WebAssembly.instantiate(mod, imports).then((i) => done(i, mod));
+        //  a module that cannot be instantiated (out of memory) would
+        //  leave the loader waiting until the time limit: say it now
+        WebAssembly.instantiate(mod, imports).then((i) => done(i, mod), (x) => {
+          log.push([2, 'the OpenSCAD runtime failed: ' + ((x && x.message) || x)]);
+          self.postMessage({ rc: -1, log, data: null, error: true });
+        });
         return {};
       },
     });
@@ -44,18 +49,19 @@ self.onmessage = async (e) => {
       try { inst.FS.writeFile(p, t); }
       catch (x) { log.push([1, 'WARNING: could not write ' + p + ' for OpenSCAD: ' + ((x && x.message) || x)]); }
     }
-    let rc = 0;
+    let rc = 0, error = false;
     try { rc = inst.callMain(args); }
     catch (x) {
       rc = typeof x === 'number' ? x : (x && typeof x.status === 'number' ? x.status : 1);
-      if (!(x && x.name === 'ExitStatus')) log.push([1, 'OpenSCAD stopped: ' + ((x && x.message) || x)]);
+      //  anything but OpenSCAD's own exit is a crash: a trap, out of memory
+      if (!(x && x.name === 'ExitStatus')) { error = true; log.push([2, 'OpenSCAD stopped: ' + ((x && x.message) || x)]); }
     }
     let data = null;
     try { data = inst.FS.readFile(out); } catch (x) {}
-    self.postMessage({ rc, log, data }, data ? [data.buffer] : []);
+    self.postMessage({ rc, log, data, error }, data ? [data.buffer] : []);
   } catch (x) {
-    log.push([1, 'the OpenSCAD runtime failed: ' + ((x && x.message) || x)]);
-    self.postMessage({ rc: -1, log, data: null });
+    log.push([2, 'the OpenSCAD runtime failed: ' + ((x && x.message) || x)]);
+    self.postMessage({ rc: -1, log, data: null, error: true });
   }
 };
 `;
@@ -126,6 +132,10 @@ export function makeRunner({ wasm, js, fonts = [] }) {
   const ready = () => Promise.all([module(), glue(), fontFiles()]);
   //  one render: { promise, cancel }. The promise answers
   //  { rc, log, data, ms, timeout?, cancelled?, error?, unloaded? }
+  //  `error` is a render that did not run to OpenSCAD's own exit: the
+  //  runtime did not load, or the worker or the wasm crashed. A log line
+  //  is [0, text] from stdout, [1, text] from stderr, and [2, text] when
+  //  it is the runner's own account of such a failure.
   function run({ files, args, out, timeout }) {
     timeout = timeout || TIMEOUT;
     let w = null, timer = 0, settle;
@@ -142,10 +152,10 @@ export function makeRunner({ wasm, js, fonts = [] }) {
       if (!workerUrl) workerUrl = URL.createObjectURL(new Blob([WORKER], { type: 'text/javascript' }));
       w = new Worker(workerUrl, { type: 'module' });
       w.onmessage = (e) => end(e.data);
-      w.onerror = (e) => end({ rc: -1, log: [[1, 'the OpenSCAD worker failed: ' + (e.message || 'out of memory?')]], data: null, error: true });
-      timer = setTimeout(() => end({ rc: -1, log: [[1, `stopped after ${Math.round(timeout / 1000)} s`]], data: null, timeout: true }), timeout);
+      w.onerror = (e) => end({ rc: -1, log: [[2, 'the OpenSCAD worker failed: ' + (e.message || 'out of memory?')]], data: null, error: true });
+      timer = setTimeout(() => end({ rc: -1, log: [[2, `stopped after ${Math.round(timeout / 1000)} s`]], data: null, timeout: true }), timeout);
       w.postMessage({ glue: g, mod, files: ff.concat(files), args, out });
-    }, (x) => end({ rc: -1, log: [[1, 'could not load the OpenSCAD runtime: ' + ((x && x.message) || x)]], data: null, error: true, unloaded: true }));
+    }, (x) => end({ rc: -1, log: [[2, 'could not load the OpenSCAD runtime: ' + ((x && x.message) || x)]], data: null, error: true, unloaded: true }));
     return { promise, cancel: () => end({ rc: -1, log: [], data: null, cancelled: true }) };
   }
   return { run, ready };

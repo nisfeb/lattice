@@ -117,6 +117,10 @@ export function mount(host, opts) {
   const runner = makeRunner(o.runtime);
   let text = o.text || '', ps = [], defs = new Map(), job = null, timer = 0, busyT = 0, seq = 0, ask = 0;
   let lastKey = null, lastStl = null, jobKey = null, asked = !o.askFirst, dead = false, pending = false, jobAt = 0;
+  //  the status and console of the render that made the part on screen,
+  //  and whether they are what is shown: a failed render or export shows
+  //  its own, and the good ones come back with the good text
+  let good = null, shown = false;
   const ids = new Set();
   const setSt = (t, bad) => { st.textContent = t; st.className = 'lscad-st' + (bad ? ' err' : ''); st.title = t; };
 
@@ -125,10 +129,12 @@ export function mount(host, opts) {
     cpre.replaceChildren();
     let errs = 0, warns = 0;
     const lines = (notes || []).map((n) => [1, 'WARNING: ' + n]).concat(log || []);
-    for (const [, s] of lines) {
+    for (const [lv, s] of lines) {
       if (/^Could not initialize localization/.test(s)) continue;
       const line = el('div');
-      const e = /^ERROR/.test(s), w = /^WARNING/.test(s);
+      //  OpenSCAD's own errors, and the runner's account of a render that
+      //  did not run to the end (level 2)
+      const e = lv === 2 || /^ERROR/.test(s), w = !e && /^WARNING/.test(s);
       if (e) { line.className = 'e'; errs++; } else if (w) { line.className = 'w'; warns++; }
       const m = /in file ([^,]+), line (\d+)/.exec(s);
       if (m && m[1] === mainFile() && o.onJump) {
@@ -259,7 +265,13 @@ export function mount(host, opts) {
     //  the part on screen is the one wanted. A render under way is for
     //  text that was since taken back (an undo): stop it, or its part
     //  would replace this one.
-    if (k === lastKey && lastStl) { stop(); return; }
+    if (k === lastKey && lastStl) {
+      stop();
+      //  and what is said is of this part again, not of the text since
+      //  taken back
+      if (!shown && good) { showLog(good.log, inc.notes); setSt(good.st); shown = true; }
+      return;
+    }
     if (job && k === jobKey) return;
     //  a render under way finishes first when it is young, so a slider
     //  being dragged keeps drawing. One that has run a while is stopped:
@@ -281,8 +293,11 @@ export function mount(host, opts) {
     if (pending) { pending = false; schedule(0); }
     clearTimeout(busyT); busy.textContent = '';
     const errs = showLog(r.log, inc.notes);
+    shown = false;
     if (r.unloaded && o.onFail) o.onFail();
     if (r.timeout) { setSt(`stopped: the render ran past ${Math.round((o.timeout || 60000) / 1000)} s`, true); return; }
+    //  a render that did not run is not an empty model: say which
+    if (r.error) { setSt(r.unloaded ? 'OpenSCAD could not be loaded, see the console' : 'OpenSCAD stopped before it finished, see the console', true); return; }
     if (r.rc !== 0 || !r.data) {
       setSt(errs ? 'OpenSCAD reported an error, see the console' : 'no part: the model made nothing to draw', true);
       if (errs) con.open = true;
@@ -291,12 +306,14 @@ export function mount(host, opts) {
     const m = parseStl(r.data);
     if (m.error) { setSt(m.error, true); return; }
     lastKey = k; lastStl = r.data;
+    good = { log: r.log, st: `rendered in ${(r.ms / 1000).toFixed(1)} s` };
+    shown = true;
     msg.hidden = true;
     if (vw) vw.setMesh(m, { keepView: true });
     dims.textContent = m.tris
       ? `${mm(m.max[0] - m.min[0])} × ${mm(m.max[1] - m.min[1])} × ${mm(m.max[2] - m.min[2])} mm · ${m.tris.toLocaleString()} triangles`
       : 'empty';
-    setSt(`rendered in ${(r.ms / 1000).toFixed(1)} s`);
+    setSt(good.st);
   }
   function askNow() {
     msg.hidden = false;
@@ -310,6 +327,7 @@ export function mount(host, opts) {
     const inc = await gather();
     if (fmt === 'stl' && lastStl && lastKey === key(inc)) { download(leaf(o.name) + '.stl', lastStl, 'model/stl'); return; }
     setSt('making the ' + fmt.toUpperCase() + '…');
+    shown = false;
     const out = '/out.' + fmt;
     const args = [mainFile(), '-o', out, '--export-format', fmt === 'stl' ? 'binstl' : '3mf'];
     for (const [n, x] of defs) { const p = ps.find((q) => q.name === n); if (p) args.push('-D', defineArg(p, x)); }
@@ -333,6 +351,7 @@ export function mount(host, opts) {
       stop();
       defs.clear();
       lastKey = lastStl = null;
+      good = null; shown = false;
       if (vw) vw.clear();
       dims.textContent = '';
       setSt('');
