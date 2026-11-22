@@ -515,6 +515,8 @@ struct App {
     /// own: on the workers every request shares, four slow ones held them all and nothing else was answered.
     anon_reading: Option<String>,
     anon_seq: u64,
+    /// What was in front when the read of another ship's page on its way was asked for: it lands only there.
+    remote_from: Option<Front>,
     /// When the engine's start is next looked at (app clock): one wake at a time.
     anon_tick: f64,
     anon_got: std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<(String, api::Urb), String>)>>>,
@@ -1148,6 +1150,7 @@ fn init() -> App {
         engine: None,
         anon_reading: None,
         anon_seq: 0,
+        remote_from: None,
         anon_tick: 0.0,
         anon_got: Default::default(),
         #[cfg(unix)]
@@ -6133,7 +6136,11 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if let Some(r) = s.remote_req.take() {
         changed = true;
         match r {
-            Ok((sh, p)) if !s.editing => show_remote(s, sh, p),
+            Ok((sh, p)) if !s.editing => {
+                if !gone_since(s) {
+                    show_remote(s, sh, p);
+                }
+            }
             Ok(_) => {}
             Err(e) => s.note = format!("could not read it: {e}"),
         }
@@ -6783,6 +6790,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if let Some(r) = s.urb_req.take() {
         changed = true;
         match r {
+            Ok(_) if gone_since(s) => {}
             Ok((url, got)) => urb_got(s, url, got),
             Err(e) => s.note = format!("address: {e}"),
         }
@@ -6796,6 +6804,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         s.anon_reading = None;
         match r {
+            Ok(_) if gone_since(s) => {}
             Ok((url, got)) => urb_got(s, url, got),
             // the reader's own words are whole sentences
             Err(e) => s.note = e,
@@ -10773,6 +10782,7 @@ fn open_remote(s: &mut App, sh: Shared) {
     match s.conn.clone() {
         Some(c) => {
             s.note = format!("reading {} from {}", sh.name(), sh.host);
+            s.remote_from = Some(front(s));
             s.remote_req.request((c, sh), |(c, sh)| c.browse(&sh).map(|p| (sh, p)));
         }
         // sample pages: a page as its host would answer
@@ -10885,6 +10895,7 @@ fn urb_go_anon(s: &mut App, to: Option<String>) {
     s.note = format!("reading {url}\u{2026}");
     s.anon_seq += 1;
     s.anon_reading = Some(url.clone());
+    s.remote_from = Some(front(s));
     let (seq, got, waker) = (s.anon_seq, s.anon_got.clone(), s.waker.clone());
     spawn(move || {
         let read = || {
@@ -11246,7 +11257,37 @@ fn urb_go(s: &mut App, to: Option<String>) {
         return;
     }
     s.note = format!("reading {url}\u{2026}");
+    s.remote_from = Some(front(s));
     s.urb_req.request((c, url), |(c, url)| c.urb_read(&url).map(|u| (url, u)));
+}
+
+/// What stands in front of the reader: the screen, and the page on it.
+#[derive(Clone, Debug, PartialEq)]
+struct Front {
+    /// The forum, the settings, the inbox, access, the browser, a folder.
+    screens: [bool; 6],
+    memory: bool,
+    page: Option<String>,
+}
+
+fn front(s: &App) -> Front {
+    Front { screens: [s.forum.is_some(), s.settings.is_some(), s.inbox, s.access, s.shared_open, s.folder.is_some()], memory: s.memory, page: s.open.as_ref().map(|p| p.name.clone()) }
+}
+
+/// Whether the reader has gone elsewhere since the read of another ship's page now answered was
+/// asked for. Its answer is then let go, as if the read had been: it would land over the forum,
+/// the settings or whatever was gone to, and drop what is typed there. Every way of going
+/// somewhere changes what is in front, so this is asked where the answer lands, not where each
+/// way leads.
+fn gone_since(s: &mut App) -> bool {
+    if s.remote_from.as_ref() == Some(&front(s)) {
+        return false;
+    }
+    // that it is being read was said, and is so no longer
+    if s.note.starts_with("reading ") {
+        s.note.clear();
+    }
+    true
 }
 
 /// What was read at an address is shown: a page as another ship's page, a folder as a list under the address.

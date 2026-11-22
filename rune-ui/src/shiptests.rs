@@ -1296,3 +1296,36 @@ fn a_page_renamed_with_the_ship_away_while_edited_is_saved_claiming_no_revision(
     assert_eq!(ship.body("notes/b"), "firsttyped after\n");
     assert!(!ship.st().pages.keys().any(|n| n.starts_with("conflicts/")) && !r.s.note.contains("had changed on the ship"), "{:?}", r.s.note);
 }
+
+#[test]
+fn a_late_answer_to_an_address_does_not_take_the_screen_gone_to_since() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "first\n");
+    let mut r = Run::new(&ship);
+    ship.st().urb_slow = 0.6;
+    let screens: [(&str, fn(&mut App), fn(&App) -> bool); 4] = [
+        ("the forum", go_forum, |s| s.forum.as_ref().is_some_and(|f| f.draft.as_ref().is_some_and(|d| d[2].text == "three paragraphs typed"))),
+        ("the settings", go_settings, |s| s.settings.as_ref().is_some_and(|st| st.bk_label.text == "typed into a field")),
+        ("the inbox", go_inbox, |s| s.inbox),
+        ("access", go_access, |s| s.access),
+    ];
+    for (what, go, there) in screens {
+        r.open("notes/a");
+        urb_go(&mut r.s, Some("urb://~sampel-palnet/notes/plan".to_owned()));
+        r.secs(0.1);
+        go(&mut r.s);
+        // what is typed there
+        if let Some(f) = r.s.forum.as_mut() {
+            f.draft = Some(Box::new([TextEdit::new("My long thread"), TextEdit::new(""), TextEdit::new("three paragraphs typed"), TextEdit::new("")]));
+        }
+        if let Some(st) = r.s.settings.as_mut() {
+            st.bk_label = TextEdit::new("typed into a field");
+        }
+        r.secs(1.2);
+        assert!(there(&r.s) && r.s.remote.is_none(), "a late answer to an address took {what}, and what was typed there");
+    }
+    // the screen it was asked from takes it
+    urb_go(&mut r.s, Some("urb://~sampel-palnet/notes/plan".to_owned()));
+    r.until("the address", |s| s.remote.is_some());
+}
