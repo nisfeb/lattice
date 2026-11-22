@@ -709,9 +709,17 @@ impl<'a> Engine<'a> {
                 let v = self.ev(x, ctx)?;
                 let v = self.one(v, ctx);
                 // a plus before a value leaves text and numbers as they are: `=+B1` is what B1 holds. A
-                // logical is its number, as it is for every other operator
+                // logical read from a cell is its number, and one that is the result of an expression or a
+                // function stays a logical
                 if *op != '-' {
-                    return Ok(if let V::Bool(b) = v { V::Num(f64::from(b)) } else { v });
+                    let mut inner = &**x;
+                    while let Node::Paren(i) = inner {
+                        inner = i;
+                    }
+                    return Ok(match v {
+                        V::Bool(b) if matches!(inner, Node::Ref(_)) => V::Num(f64::from(b)),
+                        v => v,
+                    });
                 }
                 match to_num(&v) {
                     V::Num(v) => V::Num(-v),
@@ -2295,7 +2303,7 @@ mod tests {
             n += 1;
         }
         assert!(wrong.is_empty(), "{} of {n} differ:\n{}", wrong.len(), wrong.join("\n"));
-        assert_eq!(n, 354);
+        assert_eq!(n, 372);
     }
 
     #[test]

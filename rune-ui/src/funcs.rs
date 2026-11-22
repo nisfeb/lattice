@@ -300,8 +300,9 @@ fn round(n: f64, d: f64, mode: u8) -> f64 {
     let y = match mode {
         b'u' => {
             let m = x.floor();
-            // the allowance goes with the number's first figure, and not past what is plainly a fraction
-            let hair = if x < 2_199_023_255_552.0 { 7.5e-12 * 10f64.powi(x.log10().floor() as i32) } else { 0.0 };
+            // the allowance goes with the number's first figure, and never past binary noise: a number
+            // that is plainly a fraction goes up, and one just under a whole number goes up to it
+            let hair = if x < 2_199_023_255_552.0 { (7.5e-12 * 10f64.powi(x.log10().floor() as i32)).min(1e-3) } else { (4.0 * f64::EPSILON * x).min(0.25) };
             if x - m <= hair { m } else { x.ceil() }
         }
         b'd' => crate::calc::approx_value(x).floor(),
