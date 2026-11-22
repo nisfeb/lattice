@@ -530,6 +530,48 @@ fn with_mount(tag: &str, ship: &Arc<Ship>, secs: u64, body: impl FnOnce(&Path) +
     }
 }
 
+/// A page with pages under it shows as a folder holding its own file. The
+/// ship's delete of a name takes everything under it, so unlinking that file
+/// must not be sent while anything is still under the page.
+#[test]
+fn unlinking_a_pages_own_file_never_takes_the_pages_under_it() {
+    let ship = Ship::with(
+        &[
+            ("demo", "md", "the parent body\n"),
+            ("demo/child", "gmi", "child body\n"),
+            ("demo/sub/deep", "md", "deep body\n"),
+            ("solo", "md", "alone\n"),
+        ],
+        &[],
+    );
+    let s = ship.clone();
+    with_mount("unlink-parent", &ship, 30, move |mnt| {
+        let deletes = |s: &Ship| s.log().into_iter().filter(|l| l.starts_with("delete")).collect::<Vec<_>>();
+        let e = fs::remove_file(mnt.join("demo/demo.md")).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::ENOTEMPTY), "the page has pages under it");
+        assert_eq!(deletes(&s), Vec::<String>::new(), "no delete may reach the ship");
+        assert!(names(&mnt.join("demo")).contains(&"demo.md".to_string()), "and the file is still listed");
+        // a page with nothing under it goes as before
+        fs::remove_file(mnt.join("solo.md")).unwrap();
+        assert_eq!(deletes(&s), ["delete solo"]);
+        // one page under it gone, another still deeper: still refused. With
+        // no page directly under it, the page's file is beside the folder
+        let own = |mnt: &Path| {
+            let inside = mnt.join("demo/demo.md");
+            if inside.exists() { inside } else { mnt.join("demo.md") }
+        };
+        fs::remove_file(mnt.join("demo/child.gmi")).unwrap();
+        let e = fs::remove_file(own(mnt)).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::ENOTEMPTY), "a page two levels down is under it too");
+        assert!(s.has("demo") && s.has("demo/sub/deep"));
+        // with nothing left under it, it goes
+        fs::remove_file(mnt.join("demo/sub/deep.md")).unwrap();
+        fs::remove_dir(mnt.join("demo/sub")).unwrap();
+        fs::remove_file(own(mnt)).unwrap();
+        assert_eq!(deletes(&s).last().map(String::as_str), Some("delete demo"));
+    });
+}
+
 /// truncate(2), then the page moves on elsewhere, then something opens the
 /// file to read it: the read must never save the truncate over the newer
 /// page. Looped, because the old failure hung on which handle a lookup met
