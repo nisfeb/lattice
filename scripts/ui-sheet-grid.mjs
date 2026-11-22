@@ -126,7 +126,8 @@ console.log('==> typing and recalculation');
   await g.click(2, 4);
   await g.page.keyboard.type('=SUM(A2:A5');
   await g.press('Enter');
-  check('a formula that cannot be read is refused with a note', /cannot be read/.test(await g.note()) && (await g.cell(0, 2, 4)).f === null);
+  check('a formula that cannot be read is said so in a note', /cannot be read/.test(await g.note()) && (await g.cell(0, 2, 4)).f === null);
+  check.eq('and is kept as the text typed', (await g.cell(0, 2, 4)).v, '=SUM(A2:A5');
   await g.click(3, 4);
   await g.page.keyboard.type('=IF(AND(A2>1,B2<10),"yes","no")');
   await g.press('Tab');
@@ -176,6 +177,96 @@ console.log('==> keyboard, ranges, clipboard');
   check.eq('Ctrl+End goes to the last used cell', await g.addr(), 'F42');
   await g.chord('Control', 'Home');
   check.eq('Ctrl+Home goes home', await g.addr(), 'A1');
+  await g.page.close();
+}
+
+console.log('==> the formula bar and the cell editor are one edit');
+{
+  const g = await open(corpus('02-formulas'));
+  const edOpen = () => g.page.$eval('.ls-ed', (e) => !e.classList.contains('ls-idle'));
+  await g.click(4, 4);
+  await g.page.keyboard.type('abc');
+  await g.page.click('.ls-fx input');
+  await g.page.keyboard.type('def');
+  check.eq('typing goes on in the bar after starting in the cell', await g.bar(), 'abcdef');
+  check.eq('and the cell editor shows the same text', await g.page.$eval('.ls-ed', (e) => e.value), 'abcdef');
+  await g.click(6, 4);
+  check.eq('a click elsewhere commits what the bar shows', (await g.cell(0, 4, 4)).v, 'abcdef');
+  await g.click(5, 4);
+  await g.page.keyboard.type('=1+');
+  await g.page.click('.ls-fx input');
+  await g.page.keyboard.type('41');
+  const ok = await g.page.evaluate(() => window.ctl.sync());
+  check('a save commits a formula finished in the bar', ok === true && (await g.cell(0, 5, 4)).f === 'of:=1+41' && (await g.cell(0, 5, 4)).v === 42);
+  check('and it is in the page buffer', (await g.page.evaluate(() => window.buf)).includes('table:formula="of:=1+41"'));
+  await g.click(6, 4);
+  await g.page.keyboard.type('gone');
+  await g.page.click('.ls-fx input');
+  await g.page.keyboard.type('!');
+  await g.press('Escape');
+  check('Escape in the bar abandons the edit and closes the cell editor', (await g.cell(0, 6, 4)).vt === null && !(await edOpen()) && await g.bar() === '');
+  await g.click(7, 4);
+  await g.page.keyboard.type('one');
+  await g.page.click('.ls-fx input');
+  await g.page.keyboard.type(' two');
+  await g.page.click('.ls-ed');
+  await g.press('End');
+  await g.page.keyboard.type(' three');
+  check('going back into the cell editor keeps it open with the whole text', await edOpen() && await g.bar() === 'one two three');
+  await g.press('Enter');
+  check.eq('and Enter commits all of it', (await g.cell(0, 7, 4)).v, 'one two three');
+  await g.click(8, 4);
+  await g.page.keyboard.type('x');
+  await g.page.click('.ls-fx input');
+  await g.page.keyboard.type('y');
+  await g.tool('Bold');
+  check('a toolbar button commits what the bar shows', (await g.cell(0, 8, 4)).v === 'xy');
+  await g.page.close();
+}
+
+console.log('==> a formula that cannot be read is never dropped');
+{
+  const g = await open(corpus('02-formulas'));
+  const typo = '=IF(SUM(B1:B9)>10,AVERAGE(B1:B9),MAX(B1:B9)';
+  await g.click(4, 4);
+  await g.page.keyboard.type('kept');
+  await g.press('Enter');
+  await g.click(4, 4);
+  await g.press('F2');
+  await g.page.$eval('.ls-ed', (e) => e.select());
+  await g.page.keyboard.type(typo);
+  await g.press('Enter');
+  check.eq('Enter on a formula one bracket short keeps the text typed', (await g.cell(0, 4, 4)).v, typo);
+  check('with no formula stored, and a note saying why', (await g.cell(0, 4, 4)).f === null && /bracket/.test(await g.note()));
+  await g.click(4, 4);
+  check.eq('the bar shows it as typed, to be put right', await g.bar(), typo);
+  check('and the cell is drawn as an error', await g.page.$eval('.ls-c[data-r="4"][data-c="4"]', (e) => e.classList.contains('ls-err') && e.textContent.startsWith('=IF(')));
+  await g.page.click('.ls-fx input');
+  await g.press('End');
+  await g.page.keyboard.type(')');
+  await g.press('Enter');
+  check.eq('closing the bracket in the bar makes it the formula', (await g.cell(0, 4, 4)).f, 'of:=IF(SUM([.B1:.B9])>10;AVERAGE([.B1:.B9]);MAX([.B1:.B9]))');
+  await g.click(6, 4);
+  await g.page.keyboard.type('=A2+');
+  const r = await g.page.evaluate(() => { const ok = window.ctl.sync(); return { ok, buf: window.buf }; });
+  check('a save with such text in the open editor reports success only with the text in the buffer', r.ok === true && r.buf.includes('<text:p>=A2+</text:p>'));
+  check.eq('and the cell holds it', (await g.cell(0, 6, 4)).v, '=A2+');
+  const again = await g.page.evaluate(() => { const b = new window.LatSheet.core.Book(window.buf); return b.cell(0, 6, 4).v + '|' + b.cell(0, 4, 4).f; });
+  check.eq('the saved text reads back with both', again, '=A2+|of:=IF(SUM([.B1:.B9])>10;AVERAGE([.B1:.B9]);MAX([.B1:.B9]))');
+  //  a commit the book refuses leaves the editor open, and the save is told
+  await g.click(8, 4);
+  await g.page.keyboard.type('held');
+  const held = await g.page.evaluate(() => {
+    const b = window.ctl.book, real = b.enter;
+    b.enter = () => ({ error: 'refused for the test' });
+    const ok = window.ctl.sync();
+    b.enter = real;
+    const e = document.querySelector('.ls-ed');
+    return { ok, open: !e.classList.contains('ls-idle'), text: e.value };
+  });
+  check('a refused commit keeps the editor open with its text, and the save is told', held.ok === false && held.open && held.text === 'held', JSON.stringify(held));
+  await g.press('Enter');
+  check.eq('and it commits once the book takes it', (await g.cell(0, 8, 4)).v, 'held');
   await g.page.close();
 }
 

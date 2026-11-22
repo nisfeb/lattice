@@ -316,6 +316,9 @@ export function setCell(sheet, r, c, val) {
   cell.f = val.f ?? null;
   cell.text = val.text ?? '';
   cell.err = !!val.err;
+  //  the text of a formula that could not be read (book.js +enter). Not
+  //  saved: in the file it is a text cell.
+  cell.bad = !!val.bad;
   if (val.cur !== undefined) cell.cur = val.cur;
   if (cell.vt !== 'currency') delete cell.cur;
   cell.rich = false;

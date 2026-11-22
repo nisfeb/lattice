@@ -144,6 +144,7 @@ export class Book {
     if (!cell.vt) return '';
     if (cell.vt === 'string') {
       const t = cell.v ?? cell.text;
+      if (cell.bad) return t;
       const as = readTyped(t, this.doc.nullDate);
       return as.vt !== 'string' || t[0] === '=' || t[0] === "'" ? "'" + t : t;
     }
@@ -170,8 +171,16 @@ export class Book {
     if (typed.length > 1 && typed[0] === '=') {
       let f;
       try { f = toOf(typed); } catch (e) {
-        if (e instanceof FormulaError) return { error: 'that formula cannot be read: ' + e.message };
-        throw e;
+        //  RangeError: nested or chained too deep to parse
+        if (!(e instanceof FormulaError) && !(e instanceof RangeError)) throw e;
+        //  what was typed is never thrown away. A formula that cannot be
+        //  read is kept as the text typed, marked so the grid draws it as
+        //  an error and the bar shows it as typed, to be put right.
+        setCell(sheet, r, c, { vt: 'string', v: typed, f: null, text: typed, bad: true });
+        this.engine.setFormula(s, r, c, null);
+        const changed = this.engine.recalc([[s, r, c]]);
+        const why = e instanceof FormulaError ? e.message : 'it is too long';
+        return { changed: [[s, r, c], ...changed], note: `that formula cannot be read: ${why}. It is kept as text.` };
       }
       return this.putFormula(s, r, c, f);
     }
