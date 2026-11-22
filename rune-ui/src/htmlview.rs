@@ -420,6 +420,56 @@ mod tests {
         }
     }
 
+    /// How deep a page's elements stand one in another, as the parser that draws it reads them.
+    fn real_depth(html: &str) -> usize {
+        let doc = HtmlDocument::from_html(html, DocumentConfig::default());
+        let (mut most, mut left) = (0, vec![(doc.root_node().id, 0usize)]);
+        while let Some((id, above)) = left.pop() {
+            let node = doc.get_node(id).expect("a node the tree names");
+            let depth = above + usize::from(node.element_data().is_some());
+            most = most.max(depth);
+            left.extend(node.children.iter().map(|c| (*c, depth)));
+        }
+        most
+    }
+
+    #[test]
+    fn a_page_counted_as_shallow_is_shallow_to_the_parser_that_draws_it() {
+        // tags that close themselves, in the spellings that do and do not, set by the dozen among what starts, ends and hides a drawing.
+        // Wherever the count lets such a run by as opening nothing, the parser must not have stood them one in another
+        let runs = ["<circle/>", "<circle r=\"1\"/>", "<circle r=1/>", "<circle r= />", "<path d='M0 0' />", "<div/>", "<span/>", "<x y/>", "<x \"/>", "<x y='a>b'/>", "<g/>", "<mi/>", "<title/>", "<svg/>", "<p/>", "<td/>", "<circle / >", "<br/>", "<X:y/>", "<a-b/>"];
+        let bits = [
+            "<svg>", "<svg>", "<svg>", "<SVG viewBox='0 0 1 1'>", "<math>", "<svg\n>", "<svg/x>", "<svg-x>", "<g>", "<g>", "<defs>", "<text>", "t", "<title>", "<desc>", "<foreignObject>", "<mi>", "<mtext>", "<annotation-xml>", "<div>", "<p>", "<b>", "<font>", "<font color=red>", "<td>", "<li>", "<table>", "<select>", "<option>", "<textarea>", "<xmp>", "<iframe>", "<noscript>", "<template>", "<script>", "<style>", "<plaintext>", "<a title=\"<svg>\">", "<a title='", "<a title=\"", "<x =\"", "'>", "\">", ">", "/>", "<", "</", "<!", "<?", "<!-- ", " -->", "--!>", "<!-->", "<!--->", "<!--!>", "<!----!>", "<![CDATA[", "]]>", "<!doctype html>", "</ x>", "</>",
+            "</svg>", "</svg>", "</math>", "</g>", "</title>", "</desc>", "</foreignObject>", "</mi>", "</div>", "</p>", "</br>", "</font>", "</select>", "</textarea>", "</textareax>", "</script>", "</scriptx>", "</style>", "</xmp>", "</iframe>", "</template>", "</x>", "</table>", "</td>",
+        ];
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |n: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize % n
+        };
+        let (mut let_by, mut wrong) = (0, Vec::new());
+        for round in 0..2000 {
+            let (mut page, pieces) = (String::new(), 2 + next(12));
+            for _ in 0..pieces {
+                if next(4) == 0 {
+                    page.push_str(&runs[next(runs.len())].repeat(80));
+                } else {
+                    page.push_str(bits[next(bits.len())]);
+                }
+            }
+            // no more than `pieces` elements are opened outside the runs, and the parser adds a page's three of its own
+            if !crate::html::deeper_than(&page, pieces) {
+                let real = real_depth(&page);
+                if real > 2 * pieces + 3 {
+                    wrong.push(format!("round {round}: counted as no deeper than {pieces}, and {real} deep: {}", runs.iter().fold(page.clone(), |p, r| p.replace(&r.repeat(80), &format!("[{r} x80]")))));
+                }
+                let_by += usize::from(page.len() > 800);
+            }
+        }
+        assert!(wrong.is_empty(), "{} pages: {}", wrong.len(), wrong[..wrong.len().min(40)].join("\n"));
+        assert!(let_by > 50, "the runs were let by in {let_by} pages only: the check checks little");
+    }
+
     #[test]
     fn the_bands_in_view_come_first_and_those_far_off_are_let_go() {
         // a page of ten bands, the view over the fourth and fifth
