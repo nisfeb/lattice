@@ -244,6 +244,29 @@ console.log('==> cut, copy and paste inside one document');
   }
 }
 
+console.log('==> sync() and a refused document');
+{
+  const page = await open(corpus('01-paragraphs'));
+  const r = await page.evaluate(() => {
+    const ctl = window.ctl, v = ctl.view;
+    v.dispatch(v.state.tr.insertText('UNSAVED-EDIT ', 3));
+    const real = ctl.text; let refuse = 2;
+    ctl.text = () => (refuse-- > 0 ? { error: 'simulated refusal' } : real());
+    const first = ctl.sync();
+    const second = ctl.sync();
+    const heldBack = !window.buf.includes('UNSAVED-EDIT');
+    const third = ctl.sync();
+    return { first, second, heldBack, third, written: window.buf.includes('UNSAVED-EDIT'), fourth: ctl.sync(), notes: window.notes.filter((n) => /REFUSED/.test(n)).length };
+  });
+  check.eq('a refused sync is false', r.first, false);
+  check.eq('the next one is false too, while nothing was written', r.second, false);
+  check('  and nothing was', r.heldBack);
+  check.eq('  and each said so', r.notes, 2);
+  check('once the document serializes, sync writes it and is true', r.third === true && r.written);
+  check.eq('  and a sync with nothing to write is true', r.fourth, true);
+  await page.close();
+}
+
 console.log('==> a pasted slice context');
 {
   const ctx = (a) => JSON.stringify(a).replace(/'/g, '&#39;');

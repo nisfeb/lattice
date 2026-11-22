@@ -405,14 +405,16 @@ export function mount(host, opts = {}) {
   //  the shell's buffer (26-writer.js): opts.cur() reads it, onText writes
   //  it 300 ms after a change and at sync(); base is what it last held from
   //  here. sync() is false when the serializer refused (onRefuse), and does
-  //  nothing when the buffer changed under the editor.
+  //  nothing when the buffer changed under the editor. The edits stay
+  //  owed until a sync writes them: after a refusal every later sync
+  //  tries again, and is false again while the buffer lacks them.
   ctl.base = () => base;
   ctl.sync = () => {
     clearTimeout(syncTimer);
     if (!dirty || opts.cur() !== base) return true;
-    dirty = false;
     const r = ctl.text();
     if (r.error) return opts.onRefuse(r.error), false;
+    dirty = false;
     if (r.text !== base) opts.onText(base = r.text);
     return true;
   };
