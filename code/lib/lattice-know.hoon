@@ -940,6 +940,12 @@
   |=  [old=(unit know-entry) prose=@t author=@t source=@t now=@da sens=?]
   ^-  @t
   =/  meta=(list [k=@t v=@t])  ?~(old ~ meta:(front body.u.old))
+  ::  an entry read as superseded only by the reader before CRLF support
+  ::  (+superseded, a block closed by `----`) keeps that mark in a block
+  ::  built here, so a save never makes it live
+  =?  meta  ?&(?=(^ old) ?=(~ (meta-get meta 'superseded-by')))
+    =/  sup=(unit @t)  (superseded u.old)
+    ?~(sup meta (meta-put meta 'superseded-by' u.sup))
   =/  sets=(list [k=@t v=@t])
     ;:  weld
       ?^  (meta-get meta 'created')  ~

@@ -758,6 +758,20 @@
   ==
 ::  an entry the reader before CRLF support read as superseded still is
 ::  (a block it closed at a line of four dashes)
+::  an entry only the reader before CRLF support reads as superseded stays
+::  superseded through a keyed save
+++  test-stamp-keeps-superseded-v1
+  =/  old=know-entry
+    ['---\0asuperseded-by: /up/supnew\0acreated: 2020-01-01\0a---x\0abody' ~2026.1.1 ~ ~]
+  =/  st=@t  (stamp `old 'edited body' 'bob' '' ~2026.10.4 |)
+  ;:  weld
+    (expect-eq !>(`(unit @t)``'/up/supnew') !>((superseded old)))
+    (expect-eq !>(`(unit @t)``'/up/supnew') !>((superseded [st ~2026.1.1 ~ ~])))
+    %+  expect-eq  !>(`(unit @t)``'/y')
+    !>((superseded [(stamp `['---\0asuperseded-by: /y\0a----\0ax' ~2026.1.1 ~ ~] 'p' '' '' ~2026.10.4 &) ~2026.1.1 ~ ~]))
+    ::  a live entry stays live
+    (expect-eq !>(`(unit @t)`~) !>((superseded [(stamp `['---\0acreated: 2020-01-01\0a---x\0abody' ~2026.1.1 ~ ~] 'p' 'bob' '' ~2026.10.4 |) ~2026.1.1 ~ ~])))
+  ==
 ++  test-superseded-like-before
   ;:  weld
     (expect-eq !>(`(unit @t)``'/x') !>((superseded ['---\0asuperseded-by: /x\0a----\0abody' ~2026.1.1 ~ ~])))
