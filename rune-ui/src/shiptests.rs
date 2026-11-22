@@ -323,7 +323,7 @@ impl Run {
         s.queue = c.queue();
         s.ops = c.ops();
         // this address's own preferences, as after a sign-in: the computer's are read by other tests, and are left as they are
-        s.prefs = api::Prefs::load_for(&c.url);
+        s.prefs = api::Prefs::load_for(&c.url, c.ship());
         s.conn = Some(c);
         // autosave looks only when a test asks it to
         s.next_auto = f64::INFINITY;
