@@ -583,24 +583,50 @@ impl GrubberyFs {
     /// Sends the delete of each held page with nothing under it now: on any
     /// ship that takes the page alone. One the ship refuses stays held, and is
     /// tried again at the next change. The folder of its name goes with it.
+    /// A delete that frees the page above it is followed by that page's, so
+    /// the pass repeats until it releases nothing.
+    ///
+    /// The delete is sent later than the unlink that held it, and a ship before
+    /// the page-only delete takes everything under a name it deletes. So
+    /// the ship is asked what is under the page just before, not the mount's
+    /// last listing, and a page with anything under it stays held.
     fn release_held(&self) {
-        let free: Vec<String> = {
-            let s = self.st.lock().unwrap();
-            s.held
-                .iter()
-                .filter(|rel| {
-                    let under = format!("/{rel}/");
-                    !s.vt.keys().any(|k| k.starts_with(&under) && !s.scratch.contains_key(k))
-                })
-                .cloned()
-                .collect()
-        };
-        for rel in free {
-            if self.proj.delete(&rel).is_ok() {
-                let mut s = self.st.lock().unwrap();
-                s.held.remove(&rel);
-                s.cache_take(&rel);
-                s.mutated(&format!("/{rel}"), false);
+        loop {
+            let free: Vec<String> = {
+                let s = self.st.lock().unwrap();
+                s.held
+                    .iter()
+                    .filter(|rel| {
+                        let under = format!("/{rel}/");
+                        !s.vt.keys().any(|k| k.starts_with(&under) && !s.scratch.contains_key(k))
+                    })
+                    .cloned()
+                    .collect()
+            };
+            if free.is_empty() {
+                return;
+            }
+            // a ship that cannot be asked is not sent a delete that could take a page
+            let Ok(on_ship) = self.proj.list() else { return };
+            let mut released = false;
+            for rel in free {
+                let under = format!("{rel}/");
+                if on_ship.iter().any(|n| n.rel.starts_with(&under)) {
+                    continue;
+                }
+                if self.proj.delete(&rel).is_ok() {
+                    let mut s = self.st.lock().unwrap();
+                    s.held.remove(&rel);
+                    s.cache_take(&rel);
+                    let dir = format!("/{rel}");
+                    s.mutated(&dir, false);
+                    // its folder went with it, and the page above may be free now
+                    s.vt.remove(&dir);
+                    released = true;
+                }
+            }
+            if !released {
+                return;
             }
         }
     }
@@ -886,6 +912,8 @@ impl GrubberyFs {
             .write(dst_rel, dst_kind, &v, !dst_exists)
             .map_err(|e| self.moved_away(e))?;
         let mut s = self.st.lock().unwrap();
+        // written over a held page, it is no longer held
+        s.held.remove(dst_rel);
         // the temp no longer exists under its old name
         s.scratch.remove(src_path);
         s.vt.remove(src_path);
@@ -1991,7 +2019,8 @@ impl Filesystem for GrubberyFs {
             let dst_path = join(&npp, &newname);
             let (src_rel, _) = self.rel_kind_of(&s, &src_path);
             let (dst_rel, dst_kind) = self.rel_kind_of(&s, &dst_path);
-            let dst_exists = s.vt.contains_key(&dst_path);
+            // a held page's file is hidden from the listing, but the page is on the ship
+            let dst_exists = s.vt.contains_key(&dst_path) || s.held.contains(&dst_rel);
             (src_path, dst_path, src_rel, dst_rel, dst_kind, dst_exists)
         };
         // Any rename touching a scratch name must never delete/clobber the page it

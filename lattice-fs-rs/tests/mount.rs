@@ -648,6 +648,70 @@ fn unlinking_a_pages_own_file_never_takes_the_pages_under_it() {
     }
 }
 
+/// A held page whose pages under it are held too: the last unlink frees the
+/// deepest, whose delete frees the one above it, and so on up. Every page
+/// goes, whatever the order the files were removed in.
+#[test]
+fn held_pages_nested_in_held_pages_are_all_deleted() {
+    for older in [false, true] {
+        let ship = Ship::with(&[("demo", "md", "p\n"), ("demo/sub", "md", "s\n"), ("demo/sub/x", "md", "x\n"), ("demo/sub/y", "md", "y\n")], &[]);
+        ship.subtree.store(older, std::sync::atomic::Ordering::SeqCst);
+        let s = ship.clone();
+        with_mount(if older { "nested-held-older" } else { "nested-held" }, &ship, 30, move |mnt| {
+            fs::remove_file(mnt.join("demo/demo.md")).unwrap();
+            fs::remove_file(mnt.join("demo/sub/sub.md")).unwrap();
+            fs::remove_file(mnt.join("demo/sub/x.md")).unwrap();
+            assert_eq!(deletes(&s), ["delete demo/sub/x"]);
+            fs::remove_file(mnt.join("demo/sub/y.md")).unwrap();
+            assert_eq!(deletes(&s), ["delete demo/sub/x", "delete demo/sub/y", "delete demo/sub", "delete demo"]);
+            assert!(!s.has("demo") && !s.has("demo/sub"));
+            assert!(!names(mnt).contains(&"demo".to_string()), "{:?}", names(mnt));
+        });
+    }
+}
+
+/// An editor saves by writing `name~` and renaming it onto the file. When the
+/// file is a held page's own, the page is still on the ship: the rename writes
+/// over it, and the page is no longer held.
+#[test]
+fn an_atomic_save_onto_a_held_pages_file_writes_over_the_page() {
+    for older in [false, true] {
+        let ship = Ship::with(&[("demo", "md", "p\n"), ("demo/kid", "md", "k\n")], &[]);
+        ship.subtree.store(older, std::sync::atomic::Ordering::SeqCst);
+        let s = ship.clone();
+        with_mount(if older { "held-promote-older" } else { "held-promote" }, &ship, 30, move |mnt| {
+            fs::remove_file(mnt.join("demo/demo.md")).unwrap();
+            fs::write(mnt.join("demo/demo.md~"), "new text\n").unwrap();
+            fs::rename(mnt.join("demo/demo.md~"), mnt.join("demo/demo.md")).unwrap();
+            assert_eq!(s.body("demo").as_deref(), Some(&b"new text\n"[..]), "{:?}", s.log());
+            // the page is written again, so the last page under it going does not delete it
+            fs::remove_file(mnt.join("demo/kid.md")).unwrap();
+            assert!(s.has("demo") && deletes(&s) == ["delete demo/kid"], "{:?}", s.log());
+            assert_eq!(s.body("demo").as_deref(), Some(&b"new text\n"[..]));
+        });
+    }
+}
+
+/// A held page's delete goes at a later change. If another client made a page
+/// under it meanwhile, the delete is not sent, whichever kind of ship it is:
+/// a ship before the page-only delete would take that page with it.
+#[test]
+fn a_held_pages_delete_is_not_sent_while_another_client_has_a_page_under_it() {
+    for older in [false, true] {
+        let ship = Ship::with(&[("demo", "md", "p\n"), ("demo/kid", "md", "k\n")], &[]);
+        ship.subtree.store(older, std::sync::atomic::Ordering::SeqCst);
+        let s = ship.clone();
+        with_mount(if older { "held-late-older" } else { "held-late" }, &ship, 30, move |mnt| {
+            fs::remove_file(mnt.join("demo/demo.md")).unwrap();
+            // another client makes a page under it, and the mount has not heard
+            s.pages.lock().unwrap().insert("demo/late".into(), ("md".into(), b"precious\n".to_vec()));
+            fs::remove_file(mnt.join("demo/kid.md")).unwrap();
+            assert!(s.has("demo/late") && s.has("demo"), "older={older}: {:?}", s.log());
+            assert_eq!(deletes(&s), ["delete demo/kid"]);
+        });
+    }
+}
+
 /// `rm -r` and `remove_dir_all` of a page's folder, with pages under it that
 /// sort before its own file and after it: both work, and the page's delete
 /// goes only once nothing is under it, on either kind of ship.
