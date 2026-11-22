@@ -990,14 +990,17 @@ pub fn ships_forget() {
 
 /// Ends a session that was signed out of: the ship is asked to end it,
 /// so the cookie is good for nothing, and the copy of every page's text
-/// kept on this device for it is taken away. Before this, signing out
-/// only forgot the session here, and both stayed. What still waits to
+/// kept on this device for it is taken away, with the copy of the session
+/// handed to a mounter. Before this, signing out only forgot the session
+/// here, and these stayed. What still waits to
 /// be sent to the ship is left: it is work not yet saved there.
 #[cfg(not(target_arch = "wasm32"))]
 fn end_session(url: String, cookie: String) {
     if let Some(kept) = kept_path(&url, (Conn { url: url.clone(), cookie: cookie.clone() }).ship()) {
         let _ = std::fs::remove_file(kept);
     }
+    // and the copy of the session a mount of this ship was started with: a ship that is away now never ends it, and it would stay good on disk
+    crate::mounts::forget_session(&url);
     // asked once and not waited for: a ship that is away keeps the session until it lapses
     let _ = std::thread::Builder::new().name("sign-out".to_owned()).spawn(move || {
         // what still waits is sent first, while the session is good: the edit being typed when Sign out was pressed is kept there a moment before, and would else reach the ship with a cookie it had just ended
@@ -4135,6 +4138,23 @@ mod tests {
         let kept = crate::accounts::Accounts::parse(r#"{"list":[{"url":"http://a","cookie":"urbauth-~zod/../x=0v1"},{"url":"http://b","cookie":"urbauth-~zod=0v1"}],"front":"http://a"}"#);
         assert_eq!((kept.list.len(), kept.list[0].url.as_str(), kept.front), (1, "http://b", None));
         assert!(crate::accounts::Accounts::from_session(r#"{"url":"http://a","cookie":"urbauth-~zod/../x=0v1"}"#, 1).is_none());
+    }
+
+    #[test]
+    fn signing_out_takes_back_the_session_handed_to_the_mounter() {
+        let home = Home::new("fs-cookie");
+        // nothing answers at either: the ship is away at sign-out, so the session is never ended there
+        let (url, other) = ("http://127.0.0.1:1", "http://127.0.0.1:2");
+        let file = |u: &str| home.0.join("fs-home/.config/lattice-fs").join(crate::mounts::cookie_file_name(u).unwrap());
+        for u in [url, other] {
+            crate::mounts::hand_session(u, "urbauth-~zod=0v7.secret").unwrap();
+            assert_eq!(std::fs::read_to_string(file(u)).unwrap(), "urbauth-~zod=0v7.secret");
+        }
+        end_session(url.into(), "urbauth-~zod=0v7.secret".into());
+        assert!(!file(url).exists(), "the session is not left where the mounter reads it");
+        assert!(file(other).exists(), "another ship's is not touched");
+        // signing out of a ship never mounted is not an error
+        end_session("http://127.0.0.1:3".into(), "urbauth-~zod=0v7.secret".into());
     }
 
     #[test]

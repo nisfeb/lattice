@@ -116,7 +116,7 @@ pub fn cookie_file_name(url: &str) -> Result<String, String> {
 }
 
 /// Puts the session where the mounter will read it: a home of its own under this app's files, so the mounter's own files in the owner's home are never touched. Answers that home.
-fn hand_session(url: &str, cookie: &str) -> Result<PathBuf, String> {
+pub(crate) fn hand_session(url: &str, cookie: &str) -> Result<PathBuf, String> {
     // nothing is mounted from a browser
     #[cfg(target_arch = "wasm32")]
     return {
@@ -143,6 +143,13 @@ fn hand_session(url: &str, cookie: &str) -> Result<PathBuf, String> {
         let file = dir.join(cookie_file_name(url)?);
         open.open(&file).and_then(|mut f| f.write_all(cookie.as_bytes())).map_err(|e| e.to_string())?;
         Ok(home)
+    }
+}
+
+/// Takes away the session handed to a mounter for the ship at `url`, when it is signed out of.
+pub fn forget_session(url: &str) {
+    if let (Some(home), Ok(name)) = (list_path().map(|p| p.with_file_name("fs-home")), cookie_file_name(url)) {
+        let _ = std::fs::remove_file(home.join(".config").join("lattice-fs").join(name));
     }
 }
 
