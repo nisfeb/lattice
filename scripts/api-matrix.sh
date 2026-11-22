@@ -188,6 +188,36 @@ r=$(G "$B/page-source?name=$P/mvq/guide")
 has "  a renamed page keeps its prose" "Call GET /$P/mvp/users (see /$P/mvp) and" "$r"
 has "  and its link to itself follows" "[[$P/mvq/guide]]" "$r"
 
+echo "==> a move asked twice keeps an edit made at the destination"
+# the same move asked again while the first still runs is run again, to
+# finish it. The second run must not copy over a page the first already
+# copied: an edit made there since would go under the old text.
+M="$P-mv2"
+T=$(mktemp -d)
+python3 -c "
+import json
+print(json.dumps([{'name':'$M/src/p%02d'%i,'type':'md','body':'original %d'%i} for i in range(16)]))" > "$T/seed"
+is "seed a folder of pages" 200 "$(sc -X POST "$B/page-save-batch" -H 'content-type: application/json' --data-binary @"$T/seed")"
+sc -X POST "$B/page-move?from=$M/src&to=$M/dst" > "$T/m1" &
+# once the first run has copied its last page, and before it deletes
+# the source, the same move again, and an edit of that page
+for i in $(seq 1 120); do
+  [ "$(sc "$B/page-source?name=$M/dst/p15")" = 200 ] && break
+  sleep 0.5
+done
+sc -X POST "$B/page-move?from=$M/src&to=$M/dst" > "$T/m2" &
+e=$(sc -X POST "$B/page-save?name=$M/dst/p15&type=md" --data-binary 'edited at the destination')
+wait
+is "the first run answers"  200 "$(cat "$T/m1")"
+is "the second run answers" 200 "$(cat "$T/m2")"
+is "the edit is taken"      200 "$e"
+sleep 2
+has "the edit is still the page's text" 'edited at the destination' "$(G "$B/page-source?name=$M/dst/p15")"
+has "a page nobody edited moved whole"  'original 3' "$(G "$B/page-source?name=$M/dst/p03")"
+is "the source is gone"     404 "$(sc "$B/page-source?name=$M/src/p15")"
+rm -rf "$T"
+sc -X POST "$B/page-del?name=$M" >/dev/null
+
 echo "==> create-only (?new=1) is decided where the write lands"
 # two creates of one name at once: one makes the page, the other is told
 # it exists, and the page holds one revision

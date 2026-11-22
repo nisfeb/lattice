@@ -8948,6 +8948,27 @@
     ?.  taken  $(act [%make-by pax.act src.act who.act ~])
     %-  (say 1 ~[leaf+"lattice: a create of {(spud pax.act)} found a page there and was not written"])
     (pure:m ~)
+      %move-make
+    ::  a page a move copies to its new place, with a note beside it of
+    ::  the source text it was copied from (`moved`). A move can run
+    ::  twice at once: asked again while its first request still runs,
+    ::  or resumed after a reload. The later run reads the same source,
+    ::  so it would copy every page again, over whatever was saved at
+    ::  the new place since the first copy. A page that holds the note
+    ::  of this same text was copied already, and is left as it is now.
+    ::  A source that changed since has another hash, and is copied.
+    =/  pdir=path  (weld /page pax.act)
+    =/  mr=road:tarball  (rf up pdir %moved)
+    ;<  there=?  bind:m  (peek-exists:fio (rf up pdir %code))
+    ;<  mv=view:nexus  bind:m  (peek:fio mr ~)
+    =/  was=(unit [path @uv])
+      ?.  ?=([%file *] mv)  ~
+      (mole |.(;;([path @uv] (sang-noun:tarball sang.mv))))
+    ?:  &(there =(was `[from.act had.act]))  (pure:m ~)
+    ;<  ~  bind:m
+      %^  apply-eval  root  now
+      ?:(marked.act [%make-marked pax.act src.act] [%make pax.act src.act])
+    (put-file mr [/ %noun] [from.act had.act])
       %make-marked
     ;<  old=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
     ;<  ~  bind:m  (write-page root pax.act src.act |)
@@ -10097,7 +10118,7 @@
   ^-  form:m
   ?.  =([/lattice %eval-action] p.sage)  (pure:m |)
   =/  act=eval-action:le  !<(eval-action:le q.sage)
-  ?.  ?=(?(%make %make-marked %make-by %make-new) -.act)  (pure:m |)
+  ?.  ?=(?(%make %make-marked %make-by %make-new %move-make) -.act)  (pure:m |)
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
   =/  w=(unit pub-wait:lp)  (~(get by pen) (spat pax.act))
   (pure:m &(?=(^ w) |(dirty.u.w (gte sent.u.w now))))
@@ -10788,7 +10809,9 @@
   ::  a peer-written page stays marked where it lands (+make-page-as)
   ;<  pw=?  bind:m  (peer-written (weld from i.rels))
   =/  acts=(list eval-action:le)
-    :-  ?:(pw [%make-marked dst newcode] [%make dst newcode])
+    ::  unless a run of this move has copied this text there already
+    ::  (%move-make): the same move asked again runs beside the first
+    :-  [%move-make dst newcode pw from (sham code)]
     %+  weld
       ^-  (list eval-action:le)  ?~(dn ~ [%dname dst u.dn]~)
     %+  weld
@@ -10806,7 +10829,7 @@
 ::  and form flags, the folder's share setting and grants, its index.
 ++  page-own-grubs
   ^-  (list @ta)
-  :~  %code  %data  %cmd  %deps  %err  %seen  %show  %writers
+  :~  %code  %data  %cmd  %deps  %err  %seen  %show  %writers  %moved
       %share  %'share-via'  %'grant-via'  %'own-grants'
       %'forms-cfg'  %'forms-use'  %'fodt.cache'  %'render.json'
   ==

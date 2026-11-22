@@ -32,6 +32,11 @@
       ::  not written over it. A page gone since has moved past it too.
       ::  ~ claims nothing.
       [%make-by pax=path src=@t who=@t base=(unit @ud)]
+      ::  +make or +make-marked, for a page a move copies to pax from
+      ::  under `from`, where its source hashed to `had`. Not written
+      ::  when pax holds a page that an earlier run of the same move
+      ::  copied from that same text.
+      [%move-make pax=path src=@t marked=? from=path had=@uv]
       ::  +make-by with no base, for a page that must not exist yet (a
       ::  create-only save). Checked here in the writer, so of two
       ::  creates of one name the second leaves the first as it is.
