@@ -930,10 +930,21 @@
   =/  rest=tape  (slag (add ln 2) laft)
   =/  tail=tape  $(t rest, len (sub len :(add n ln 5)))
   :(weld "[" label "](" base name ")" tail)
+::  +strip-cr: a line without the CR that ends it, so a body with CRLF
+::  line ends renders as the same body with LF. Left in, the CR made
+::  every blank line a line of text and no rule or table row matched.
+++  strip-cr
+  |=  l=tape
+  ^-  tape
+  ?~  l  l
+  ?.  =('\0d' (rr l))  l
+  (sc (dec (lent l)) l)
 ++  render-md
   |=  body=@t
   ^-  tape
-  =/  lines0=(list tape)  (turn (turn (to-wain:format body) trip) cap-quote-depth)
+  =/  lines0=(list tape)
+    %+  turn  (to-wain:format body)
+    |=(l=@t (cap-quote-depth (strip-cr (trip l))))
   =/  fn=[footm (list tape)]  (collect-footnotes lines0)
   =/  foot=footm  -.fn
   =/  lines1=(list tape)  (turn +.fn |=(l=tape (sub-foot-refs l foot)))

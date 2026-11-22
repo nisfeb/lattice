@@ -233,4 +233,17 @@
     (expect-eq !>("<p>a #tag</p>") !>((r 'a\0a#tag')))
     (expect-eq !>("<p>a</p><h1>h</h1>") !>((r 'a\0a# h')))
   ==
+::  a body with CRLF line ends renders as the same body with LF
+++  test-crlf
+  ;:  weld
+    (expect-eq !>("<p>a</p><p>b</p>") !>((r 'a\0d\0a\0d\0ab')))
+    (expect-eq !>((r '| a |\0a|---|\0a| 1 |')) !>((r '| a |\0d\0a|---|\0d\0a| 1 |\0d\0a')))
+    (expect-eq !>("<hr>") !>((r '---\0d')))
+    (expect-eq !>("<h1>T</h1>") !>((r 'T\0d\0a===\0d')))
+    (expect-eq !>((r '- a\0a- b')) !>((r '- a\0d\0a- b\0d\0a')))
+    (expect-eq !>((r '```\0ax\0a```\0ay')) !>((r '```\0d\0ax\0d\0a```\0d\0ay\0d\0a')))
+    (expect-eq !>("<h2>h</h2>") !>((r '## h\0d')))
+    ::  only the one CR that ends a line goes
+    (expect-eq !>("<p>a\0db</p>") !>((r 'a\0db')))
+  ==
 --
