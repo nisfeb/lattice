@@ -1554,10 +1554,6 @@
     %-  poke-eval
     ?:  new  [%make-new (pax-of u.name) src wid]
     [%make-by (pax-of u.name) src wid claim]
-  ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
-  ::  client only when the typed name was not a valid path and the path is
-  ::  its slug. Absent on every ordinary save, so autosave never touches them.
-  ;<  ~  bind:m  (poke-dnames args (pax-of u.name))
   ::  answer once the write is down: the writer took the poke above
   ::  before it applied it. The next save's base check, and the rev
   ::  below, then see it.
@@ -1576,6 +1572,14 @@
   ::  a create that finds another body at its name lost the race for it,
   ::  and the writer left that page as it was
   ?:  &(!mine new)  (send-err eyre-id 409 'page exists')
+  ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
+  ::  client only when the typed name was not a valid path and the path is
+  ::  its slug. Absent on every ordinary save, so autosave never touches
+  ::  them. Only for a save that was written: one refused above, a lost
+  ::  create or a stale claim, leaves the names the page has.
+  =/  dacts=(list eval-action:le)  (dname-acts-of args (pax-of u.name))
+  ;<  ~  bind:m  (poke-dnames args (pax-of u.name))
+  ;<  ~  bind:m  ?~(dacts (pure:(fiber:fiber:nexus ,~) ~) writer-drain)
   ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
   %+  send-json  eyre-id
   %-  pairs:enjs:format

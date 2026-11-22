@@ -814,6 +814,28 @@ is "  and is gone"                          "<missing>" "$(field page-tree "$E/z
 is "a folder that was never a page goes whole" 200 "$(sc -X POST "$B/page-del?name=$E")"
 is "  with what a deleted page left in it"  "<missing>" "$(field page-tree "$E/zf/k" kind)"
 
+echo "==> a create that loses the race leaves the winner's display name"
+# a folder move keeps the writer busy, so two creates of one name both
+# pass the checks before either lands. The one written wins, and the
+# page holds its body and its display name, not the loser's.
+R="$P-race"
+python3 -c "
+import json,sys; print(json.dumps([{'name':sys.argv[1]+'/big/p%02d'%i,'type':'md','body':'big %d'%i,'base':None} for i in range(40)]))" "$R" |
+  sc -X POST "$B/page-save-batch" -H 'content-type: application/json' --data-binary @- >/dev/null
+RT=$(mktemp -d)
+( sc -X POST "$B/page-move?from=$R/big&to=$R/big2" > "$RT/mv" ) &
+sleep 0.3
+( G -X POST "$B/page-save?name=$R/n&type=md&new=1&dname=Alpha%20Name" --data-binary 'alpha body' > "$RT/a" ) &
+( G -X POST "$B/page-save?name=$R/n&type=md&new=1&dname=Beta%20Name" --data-binary 'beta body' > "$RT/b" ) &
+wait
+won=none; grep -q '"ok":true' "$RT/a" && won=alpha; grep -q '"ok":true' "$RT/b" && won="${won/none/}beta"
+is "one of the two creates is answered 200"  1 "$(cat "$RT/a" "$RT/b" | grep -c '"ok":true')"
+has "  the page holds the winner's body"     "$won body" "$(G "$B/page-source?name=$R/n")"
+w=$(tr '[:lower:]' '[:upper:]' <<<"${won:0:1}")${won:1}
+is "  and the winner's display name"         "$w Name" "$(field page-tree "$R/n" dname)"
+rm -rf "$RT"
+sc -X POST "$B/page-del?name=$R&tree=1" >/dev/null
+
 echo "==> recursive folder delete"
 is "page-del on folder" 200 "$(sc -X POST "$B/page-del?name=$P")"
 sleep 2
