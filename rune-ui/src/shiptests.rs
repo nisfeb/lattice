@@ -871,6 +871,32 @@ fn two_windows_on_one_ship_keep_each_others_waiting_saves() {
 }
 
 #[test]
+fn a_memory_that_waits_to_be_sent_is_not_listed_among_the_pages() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "a\n");
+    let mut r = Run::new(&ship);
+    load_know(&mut r.s);
+    r.until("the memories", |s| !s.know_req.is_pending() && !s.other.1.is_empty());
+    flip(&mut r.s);
+    open_page(&mut r.s, "rune/fact");
+    r.tick();
+    start_edit(&mut r.s);
+    r.typ("more");
+    ship.st().know_fail = 502;
+    save(&mut r.s);
+    r.settle();
+    assert!(r.s.queue.contains_key("know:rune/fact"), "the memory's save waits: {:?}", r.s.note);
+    flip(&mut r.s);
+    r.sync();
+    assert_eq!(r.s.names, ["notes/a"], "a memory that waits to be sent is listed among the pages");
+    assert!(!r.s.cache.contains_key("know:rune/fact"));
+    // and it is still a memory, with its waiting text
+    flip(&mut r.s);
+    assert!(r.s.cache.get("rune/fact").is_some_and(|p| p.body.contains("more")));
+}
+
+#[test]
 fn a_links_host_away_does_not_end_the_sending_for_a_ship_not_in_front() {
     let _one = one();
     let ship = Ship::start();

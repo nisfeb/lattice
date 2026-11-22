@@ -6385,7 +6385,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 let mut nodes = api::ops_over(nodes, &s.ops);
                 // a save that waits is the page's text, over whatever was read: it is newer than anything the ship has
                 // ponytail: while anything waits this rewrites the kept file on every read. Skip unchanged ones if it shows up as disk churn
-                for (name, q) in &s.queue {
+                // a memory that waits is in the same list under a name of its own, and is no page
+                for (name, q) in s.queue.iter().filter(|(name, _)| api::queued_know(name).is_none()) {
                     match nodes.iter_mut().find(|n| n.page && n.path == *name) {
                         // with the revision it was written over, so a save made from it is still checked against that one
                         Some(n) => (n.body, n.kind, n.rev) = (Some(q.body.clone()), q.kind.clone(), q.base.unwrap_or(n.rev)),
