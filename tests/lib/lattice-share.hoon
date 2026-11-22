@@ -960,15 +960,30 @@
     (expect-eq !>(`(set *)`~) !>(make:(folder-roads:ls at ~ ~ &)))
   ==
 ::  a group save unshares a folder when its last page went, or its line did
+::  a folder line is taken out only by a save that was shown it: one that
+::  holds its index line (`seen`). A list read before the folder was
+::  shared, or before folder lines were listed, leaves it shared.
 ++  test-folder-out
   ;:  weld
-    (expect !>((folder-out:ls & | | |)))
-    (expect !>((folder-out:ls & & & |)))
-    (expect !>(!(folder-out:ls & & & &)))
-    (expect !>(!(folder-out:ls & & | |)))
-    (expect !>(!(folder-out:ls | | | |)))
-    (expect !>((folder-out:ls | | & |)))
-    (expect !>(!(folder-out:ls | | & &)))
+    (expect !>((folder-out:ls & | | | |)))
+    (expect !>((folder-out:ls & & & | &)))
+    (expect !>(!(folder-out:ls & & & | |)))
+    (expect !>(!(folder-out:ls & & & & &)))
+    (expect !>(!(folder-out:ls & & | | &)))
+    (expect !>(!(folder-out:ls | | | | |)))
+    (expect !>((folder-out:ls | | & | &)))
+    (expect !>(!(folder-out:ls | | & | |)))
+    (expect !>(!(folder-out:ls | | & & &)))
+  ==
+::  the index line the group list gives with each folder line
+++  test-index-line
+  =/  pre=path  /apps/x/page
+  ;:  weld
+    (expect-eq !>(`(unit path)``/a/b) !>((index-line:ls pre /apps/x/page/a/b/dir-index)))
+    (expect-eq !>(`(unit path)`~) !>((index-line:ls pre /apps/x/page/dir-index)))
+    (expect-eq !>(`(unit path)`~) !>((index-line:ls pre /apps/x/page/a/b)))
+    (expect-eq !>(`(unit path)`~) !>((index-line:ls pre /apps/x/page/a/code)))
+    (expect-eq !>(`(unit path)`~) !>((index-line:ls pre /apps/y/a/dir-index)))
   ==
 ++  test-pax-ok
   ;:  weld
