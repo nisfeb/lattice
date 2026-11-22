@@ -8094,7 +8094,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   const CD_RE = /&CD(\d+);/g;
   const SCAN = 2048, LSCAN = 4096;
-  const PAREN = '\\((?=(?:[^)\\]]|\\](?!\\())' + '{0,' + LSCAN + '}\\))((?:[^)\\s\\]]|\\](?!\\())+)(?:\\s[^)]*)?\\)';
+  const ENT = '&(?:amp|lt|gt|quot);';
+  const PAREN = '\\((?=(?:[^)\\]&]|' + ENT + '|&(?!(?:amp|lt|gt|quot);)|\\](?!\\())' + '{0,' + LSCAN + '}\\))((?:[^)\\s\\]]|\\](?!\\())+)(?:\\s[^)]*)?\\)';
   const IMG_RE = new RegExp('!\\[((?:[^\\]!]|!(?!\\[)){0,' + SCAN + '})\\]' + PAREN, 'g');
   const LINK_RE = new RegExp('\\[([^\\]\\[]{1,' + SCAN + '})\\]' + PAREN, 'g');
   const WIKI_RE = /\[\[((?:[^\]|[]|\[(?!\[))+)(?:\|((?:[^\][]|\[(?!\[))+))?\]\]/g;
