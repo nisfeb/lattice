@@ -1081,12 +1081,7 @@ fn adopt_old_names(dir: &std::path::Path) {
     if mark.exists() {
         return;
     }
-    let mut ships: Vec<(String, String)> = crate::accounts::load_at(dir, now_secs()).list.iter().map(|a| (a.url.clone(), a.ship().to_owned())).collect();
-    if let Some(c) = Conn::from_env().map(|c| (c.url.clone(), c.ship().to_owned())) {
-        if !ships.contains(&c) {
-            ships.push(c);
-        }
-    }
+    let ships = signed_in_at(dir);
     for (url, ship) in &ships {
         let old = old_key(url);
         if ships.iter().filter(|(u, _)| old_key(u) == old).count() != 1 {
@@ -1101,6 +1096,94 @@ fn adopt_old_names(dir: &std::path::Path) {
     }
     // the mark is what stops a ship signed in later from being given what is left
     let _ = write_private(&mark, b"");
+}
+
+/// The ships signed in on this computer, by address and name: those kept, and the environment's.
+#[cfg(not(target_arch = "wasm32"))]
+fn signed_in_at(dir: &std::path::Path) -> Vec<(String, String)> {
+    let mut ships: Vec<(String, String)> = crate::accounts::load_at(dir, now_secs()).list.iter().map(|a| (a.url.clone(), a.ship().to_owned())).collect();
+    if let Some(c) = Conn::from_env().map(|c| (c.url.clone(), c.ship().to_owned())) {
+        if !ships.contains(&c) {
+            ships.push(c);
+        }
+    }
+    ships
+}
+
+/// An older version, after this one's first run, still keeps what waits under an address alone,
+/// as it always did: a window of it left open, or the older program run again. At each start a
+/// file of that kind written since the mark is taken in by the ship signed in at its address, by
+/// the first run's rule (one ship signed in makes that old name), and only while that ship has
+/// nothing waiting of its own: two lists of deletes and saves cannot be put in one order. A file
+/// from before the mark is never taken in: a ship signed in since may not be the one it was for.
+/// Answers the files under an address alone that still hold a save, a delete or a move and were
+/// not taken in. Whose they are cannot be told, so they are never sent, and the window says where
+/// they are.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn adopt_late() -> Vec<std::path::PathBuf> {
+    let Some(dir) = config_dir() else { return Vec::new() };
+    // a test's own folder alone is looked at in a test
+    #[cfg(test)]
+    if TEST_CONFIG.with(|t| t.borrow().is_none()) {
+        return Vec::new();
+    }
+    adopt_old_names(&dir);
+    let Some(mark) = std::fs::metadata(dir.join(NAMED_BY_SHIP)).and_then(|m| m.modified()).ok() else { return Vec::new() };
+    // no file, one written since the mark, or one from before it
+    let since = |p: &std::path::Path| std::fs::symlink_metadata(p).ok().filter(std::fs::Metadata::is_file).map(|m| m.modified().is_ok_and(|t| t > mark));
+    // a file that is not there is empty, and one that cannot be read is not taken in
+    fn read<T: serde::de::DeserializeOwned + Default>(p: &std::path::Path) -> Option<T> {
+        match std::fs::read(p) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(T::default()),
+            Err(_) => None,
+            Ok(b) => serde_json::from_slice(&b).ok(),
+        }
+    }
+    let ships = signed_in_at(&dir);
+    for (url, ship) in &ships {
+        let old = old_key(url);
+        if ships.iter().filter(|(u, _)| old_key(u) == old).count() != 1 {
+            continue;
+        }
+        let (oq, oo) = (dir.join(format!("waiting-{old}.json")), dir.join(format!("ops-{old}.json")));
+        let (wq, wo) = (since(&oq), since(&oo));
+        if !(wq == Some(true) || wo == Some(true)) || wq == Some(false) || wo == Some(false) {
+            continue;
+        }
+        let (Some(qp), Some(op)) = (queue_path(url, ship), ops_path(url, ship)) else { continue };
+        let _held = waiting_lock(&qp);
+        let (Some(q), Some(o)) = (read::<Queue>(&oq), read::<Vec<QueuedOp>>(&oo)) else { continue };
+        // the ship's own lists, empty: one that holds anything, or cannot be read, is not written over
+        if read::<Queue>(&qp).is_none_or(|q| !q.is_empty()) || read::<Vec<QueuedOp>>(&op).is_none_or(|o| !o.is_empty()) {
+            continue;
+        }
+        // written whole, and only then the old names go: a write that fails leaves them as they were
+        let wrote = serde_json::to_vec(&o).map_err(|e| e.to_string()).and_then(|b| write_private(&op, &b)).and_then(|()| serde_json::to_vec(&q).map_err(|e| e.to_string())).and_then(|b| write_private(&qp, &b));
+        if wrote.is_ok() {
+            let _ = std::fs::remove_file(&oq);
+            let _ = std::fs::remove_file(&oo);
+        }
+    }
+    let mut left: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            // a ship's own file has a `+` between its ship and its address. One named for an address alone has none
+            let alone = ["waiting-", "ops-"].iter().any(|w| name.strip_prefix(w).and_then(|r| r.strip_suffix(".json")).is_some_and(|k| !k.contains('+')));
+            let holds = || match std::fs::read(e.path()).ok().map(|b| serde_json::from_slice::<serde_json::Value>(&b)) {
+                Some(Ok(serde_json::Value::Object(m))) => !m.is_empty(),
+                Some(Ok(serde_json::Value::Array(a))) => !a.is_empty(),
+                Some(Ok(_)) | None => false,
+                Some(Err(_)) => true,
+            };
+            alone && holds()
+        })
+        .map(|e| e.path())
+        .collect();
+    left.sort();
+    left
 }
 
 #[cfg(test)]
@@ -4188,6 +4271,51 @@ mod tests {
         crate::accounts::store_at(&home.0, &all).unwrap();
         assert!(conn("http://ship.example:8080", "~bus").queue().is_empty());
         assert!(home.0.join("waiting-http---ship-example-8080.json").exists());
+    }
+
+    #[test]
+    fn a_save_an_older_version_keeps_after_the_names_changed_is_taken_in_or_said() {
+        let home = Home::new("older-after");
+        let dir = home.0.clone();
+        let mut all = crate::accounts::Accounts::default();
+        all.put("http://ship.example:8080", "urbauth-~zod=0v1", 1);
+        all.put("https://my.ship.example", "urbauth-~nec=0v1", 1);
+        all.put("https://my-ship.example", "urbauth-~bud=0v1", 1);
+        crate::accounts::store_at(&dir, &all).unwrap();
+        let zod = conn("http://ship.example:8080", "~zod");
+        // the new version's first look: the names change, and the mark is written
+        assert!(zod.queue().is_empty() && dir.join(NAMED_BY_SHIP).exists());
+        // an older version's window, still open or run again, keeps saves with the ship away as it always did: after the mark
+        let after = std::fs::metadata(dir.join(NAMED_BY_SHIP)).unwrap().modified().unwrap() + Duration::from_secs(2);
+        let old = |what: &str, key: &str, text: &str| {
+            let p = dir.join(format!("{what}-{key}.json"));
+            std::fs::write(&p, text).unwrap();
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(after).unwrap();
+        };
+        old("waiting", "http---ship-example-8080", r#"{"diary":{"kind":"md","body":"typed in the old window","base":3,"is_new":false,"at":1}}"#);
+        old("ops", "http---ship-example-8080", r#"[{"Del":"drafts"}]"#);
+        // and one for an address two signed-in ships make: whose it is cannot be told
+        old("waiting", "https---my-ship-example", r#"{"plan":{"kind":"md","body":"of one of the two","base":1,"is_new":false,"at":1}}"#);
+        // the next start takes in the one it can tell, and says the one it cannot
+        let left = adopt_late();
+        assert_eq!(zod.queue()["diary"].body, "typed in the old window", "a save the older version kept after the change is read");
+        assert_eq!(zod.ops(), [QueuedOp::Del("drafts".into())]);
+        assert!(!dir.join("waiting-http---ship-example-8080.json").exists() && !dir.join("ops-http---ship-example-8080.json").exists());
+        assert_eq!(left, [dir.join("waiting-https---my-ship-example.json")], "the one whose ship cannot be told is said, not left unseen");
+        assert!(conn("https://my.ship.example", "~nec").queue().is_empty() && conn("https://my-ship.example", "~bud").queue().is_empty(), "and given to neither");
+        // one kept again while this ship has saves of its own waiting is not merged in over them: it is said
+        old("waiting", "http---ship-example-8080", r#"{"diary":{"kind":"md","body":"typed in the old window again","base":3,"is_new":false,"at":2}}"#);
+        assert_eq!(adopt_late().len(), 2);
+        assert_eq!(zod.queue()["diary"].body, "typed in the old window");
+        // one left from before the change (older than the mark) is never given to a ship signed in since
+        let before = std::fs::metadata(dir.join(NAMED_BY_SHIP)).unwrap().modified().unwrap() - Duration::from_secs(60);
+        let p = dir.join("waiting-http---gone-example.json");
+        std::fs::write(&p, r#"{"x":{"kind":"md","body":"of a ship signed out of","base":1}}"#).unwrap();
+        std::fs::File::options().write(true).open(&p).unwrap().set_modified(before).unwrap();
+        all.put("http://gone.example", "urbauth-~bus=0v1", 2);
+        crate::accounts::store_at(&dir, &all).unwrap();
+        assert!(adopt_late().contains(&p));
+        assert!(conn("http://gone.example", "~bus").queue().is_empty() && p.exists());
     }
 
     #[test]

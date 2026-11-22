@@ -2642,6 +2642,18 @@ fn setup(s: &mut App, waker: Waker) {
     s.remote_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
     s.op_req.set_waker(waker);
+    // what an older version kept since the files were named for their ships is taken in where it can be told whose it is, and said where it cannot
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let left = api::adopt_late();
+        if let Some(c) = s.conn.clone() {
+            (s.ops, s.queue) = (c.ops(), c.queue());
+        }
+        if !left.is_empty() {
+            let at: Vec<String> = left.iter().map(|p| p.display().to_string()).collect();
+            s.note = format!("an older version of lattice-rune kept edits, deletes or moves that were not sent. Which ship they are for cannot be told, so they are not sent: they are in {}", at.join(", "));
+        }
+    }
     load_tree(s);
     load_know(s);
     load_shared(s);
