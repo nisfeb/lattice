@@ -10535,6 +10535,22 @@
   =/  out=tape  (weld pre ?:(&(bnd pbnd) to from))
   %+  weld  out
   $(hay aft, bef ?~(out bef `(rear out)))
+::  +move-code: a page's source as it reads once the tree at `from` is at
+::  `to`. A [[wikilink]] into the moved tree follows it in every page. A
+::  path literal under the old root (+rewrite-root) follows only in code,
+::  a hoon page or a folder index. A content page's body is the writer's
+::  own text, where the same bytes are prose (`GET /api/users`,
+::  `cd /home/me`) and stay as written.
+++  move-code
+  |=  [code=@t from=path to=path]
+  ^-  @t
+  =/  cb=(unit @tas)  (content-builder code)
+  =/  prose=?  &(?=(^ cb) (~(has in content-builders) u.cb))
+  %-  crip
+  %^  rewrite-wikilinks:gfm
+      ?:(prose (trip code) (rewrite-root (trip code) (spud from) (spud to)))
+    (pax-str from)
+  (pax-str to)
 ::  +copy-tree: copy every PAGE under src (a [base rel] like [%page /mysite] or
 ::  [%template /site]) to dst, rewriting the source root path to the dest root in
 ::  each page's code. live=%.y -> dest is under /page and each page is MADE
@@ -10580,10 +10596,6 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   =/  sdir=path  (weld /page from)
-  =/  from-str=tape   (spud from)
-  =/  to-str=tape     (spud to)
-  =/  from-bare=tape  (pax-str from)
-  =/  to-bare=tape    (pax-str to)
   ;<  dv=view:nexus  bind:m  (peek:fio (rv up sdir) ~)
   ;<  lv=view:nexus  bind:m  (peek:fio (rv up (weld /links from)) ~)
   ?.  |(?=([%ball *] dv) ?=([%ball *] lv))  (pure:m ~)
@@ -10691,12 +10703,7 @@
   =/  own=(unit share-mode:le)  (fils-own-share pf)
   =/  dn=(unit @t)  (fils-dname pf)
   =/  dst=path  (weld to i.rels)
-  =/  newcode=@t
-    %-  crip
-    %^  rewrite-wikilinks:gfm
-        (rewrite-root (trip code) from-str to-str)
-      from-bare
-    to-bare
+  =/  newcode=@t  (move-code code from to)
   ::  a peer-written page stays marked where it lands (+make-page-as)
   ;<  pw=?  bind:m  (peer-written (weld from i.rels))
   =/  acts=(list eval-action:le)
@@ -10930,12 +10937,7 @@
   |-  ^-  form:m
   ?~  late  (pure:m ~)
   =/  code=@t  (fils-code (ball-fils ball.dv i.late))
-  =/  newcode=@t
-    %-  crip
-    %^  rewrite-wikilinks:gfm
-        (rewrite-root (trip code) (spud from) (spud to))
-      (pax-str from)
-    (pax-str to)
+  =/  newcode=@t  (move-code code from to)
   =/  dst=path  (weld to i.late)
   ;<  pw=?  bind:m  (peer-written (weld from i.late))
   ;<  ~  bind:m  (ensure-dirs up /page (snip dst))

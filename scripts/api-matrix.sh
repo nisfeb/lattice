@@ -170,6 +170,23 @@ has "  page landed"        'inside' "$(G "$B/page-source?name=$P/mvdir2/x")"
 is "  old folder gone"     "<missing>" "$(field page-tree "$P/mvdir/x" kind)"
 is "move under itself 400" 400 "$(sc -X POST "$B/page-move?from=$P/mvdir2&to=$P/mvdir2/sub")"
 is "move missing 404"      404 "$(sc -X POST "$B/page-move?from=$P/ghost-move&to=$P/anywhere")"
+# a move follows path literals in code and wikilinks. A content page's
+# body is the writer's own text: the old path spelled in it is prose
+is "seed prose that spells its folder's path" 200 "$(sc -X POST "$B/page-save?name=$P/mvp/readme&type=md&new=1" --data-binary "Call GET /$P/mvp/users (see /$P/mvp) and [[$P/mvp/readme]]")"
+is "  a folder index beside it" 200 "$(sc -X POST "$B/page-save?name=$P/mvp/index&type=index&new=1")"
+is "  a hoon page with a path literal" 200 "$(sc -X POST "$B/page-save?name=$P/mvp/code&new=1" --data-binary "|=(* [/$P/mvp/readme \"/$P/mvp\"])")"
+is "  move the folder"     200 "$(sc -X POST "$B/page-move?from=$P/mvp&to=$P/mvq")"
+sleep 2
+r=$(G "$B/page-source?name=$P/mvq/readme")
+has "  prose spelling the old path is left as written" "Call GET /$P/mvp/users (see /$P/mvp) and" "$r"
+has "  its wikilink follows the move" "[[$P/mvq/readme]]" "$r"
+has "  the folder index lists the new folder" "folder-index deps /$P/mvq)" "$(G "$B/page-source?name=$P/mvq/index")"
+has "  the hoon page's path literals follow" "[/$P/mvq/readme \\\"/$P/mvq\\\"]" "$(G "$B/page-source?name=$P/mvq/code")"
+is "  rename the page alone" 200 "$(sc -X POST "$B/page-move?from=$P/mvq/readme&to=$P/mvq/guide")"
+sleep 2
+r=$(G "$B/page-source?name=$P/mvq/guide")
+has "  a renamed page keeps its prose" "Call GET /$P/mvp/users (see /$P/mvp) and" "$r"
+has "  and its link to itself follows" "[[$P/mvq/guide]]" "$r"
 is "page-move gated"       403 "$(code -X POST "$B/page-move?from=$P/mvdir2&to=$P/free")"
 
 echo "==> public forms: the unauthenticated write surface"
