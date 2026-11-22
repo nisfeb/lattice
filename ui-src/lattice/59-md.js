@@ -96,13 +96,15 @@
   // the next opener of its own kind, so the scans of a paragraph do not
   // overlap and together cost one pass. And it gives up where the ship
   // does: +scan-cap and +link-scan-cap in code/lib/lattice-md.hoon. No
-  // real link text or address is near either length.
-  const SCAN = 2048, LSCAN = 512;
+  // real link text is near either length. An address can be: signed
+  // download links run to a few KB, so the paren bound is well past them.
+  const SCAN = 2048, LSCAN = 4096;
   //  (url "title"): the paren must close within LSCAN, looked for once, so
-  //  the two runs after it never walk further than that
+  //  the two runs after it never walk further than that. The look stops at
+  //  a "](" as well, so the looks of a run of "[a](" do not overlap.
   //  and the address never holds "](", the next link's opener (the ship's
   //  +find-stop)
-  const PAREN = '\\((?=[^)]{0,' + LSCAN + '}\\))((?:[^)\\s\\]]|\\](?!\\())+)(?:\\s[^)]*)?\\)';
+  const PAREN = '\\((?=(?:[^)\\]]|\\](?!\\())' + '{0,' + LSCAN + '}\\))((?:[^)\\s\\]]|\\](?!\\())+)(?:\\s[^)]*)?\\)';
   //  an image's alt stops at the next "![", a link's text at the next "["
   const IMG_RE = new RegExp('!\\[((?:[^\\]!]|!(?!\\[)){0,' + SCAN + '})\\]' + PAREN, 'g');
   const LINK_RE = new RegExp('\\[([^\\]\\[]{1,' + SCAN + '})\\]' + PAREN, 'g');
@@ -187,6 +189,8 @@
   //  Each level is one more pass over the quoted text and one more call
   //  deep, so a line of thousands of ">" overflowed the stack. Marks may
   //  have blanks between them. A line at or under the cap is not touched.
+  //  Only a line read as a quote is capped, so a fence's lines are kept
+  //  as they are.
   const QDEPTH = 32;
   const capQuote = (l) => {
     let n = 0, p = 0;
@@ -203,7 +207,7 @@
   const tableSep = (l) => l.indexOf('|', 1) > 0 && /^[\s:|-]+$/.test(l);
   function mdToHtml(input, tasks, base = 0) {
     //  CRLF: `.` stops at \r, so "(.*)$" failed on every line
-    const lines = String(input == null ? '' : input).split('\n').map((l) => capQuote(l.replace(/\r$/, '')));
+    const lines = String(input == null ? '' : input).split('\n').map((l) => l.replace(/\r$/, ''));
     const out = [];
     let i = 0;
     const listStack = [];
@@ -245,7 +249,7 @@
         closeLists(0);
         const q = [];
         while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
-          q.push(lines[i].replace(/^\s*>\s?/, ''));
+          q.push(capQuote(lines[i]).replace(/^\s*>\s?/, ''));
           i += 1;
         }
         out.push('<blockquote>' + mdToHtml(q.join('\n'), tasks, base + i - q.length) + '</blockquote>');

@@ -193,7 +193,18 @@ for (const [n, unit, tail] of [['[a]( runs', '[a](', ''], ['[ runs', '[', ''], [
 }
 has('a link with a title still links', '[a](https://e.com "the title")', '<a href="https://e.com">a</a>');
 has('a 500 character url still links', '[a](https://e.com/' + 'p'.repeat(482) + ')', '<a href="https://e.com/pppp');
-hasnt('a paren 513 characters on is no link', '[a](https://e.com/' + 'p'.repeat(500) + ')', '<a ');
+has('an 800 character url (signed links) still links', '[a](https://e.com/?' + 'q=1&'.repeat(200) + ')', '<a href="https://e.com/?q=1&amp;q=1');
+has('so does an image with one', '![a](https://e.com/?' + 'q=1&'.repeat(200) + ')', 'image from another site: a');
+has('a bracket before the closing paren stays in the address', '[a](https://e.com/x])', 'href="https://e.com/x]"');
+hasnt('a paren 5000 characters on is no link', '[a](https://e.com/' + 'p'.repeat(5000) + ')', '<a ');
+{
+  const f = '```\n' + '>'.repeat(40) + '\n' + '> '.repeat(35) + 'x\n```';
+  has('a fence keeps a line of 40 quote marks', f, '<code>' + '&gt;'.repeat(40) + '\n');
+  has('and a spaced one with its blanks', f, '&gt; '.repeat(35) + 'x</code>');
+  hasnt('and no quote is opened', f, '<blockquote>');
+  const q = mdToHtml('>'.repeat(40) + ' deep');
+  check('a line of 40 marks outside a fence is still held to 32', q.split('<blockquote>').length - 1 === 32, q.slice(0, 60));
+}
 has('2000 characters of link text still link', '[' + 't'.repeat(2000) + '](https://e.com)', '<a href="https://e.com">tttt');
 hasnt('link text past the scan cap is no link', '[' + 't'.repeat(2100) + '](https://e.com)', '<a ');
 has('a table still renders', '| a | b |\n|---|:-:|\n| 1 | 2 |', '<table><thead><tr><th>a</th><th>b</th>');

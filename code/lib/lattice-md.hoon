@@ -132,8 +132,9 @@
 ::  +link-scan-cap: lookahead for a link's ( ) or [ref] tail. Reached only
 ::  after a bracket matched, so a tight bound is safe (real URLs and
 ::  reference labels are far shorter), and it stops "[a](" spam from costing
-::  a full-tail scan per link.
-++  link-scan-cap  ^~(512)
+::  a full-tail scan per link. 4K: signed download links run to a few KB, and
+::  the scan stops at the next "](" so scans of a run of links do not overlap.
+++  link-scan-cap  ^~(4.096)
 ::  +stop-run: how many characters at the head of `t` are not in `stops`,
 ::  a bit mask of byte values (see +stop-mask).
 ++  stop-run
