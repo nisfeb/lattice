@@ -125,6 +125,31 @@
 ::  held back and counted, and one item per sender says how many
 ::  (+flood-item), so nothing is dropped unseen.
 ::
+::  +board-cap: bytes of a board name kept in a refusal note
+++  board-cap  ^-(@ud 64)
+::  +refusal: a refusal note's [board reason] as it is stored, ~ for one
+::  to drop. Any ship may send one, so both fields are cut to size before
+::  they are kept: the board to +board-cap and then held to a board
+::  name's shape, the reason to +body-cap as every other inbox clips.
+++  refusal
+  |=  [board=@ reason=@]
+  ^-  (unit [board=@tas reason=@t])
+  =/  b=@  (end [3 board-cap] board)
+  ?.  &(!=(0 b) ((sane %tas) b))  ~
+  `[`@tas`b (clip `@t`reason)]
+::  +notes-cap, +notes-family-cap: refusal notes kept in all, and from
+::  one sender's family, so one sender cannot fill the store and have
+::  every other host's refusal dropped
+++  notes-cap         ^-(@ud 100)
+++  notes-family-cap  ^-(@ud 25)
+::  +notes-full: is the store full for a note from family `fam`, given
+::  the family of each stored note's host
+++  notes-full
+  |=  [fams=(list @) fam=@]
+  ^-  ?
+  ?|  (gte (lent fams) notes-cap)
+      (gte (lent (skim fams |=(f=@ =(f fam)))) notes-family-cap)
+  ==
 ::  +$  note-hits: per sender, the stamps of the notes it filed (newest
 ::  first, at most +note-cap), and how many it sent past the cap since
 +$  note-hits  (map @p [at=(list @da) over=@ud])

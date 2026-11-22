@@ -8835,15 +8835,22 @@
     %+  notify-add  now
     (flood-item:ln now host board.u.rn post.u.rn over.gate)
   ?.  ok.gate  (pure:m ~)
+  ::  both fields cut to size before they are kept (+refusal:ln): the
+  ::  sender chose them, and nothing else bounds what one note stores
   =/  nn=(unit [board=board-name:ft reason=@t])
-    (mole |.(;;([board-name:ft @t] payload)))
+    =/  raw=(unit [@ @])  (mole |.(;;([@ @] payload)))
+    ?~(raw ~ (refusal:ln u.raw))
   ?~  nn  (pure:m ~)
   ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
-  =/  stored=@ud
-    ?.  ?=([%ball *] v)  0
-    ?~  fil.ball.v  0
-    ~(wyt by contents.u.fil.ball.v)
-  ?:  (gte stored 100)  (pure:m ~)
+  ::  bounded in all, and for one sender's family (+notes-full:ln)
+  =/  fams=(list @)
+    ?.  ?=([%ball *] v)  ~
+    ?~  fil.ball.v  ~
+    %+  turn  ~(val by contents.u.fil.ball.v)
+    |=  [=sang:tarball *]
+    =/  n  (mole |.(;;([host=@p @ @ @] (sang-noun:tarball sang))))
+    ?~(n 0 (family:ls host.u.n))
+  ?:  (notes-full:ln fams (family:ls host))  (pure:m ~)
   =/  note=[host=@p board=board-name:ft reason=@t at=@da]
     [host board.u.nn reason.u.nn now]
   =/  id=@ta  (scot %uv (sham note))

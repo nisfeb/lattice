@@ -124,6 +124,33 @@
     ::  and never a banned one, member or not
     (expect !>(!(reply-tell-ok:ln | mem & pla)))
   ==
+::  a refusal note is cut to size before it is stored
+++  test-refusal-clips
+  =/  long=@t  (crip (reap 100.000 'r'))
+  ;:  weld
+    (expect-eq !>(`[%main 'no']) !>((refusal:ln %main 'no')))
+    ::  the reason is clipped to +body-cap
+    (expect-eq !>(`body-cap:ln) !>((bind (refusal:ln %main long) |=([@ r=@t] (met 3 r)))))
+    ::  the board is cut to +board-cap, and must read as a board name
+    (expect-eq !>(`board-cap:ln) !>((bind (refusal:ln (crip (reap 5.000 'b')) 'x') |=([b=@ @] (met 3 b)))))
+    (expect-eq !>(~) !>((refusal:ln 'Not A Board' 'x')))
+    (expect-eq !>(~) !>((refusal:ln '' 'x')))
+    (expect-eq !>(~) !>((refusal:ln (crip (reap 5.000 'B')) 'x')))
+  ==
+::  the note store is full at +notes-cap, or at +notes-family-cap from
+::  one family
+++  test-notes-full
+  =/  fam=@  pla
+  ;:  weld
+    (expect !>(!(notes-full:ln ~ fam)))
+    (expect !>(!(notes-full:ln (reap (dec notes-family-cap:ln) fam) fam)))
+    (expect !>((notes-full:ln (reap notes-family-cap:ln fam) fam)))
+    ::  another family still files while one is at its cap
+    (expect !>(!(notes-full:ln (reap notes-family-cap:ln fam) `@`nec)))
+    ::  and no one does once the store is full
+    (expect !>((notes-full:ln (turn (gulf 1 notes-cap:ln) |=(i=@ud i)) `@`nec)))
+    (expect !>(!(notes-full:ln (turn (gulf 2 notes-cap:ln) |=(i=@ud i)) `@`nec)))
+  ==
 ::  the note gate: note-cap an hour per sender, then held and counted,
 ::  and free again once the window passes
 ++  test-note-gate-cap
