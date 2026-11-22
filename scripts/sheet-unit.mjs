@@ -740,6 +740,9 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   }).join(' ');
   check.eq('a date in a year under 1000 keeps its four digits in the bar and is read back', old,
     'date|0050-02-14|0050-02-14|true date|0001-05-05|0001-05-05|true date|0999-12-31|0999-12-31|true date|0100-01-01 16:00:00|0100-01-01|true');
+  //  hours run past 24 and a leap second ends a day, as Calc reads an ISO time of day (checked against Calc)
+  check.eq('an ISO time over 24 hours, and the leap second, is read as in Calc', ['="2024-01-01T25:00"+0', '="2024-01-01T23:59:60"+0', '="2024-01-01 48:00"+0', '="2024-01-01T100:00"+0', '="2024-01-01T10:00:60"+0', '="2024-01-01T24:00:60"+0', '="2024-01-01T10:60"+0'].map((f) => { const v = asNum(f); return typeof v === 'number' ? Number(v.toPrecision(12)) : v; }).join(' '),
+    '45293.0416667 45293 45294 45296.1666667 #VALUE! #VALUE! #VALUE!');
   //  a number too large to hold, in a formula, is kept as typed
   const big = ['=1e999', '=2*1e400', '=SUM(1,5E1000)'].map((t) => { const e = b.enter(0, 7, 0, t); const c = b.cell(0, 7, 0); return `${c.f === null && c.v === t && /too large/.test(e.note || '')}|${b.input(0, 7, 0)}`; }).join(' ');
   check.eq('a formula holding a number no double holds is kept as the text typed', big, 'true|=1e999 true|=2*1e400 true|=SUM(1,5E1000)');
@@ -818,6 +821,8 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
     ['=REPLACE("abc",0,1,"x")', 'Err:502'], ['=REPLACE("abc",-1,1,"x")', 'Err:502'], ['=REPLACE("abc",1,-1,"x")', 'Err:502'], ['=REPLACE("abc",0.5,1,"x")', 'Err:502'],
     ['=REPLACE("abc",1,0,"x")', 'xabc'], ['=REPLACE("abc",5,1,"x")', 'abcx'], ['=REPLACE("abc",1.9,1,"x")', 'xbc'], ['=REPLACE("abc",1.9,1.9,"x")', 'xbc'], ['=REPLACE("abc",2,100,"x")', 'ax']];
   const off = T.filter(([f, want]) => at(f) !== want).map(([f, want]) => `${f} gave ${at(f)}, Calc ${want}`);
+  const tiny = ['=ROUNDUP(1E-300,0)', '=ROUNDUP(1E-300,2)', '=ROUNDUP(-1E-300,-2)', '=ROUNDUP(5E-310,0)', '=ROUNDUP(1E-298,-1)', '=ROUNDUP(1E-297,-1)', '=ROUNDUP(123.456,-300)', '=ROUNDUP(123.456,-299)', '=ROUNDUP(1E-10,-290)', '=ROUNDUP(1E-300,-30)'].map(at).join(' ');
+  check.eq('ROUNDUP of a tiny number is one unit of its place, and a number far below one at very negative places is nothing, as in Calc', tiny, '1 0.01 -100 1 10 0 0 1E+299 0 0');
   check(`${T.length} rounding and text results are Calc's`, off.length === 0, off.join(' | '));
 }
 

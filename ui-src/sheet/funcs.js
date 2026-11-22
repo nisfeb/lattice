@@ -56,7 +56,7 @@ export function general(n) {
 
 //  text LibreOffice reads as a number without asking: a plain number, an
 //  ISO date, a time of day. The date serial is on the default null date.
-const ISO_DATE = /^\s*(\d{4})-(\d\d)-(\d\d)(?:[T ](\d\d):(\d\d)(?::(\d\d(?:\.\d+)?))?)?\s*$/;
+const ISO_DATE = /^\s*(\d{4})-(\d\d)-(\d\d)(?:[T ](\d\d+):(\d\d)(?::(\d\d(?:\.\d+)?))?)?\s*$/;
 const CLOCK = /^\s*(\d+):(\d\d)(?::(\d\d(?:\.\d+)?))?\s*$/;
 function textNum(v) {
   if (NUMERIC.test(v)) return Number(v);
@@ -67,7 +67,12 @@ function textNum(v) {
     const t = new Date(0);
     t.setUTCFullYear(+m[1], +m[2] - 1, +m[3]);
     if (+m[1] < 1 || t.getUTCMonth() !== +m[2] - 1 || t.getUTCDate() !== +m[3]) return E.value;
-    if (m[4] && (+m[4] > 24 || +m[5] > 59 || +(m[6] || 0) >= 60)) return E.value;
+    //  hours run past 24 as Calc reads them. A 60th second is only the
+    //  leap second that ends a day, 23:59:60 (or 00:00:60), as in Calc
+    if (m[4]) {
+      const sec = +(m[6] || 0), leap = (+m[4] === 23 && +m[5] === 59) || (+m[4] === 0 && +m[5] === 0);
+      if (+m[5] > 59 || sec >= 61 || (sec >= 60 && !leap)) return E.value;
+    }
     return t.getTime() / 86400000 + 25569 + (m[4] ? (+m[4] * 3600 + +m[5] * 60 + +(m[6] || 0)) / 86400 : 0);
   }
   m = CLOCK.exec(v);
@@ -245,7 +250,8 @@ const round = (n, d, mode) => {
   //  too large to have a fraction at this place
   if (!(x < 4503599627370496)) return n;
   //  a fraction far under one whole unit of the place rounds up to nothing
-  if (mode === 'up' && x < 1e-297 && !Number.isInteger(n)) return 0;
+  //  (a number itself under 1E-297 is not that: Calc rounds it up to a unit)
+  if (mode === 'up' && x < 1e-297 && Math.abs(n) >= 1e-297 && !Number.isInteger(n)) return 0;
   //  a product a hair off a whole number through binary arithmetic is
   //  that number: 0.29*100 is 29. The allowance is relative, about the
   //  last of a double's digits, as in styles.js +fixed. An absolute one
