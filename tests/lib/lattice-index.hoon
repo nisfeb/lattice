@@ -26,4 +26,16 @@
     !>((levy (query-terms:li "ricsul-bilwyt foo.hoon") |=(t=@t (~(has by doc) t))))
     (expect-eq !>(`(list @t)`~) !>((query-terms:li "a of the")))
   ==
+::  text past ASCII is indexed, and asked for, as written
+++  test-index-non-ascii
+  =/  doc  (index-terms:li ~ "日本語 Café über Привет “quoted” naïve—word")
+  ;:  weld
+    (expect !>((~(has by doc) '日本語')))
+    (expect !>((~(has by doc) 'café')))
+    (expect !>((~(has by doc) 'über')))
+    (expect !>((~(has by doc) 'Привет')))
+    (expect !>((~(has by doc) 'quoted')))
+    (expect-eq !>(`(list @t)`~['日本語' 'café']) !>((query-terms:li "日本語, café")))
+    (expect-eq !>(`(list @t)`~['quoted']) !>((query-terms:li "“quoted”")))
+  ==
 --

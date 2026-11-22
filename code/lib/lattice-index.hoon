@@ -176,27 +176,48 @@
   ?:  (~(has in stop-words) c)  ~
   `c
 ::
-::  +trim-punct: drop non-alphanumeric characters from BOTH ends of a tape
-::  (leading via +trim-leading, trailing via flop/trim-leading/flop).
+::  +trim-punct: drop non-word characters from BOTH ends of a tape: what
+::  is left runs from its first word byte to its last. Punctuation past
+::  ASCII (+high-punct) is skipped a character at a time.
 ++  trim-punct
   |=  t=tape
   ^-  tape
-  (flop (trim-leading (flop (trim-leading t))))
-::  +trim-leading: drop leading non-alphanumeric characters.
-++  trim-leading
-  |=  t=tape
-  ^-  tape
-  ?~  t  ~
-  ?:  (is-alnum i.t)  t
-  $(t t.t)
-::  +is-alnum: is [c] an ASCII letter or digit?
+  =|  [i=@ud a=(unit @ud) b=@ud]
+  =/  s=tape  t
+  |-  ^-  tape
+  ?~  s  ?~(a ~ (swag [u.a (sub b u.a)] t))
+  =/  hp=@ud  (high-punct s)
+  ?.  =(0 hp)  $(s (slag hp `tape`s), i (add i hp))
+  ?.  (is-alnum i.s)  $(s t.s, i +(i))
+  $(s t.s, i +(i), a ?~(a `i a), b +(i))
+::  +is-alnum: is [c] a word byte: an ASCII letter or digit, or a byte
+::  of a character past ASCII? Without the last, text in any script but
+::  Latin was indexed nowhere, and "café" as "caf".
 ++  is-alnum
   |=  c=@tD
   ^-  ?
   ?|  &((gte c '0') (lte c '9'))
       &((gte c 'a') (lte c 'z'))
       &((gte c 'A') (lte c 'Z'))
+      (gte c 128)
   ==
+::  +high-punct: how many bytes of punctuation past ASCII `t` starts with,
+::  0 for none. A byte of 128 or more is a word byte, so a word in any
+::  script is a term. These characters are the exceptions, and separate
+::  words as their ASCII twins do: U+0080 to U+00BF (no-break space,
+::  guillemets), U+2000 to U+2BFF (dashes, curly quotes, the ellipsis,
+::  arrows, symbols), U+3000 to U+303F (CJK punctuation) and the emoji
+::  from U+1F000. /lib/lattice-know has the same arm:
+::  the two tokenizers agree on it.
+++  high-punct
+  |=  t=tape
+  ^-  @ud
+  ?.  ?=([@ @ *] t)  0
+  ?:  =(0xc2 i.t)  2
+  ?:  &(=(0xe2 i.t) (gte i.t.t 0x80) (lte i.t.t 0xaf))  3
+  ?:  &(=(0xe3 i.t) =(0x80 i.t.t))  3
+  ?:  &(=(0xf0 i.t) =(0x9f i.t.t))  4
+  0
 ::  +stop-words: a small fixed set of high-frequency English function words
 ::  (3+ chars, since shorter ones are already dropped by the min-length filter)
 ::  excluded from the term index. Deliberately small + fixed so this lib stays

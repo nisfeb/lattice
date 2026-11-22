@@ -130,7 +130,28 @@
 ++  word-char
   |=  c=@tD
   ^-  ?
-  ?|(&((gte c 'a') (lte c 'z')) &((gte c '0') (lte c '9')) (seam c))
+  ?|  &((gte c 'a') (lte c 'z'))
+      &((gte c '0') (lte c '9'))
+      (seam c)
+      (gte c 128)
+  ==
+::  +high-punct: how many bytes of punctuation past ASCII `t` starts with,
+::  0 for none. A byte of 128 or more is a word byte, so a word in any
+::  script is a term. These characters are the exceptions, and separate
+::  words as their ASCII twins do: U+0080 to U+00BF (no-break space,
+::  guillemets), U+2000 to U+2BFF (dashes, curly quotes, the ellipsis,
+::  arrows, symbols), U+3000 to U+303F (CJK punctuation) and the emoji
+::  from U+1F000. /lib/lattice-index has the same arm:
+::  the two tokenizers agree on it.
+++  high-punct
+  |=  t=tape
+  ^-  @ud
+  ?.  ?=([@ @ *] t)  0
+  ?:  =(0xc2 i.t)  2
+  ?:  &(=(0xe2 i.t) (gte i.t.t 0x80) (lte i.t.t 0xaf))  3
+  ?:  &(=(0xe3 i.t) =(0x80 i.t.t))  3
+  ?:  &(=(0xf0 i.t) =(0x9f i.t.t))  4
+  0
 ::  +terms: a text's ranking terms, in order, repeats kept. Lower-cased
 ::  words with their parts, words under two letters and stop words dropped,
 ::  then stemmed.
@@ -150,6 +171,9 @@
   ^-  (unit @t)
   ?:  (lth (lent p) 2)  ~
   ?:  (~(has in stop-words) (crip p))  ~
+  ::  the stemmer knows English endings. A word with bytes past ASCII
+  ::  goes in whole: its last bytes are part of a character.
+  ?:  (lien p |=(c=@tD (gte c 128)))  `(crip p)
   `(crip (stem p))
 ::  +runs: maximal runs of word characters.
 ++  runs
@@ -158,6 +182,8 @@
   =|  [cur=tape out=(list tape)]
   |-  ^-  (list tape)
   ?~  t  (flop ?~(cur out [(flop cur) out]))
+  =/  hp=@ud  (high-punct t)
+  ?.  =(0 hp)  $(t (slag hp `tape`t), cur ~, out ?~(cur out [(flop cur) out]))
   ?:  (word-char i.t)  $(t t.t, cur [i.t cur])
   $(t t.t, cur ~, out ?~(cur out [(flop cur) out]))
 ++  drop-seams
@@ -589,14 +615,18 @@
   ?~  t  ~
   ?.  &((gte i.t 128) (lth i.t 192))  t
   $(t t.t)
-::  +drop-high: leading non-ASCII bytes off. Run on a reversed tape it drops
-::  the last character if it is multi-byte, whole or cut.
+::  +drop-high: one leading non-ASCII character off, read backwards: its
+::  continuation bytes, then its lead byte. Run on a reversed tape it
+::  drops the last character if it is multi-byte, whole or cut, and no
+::  more. Dropping every byte past ASCII emptied a line with no ASCII
+::  in it.
 ++  drop-high
   |=  t=tape
   ^-  tape
-  ?~  t  ~
-  ?.  (gte i.t 128)  t
-  $(t t.t)
+  =/  r=tape  (drop-cont t)
+  ?~  r  ~
+  ?:  (gte i.r 192)  t.r
+  r
 ::  +term-set / +overlap: the duplicate test. Percent of distinct terms two
 ::  bodies share. On the live store every true duplicate pair scored 60 or
 ::  more and every distinct pair under 45.

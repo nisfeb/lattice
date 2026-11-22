@@ -651,4 +651,35 @@
     ::  the snippet is the line that holds the phrase
     (expect-eq !>('we use C++ here') !>((snippet 'first line\0awe use C++ here\0alast' '"c++"')))
   ==
+::  a word in a script past ASCII is a term, and typographic punctuation
+::  and a no-break space separate words as their ASCII twins do
+++  test-non-ascii-terms
+  =/  es=(list [key=path e=know-entry])
+    :~  [/n ['Привет мир' ~2026.1.1 ~ ~]]
+        [/o ['an “alpha” entry' ~2026.1.1 ~ ~]]
+    ==
+  ;:  weld
+    (expect-eq !>(`(list @t)`~['привет' 'мир']) !>((terms 'привет мир')))
+    (expect-eq !>(`(list @t)`~['café' 'über']) !>((terms 'Café über')))
+    (expect-eq !>(`(list @t)`~['alpha' 'beta' 'gamma']) !>((terms '“alpha”—beta… gamma')))
+    (expect-eq !>(`(list @t)`~['alpha' 'beta']) !>((terms 'alpha\c2\a0beta')))
+    (expect-eq !>(`(list @t)`~['日本語' 'メモ']) !>((terms '日本語、メモ。')))
+    ::  a word past ASCII is not stemmed: its last bytes are no suffix
+    (expect-eq !>(`(list @t)`~['ぁぁぁぁ']) !>((terms 'ぁぁぁぁ')))
+    (expect-eq !>(`(list path)`~[/n]) !>((turn (search es ~ 'мир' |) |=(h=hit key.h))))
+    (expect-eq !>(`(list path)`~[/o]) !>((turn (search es ~ 'alpha' |) |=(h=hit key.h))))
+  ==
+::  a long line with no ASCII in it still gives a snippet, cut between
+::  characters
+++  test-snippet-non-ascii
+  =/  line=@t  (crip (zing (reap 100 "日")))
+  =/  s=tape  (trip (snippet line 'zeta'))
+  ;:  weld
+    (expect !>((gth (lent s) 100)))
+    (expect-eq !>("日") !>((scag 3 s)))
+    (expect-eq !>("...") !>((slag (sub (lent s) 3) s)))
+    (expect-eq !>(0) !>((mod (sub (lent s) 3) 3)))
+    (expect-eq !>("ab") !>((flop (drop-high (flop ~['a' 'b' `@tD`0xe6 `@tD`0x97])))))
+    (expect-eq !>("日") !>((flop (drop-high (flop (weld "日" ~[`@tD`0xe6 `@tD`0x97]))))))
+  ==
 --
