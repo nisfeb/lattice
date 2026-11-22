@@ -25,8 +25,8 @@
 //     and opening it, by the preview, an Outgoing row or the address,
 //     starts that page under its name with nothing written. A name the
 //     ship refuses, a 403 and a link whose host is down keep the locked
-//     tab. A deleted page still opens as it does today: this kernel keeps
-//     serving it, and refuses to make it again.
+//     tab. A deleted page opens as a missing one: started, empty, nothing
+//     written (the kernel stopped serving a culled file, grubbery 15c5dc75).
 //
 //  E: When a page is written. A page hidden at once is saved without the
 //     debounce. A page deleted elsewhere is not written again until a
@@ -1108,8 +1108,23 @@ try {
 
     // ── C1. the order follows the last run ──
     step = 'C1 order';
-    let s = await cmdUp();
-    const base = names(s);
+    //  The palette lists an action only while its home is shown and
+    //  enabled, and some homes settle after the page is in front (on a
+    //  loaded host, seconds after). Read once, at once, `base` differed from
+    //  every later read and C1 and C5 all failed together (gate
+    //  2026-11-21T04-00-52, twice, at load 9 to 22; passing at load 2). So
+    //  the order is taken once three reads in a row agree.
+    let s = null, base = null;
+    for (let i = 0, same = 0, last = ''; i < 40 && same < 3; i++) {
+      s = await cmdUp();
+      const now = JSON.stringify(names(s));
+      same = now === last ? same + 1 : 1;
+      last = now;
+      base = names(s);
+      await palEsc();
+      if (same < 3) await sleep(500);
+    }
+    s = await cmdUp();
     check('C: with nothing run the palette lists the actions as registered',
       base.length > 5 && base[0] !== 'Move or rename', JSON.stringify(base.slice(0, 3)));
     await palEsc();
@@ -1132,7 +1147,8 @@ try {
     s = await cmdUp();
     check('C: after running Move or rename it is listed first', names(s)[0] === 'Move or rename', JSON.stringify(names(s).slice(0, 3)));
     check('C: the never-run actions keep their place after it',
-      JSON.stringify(names(s).slice(1)) === JSON.stringify(base.filter((n) => n !== 'Move or rename')));
+      JSON.stringify(names(s).slice(1)) === JSON.stringify(base.filter((n) => n !== 'Move or rename')),
+      JSON.stringify({ base, now: names(s) }));
     await page.keyboard.press('Enter');
     await sleep(300);
     dlgMeant++;
@@ -1400,6 +1416,9 @@ try {
     await setText(BODY);
     const gsaved = await waitFor(async () => (await shipBody(G)) === BODY, 15000, 500);
     check('D: the page with the links is saved', !!gsaved);
+    //  the ship holds the edit before its save answers: a reload while
+    //  the answer is owed asks to leave, and that stops the navigation
+    await waitFor(() => page.evaluate(() => !window.__latUnsaved()), 30000, 100);
     //  painted fresh from the ship, as a reload paints it
     await page.evaluate(() => window.latSetRead(true));
     await boot();
@@ -1630,10 +1649,19 @@ try {
     fakeLink = null;
     fake.delete(LNK);
     fake.delete(FORB);
+    //  A deleted page is gone: the kernel no longer serves a culled file's
+    //  last content (grubbery 15c5dc75), so it opens as a page not written
+    //  yet does, started under its name, empty, its old text nowhere and
+    //  nothing written for it until the owner types
     await boot();
+    const nDel = saves.length;
     await page.evaluate((n) => window.latTabs.openIn('page', n), DEL);
-    f = await waitFor(async () => { const x = await front(); return x.key === DEL && x.src === 'deleted body' ? x : null; }, 30000, 250);
-    check('D: a deleted page, which this ship still serves, opens as it does today', !!f, JSON.stringify(await front()));
+    f = await started(DEL);
+    check('D: a deleted page opens as a missing one, started under its name and empty', !!f, JSON.stringify(await front()));
+    check('D: its old text is not shown', (await front()).src !== 'deleted body', JSON.stringify(await front()));
+    await sleep(3000);
+    check('D: and nothing is written for it', savesOf(DEL).length === 0 && saves.length === nDel,
+      JSON.stringify(saves.slice(nDel)));
 
     // ── D7. offline, a missing page is not started ──
     //  With the page routes cut (saves and this name's read abort) and the

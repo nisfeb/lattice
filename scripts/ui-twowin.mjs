@@ -164,7 +164,10 @@ try {
   check('the ship keeps theirs, not written over',
     shipB.includes('line ONE theirs again') && !shipB.includes('line ONE mine again'), JSON.stringify(shipB));
   check('the editor keeps the unsaved text', (await srcVal(p1)).includes('line ONE mine again'));
-  check('and a bar says it changed elsewhere', await p1.evaluate(() => !document.getElementById('casbar').hidden));
+  // the bar is painted once the kept copy's save answers, which can be
+  // after the copy shows in the tree: wait for it
+  check('and a bar says it changed elsewhere', !!(await waitFor(() =>
+    p1.evaluate(() => !document.getElementById('casbar').hidden), 30000)));
   await p1.evaluate(() => document.getElementById('castheirs').click());
   const showsTheirs = await waitFor(async () => (await srcVal(p1)).includes('line ONE theirs again'), 30000);
   check('"Show theirs" shows theirs', !!showsTheirs, JSON.stringify(await srcVal(p1)));

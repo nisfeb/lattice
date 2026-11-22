@@ -60,7 +60,7 @@
     }
     // a link shown from its last-known copy, read live again: open it
     // properly, which lifts the lock and the badge
-    if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent); return; }
+    if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent, false, 1); return; }
     // A KIND change with an UNCHANGED body still needs handling. Retagging a
     // page (gmi -> md, say) leaves the text byte-identical, so the body check
     // below returns early and the preview keeps rendering with the old builder.
@@ -68,13 +68,13 @@
     // too. This request has no &render=1, so re-open the page properly rather
     // than trying to patch the preview from a response that does not contain
     // one.
-    if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
+    if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent, false, 1); return; }
     // track the rev even when the BODY is unchanged. A save from elsewhere
     // that landed the same text still moved the revision, and a stale curRev
     // makes the next save carry a stale base, manufacturing a false
     // conflict (and a conflicts/ page) out of nothing
     //  never back: a read sent before our own save landed answers older
-    if (mode !== 'know' && d.rev && d.rev >= curRev) {
+    if (mode !== 'know' && isRev(d.rev) && (!isRev(curRev) || d.rev >= curRev)) {
       curRev = d.rev; shipText.set(wasCurrent, d.body); freshPending.delete(wasCurrent);
     }
     if (d.body === src.value) return;

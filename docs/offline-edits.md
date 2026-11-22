@@ -87,6 +87,8 @@ queue entry.
   restore of the server copy (`page-history` / `page-source-at` already
   support this).
 
+**No base is not base 0.** A page's first version is rev 0 (grubbery 09653ae9), so `base=0` is a claim like any other. An edit that claims nothing sends no `base` (`null` in a batch item), and the queue keeps `baseRev: null` for it. A record written before this rule has no `bv` field, and its `baseRev` 0 is read as no claim. When `page-save` cannot see its own write on a page that was not there, it answers `rev: null` rather than guess, and the editor then claims nothing on its next save.
+
 Optimistic-plus-flag beats refuse-and-block because the dominant conflict is
 one person on two devices, and blocking your own offline work behind a
 resolution dialog is the worse trade. Nothing is lost either way. The

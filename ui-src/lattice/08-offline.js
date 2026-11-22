@@ -188,7 +188,7 @@
     try { v = await offGet(q.name); } catch {}
     const kept = !!v && !sameRec(v, q);
     //  the create it rode on has landed, so the newer text is a plain edit
-    if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: 0 });
+    if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: null, bv: 1 });
     if (kept) offKept = true;
     bustPages(q.name);
     await offRecount();
@@ -437,6 +437,9 @@
   //  page's (a parked tab's, saveParked in 35-pages.js). `drawn`: a
   //  create under an Inbox name the editor drew, not one the user typed,
   //  which the replay may draw again (drainCreates)
+  //  the rev a queued edit claims, null for none. A record from before
+  //  `bv` used 0 for no claim; now 0 is a page's first rev
+  const qBase = (q) => (isRev(q.baseRev) && (q.bv || q.baseRev) ? q.baseRev : null);
   async function enqueueSave(name, kind, body, isNew, rn, rev = curRev, drawn = false) {
     // the queue coalesces by name, and the 2s autosave calls this WITHOUT
     // the create flag — overwriting a queued create as a plain edit would
@@ -450,7 +453,7 @@
     //  flag our own text as a conflict: no base claim, as a live save
     //  so does a replay: the editor's rev is from before the replayed text
     if (tooBig(body)) { st(TOO_BIG, false); return false; }
-    const queued = await offPut({ name, kind, body, baseRev: jobWait || replaying ? 0 : rev || 0,
+    const queued = await offPut({ name, kind, body, baseRev: jobWait || replaying || !isRev(rev) ? null : rev, bv: 1,
       isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(), ...qStamp(),
       drawn: !!drawn || !!(prev && prev.drawn),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
@@ -463,7 +466,7 @@
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
-    snapPage(name, { body, kind, rev: rev || 0 });
+    snapPage(name, { body, kind, rev: isRev(rev) ? rev : null });
     st(job ? JOB_NOTE : 'saved offline — ' + offCount + ' waiting to sync');
     // truthy either way: 'job' tells the editor which words to show
     return job ? 'job' : true;
@@ -531,7 +534,7 @@
           //  rides on (`via`): it waits for that move, and is kept aside
           //  rather than written at the new name if the move is refused
           //  a page the user moved has a name the user gave: not drawn
-          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0,
+          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: null, bv: 1,
             body: moveBody(q.body || '', rec.from, rec.to), via: stamp.id, from: q.name, drawn: false });
         }
       }
@@ -898,7 +901,7 @@
           r = await tfetch(api + '/page-save-batch?report=1', {
             method: 'POST',
             body: JSON.stringify(part.map((q) =>
-              ({ name: q.name, type: q.kind, body: q.body || '\n', base: q.baseRev || 0 }))),
+              ({ name: q.name, type: q.kind, body: q.body || '\n', base: qBase(q) }))),
           }, 120000);
         } catch {}
       } else r = { status: 413 };
@@ -924,7 +927,7 @@
         else {
           try {
             one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
-              '&type=' + q.kind + '&base=' + (q.baseRev || 0) + '&by=' + (q.win || winId),
+              '&type=' + q.kind + (isRev(qBase(q)) ? '&base=' + qBase(q) : '') + '&by=' + (q.win || winId),
               { method: 'POST', body: q.body || '\n' }, 20000);
           } catch {}
         }

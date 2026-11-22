@@ -91,16 +91,19 @@
   =/  r=(unit path)  (strip-prefix desk-base-old p)
   ?~(r ~ `(weld desk-base u.r))
 ::  +save-moved: whether a /remote-save write that failed with `code` is
-::  tried once more where the peer's lattice lives now (+moved-path). A
-::  write that reached no one, a 504 with nothing sent (`sent` |), or one
-::  the host had no file for (404, nothing written: a kernel that moved
-::  the shell answers so at the old path), at a path under one of
-::  +peer-bases. Any other answer from the host is final, and a write
-::  sent but not acked may still land where it went.
+::  tried once more where the peer's lattice lives now (+moved-path), at a
+::  path under one of +peer-bases. Two cases qualify. A write that reached
+::  no one: a 504 with nothing sent (`sent` |), and only when the host
+::  refused the read before the deadline (`took` under `wait`), since a
+::  read that ran the whole deadline found the peer offline and asking
+::  where its lattice lives would only wait out a timeout per layout. Or
+::  the host had no file there (404, nothing written): a kernel that moved
+::  the shell answers so at the old path. Any other answer from the host is
+::  final, and a write sent but not acked may still land where it went.
 ++  save-moved
-  |=  [code=@ud sent=? p=path]
+  |=  [code=@ud sent=? took=@dr wait=@dr p=path]
   ^-  ?
-  ?&  |(&(=(504 code) !sent) =(404 code))
+  ?&  |(&(=(504 code) !sent (lth took wait)) =(404 code))
       (lien peer-bases |=(b=path ?=(^ (strip-prefix b p))))
   ==
 ::  +sub-keep-dir: the directory of a peer's published page that a /sub

@@ -206,17 +206,29 @@ pub enum Level {
 }
 
 impl Group {
-    /// The whole path of a page's text under the lattice at `base`.
+    /// The path that names the page `name` in a grant, as the ship's
+    /// access list gives it and takes it: the page's own path. The ship
+    /// grants that as a read of the page's text.
     fn road(base: &str, name: &str) -> String {
+        format!("{base}/page/{name}")
+    }
+
+    /// The page's text path, which this client used to send. The ship takes
+    /// it as the page too, so it is matched and taken out with the page.
+    fn code_road(base: &str, name: &str) -> String {
         format!("{base}/page/{name}/code")
+    }
+
+    /// Whether `path` names the page `name` under the lattice at `base`.
+    fn names_page(path: &str, base: &str, name: &str) -> bool {
+        *path == Group::road(base, name) || *path == Group::code_road(base, name)
     }
 
     /// What this group may do with the page `name` by the page's own grant.
     pub fn level(&self, base: &str, name: &str) -> Level {
-        let road = Group::road(base, name);
-        if self.make.contains(&road) {
+        if self.make.iter().any(|p| Group::names_page(p, base, name)) {
             Level::Edit
-        } else if self.peek.contains(&road) {
+        } else if self.peek.iter().any(|p| Group::names_page(p, base, name)) {
             Level::Read
         } else {
             Level::None
@@ -236,8 +248,8 @@ impl Group {
     pub fn with_level(&self, base: &str, name: &str, level: Level) -> Group {
         let road = Group::road(base, name);
         let mut g = self.clone();
-        g.peek.retain(|p| *p != road);
-        g.make.retain(|p| *p != road);
+        g.peek.retain(|p| !Group::names_page(p, base, name));
+        g.make.retain(|p| !Group::names_page(p, base, name));
         if level != Level::None {
             g.peek.push(road.clone());
         }
@@ -287,7 +299,8 @@ pub fn readers(groups: &[Group], name: &str) -> Vec<Reader> {
     // what a path grants on this page: its own text, or a folder above it
     let on = |path: &str| -> Option<Option<String>> {
         let rel = path.split_once("/page/")?.1.trim_end_matches('/');
-        if rel.strip_suffix("/code") == Some(name) {
+        // the page's own grant: its path, as the ship lists it, or its text path
+        if rel == name || rel.strip_suffix("/code") == Some(name) {
             return Some(None);
         }
         let dir = rel.strip_suffix("/code").unwrap_or(rel);
@@ -768,8 +781,9 @@ struct History {
 
 #[derive(Deserialize)]
 struct Saved {
+    /// None when the ship did not see the write yet on a page that was not there before: a new page's first rev is 0, or above the old ones at a name used before.
     #[serde(default)]
-    rev: u64,
+    rev: Option<u64>,
     /// The page had changed since the revision the save named: it was applied all the same, and what it replaced is kept at `kept`.
     #[serde(default)]
     conflicted: bool,
@@ -1520,10 +1534,12 @@ pub fn key_request(a: &KeyAsk) -> Result<serde_json::Value, String> {
 /// text, and the revision it was written over, by which the ship can
 /// tell whether the page changed meanwhile.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(from = "QueuedFile", into = "QueuedFile")]
 pub struct Queued {
     pub kind: String,
     pub body: String,
-    pub base: u64,
+    /// None claims no revision, and the ship checks nothing. Some(0) claims rev 0, a page's first.
+    pub base: Option<u64>,
     /// The page was made here and the ship has not seen it: sent as a new page, which a page of that name made elsewhere meanwhile refuses.
     #[serde(default)]
     pub is_new: bool,
@@ -1532,13 +1548,42 @@ pub struct Queued {
     pub at: u64,
 }
 
+/// A waiting save as the file keeps it. A file written before `claims`
+/// used a base of 0 for no claim, so there 0 reads as None.
+#[derive(Clone, Deserialize, Serialize)]
+struct QueuedFile {
+    kind: String,
+    body: String,
+    #[serde(default)]
+    base: Option<u64>,
+    #[serde(default)]
+    claims: bool,
+    #[serde(default)]
+    is_new: bool,
+    #[serde(default)]
+    at: u64,
+}
+
+impl From<QueuedFile> for Queued {
+    fn from(f: QueuedFile) -> Self {
+        let base = if f.claims { f.base } else { f.base.filter(|&b| b != 0) };
+        Queued { kind: f.kind, body: f.body, base, is_new: f.is_new, at: f.at }
+    }
+}
+
+impl From<Queued> for QueuedFile {
+    fn from(q: Queued) -> Self {
+        QueuedFile { kind: q.kind, body: q.body, base: q.base, claims: true, is_new: q.is_new, at: q.at }
+    }
+}
+
 /// The saves that wait, one for each page by its name (`docs/offline-edits.md`).
 pub type Queue = std::collections::BTreeMap<String, Queued>;
 
 /// Puts a save by. A page saved again while one waits takes its place,
 /// and keeps what the first one knew: the revision the ship last gave,
 /// and that the page is new. Once new, new until it is sent.
-pub fn enqueue(q: &mut Queue, p: &Page, base: u64, is_new: bool, at: u64) {
+pub fn enqueue(q: &mut Queue, p: &Page, base: Option<u64>, is_new: bool, at: u64) {
     let prev = q.get(&p.name);
     let (base, is_new) = (prev.map_or(base, |o| o.base), is_new || prev.is_some_and(|o| o.is_new));
     q.insert(p.name.clone(), Queued { kind: p.kind.clone(), body: p.body.clone(), base, is_new, at });
@@ -1631,7 +1676,7 @@ pub fn enqueue_op(ops: &mut Vec<QueuedOp>, saves: &mut Queue, op: QueuedOp) {
             let carried: Vec<(String, String)> = saves.keys().filter(|k| queued_know(k).is_none()).filter_map(|k| Some((k.clone(), moved(k, from, to)?))).collect();
             for (old, new) in carried {
                 if let Some(mut q) = saves.remove(&old) {
-                    q.base = 0;
+                    q.base = None;
                     saves.insert(new, q);
                 }
             }
@@ -2265,12 +2310,12 @@ impl Conn {
         let tried = match know {
             Some(key) => self.know_save(&format!("/{key}"), body).map(|()| "{}".to_owned()),
             None if q.is_new => save(name, "&new=1"),
-            None => save(name, &format!("&base={}", q.base)),
+            None => save(name, &q.base.map_or(String::new(), |b| format!("&base={b}"))),
         };
         let why = match tried {
             Ok(text) => {
                 return match serde_json::from_str::<Saved>(&text) {
-                    Ok(a) => Sent::Done { rev: a.rev, kept: (a.conflicted && !a.kept.is_empty()).then_some(a.kept) },
+                    Ok(a) => Sent::Done { rev: self.rev_after(name, body, a.rev), kept: (a.conflicted && !a.kept.is_empty()).then_some(a.kept) },
                     Err(e) => Sent::Stop(format!("the ship's answer was not read: {e}")),
                 }
             }
@@ -2949,22 +2994,32 @@ impl Conn {
     }
 
     /// Saves over `base`, the rev the text was read at. The ship answers 409
-    /// when the page has moved past it.
-    pub fn save(&self, p: &Page, base: u64) -> Result<u64, String> {
+    /// when the page has moved past it. None claims nothing: the save makes
+    /// the page or writes over it.
+    pub fn save(&self, p: &Page, base: Option<u64>) -> Result<u64, String> {
         self.save_as(p, base, false)
     }
 
     /// Saves a page, and when it is `fresh`, one this window has never
     /// seen on the ship, only if the ship has none of that name: the
-    /// ship answers 409 otherwise. A base of 0 is no check to the ship,
-    /// so without this a page begun by name before the tree was read
-    /// would be written over one that was there all along.
-    pub fn save_as(&self, p: &Page, base: u64, fresh: bool) -> Result<u64, String> {
+    /// ship answers 409 otherwise. Without it, a page begun by name before
+    /// the tree was read would be written over one that was there all along.
+    pub fn save_as(&self, p: &Page, base: Option<u64>, fresh: bool) -> Result<u64, String> {
+        let claim = base.map_or(String::new(), |b| format!("&base={b}&cas=1"));
         let new = if fresh { "&new=1" } else { "" };
-        let q = format!("page-save?name={}&type={}&by=rune&base={base}&cas=1{new}", enc(&p.name), enc(&p.kind));
+        let q = format!("page-save?name={}&type={}&by=rune{claim}{new}", enc(&p.name), enc(&p.kind));
         // an answer that cannot be read is still an answer: the ship took the save or refused it, and is not away. Said with a status, so the save is not kept to be sent a second time
         let s: Saved = serde_json::from_str(&self.call("POST", &q, Some(&p.body))?).map_err(|e| format!("200: the ship's answer to the save could not be read: {e}"))?;
-        Ok(s.rev)
+        let body = if p.body.is_empty() { "\n" } else { p.body.as_str() };
+        Ok(self.rev_after(&p.name, body, s.rev))
+    }
+
+    /// The rev a save landed at. The ship answers none for a page that was
+    /// not there and does not show the write yet, so read the page: our
+    /// text there is its rev. Anything else is 0, a page's first rev, and a
+    /// save claiming it is refused if the page is past it, never written over.
+    fn rev_after(&self, name: &str, body: &str, rev: Option<u64>) -> u64 {
+        rev.unwrap_or_else(|| self.page(name).ok().filter(|t| t.body == body).map_or(0, |t| t.rev))
     }
 
     /// Every stored revision of a page, newest first.
@@ -3816,6 +3871,23 @@ mod tests {
     }
 
     #[test]
+    fn a_page_grant_as_the_ship_lists_it_is_found_and_taken_back() {
+        // the ship's access list names a page's own grant by the page's path,
+        // not its text path; unsharing must take that out, and an old
+        // text-path grant too
+        let base = "/apps/x/lattice";
+        let page = format!("{base}/page/a/b");
+        let g = Group { name: "nec".into(), ships: vec!["~nec".into()], peek: vec![page.clone()], make: vec![page.clone()] };
+        assert_eq!(g.level(base, "a/b"), Level::Edit);
+        let gone = g.with_level(base, "a/b", Level::None);
+        assert!(gone.peek.is_empty() && gone.make.is_empty(), "unsharing takes the ship's own form out");
+        let old = Group { peek: vec![format!("{page}/code")], make: vec![], ..g.clone() };
+        assert!(old.with_level(base, "a/b", Level::None).peek.is_empty(), "and the old text-path form");
+        assert_eq!(g.with_level(base, "a/b", Level::Read).peek, vec![page.clone()], "a grant is sent as the page's path");
+        assert_eq!(readers(&[g.clone()], "a/b"), vec![Reader { ship: "~nec".into(), edit: true, via: None }]);
+    }
+
+    #[test]
     fn a_groups_grant_on_a_page_is_set_without_touching_its_others() {
         let base = "/apps/x/lattice";
         let g = Group { name: "team".into(), ships: vec!["~nec".into()], peek: vec![format!("{base}/page/other/code"), format!("{base}/page/dir")], make: vec![] };
@@ -4207,19 +4279,25 @@ mod tests {
     fn a_save_that_waits_is_one_for_each_page_and_keeps_what_the_first_knew() {
         let page = |name: &str, body: &str| Page { name: name.into(), body: body.into(), kind: "md".into(), rev: 0 };
         let mut q = Queue::new();
-        enqueue(&mut q, &page("a", "one"), 4, false, 10);
-        enqueue(&mut q, &page("made", "new"), 0, true, 11);
+        enqueue(&mut q, &page("a", "one"), Some(4), false, 10);
+        enqueue(&mut q, &page("made", "new"), None, true, 11);
         // saved again: the newer text, over the revision the ship last gave, not one this device made up
-        enqueue(&mut q, &page("a", "two"), 9, false, 12);
-        enqueue(&mut q, &page("made", "newer"), 0, false, 13);
-        assert_eq!(q.len(), 2);
-        assert_eq!(q["a"], Queued { kind: "md".into(), body: "two".into(), base: 4, is_new: false, at: 12 });
+        enqueue(&mut q, &page("a", "two"), Some(9), false, 12);
+        enqueue(&mut q, &page("made", "newer"), None, false, 13);
+        enqueue(&mut q, &page("first", "on rev 0"), Some(0), false, 14);
+        assert_eq!(q.len(), 3);
+        assert_eq!(q["a"], Queued { kind: "md".into(), body: "two".into(), base: Some(4), is_new: false, at: 12 });
         assert_eq!((q["made"].body.as_str(), q["made"].is_new), ("newer", true));
         // kept in a file and read back the same. A file that is not there, or not a queue, is an empty one
         let file = std::env::temp_dir().join(format!("lr-queue-{}", std::process::id())).join("waiting.json");
         assert!(queue_at(&file).is_empty());
         write_private(&file, &serde_json::to_vec(&q).unwrap()).unwrap();
         assert_eq!(queue_at(&file), q);
+        // a claim of rev 0 is kept as one, and a file from before claims were marked reads its 0 as no claim
+        assert_eq!(queue_at(&file)["first"].base, Some(0));
+        write_private(&file, br#"{"old":{"kind":"md","body":"x","base":0},"older":{"kind":"md","body":"y","base":3}}"#).unwrap();
+        let old = queue_at(&file);
+        assert_eq!((old["old"].base, old["older"].base), (None, Some(3)));
         std::fs::write(&file, "not json").unwrap();
         assert!(queue_at(&file).is_empty());
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
@@ -4246,13 +4324,13 @@ mod tests {
     fn live_send_queued() {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
         let name = format!("waited/a-{}", crate::api::since_epoch().unwrap().as_secs());
-        let q = |body: &str, base: u64, is_new: bool| Queued { kind: "md".into(), body: body.into(), base, is_new, at: 0 };
+        let q = |body: &str, base: u64, is_new: bool| Queued { kind: "md".into(), body: body.into(), base: Some(base), is_new, at: 0 };
         // made here: it goes as a new page
         let Sent::Done { rev: r1, kept: None } = c.send_queued(&name, &q("first\n", 0, true)) else { panic!("a new page is taken") };
         assert_eq!(c.page(&name).unwrap().body, "first\n");
         // sent again, as after a try that landed unseen: the same text there is not a collision
         assert_eq!(c.send_queued(&name, &q("first\n", 0, true)), Sent::Done { rev: r1, kept: None });
-        // a page starts at revision 0, and a save that names 0 names no revision: it is applied and nothing is checked
+        // a page starts at revision 0, and a save that names 0 claims it: the ship is there, so it is plain
         let Sent::Done { rev: r2, kept: None } = c.send_queued(&name, &q("second\n", r1, false)) else { panic!("an edit over a new page is plain") };
         assert!((r1, r2) == (0, 1), "{r1} {r2}");
         // an edit over the revision the ship has: applied, nothing kept
@@ -4285,10 +4363,10 @@ mod tests {
     fn a_memory_that_waits_is_put_over_what_was_read() {
         let mut q = Queue::new();
         let page = |name: &str, body: &str| Page { name: name.into(), body: body.into(), kind: "md".into(), rev: 0 };
-        enqueue(&mut q, &Page { name: know_queue_name("/project/a"), ..page("", "changed away") }, 0, false, 1);
-        enqueue(&mut q, &Page { name: know_queue_name("made/away"), ..page("", "new") }, 0, false, 2);
+        enqueue(&mut q, &Page { name: know_queue_name("/project/a"), ..page("", "changed away") }, None, false, 1);
+        enqueue(&mut q, &Page { name: know_queue_name("made/away"), ..page("", "new") }, None, false, 2);
         // a page of the same name waits beside it, and is no memory
-        enqueue(&mut q, &page("project/a", "a page"), 3, false, 3);
+        enqueue(&mut q, &page("project/a", "a page"), Some(3), false, 3);
         assert_eq!(q.len(), 3);
         assert_eq!((queued_know("know:project/a"), queued_know("project/a")), (Some("project/a"), None));
         let read = vec![Know { key: "/project/a".into(), body: "as read".into(), tags: vec!["core".into()], updated: "~2026.1.1".into() }, Know { key: "/other".into(), body: "untouched".into(), ..Know::default() }];
@@ -4302,21 +4380,21 @@ mod tests {
         let page = |name: &str, body: &str| Page { name: name.into(), body: body.into(), kind: "md".into(), rev: 0 };
         let mv = |from: &str, to: &str| QueuedOp::Move { from: from.into(), to: to.into(), dname: String::new(), dnames: String::new() };
         let (mut ops, mut q) = (Vec::new(), Queue::new());
-        enqueue(&mut q, &page("notes/a", "A"), 4, false, 1);
-        enqueue(&mut q, &page("notes/sub/b", "B"), 0, true, 2);
-        enqueue(&mut q, &page("notes-other", "O"), 2, false, 3);
-        enqueue(&mut q, &Page { name: know_queue_name("notes/a"), ..page("", "a memory") }, 0, false, 4);
+        enqueue(&mut q, &page("notes/a", "A"), Some(4), false, 1);
+        enqueue(&mut q, &page("notes/sub/b", "B"), None, true, 2);
+        enqueue(&mut q, &page("notes-other", "O"), Some(2), false, 3);
+        enqueue(&mut q, &Page { name: know_queue_name("notes/a"), ..page("", "a memory") }, None, false, 4);
         // a folder moved: the saves under it go with it, and name no revision. One beside it, and a memory of the same name, stay
         enqueue_op(&mut ops, &mut q, mv("notes", "kept"));
         assert_eq!(q.keys().map(String::as_str).collect::<Vec<_>>(), ["kept/a", "kept/sub/b", "know:notes/a", "notes-other"]);
-        assert_eq!((q["kept/a"].base, q["kept/sub/b"].is_new, q["notes-other"].base), (0, true, 2));
+        assert_eq!((q["kept/a"].base, q["kept/sub/b"].is_new, q["notes-other"].base), (None, true, Some(2)));
         // a page deleted under its new name: its save is dropped, the others wait
         enqueue_op(&mut ops, &mut q, QueuedOp::Del("kept/a".into()));
         assert_eq!(q.keys().map(String::as_str).collect::<Vec<_>>(), ["kept/sub/b", "know:notes/a", "notes-other"]);
         assert_eq!(ops, [mv("notes", "kept"), QueuedOp::Del("kept/a".into())], "in the order made");
         // a page made away and deleted away leaves nothing to send
         let (mut ops2, mut q2) = (Vec::new(), Queue::new());
-        enqueue(&mut q2, &page("scratch", "s"), 0, true, 1);
+        enqueue(&mut q2, &page("scratch", "s"), None, true, 1);
         enqueue_op(&mut ops2, &mut q2, QueuedOp::Del("scratch".into()));
         assert!(ops2.is_empty() && q2.is_empty());
         // the tree as read shows as it is once they are done
@@ -4336,13 +4414,13 @@ mod tests {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
         let t = crate::api::since_epoch().unwrap().as_secs();
         let (a, b, to) = (format!("ops{t}/a"), format!("ops{t}/b"), format!("ops{t}/moved"));
-        let q = |body: &str, base: u64, is_new: bool| Queued { kind: "md".into(), body: body.into(), base, is_new, at: 0 };
+        let q = |body: &str, base: u64, is_new: bool| Queued { kind: "md".into(), body: body.into(), base: Some(base), is_new, at: 0 };
         for n in [&a, &b] {
             assert!(matches!(c.send_queued(n, &q("as made\n", 0, true)), Sent::Done { .. }));
         }
         // made away: a moved to a new name with an edit waiting on it, then b deleted
         let (mut ops, mut saves) = (Vec::new(), Queue::new());
-        enqueue(&mut saves, &Page { name: a.clone(), body: "edited before the move\n".into(), kind: "md".into(), rev: 0 }, 0, false, 1);
+        enqueue(&mut saves, &Page { name: a.clone(), body: "edited before the move\n".into(), kind: "md".into(), rev: 0 }, Some(0), false, 1);
         enqueue_op(&mut ops, &mut saves, QueuedOp::Move { from: a.clone(), to: to.clone(), dname: String::new(), dnames: String::new() });
         enqueue_op(&mut ops, &mut saves, QueuedOp::Del(b.clone()));
         for op in &ops {
@@ -4507,7 +4585,7 @@ mod tests {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
         let dir = format!("urbt{}", crate::api::since_epoch().unwrap().as_secs());
         let name = format!("{dir}/page");
-        let q = Queued { kind: "md".into(), body: "# Read by address\n".into(), base: 0, is_new: true, at: 0 };
+        let q = Queued { kind: "md".into(), body: "# Read by address\n".into(), base: None, is_new: true, at: 0 };
         assert!(matches!(c.send_queued(&name, &q), Sent::Done { .. }));
         c.share(&name, "shared").unwrap();
         let got = c.urb_read(&format!("urb://{}/{name}", c.ship())).unwrap();
@@ -4579,7 +4657,7 @@ mod tests {
                     let (c3, n3) = (c2.clone(), name2.clone());
                     saver = Some(std::thread::spawn(move || {
                         std::thread::sleep(Duration::from_secs(1));
-                        c3.send_queued(&n3, &Queued { kind: "md".into(), body: "seen\n".into(), base: 0, is_new: true, at: 0 })
+                        c3.send_queued(&n3, &Queued { kind: "md".into(), body: "seen\n".into(), base: None, is_new: true, at: 0 })
                     }));
                 }
                 let done = matches!(ev, Beacon::Rev { old: false, .. });
@@ -4873,7 +4951,7 @@ mod tests {
         // a bookmark of a page that is shared opens by the read the pane uses for it.
         // The page is left there, named for the run, for `scripts/marks-ship.json` to press
         let name = format!("marks{stamp}/page");
-        let q = Queued { kind: "md".into(), body: "# Kept by a bookmark\n".into(), base: 0, is_new: true, at: 0 };
+        let q = Queued { kind: "md".into(), body: "# Kept by a bookmark\n".into(), base: None, is_new: true, at: 0 };
         assert!(matches!(c.send_queued(&name, &q), Sent::Done { .. }));
         c.share(&name, "shared").unwrap();
         let there = format!("urb://{}/{name}", c.ship());
@@ -4911,20 +4989,15 @@ mod tests {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
         assert!(c.tree().unwrap().iter().any(|n| n.page && n.path == "rune-probe"), "the tree lists the page");
         let mut p = c.page("rune-probe").unwrap();
-        // a base of 0 is no check at all on the ship, as in the web client:
-        // move a fresh page past it first
-        if p.rev == 0 {
-            p.body.push_str("\nfirst\n");
-            p.rev = c.save(&p, 0).unwrap();
-        }
+        // a base of 0 claims rev 0, a page's first, so it is checked as any other
         let base = p.rev;
         p.body = format!("# probe\n\nsaved at rev {base}\n");
-        let rev = c.save(&p, base).unwrap();
+        let rev = c.save(&p, Some(base)).unwrap();
         assert!(rev > base, "a save moves the rev: {base} -> {rev}");
         assert_eq!(c.page("rune-probe").unwrap().body, p.body, "and reads back");
         // the same text again is no conflict: the ship takes it as already landed
         p.body.push_str("another edit\n");
-        assert!(c.save(&p, base).unwrap_err().starts_with("409"), "a stale base is refused");
+        assert!(c.save(&p, Some(base)).unwrap_err().starts_with("409"), "a stale base is refused");
         // history lists what was saved, and an old revision reads as it was
         let revs = c.history("rune-probe").unwrap();
         assert!(revs.len() >= 2 && revs[0].rev > revs[1].rev, "newest first: {revs:?}");
@@ -5042,13 +5115,13 @@ mod tests {
         // only orrery's map is said to be kept or not, and with no orrery here it is not
         assert_eq!(c.kept("rune-probe").unwrap(), None);
         if !c.tree().unwrap().iter().any(|n| n.path == "orrery/map") {
-            c.save(&Page { name: "orrery/map".into(), body: r#"{"type":"FeatureCollection","features":[]}"#.into(), kind: "geojson".into(), rev: 0 }, 0).unwrap();
+            c.save(&Page { name: "orrery/map".into(), body: r#"{"type":"FeatureCollection","features":[]}"#.into(), kind: "geojson".into(), rev: 0 }, None).unwrap();
         }
         assert_eq!(c.kept("orrery/map").unwrap(), Some(false));
         // a captured page is made by its first save, with no create before it
         let cap = capture_name(&today(), u64::from(std::process::id()), &|_| false);
         let made = Page { name: cap.clone(), body: "a thought\n".into(), kind: "md".into(), rev: 0 };
-        c.save(&made, 0).unwrap();
+        c.save(&made, None).unwrap();
         assert_eq!(c.page(&cap).unwrap().body, "a thought\n");
         assert!(c.tree().unwrap().iter().any(|n| n.page && n.path == cap));
         // a page that links to the probe is among its backlinks, once the ship has read it
@@ -5056,7 +5129,7 @@ mod tests {
         c.create(&from).unwrap();
         let mut linker = c.page(&from).unwrap();
         linker.body = "see [[rune-probe]]\n".into();
-        c.save(&linker, linker.rev).unwrap();
+        c.save(&linker, Some(linker.rev)).unwrap();
         let mut back = Vec::new();
         for _ in 0..20 {
             back = c.backlinks("rune-probe").unwrap();
@@ -5161,7 +5234,7 @@ mod tests {
         let first = c.dump("").unwrap();
         assert!(first.nodes.iter().filter(|n| n.page).all(|n| n.body.is_some()) && !first.since.is_empty(), "a first dump has every body");
         p.body.push_str("once more\n");
-        c.save(&p, rev).unwrap();
+        c.save(&p, Some(rev)).unwrap();
         let next = c.dump(&first.since).unwrap();
         let bodies: Vec<&str> = next.nodes.iter().filter(|n| n.body.is_some()).map(|n| n.path.as_str()).collect();
         assert_eq!(bodies, ["rune-probe"], "only the page written since comes with its body");

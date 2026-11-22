@@ -2049,7 +2049,7 @@ fn confirm(s: &mut App) {
         match s.conn.clone() {
             Some(c) => s.op_req.request((c, copy), |(c, copy)| {
                 // made by its first save, with the kind and the text of the page it copies
-                c.save_as(&copy, 0, true)?;
+                c.save_as(&copy, None, true)?;
                 Ok(Op::Created(copy.name))
             }),
             None => {
@@ -2126,7 +2126,7 @@ fn confirm(s: &mut App) {
             // a page made away is a save that waits as a new page, with the heading a page starts with
             Op::Created(n) => {
                 let made = Page { name: n.clone(), body: format!("# {}\n", if rn.dname.is_empty() { n.rsplit('/').next().unwrap_or(n) } else { rn.dname.as_str() }), kind: "md".into(), rev: 0 };
-                api::enqueue(&mut saves, &made, 0, true, 0);
+                api::enqueue(&mut saves, &made, None, true, 0);
                 s.cache.insert(n.clone(), made);
             }
             Op::Renamed(a, b) => api::enqueue_op(&mut ops, &mut saves, api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
@@ -3361,7 +3361,7 @@ fn save_body(s: &mut App, p: Page, body: String) {
     s.save_for = Some(page.name.clone());
     match s.conn.clone() {
         Some(c) => s.save_req.request((c, page), move |(c, mut p)| {
-            p.rev = c.save(&p, base)?;
+            p.rev = c.save(&p, Some(base))?;
             Ok(p)
         }),
         None => landed(s, Page { rev: base + 1, ..page }),
@@ -4837,7 +4837,7 @@ fn restore(s: &mut App) {
     let p = Page { name: old.name, body: old.body, kind: cur.kind.clone(), rev: base };
     s.save_for = Some(p.name.clone());
     s.save_req.request((c, p), move |(c, mut p)| {
-        p.rev = c.save(&p, base)?;
+        p.rev = c.save(&p, Some(base))?;
         Ok(p)
     });
 }
@@ -5483,7 +5483,7 @@ fn write(s: &mut App) {
             } else if memory {
                 c.know_save(&format!("/{}", p.name), &p.body)?;
             } else {
-                p.rev = c.save_as(&p, base, fresh)?;
+                p.rev = c.save_as(&p, Some(base), fresh)?;
             }
             Ok(p)
         }),
@@ -5635,7 +5635,7 @@ fn drained(s: &mut App, (did, out): Drained) {
                     s.queue.remove(&name);
                 } else if let Some(newer) = s.queue.get_mut(&name) {
                     // saved again meanwhile: that one is written over what was just sent
-                    (newer.base, newer.is_new) = (rev, false);
+                    (newer.base, newer.is_new) = (Some(rev), false);
                 }
                 if let Some(p) = s.cache.get_mut(&name) {
                     p.rev = rev;
@@ -5694,9 +5694,9 @@ fn queue_save(s: &mut App, mut p: Page, base: u64, memory: bool) {
     let mut q = s.queue.clone();
     if memory {
         // under its own name in the list, with no revision: the last write of a memory wins
-        api::enqueue(&mut q, &Page { name: api::know_queue_name(&p.name), ..p.clone() }, 0, false, at);
+        api::enqueue(&mut q, &Page { name: api::know_queue_name(&p.name), ..p.clone() }, None, false, at);
     } else {
-        api::enqueue(&mut q, &p, base, !s.names.contains(&p.name), at);
+        api::enqueue(&mut q, &p, Some(base), !s.names.contains(&p.name), at);
     }
     if let Err(e) = c.store_queue(&q) {
         (s.save_again, s.autosaving, s.auto_held) = (false, false, true);
@@ -6298,8 +6298,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 for (name, q) in &s.queue {
                     match nodes.iter_mut().find(|n| n.page && n.path == *name) {
                         // with the revision it was written over, so a save made from it is still checked against that one
-                        Some(n) => (n.body, n.kind, n.rev) = (Some(q.body.clone()), q.kind.clone(), q.base),
-                        None => nodes.push(Node { path: name.clone(), page: true, kind: q.kind.clone(), rev: q.base, body: Some(q.body.clone()), ..Node::default() }),
+                        Some(n) => (n.body, n.kind, n.rev) = (Some(q.body.clone()), q.kind.clone(), q.base.unwrap_or(n.rev)),
+                        None => nodes.push(Node { path: name.clone(), page: true, kind: q.kind.clone(), rev: q.base.unwrap_or(0), body: Some(q.body.clone()), ..Node::default() }),
                     }
                 }
                 // what the ship gave is kept for a run when it does not answer: whenever it carried a text, or pages came or went
@@ -6979,8 +6979,8 @@ fn convert_tex(s: &mut App) {
         let say = format!("wrote {}", out.name);
         match conn {
             Some(c) => {
-                // a base of 0 makes it or writes over it: a conversion replaces the last one
-                c.save(&out, 0)?;
+                // no base makes it or writes over it: a conversion replaces the last one
+                c.save(&out, None)?;
                 Ok(Op::Wrote(out.name, None, say))
             }
             None => Ok(Op::Wrote(out.name.clone(), Some(out), say)),
@@ -15430,7 +15430,7 @@ mod tests {
     fn what_the_watcher_sent_is_taken_out_of_the_windows_own_list_once() {
         let mut s = sample("welcome");
         s.conn = Some(Conn { url: "https://bg-test.invalid".into(), cookie: "urbauth-~zod=0v1".into() });
-        let save = |body: &str| api::Queued { kind: "md".into(), body: body.into(), base: 3, ..api::Queued::default() };
+        let save = |body: &str| api::Queued { kind: "md".into(), body: body.into(), base: Some(3), ..api::Queued::default() };
         s.queue.insert("notes/a".into(), save("sent by the watcher"));
         s.queue.insert("notes/b".into(), save("typed again since"));
         s.ops = vec![api::QueuedOp::Del("old".into()), api::QueuedOp::Del("other".into())];
