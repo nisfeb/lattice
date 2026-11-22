@@ -56,6 +56,10 @@ blake3 = { version = "1", features = ["pure"] }
 # the build already, under rustls
 ring = "0.17"
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# a test reads drawings as Blitz does, to hold `vendor/usvg` to reading no file. In the build already, under blitz-dom
+usvg = "=0.48.1"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Rune's own, already in the lock: the browser's entry point, clock, requests and storage
 wasm-bindgen = "0.2"
@@ -69,6 +73,9 @@ winit = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e
 parley_engine = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
 accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
 accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
+
+# usvg with a default that reads no file from this computer's disk: see `vendor/usvg/Cargo.toml`
+usvg = { path = "vendor/usvg" }
 
 # Rune's layout crate with one arm added, so it builds beside Blitz: see `vendor/rune-taffy/Cargo.toml`
 [patch."https://github.com/anomalyco/rune"]
