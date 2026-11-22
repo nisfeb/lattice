@@ -929,17 +929,28 @@ console.log('==> references in single-quoted attributes move with the rows');
   check('a row insert after it moves the rule once more', again.shift(0, 'r', 0, 1).ok && /list\(\[\.\$A\$5:\.\$A\$7\]\)/.test(again.text()));
 }
 
+{
+  //  a cut moves its formulas, a copy offsets them
+  const b = new Book(blankText);
+  b.enter(0, 0, 0, '7');
+  b.enter(0, 4, 2, '=A1+1');
+  const k = { ...b.cell(0, 4, 2), r: 4, c: 2 };
+  b.moveCell(k, { sheet: 0, r1: 4, c1: 2, r2: 4, c2: 2 }, 0, 8, 4);
+  b.copyCell(k, 0, 9, 4);
+  check.eq('moveCell keeps what the formula read, copyCell moves it', `${b.cell(0, 8, 4).f} ${b.cell(0, 8, 4).v} | ${b.cell(0, 9, 4).f} ${b.cell(0, 9, 4).v}`, 'of:=[.A1]+1 8 | of:=[.C6]+1 1');
+}
+
 console.log('==> hostile input');
 {
   const head = '<?xml version="1.0"?>\n<office:document xmlns:office="o" xmlns:table="t" xmlns:text="x" office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet>';
   const tail = '</office:spreadsheet></office:body></office:document>';
   const bomb = head + '<table:table table:name="B"><table:table-row table:number-rows-repeated="1048576"><table:table-cell table:number-columns-repeated="16384" office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>'
     + '<table:table-row><table:table-cell table:formula="of:=SUM([.A1:.XFD1048576])" office:value-type="float" office:value="7"><text:p>7</text:p></table:table-cell><table:table-cell table:formula="of:=SUM([.A1:.B3])"/></table:table-row></table:table>' + tail;
-  const t0 = Date.now();
   const b = new Book(bomb);
   check('a repeat bomb opens', !b.error, b.error);
   const r = b.enter(0, 0, 0, '5');
-  check('an edit inside it is fast', Date.now() - t0 < 4000, `${Date.now() - t0} ms`);
+  //  counted, not timed: the work of the edit is bounded by the walk budget
+  check('an edit inside it reads at most the budget of cells', b.engine.total <= 2 * 5000001 && b.engine.steps <= 5000001, `${b.engine.total} ${b.engine.steps}`);
   check('the formula over 17 billion cells keeps its cached value and is marked', b.cell(0, 1048576 - 1 + 1, 0).v === 7 || b.stale(0, 1048576, 0), JSON.stringify(r).slice(0, 80));
   check('the row count is never over the sheet', rowCount(b.sheets[0]) <= 1048577);
   check('a repeat count of nonsense is one', parseFods(head + '<table:table table:name="B"><table:table-row table:number-rows-repeated="-5"><table:table-cell table:number-columns-repeated="x"/></table:table-row></table:table>' + tail).sheets[0].rows[0].rep === 1);
