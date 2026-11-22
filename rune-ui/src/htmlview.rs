@@ -250,12 +250,83 @@ pub fn tree_depth(doc: &HtmlDocument) -> usize {
 /// tag that closes nothing, a table inside a cell, a list inside an item). One nested past `DEEPEST` is not
 /// laid out: the page that says so is parsed in its place. `config` is asked for once for each parse.
 fn document(html: &str, config: impl Fn() -> DocumentConfig) -> HtmlDocument {
-    let doc = HtmlDocument::from_html(html, config());
-    if tree_depth(&doc) <= DEEPEST {
-        return doc;
+    // the parser's cost grows with the square of the depth, so a page measured as too deep by a linear
+    // count of its tags is refused before the parser starts, and not after it has spent minutes on it
+    if !nests_within(html, 2 * DEEPEST) {
+        return HtmlDocument::from_html(TOO_DEEP, config());
     }
-    drop(doc);
-    HtmlDocument::from_html(TOO_DEEP, config())
+    // measured on a parse that has no way to fetch: a page refused for its depth must not have asked for
+    // its images and stylesheets on the way
+    let deep = tree_depth(&HtmlDocument::from_html(html, DocumentConfig::default())) > DEEPEST;
+    HtmlDocument::from_html(if deep { TOO_DEEP } else { html }, config())
+}
+
+/// Whether the elements of `html`, counted in one pass the way the parser nests them in the common
+/// cases, stay within `limit` open at once. It is a guard on the parser's time and no more: an element
+/// that closes itself (a paragraph, an item, a cell), a void one, and a text inside a script, a style
+/// or a comment are not counted, an end tag closes the nearest open element of its name or nothing, and
+/// the tree the parser built is measured again after (`tree_depth`) for what this lets by.
+fn nests_within(html: &str, limit: usize) -> bool {
+    const SELF_CLOSING: [&str; 38] = [
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr", "param", "keygen", "basefont", "bgsound", "frame", "p", "li", "dt", "dd", "option",
+        "optgroup", "tr", "td", "th", "thead", "tbody", "tfoot", "colgroup", "caption", "head", "body", "html", "rb", "rt", "rp",
+    ];
+    const RAW: [&str; 7] = ["script", "style", "textarea", "title", "xmp", "iframe", "noembed"];
+    let b = html.as_bytes();
+    let mut open: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while let Some(at) = html[i..].find('<') {
+        i += at + 1;
+        let rest = &html[i..];
+        if rest.starts_with("!--") {
+            i += rest.find("-->").map_or(rest.len(), |e| e + 3);
+            continue;
+        }
+        let end_tag = rest.starts_with('/');
+        let name_from = i + usize::from(end_tag);
+        if !b.get(name_from).is_some_and(u8::is_ascii_alphabetic) {
+            continue;
+        }
+        let name_len = b[name_from..].iter().take_while(|c| !c.is_ascii_whitespace() && !matches!(c, b'/' | b'>')).count();
+        let name = &html[name_from..name_from + name_len];
+        // to the tag's closing bracket, past any quoted value that holds one
+        let mut j = name_from + name_len;
+        let mut quote = 0u8;
+        while let Some(&c) = b.get(j) {
+            match (quote, c) {
+                (0, b'>') => break,
+                (0, b'"' | b'\'') => quote = c,
+                (q, c) if q == c => quote = 0,
+                _ => {}
+            }
+            j += 1;
+        }
+        let selfclosed = j > 0 && b.get(j - 1) == Some(&b'/');
+        i = j.min(b.len());
+        let lower = name.to_ascii_lowercase();
+        if end_tag {
+            if let Some(at) = open.iter().rposition(|o| o.eq_ignore_ascii_case(&lower)) {
+                open.truncate(at);
+            }
+        } else if RAW.contains(&lower.as_str()) {
+            // its text is no markup: on to its end tag
+            let mut k = i.min(html.len());
+            i = loop {
+                let Some(at) = html[k..].find("</") else { break html.len() };
+                let tail = &b[k + at + 2..];
+                if tail.len() >= lower.len() && tail[..lower.len()].eq_ignore_ascii_case(lower.as_bytes()) {
+                    break k + at;
+                }
+                k += at + 2;
+            };
+        } else if !selfclosed && !SELF_CLOSING.contains(&lower.as_str()) {
+            open.push(name);
+            if open.len() > limit {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn viewport(ask: &Ask, view: f32) -> Viewport {
@@ -440,17 +511,68 @@ mod tests {
     #[test]
     fn a_page_nested_very_deep_is_laid_out_or_said_to_have_failed_and_the_next_is_drawn() {
         let h = Html::start(Arc::new(|| {}));
+        // the page is asked for alone and the next after it is laid out: the worker must not leave out the first (it takes the newest of what is waiting) and parse it
         let deep = format!("{}x{}", "<div>".repeat(20_000), "</div>".repeat(20_000));
-        h.show(Ask { key: Key { name: "deep".into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some(deep));
-        h.show(Ask { key: Key { name: "next".into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some("<p>after</p>".to_owned()));
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        loop {
-            if h.take().into_iter().any(|o| matches!(o, Out::Laid { ask, .. } if ask.key.name == "next")) {
-                break;
+        let ask = |name: &str| Ask { key: Key { name: name.into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false };
+        let laid = |name: &str| {
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                if h.take().into_iter().any(|o| matches!(o, Out::Laid { ask, .. } if ask.key.name == name)) {
+                    break;
+                }
+                assert!(std::time::Instant::now() < end, "{name} is laid out");
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            assert!(std::time::Instant::now() < end, "the page after a hard one is still drawn");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        };
+        h.show(ask("deep"), Some(deep));
+        laid("deep");
+        h.show(ask("next"), Some("<p>after</p>".to_owned()));
+        laid("next");
+    }
+
+    #[test]
+    fn a_page_refused_as_too_deep_has_fetched_nothing() {
+        // deep to the parser, shallow to the count that guards its time, and naming a picture and a stylesheet
+        let named = "<img src='http://example.invalid/a.png'><link rel=stylesheet href='http://example.invalid/a.css'>";
+        let fetched = |page: &str| {
+            let (tx, _rx) = channel();
+            let net = Arc::new(Net { tx: Mutex::new(tx), outside: false, left: FETCHES.into(), held: 0.into() });
+            let ask = Ask { key: Key { name: "f".into(), rev: 1, text: 0 }, width: 100.0, scale: 1.0, dark: false, outside: false };
+            let doc = document(page, || DocumentConfig { viewport: Some(viewport(&ask, 100.0)), net_provider: Some(net.clone()), ..Default::default() });
+            (tree_depth(&doc), net.held.load(std::sync::atomic::Ordering::Relaxed))
+        };
+        let (depth, held) = fetched(&format!("{named}<p>x</p>"));
+        assert!(depth > 2 && held > 0, "a page that is let by names what it fetches ({depth}, {held})");
+        let deep = format!("{}{named}x", "<div>".repeat(DEEPEST + 50));
+        assert!(nests_within(&deep, 2 * DEEPEST), "this page is for the parse to refuse");
+        assert_eq!(fetched(&deep), (tree_depth(&HtmlDocument::from_html(TOO_DEEP, DocumentConfig::default())), 0));
+    }
+
+    #[test]
+    fn a_page_is_measured_in_one_pass_before_the_parser_spends_its_time_on_it() {
+        // the parser takes time with the square of the depth: 20,000 nested divs took over a minute in a debug build
+        // and 100,000 more than half an hour, so such a page is refused on a count that is linear in its text
+        let n = 2 * DEEPEST;
+        let deep = |tag: &str, n: usize| format!("{}x", format!("<{tag}>").repeat(n));
+        assert!(!nests_within(&deep("div", 20_000), n) && !nests_within(&deep("span", n + 1), n) && !nests_within(&deep("b", 100_000), n));
+        assert!(!nests_within(&deep("svg", n + 1), n), "a drawing's elements are counted too");
+        assert!(!nests_within(&format!("{}x", "<div class='a>b' >".repeat(n + 1)), n), "a bracket in a quoted value is no end of the tag");
+        // a page the limit lets by, whatever its length
+        assert!(nests_within(&deep("div", n), n));
+        assert!(nests_within(&"<p>a</p>".repeat(100_000), n) && nests_within(&"<li>a".repeat(100_000), n) && nests_within(&"<br>".repeat(100_000), n));
+        assert!(nests_within(&"<div><span></span></div>".repeat(100_000), n), "elements that close do not add up");
+        assert!(nests_within(&format!("<b>{}</b>", "<i>x</i>".repeat(100_000)), n));
+        // text in a script, a style or a comment is no markup, and a stray end tag closes nothing
+        assert!(nests_within(&format!("<script>var a={};</script>", "'<div>'+".repeat(5000)), n));
+        assert!(nests_within(&format!("<STYLE>{}</Style><p>x", "a<b{".repeat(5000)), n));
+        assert!(nests_within(&format!("<!--{}-->", "<div>".repeat(5000)), n));
+        assert!(nests_within(&"</x></div>".repeat(5000), n));
+        // an end tag closes what it names and what is open inside it
+        assert!(nests_within(&"<div><b><i></div>".repeat(5000), n));
+        assert!(nests_within("<div>ünï<b>", n) && nests_within("<", n) && nests_within("<div", n) && nests_within("<script>", n));
+        // the page that is refused is replaced by the notice, and the parser is not asked for it
+        let page = document(&deep("div", 100_000), DocumentConfig::default);
+        assert!(tree_depth(&page) <= 8);
     }
 
     #[test]
