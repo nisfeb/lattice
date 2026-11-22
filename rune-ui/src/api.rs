@@ -1205,6 +1205,27 @@ pub fn write_private(p: &std::path::Path, body: &[u8]) -> Result<(), String> {
     done
 }
 
+/// The most of one answer that is read: a whole store comes as one answer, with every page's
+/// text. `ureq`'s own way of reading an answer as text stops at 10 MB, which a store with a few
+/// large maps or sheets is over. This is far above any store, and is still a limit: a ship, or
+/// what answers in its place, cannot fill the memory.
+#[cfg(not(target_arch = "wasm32"))]
+const ANSWER_LIMIT: u64 = 256 * 1024 * 1024;
+
+/// An answer's text, up to `limit` bytes. One over it is refused by name, with its status, so it
+/// is not taken for a ship that is away.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_text(r: ureq::Response, limit: u64) -> Result<String, String> {
+    use std::io::Read;
+    let code = r.status();
+    let mut body = Vec::new();
+    r.into_reader().take(limit.saturating_add(1)).read_to_end(&mut body).map_err(|e| format!("{code}: the answer could not be read: {e}"))?;
+    if body.len() as u64 > limit {
+        return Err(format!("{code}: the answer is too large to read: over {} MB", limit.div_ceil(1024 * 1024)));
+    }
+    Ok(String::from_utf8(body).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
+}
+
 fn kept_at(p: &std::path::Path) -> Option<(Dump, u64)> {
     let d: Dump = serde_json::from_slice(&std::fs::read(p).ok()?).ok()?;
     let age = std::fs::metadata(p).ok()?.modified().ok()?.elapsed().map_or(0, |d| d.as_secs());
@@ -2871,10 +2892,7 @@ impl Conn {
             match res {
                 Ok(r) if (300..400).contains(&r.status()) => Err(format!("{}: the ship sent this elsewhere. Lattice may be starting", r.status())),
                 // the ship answered, so it is not away: an answer cut short is said as one, with its status
-                Ok(r) => {
-                    let code = r.status();
-                    r.into_string().map_err(|e| format!("{code}: the answer could not be read: {e}"))
-                }
+                Ok(r) => read_text(r, ANSWER_LIMIT),
                 Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
                 Err(e) => Err(e.to_string()),
             }
@@ -4074,6 +4092,24 @@ mod tests {
         // and a refusal is still one
         let (url, _) = serve(|_| answer("403 Forbidden", "", b"no"));
         assert_eq!(conn(&url, "~zod").comment("p", "x"), Err("403: no".into()));
+    }
+
+    #[test]
+    fn an_answer_far_over_ten_megabytes_is_read_and_one_over_the_limit_is_said_to_be_too_large() {
+        let (url, _) = serve(|r| {
+            let big = "x".repeat(11 * 1024 * 1024);
+            if r.path.contains("page-dump") { ok(&format!(r#"{{"nodes":[{{"path":"big","page":true,"kind":"md","rev":1,"body":"{big}"}}],"since":"s1"}}"#)) } else if r.path.contains("page-source") { ok(&format!(r#"{{"body":"{big}","kind":"md","rev":1}}"#)) } else { ok(r#"{"items":[]}"#) }
+        });
+        let c = conn(&url, "~zod");
+        assert_eq!(c.dump("").map(|d| d.nodes[0].body.as_ref().map(String::len)), Ok(Some(11 * 1024 * 1024)));
+        assert_eq!(c.page("big").map(|p| p.body.len()), Ok(11 * 1024 * 1024));
+        assert_eq!(c.vault(1).map(|b| b.pages), Ok(1));
+        // the limit is a limit: one byte over is refused by name, and at it is read
+        let get = || ureq::get(&format!("{url}/apps/lattice/know-all")).call().unwrap();
+        assert_eq!(read_text(get(), 12), Ok(r#"{"items":[]}"#.to_owned()));
+        let over = read_text(get(), 11).unwrap_err();
+        assert!(over.starts_with("200: ") && over.contains("too large"), "{over}");
+        assert!(!gone(&over), "the ship answered: what was kept is not read in its place");
     }
 
     #[test]
