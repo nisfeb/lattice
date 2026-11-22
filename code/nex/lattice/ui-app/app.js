@@ -2,13 +2,13 @@
 (function () {
 'use strict';
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
-const WRITER_H = '0v3.4g8bu.gitpg.4hui5.6i6ib.91c19';
+const WRITER_H = '0v3.nm6k7.4k7eg.i0bfe.baj4s.uumr7';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
-const SHEET_H = '0v3.v145b.hha4j.kjuag.dcc4c.ld732';
+const SHEET_H = '0v6.jhub6.b91c6.7sudv.c4oga.jnvv8';
 // and map.js's, the map view (26-writer.js)
-const MAP_H = '0v4.gefvq.vdk6m.u260a.mdsrr.iaf1a';
+const MAP_H = '0v1.3jgkh.ff5dq.hmq77.odpec.jvndj';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)
-const SCAD_H = '0v1.34a0s.qp4ih.24c5l.t4asl.8br0p';
+const SCAD_H = '0v3.83q9u.qhgj4.1bo0q.2nelf.nbkkr';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)

@@ -6,6 +6,7 @@
 //  `find` picks the first text block whose text starts with it.
 import { Transform } from 'prosemirror-transform';
 import { schema } from './schema.js';
+import { decode } from './xml.js';
 
 const S = schema.nodes;
 const M = schema.marks;
@@ -100,7 +101,7 @@ export function applyEdit(parsed, e) {
         let t = null;
         doc.descendants((n, pos) => {
           if (t) return false;
-          if (n.type === S.table && n.attrs.xattrs.some(([k, v]) => k === 'table:name' && v === e.table)) { t = { node: n, pos }; return false; }
+          if (n.type === S.table && n.attrs.xattrs.some(([k, v]) => k === 'table:name' && decode(v) === e.table)) { t = { node: n, pos }; return false; }
           return true;
         });
         if (!t) throw new Error(`no table ${e.table}`);

@@ -14,9 +14,9 @@ import { readFileSync, readdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { makeCheck } from './lib/check.mjs';
-import { parseParams, rewriteLine, fmtValue, defineArg, parseLiteral } from '../ui-src/scad/customizer.js';
-import { scanIncludes, resolveRef, collect } from '../ui-src/scad/includes.js';
-import { parseStl, MAX_TRIS } from '../ui-src/scad/stl.js';
+import { parseParams, rewriteLine, fmtValue, defineArg, parseLiteral, readNumber, readVector, fieldText, readField } from '../ui-src/scad/customizer.js';
+import { scanIncludes, resolveRef, collect, CAPS } from '../ui-src/scad/includes.js';
+import { parseStl, smoothNormals, MAX_TRIS } from '../ui-src/scad/stl.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FX = join(here, '..', 'tests', 'scad', 'customizer');
@@ -90,6 +90,44 @@ console.log('\ncustomizer: a change rewrites only the value');
   check('a hostile 450 KB source parses in under a second', Date.now() - t0 < 1000, `${Date.now() - t0} ms`);
 }
 
+console.log('\ncustomizer: the value written is the value picked');
+{
+  const one = (src, v) => { const p = parseParams(src)[0]; return rewriteLine(src.split('\n')[0], p, v); };
+  //  a slider or a field off the step's grid: the number as it is, never
+  //  rounded to the step's decimals
+  check.eq('a slider stop between the step\'s decimals', one('w = 0.25; // [0.25:0.5:10]', 0.75), 'w = 0.75; // [0.25:0.5:10]');
+  check.eq('  and the next', one('w = 0.25; // [0.25:0.5:10]', 1.25), 'w = 1.25; // [0.25:0.5:10]');
+  check.eq('a typed value finer than the step', one('x = 1; // 0.5', 2.25), 'x = 2.25; // 0.5');
+  check.eq('a vector element nobody touched', one('v = [10.25, 20.5, 5]; // [0:0.5:100]', [10.25, 20.5, 6]), 'v = [10.25, 20.5, 6]; // [0:0.5:100]');
+  check.eq('a long number with no step', one('x = 1;', 1234567890123.5), 'x = 1234567890123.5;');
+  check.eq('float noise from a step is still snapped', [0.1 + 0.2, 0.8 + 0.2 * 7, 0.1 * 3, 1.1 * 1.1].map((v) => fmtValue(v, 0.1)).join(), '0.3,2.2,0.3,1.21');
+  check.eq('small, large and negative numbers', [1e-7, -0.000125, 1e21, -3, 2 ** 53].map((v) => fmtValue(v)).join(), '1e-7,-0.000125,1e+21,-3,9007199254740992');
+  check('  and each reads back as itself', [0.75, 1e-7, 1e21, 1234567890123.5, -0.000125].every((v) => parseLiteral(fmtValue(v)) === v));
+  check.eq('the -D form is the same number', defineArg(parseParams('w = 0.25; // [0.25:0.5:10]')[0], 0.75), 'w=0.75');
+  //  a field: empty or not a number is no value at all, never 0
+  check.eq('an empty number field is no value', [readNumber(''), readNumber('   '), readNumber('abc'), readNumber('1e'), readNumber(null)].join(), ',,,,');
+  check.eq('a number field is its number', [readNumber('0'), readNumber(' 2.5 '), readNumber('-1e3'), readNumber('.5')].join(), '0,2.5,-1000,0.5');
+  check.eq('a vector with an empty element is no value', [readVector('1,,3', 3), readVector('', 3), readVector(' , , ', 3), readVector('[1, 2]', 3), readVector('1,2,x', 3), readVector('1 2 3', 3)].map((v) => v === null).join(), 'true,true,true,true,true,true');
+  check.eq('a vector field is its numbers', JSON.stringify([readVector('[1, 2.5, -3]', 3), readVector('0,0,0', 3), readVector(' 4 , 5 ', 2)]), '[[1,2.5,-3],[0,0,0],[4,5]]');
+  //  a string with a line break or a tab: written as escapes, and shown
+  //  and read in that form, so a text field cannot drop it
+  check.eq('a line break, a tab and a return are written as escapes', fmtValue('a\nb\tc\rd "q" \\'), '"a\\nb\\tc\\rd \\"q\\" \\\\"');
+  check.eq('  and read back', parseLiteral(fmtValue('a\nb\tc\rd "q" \\')), 'a\nb\tc\rd "q" \\');
+  const nl = fieldText('line one\nline two');
+  check.eq('a string with a line break is shown escaped', JSON.stringify(nl), JSON.stringify({ text: 'line one\\nline two', escaped: true }));
+  check.eq('  an edit of it keeps the break', readField(nl.text + '!', true), 'line one\nline two!');
+  check.eq('  and one that is not a string is no value', [readField('a"b', true), readField('a\\', true)].join(), ',');
+  check.eq('a plain string is shown and read as it is', JSON.stringify([fieldText('C:\\new\\table "x"'), readField('C:\\new\\table "x"', false)]), JSON.stringify([{ text: 'C:\\new\\table "x"', escaped: false }, 'C:\\new\\table "x"']));
+  check.eq('  and written so it reads back', parseLiteral(fmtValue('C:\\new\\table "x"')), 'C:\\new\\table "x"');
+  //  choices in quotes may hold the separators
+  const ch = (src) => parseParams(src)[0].options.map((o) => `${o.value}=${o.name}`).join(' | ');
+  check.eq('a quoted choice keeps its comma and its colon', ch('s = "a"; // ["a:b", "c,d", e]'), 'a=a | a:b=a:b | c,d=c,d | e=e');
+  check.eq('  a quoted label too', ch('s = "x"; // [x:"one, two", y:"a:b"]'), 'x=one, two | y=a:b');
+  check.eq('  and plain choices read as before', ch('s = "S"; // [S:Small, L:Large]') + ' / ' + ch('n = 10; // [10:Small, 20:Large]') + ' / ' + ch('n = 2; // [1, 2, 3]'), 'S=Small | L=Large / 10=Small | 20=Large / 1=1 | 2=2 | 3=3');
+  check.eq('  a choice written back is one of them', one('s = "a"; // ["a:b", "c,d", e]', 'c,d'), 's = "c,d"; // ["a:b", "c,d", e]');
+  check.eq('  a quote that never closes is still a choice list', ch('s = "a"; // [a, "b, c]'), 'a=a | "b="b | c=c');
+}
+
 console.log('\nincludes: resolved as lattice pages, inside lattice');
 {
   const inc = scanIncludes('include <lib/screws.scad>\nuse <gear>;\n// include <commented.scad>\nx = "include <instring>";\n/* use <blocked> */\n  include<tight.scad>\n');
@@ -125,6 +163,46 @@ console.log('\nincludes: resolved as lattice pages, inside lattice');
   check.eq('a read that fails is a missing page', thrown.files.length, 1);
 }
 
+console.log('\nincludes: a hostile source costs its length, and a few reads');
+{
+  //  the scan visits each character a bounded number of times: twice the
+  //  text is about twice the steps, whatever the text is
+  const steps = (src) => { const t = {}; scanIncludes(src, t); return t.steps; };
+  for (const [what, unit] of [['include < with no >', 'include <'], ['use< with no >', 'use<'], ['an unterminated /*', '/* '], ['a quote that never closes', '"\\"'],
+    ['// comments', '// x\n'], ['real includes', 'include <a.scad>\n'], ['include and spaces', 'include   '], ['include < x // y', 'include <x // y\n']]) {
+    const a = steps('cube(1);\n' + unit.repeat(5000)), b = steps('cube(1);\n' + unit.repeat(10000)), len = 9 + unit.length * 10000;
+    check(`${what}, 10,000 times: the steps double with the text`, b <= a * 2.2 && b <= len * 4, `${a} then ${b} for ${len} characters`);
+  }
+  //  and it still reads what it read
+  const scan = (src) => scanIncludes(src).map((i) => `${i.kind}:${i.ref}@${i.line}`).join(' ');
+  check.eq('an include after one with no > on its line', scan('include <a\ninclude <b.scad>\nuse<c>'), 'include:b.scad@2 use:c@3');
+  check.eq('a // inside a path is part of the path', scan('include <http://x/y.scad>\ninclude <a//b.scad> // include <no.scad>'), 'include:http://x/y.scad@1 include:a//b.scad@2');
+  check.eq('include on one line, its path on the next', scan('include\n  <a.scad>\nuse\t<b>'), 'include:a.scad@1 use:b@3');
+  check.eq('a word that only ends in use or include is not one', scan('reuse <a>\nmyinclude <b>\nuse_ <c>\n;use <d>\n}include <e>'), 'use:d@4 include:e@5');
+  check.eq('comments and strings hide an include, and one after them is found', scan('/* include <a> */ include <b>\n"include <c>" include <d>\n/* open\ninclude <e>\n*/use <f>'), 'include:b@1 include:d@2 use:f@5');
+  check.eq('an escaped quote does not end a string', scan('x = "a \\" include <no>"; include <yes>'), 'include:yes@1');
+  check.eq('an empty path is still an include', scan('include <>'), 'include:@1');
+  check.eq('CRLF lines', scan('include <a.scad>\r\ninclude <b.scad>\r\n'), 'include:a.scad@1 include:b.scad@2');
+  //  pages that do not exist are asked for too: the cap counts the asking
+  let reads = 0;
+  const missing = await collect('m', Array.from({ length: 8000 }, (_, i) => `include <m${i}.scad>`).join('\n'), async () => { reads++; return null; });
+  check(`8,000 includes of pages that do not exist are not 8,000 reads`, reads <= CAPS.files && missing.notes.some((x) => /more than/.test(x)), `${reads} reads, ${missing.notes.length} notes`);
+  reads = 0;
+  const some = await collect('m', Array.from({ length: 40 }, (_, i) => `include <m${i}.scad>`).join('\n') + '\ninclude <real.scad>', async (n) => { reads++; return n === 'real' ? 'x=1;' : null; });
+  check.eq('a page with a few missing includes still reads the real one', `${reads} ${some.files.length} ${some.notes.length}`, '41 2 0');
+  const bad = await collect('b', Array.from({ length: 20000 }, () => 'include </etc/passwd>').join('\n'), async () => null);
+  check('20,000 refused includes are not 20,000 notes', bad.notes.length <= CAPS.refs + 1 && bad.notes.some((x) => /include lines/.test(x)), `${bad.notes.length} notes`);
+  //  a page and a page under it, both named without .scad: one cannot be
+  //  a file and a folder, so the second is noted, and the rest still goes
+  const both = await collect('main', 'include <a>\ninclude <a/b>\ninclude <c.scad>', async (n) => ({ a: 'x=1;', 'a/b': 'y=2;', c: 'z=3;' }[n] ?? null));
+  check.eq('a page and its child page without .scad: the child is left out', both.files.map(([f]) => f).join(' '), '/w/main.scad /w/a /w/c.scad');
+  check('  and said', both.notes.some((x) => /a\/b/.test(x) && /\.scad/.test(x)), both.notes.join(' | '));
+  const other = await collect('main', 'include <a/b>\ninclude <a>', async (n) => ({ a: 'x=1;', 'a/b': 'y=2;' }[n] ?? null));
+  check.eq('  in the other order the parent is', other.files.map(([f]) => f).join(' ') + ' ' + other.notes.length, '/w/main.scad /w/a/b 1');
+  const fine = await collect('main', 'include <a.scad>\ninclude <a/b>', async (n) => ({ a: 'x=1;', 'a/b': 'y=2;' }[n] ?? null));
+  check.eq('  and with .scad on the parent both go', fine.files.map(([f]) => f).join(' ') + ' ' + fine.notes.length, '/w/main.scad /w/a.scad /w/a/b 0');
+}
+
 console.log('\nSTL: OpenSCAD\'s binary STL');
 {
   const stl = (tris) => {
@@ -147,6 +225,48 @@ console.log('\nSTL: OpenSCAD\'s binary STL');
   check.eq('an empty part', parseStl(stl([])).tris, 0);
   check('a corner that is not a finite number is refused', /no size/.test(parseStl(stl([[0, 0, 0, Infinity, 0, 0, 0, 1, 0]])).error || '')
     && /no size/.test(parseStl(stl([[0, 0, 0, NaN, 0, 0, 0, 1, 0]])).error || ''));
+}
+
+console.log('\nsmooth shading: bounded where many faces share a point');
+{
+  const mesh = (tris) => {
+    const b = new ArrayBuffer(84 + tris.length * 50), dv = new DataView(b);
+    dv.setUint32(80, tris.length, true);
+    tris.forEach((t, i) => t.forEach((v, k) => dv.setFloat32(84 + i * 50 + 12 + k * 4, v, true)));
+    return parseStl(new Uint8Array(b));
+  };
+  //  a cone's side: every triangle meets at the apex
+  const fan = (n) => mesh(Array.from({ length: n }, (_, t) => { const a = t / n * 2 * Math.PI, b = (t + 1) / n * 2 * Math.PI; return [0, 0, 10, 10 * Math.cos(a), 10 * Math.sin(a), 0, 10 * Math.cos(b), 10 * Math.sin(b), 0]; }));
+  const steps = (m) => { const t = {}; smoothNormals(m, t); return t.steps; };
+  const s4 = steps(fan(4000)), s8 = steps(fan(8000)), s16 = steps(fan(16000));
+  check('a fan of 8,000 costs about twice one of 4,000', s8 <= s4 * 2.2, `${s4} then ${s8}`);
+  check('  and 16,000 about twice that', s16 <= s8 * 2.2, `${s8} then ${s16}`);
+  check('  far under one comparison per pair', s16 < 16000 * 16000 / 20, String(s16));
+  //  what it draws: unit normals, the apex shaded within the sharp-edge
+  //  angle of each face, a ring corner as the exact mean of its two faces
+  const m = fan(2000), out = smoothNormals(m);
+  let unit = true, near = true;
+  for (let c = 0; c < m.tris * 3; c++) {
+    const l = Math.hypot(out[c * 3], out[c * 3 + 1], out[c * 3 + 2]);
+    if (Math.abs(l - 1) > 1e-3) unit = false;
+    if (out[c * 3] * m.nor[c * 3] + out[c * 3 + 1] * m.nor[c * 3 + 1] + out[c * 3 + 2] * m.nor[c * 3 + 2] < Math.cos(41 * Math.PI / 180)) near = false;
+  }
+  check('every normal of the fan has length 1', unit);
+  check('  and stays within the sharp-edge angle of its face', near);
+  //  the exact answer at the apex, by the plain all-pairs sum, for a fan
+  //  small enough to afford it: the bounded path is close to it
+  const exact = (mm, c) => { const cos = Math.cos(40 * Math.PI / 180); let sx = 0, sy = 0, sz = 0; for (let d = 0; d < mm.tris * 3; d += 3) { const g = [mm.nor[d * 3], mm.nor[d * 3 + 1], mm.nor[d * 3 + 2]]; if (g[0] * mm.nor[c * 3] + g[1] * mm.nor[c * 3 + 1] + g[2] * mm.nor[c * 3 + 2] >= cos) { sx += g[0]; sy += g[1]; sz += g[2]; } } const l = Math.hypot(sx, sy, sz); return [sx / l, sy / l, sz / l]; };
+  let worst = 1;
+  for (let t = 0; t < m.tris; t += 97) { const e = exact(m, t * 3); worst = Math.min(worst, e[0] * out[t * 9] + e[1] * out[t * 9 + 1] + e[2] * out[t * 9 + 2]); }
+  check('  the apex within 10 degrees of the all-pairs answer', worst >= Math.cos(10 * Math.PI / 180), `${(Math.acos(Math.min(1, worst)) * 180 / Math.PI).toFixed(2)} degrees`);
+  //  small meshes are exact, as before: a cube keeps its edges, a prism's
+  //  side is smoothed across its shallow edges
+  const cube = mesh([[0, 0, 0, 1, 0, 0, 0, 1, 0], [0, 0, 0, 0, 0, 1, 1, 0, 0], [0, 0, 0, 0, 1, 0, 0, 0, 1]]);
+  check.eq('three faces at a right-angled corner keep their own normals', [...smoothNormals(cube)].map((v) => Math.round(v)).join(), [...cube.nor].map((v) => Math.round(v)).join());
+  const few = fan(24), fo = smoothNormals(few);
+  const fe = exact(few, 0);
+  check('a fan of 24 is the all-pairs answer exactly', Math.abs(fe[0] - fo[0]) < 1e-6 && Math.abs(fe[1] - fo[1]) < 1e-6 && Math.abs(fe[2] - fo[2]) < 1e-6);
+  check.eq('an empty mesh', smoothNormals(mesh([])).length, 0);
 }
 
 check.done();

@@ -10,6 +10,7 @@ import { liftListItem, sinkListItem, splitListItem, wrapInList } from 'prosemirr
 import { goToNextCell } from 'prosemirror-tables';
 import { schema } from './schema.js';
 import { isQuote, lookup } from './styles.js';
+import { escAttr } from './xml.js';
 
 const S = schema.nodes;
 const M = schema.marks;
@@ -112,7 +113,7 @@ export const hardBreak = (state, dispatch) => {
 
 //  +listCmd: wrap in a list of `kind` (bullet or number) in the given list
 //  style, or lift out of one
-export const toList = (style) => wrapInList(S.list, { xattrs: [['text:style-name', style]] });
+export const toList = (style) => wrapInList(S.list, { xattrs: [['text:style-name', escAttr(style)]] });
 export const lift = liftListItem(S.list_item);
 export const sink = sinkListItem(S.list_item);
 

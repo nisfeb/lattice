@@ -15,7 +15,7 @@
 //  styles the master pages use, content.xml the rest) and zips them STORED, mimetype first, with
 //  META-INF/manifest.xml.
 import tinf from 'tiny-inflate';
-import { parseXml, elements, child, attr, escAttr, LIMITS } from './xml.js';
+import { parseXml, elements, child, attr, decode, escAttr, LIMITS } from './xml.js';
 
 const MIME = 'application/vnd.oasis.opendocument.text';
 //  the two package kinds lattice reads and writes. A spreadsheet (.ods)
@@ -103,8 +103,43 @@ const ROOTS = {
   'settings.xml': 'office:document-settings',
 };
 //  attributes that name a style: every *style-name, and the page layout
-const REF = /(\s(?:[\w-]+:[\w-]*style-name|style:page-layout-name)=")([^"]*)(")/g;
-const styleNames = (el) => new Set(el ? elements(el).map((s) => attr(s, 'style:name')).filter(Boolean) : []);
+const REFNAME = /^(?:[\w-]+:[\w-]*style-name|style:page-layout-name)$/;
+//  the same in raw XML, the value in either kind of quote
+const REF = /\s(?:[\w-]+:[\w-]*style-name|style:page-layout-name)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+//  A style's name is its own only among its kind: a style:style within its
+//  family, a list style among list styles, a page layout among page
+//  layouts, the number:* styles among data styles. So an automatic
+//  paragraph style P1, a common text style P1 and a master page P1 are
+//  three things.
+const kindOf = (e) => (e.name === 'style:style' ? 'style:' + (attr(e, 'style:family') ?? '') : e.name.startsWith('number:') ? 'data' : e.name);
+//  the automatic styles of one file, as kind -> names
+const styleNames = (el) => {
+  const m = new Map();
+  for (const e of el ? elements(el) : []) {
+    const n = attr(e, 'style:name');
+    if (n == null) continue;
+    if (!m.has(kindOf(e))) m.set(kindOf(e), new Set());
+    m.get(kindOf(e)).add(n);
+  }
+  return m;
+};
+const FAMILY = {
+  'text:p': 'paragraph', 'text:h': 'paragraph', 'text:span': 'text', 'text:a': 'text', 'text:section': 'section', 'text:ruby': 'ruby',
+  'table:table': 'table', 'table:table-column': 'table-column', 'table:table-row': 'table-row', 'table:table-cell': 'table-cell', 'table:covered-table-cell': 'table-cell',
+};
+//  the kind of style attribute `a` on element `el` names: null when it
+//  can only be a common style or a master page, which are never renamed,
+//  undefined when this table does not know
+function refKind(el, a) {
+  if (/^style:(parent|next|apply)-style-name$/.test(a)) return null;
+  if (a === 'style:page-layout-name') return 'style:page-layout';
+  if (a === 'style:data-style-name') return 'data';
+  if (a === 'style:list-style-name' || (a === 'text:style-name' && (el === 'text:list' || el === 'text:numbered-paragraph'))) return 'text:list-style';
+  if (a === 'draw:text-style-name') return 'style:paragraph';
+  if (a === 'table:default-cell-style-name') return 'style:table-cell';
+  if ((a === 'text:style-name' || a === 'table:style-name') && FAMILY[el]) return 'style:' + FAMILY[el];
+  return undefined;
+}
 
 //  the package's Basic libraries (Basic/) as the office:script a flat
 //  ODT embeds them in, or ''. A linked library stays behind.
@@ -173,25 +208,57 @@ export async function importPackage(buf, kind) {
     const ver = attr(c.r, 'office:version');
     let head = '<?xml version="1.0" encoding="UTF-8"?>\n\n<office:document';
     for (const [k, v] of ns) head += ' ' + k + '="' + v + '"';
-    if (ver != null) head += ' office:version="' + ver + '"';
+    if (ver != null) head += ' office:version="' + escAttr(ver) + '"';
     head += ' office:mimetype="' + kind.mime + '">\n ';
     //  styles.xml's automatic names content.xml also uses get a new name
     let sAuto = s ? s.get('office:automatic-styles') : '', sMaster = s ? s.get('office:master-styles') : '';
     if (s) {
+      const sa = child(s.r, 'office:automatic-styles'), sm = child(s.r, 'office:master-styles');
       const taken = styleNames(child(c.r, 'office:automatic-styles'));
-      const mine = styleNames(child(s.r, 'office:automatic-styles'));
+      const mine = styleNames(sa);
+      const used = new Set([...taken.values(), ...mine.values()].flatMap((x) => [...x]));
+      //  kind -> old name -> new name, for a name both files give a style
+      //  of that kind
       const ren = new Map();
-      for (const n of mine) {
-        if (!taken.has(n)) continue;
-        let k = 1;
-        while (taken.has('M' + n + '_' + k) || mine.has('M' + n + '_' + k)) k++;
-        ren.set(n, 'M' + n + '_' + k);
+      for (const [kind, names] of mine) {
+        for (const n of names) {
+          if (!taken.has(kind) || !taken.get(kind).has(n)) continue;
+          let k = 1;
+          while (used.has('M' + n + '_' + k)) k++;
+          used.add('M' + n + '_' + k);
+          if (!ren.has(kind)) ren.set(kind, new Map());
+          ren.get(kind).set(n, 'M' + n + '_' + k);
+        }
       }
       if (ren.size) {
-        const fix = (xml) => xml.replace(/<[^>]*>/g, (tag) => tag.replace(REF, (all, a, v, z) => (ren.has(v) ? a + ren.get(v) + z : all))
-          .replace(/(\sstyle:name=")([^"]*)(")/, (all, a, v, z) => (ren.has(v) ? a + ren.get(v) + z : all)));
-        sAuto = fix(sAuto);
-        sMaster = fix(sMaster);
+        //  an element's start tag with those attributes given new values
+        const retag = (e, to) => to.reduce((tag, [k, v]) => tag.replace(
+          new RegExp('(\\s' + k + '\\s*=\\s*)(?:"[^"]*"|\'[^\']*\')'), (all, lead) => lead + '"' + escAttr(v) + '"'), s.src.slice(e.start, e.openEnd));
+        //  `el` with the renames made: the name of each automatic style
+        //  itself (`top`), and every reference of the kind renamed
+        const fix = (el, top) => {
+          let out = '', at = el.start;
+          const walk = (p, defs) => {
+            for (const e of elements(p)) {
+              const to = [];
+              for (const [k] of e.attrs) {
+                const v = attr(e, k);
+                let kind = k === 'style:name' ? (defs ? kindOf(e) : null) : REFNAME.test(k) ? refKind(e.name, k) : null;
+                //  an attribute this table does not know follows a rename
+                //  only when one kind alone renamed that name
+                if (kind === undefined) { const hit = [...ren].filter(([, m]) => m.has(v)); kind = hit.length === 1 ? hit[0][0] : null; }
+                const n = kind != null && ren.has(kind) ? ren.get(kind).get(v) : undefined;
+                if (n !== undefined) to.push([k, n]);
+              }
+              if (to.length) { out += s.src.slice(at, e.start) + retag(e, to); at = e.openEnd; }
+              walk(e, false);
+            }
+          };
+          walk(el, top);
+          return out + s.src.slice(at, el.end);
+        };
+        if (sa) sAuto = fix(sa, true);
+        if (sm) sMaster = fix(sm, false);
       }
     }
     //  font faces: styles.xml's, then content.xml's not already there
@@ -284,7 +351,7 @@ export function exportPackage(text, kind) {
   const doc = !x.error && elements(x.root).find((k) => k.name === 'office:document');
   if (!doc) return { error: 'This ' + kind.doc + ' cannot be exported: ' + (x.error || 'it is not ' + kind.flat) + '.' };
   const get = (n) => { const k = child(doc, n); return k ? linksOut(text.slice(k.start, k.end)) : ''; };
-  const ver = attr(doc, 'office:version') || '1.3';
+  const ver = escAttr(attr(doc, 'office:version') || '1.3');
   let at = '';
   for (const [k, v] of doc.attrs) if (k !== 'office:mimetype') at += ' ' + k + '="' + v + '"';
   //  automatic styles as LibreOffice splits them: styles.xml gets the page
@@ -293,7 +360,7 @@ export function exportPackage(text, kind) {
   const autoEl = child(doc, 'office:automatic-styles');
   const autos = autoEl ? elements(autoEl).map((e) => ({ name: attr(e, 'style:name'), el: e.name, raw: linksOut(text.slice(e.start, e.end)) })) : [];
   const want = new Set();
-  const refs = (xml) => { for (const m of xml.matchAll(REF)) if (!want.has(m[2])) { want.add(m[2]); const a = autos.find((x) => x.name === m[2]); if (a) refs(a.raw); } };
+  const refs = (xml) => { for (const m of xml.matchAll(REF)) { const n = decode(m[1] ?? m[2]); if (!want.has(n)) { want.add(n); const a = autos.find((x) => x.name === n); if (a) refs(a.raw); } } };
   refs(get('office:master-styles'));
   const auto = (keep) => '<office:automatic-styles>' + autos.filter(keep).map((a) => a.raw).join('') + '</office:automatic-styles>';
   const sAuto = auto((a) => a.el === 'style:page-layout' || want.has(a.name));

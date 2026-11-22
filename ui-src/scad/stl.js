@@ -48,8 +48,17 @@ export function parseStl(buf) {
 
 //  smooth normals: each corner gets the mean of the faces that share its
 //  position, unless the faces meet at a sharp edge (over 40 degrees), so a
-//  cylinder looks round and a cube keeps its edges
-export function smoothNormals(m) {
+//  cylinder looks round and a cube keeps its edges.
+//
+//  Comparing every corner at a point with every other is quadratic in the
+//  faces that meet there, and a cone's apex or a fan-cut cap is met by
+//  all of them. So past CROWD corners at one point the faces are first
+//  gathered by direction, into the cells of a coarse grid on the sphere,
+//  and each corner is compared with the cells: a bounded number, whatever
+//  the mesh. `tally.steps`, when asked for, is the comparisons made, for
+//  the suite.
+const CROWD = 64, GRID = 4;
+export function smoothNormals(m, tally) {
   const n = m.tris, out = new Float32Array(n * 9);
   const key = (i) => m.pos[i].toFixed(5) + ',' + m.pos[i + 1].toFixed(5) + ',' + m.pos[i + 2].toFixed(5);
   const at = new Map();
@@ -60,17 +69,47 @@ export function smoothNormals(m) {
     l.push(c);
   }
   const cos = Math.cos(40 * Math.PI / 180);
+  let steps = 0;
   for (const l of at.values()) {
+    //  what each corner is compared with: the other corners' normals, or
+    //  for a crowd the summed normal and the direction of each cell
+    let sum, dir;
+    if (l.length <= CROWD) {
+      sum = dir = new Float32Array(l.length * 3);
+      l.forEach((d, j) => { sum[j * 3] = m.nor[d * 3]; sum[j * 3 + 1] = m.nor[d * 3 + 1]; sum[j * 3 + 2] = m.nor[d * 3 + 2]; });
+    } else {
+      const cells = new Map();
+      for (const d of l) {
+        const gx = m.nor[d * 3], gy = m.nor[d * 3 + 1], gz = m.nor[d * 3 + 2];
+        const k = Math.round(gx * GRID) + ',' + Math.round(gy * GRID) + ',' + Math.round(gz * GRID);
+        let cell = cells.get(k);
+        if (!cell) cells.set(k, (cell = [0, 0, 0]));
+        cell[0] += gx; cell[1] += gy; cell[2] += gz;
+      }
+      sum = new Float32Array(cells.size * 3);
+      dir = new Float32Array(cells.size * 3);
+      let j = 0;
+      for (const cell of cells.values()) {
+        const len = Math.hypot(cell[0], cell[1], cell[2]) || 1;
+        for (let a = 0; a < 3; a++) { sum[j * 3 + a] = cell[a]; dir[j * 3 + a] = cell[a] / len; }
+        j++;
+      }
+    }
+    const w = sum.length / 3;
+    steps += l.length * w;
     for (const c of l) {
       const fx = m.nor[c * 3], fy = m.nor[c * 3 + 1], fz = m.nor[c * 3 + 2];
       let sx = 0, sy = 0, sz = 0;
-      for (const d of l) {
-        const gx = m.nor[d * 3], gy = m.nor[d * 3 + 1], gz = m.nor[d * 3 + 2];
-        if (fx * gx + fy * gy + fz * gz >= cos) { sx += gx; sy += gy; sz += gz; }
+      for (let j = 0; j < w; j++) {
+        if (fx * dir[j * 3] + fy * dir[j * 3 + 1] + fz * dir[j * 3 + 2] >= cos) { sx += sum[j * 3]; sy += sum[j * 3 + 1]; sz += sum[j * 3 + 2]; }
       }
+      //  no cell within the angle (its own may have a mean a little off):
+      //  the face's own normal
+      if (!sx && !sy && !sz) { sx = fx; sy = fy; sz = fz; }
       const len = Math.hypot(sx, sy, sz) || 1;
       out[c * 3] = sx / len; out[c * 3 + 1] = sy / len; out[c * 3 + 2] = sz / len;
     }
   }
+  if (tally) tally.steps = steps;
   return out;
 }

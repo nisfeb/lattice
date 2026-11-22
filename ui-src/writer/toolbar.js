@@ -10,6 +10,7 @@ import { toggleMark } from 'prosemirror-commands';
 import { undo, redo, undoDepth, redoDepth } from 'prosemirror-history';
 import { safeHref } from './schema.js';
 import { listKind, lookup, namedStyles } from './styles.js';
+import { decode } from './xml.js';
 import { blocksIn, bodyStyle, headingStyle, lift, setBlock, sink, toList } from './keys.js';
 import { listStyleFor } from './paste.js';
 
@@ -99,7 +100,7 @@ export function buildToolbar(bar, ctl, { schema, st }) {
       const n = $from.node(d);
       if (n.type === S.list) {
         const s = n.attrs.xattrs.find(([k]) => k === 'text:style-name');
-        return !kind || (s ? listKind(st, s[1]) || 'bullet' : 'bullet') === kind;
+        return !kind || (s ? listKind(st, decode(s[1])) || 'bullet' : 'bullet') === kind;
       }
     }
     return false;

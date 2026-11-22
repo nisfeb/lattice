@@ -10,7 +10,7 @@
 import { makeRunner } from './runner.js';
 import { parseStl, MAX_TRIS } from './stl.js';
 import { collect } from './includes.js';
-import { parseParams, rewriteLine, defineArg, fmtValue } from './customizer.js';
+import { parseParams, rewriteLine, defineArg, fmtValue, readNumber, readVector, fieldText, readField } from './customizer.js';
 import { makeViewer } from './viewer.js';
 
 const STYLE = `
@@ -117,6 +117,14 @@ export function mount(host, opts) {
   const runner = makeRunner(o.runtime);
   let text = o.text || '', ps = [], defs = new Map(), job = null, timer = 0, busyT = 0, seq = 0, ask = 0;
   let lastKey = null, lastStl = null, jobKey = null, asked = !o.askFirst, dead = false, pending = false, jobAt = 0;
+  //  the status and console of the render that made the part on screen,
+  //  and whether they are what is shown: a failed render or export shows
+  //  its own, and the good ones come back with the good text
+  let good = null, shown = false;
+  //  the export under way, and its turn: a later export, another page or
+  //  the pane's end makes it nobody's
+  let xjob = null, xseq = 0;
+  const ids = new Set();
   const setSt = (t, bad) => { st.textContent = t; st.className = 'lscad-st' + (bad ? ' err' : ''); st.title = t; };
 
   //  ── console ──
@@ -124,10 +132,12 @@ export function mount(host, opts) {
     cpre.replaceChildren();
     let errs = 0, warns = 0;
     const lines = (notes || []).map((n) => [1, 'WARNING: ' + n]).concat(log || []);
-    for (const [, s] of lines) {
+    for (const [lv, s] of lines) {
       if (/^Could not initialize localization/.test(s)) continue;
       const line = el('div');
-      const e = /^ERROR/.test(s), w = /^WARNING/.test(s);
+      //  OpenSCAD's own errors, and the runner's account of a render that
+      //  did not run to the end (level 2)
+      const e = lv === 2 || /^ERROR/.test(s), w = !e && /^WARNING/.test(s);
       if (e) { line.className = 'e'; errs++; } else if (w) { line.className = 'w'; warns++; }
       const m = /in file ([^,]+), line (\d+)/.exec(s);
       if (m && m[1] === mainFile() && o.onJump) {
@@ -146,7 +156,8 @@ export function mount(host, opts) {
 
   //  ── customizer ──
   function paintParams() {
-    const keep = document.activeElement && pbody.contains(document.activeElement) ? document.activeElement.dataset.p : null;
+    const on = document.activeElement && pbody.contains(document.activeElement) ? document.activeElement.dataset : null;
+    const keep = on && on.p !== undefined ? [on.p, on.g] : null;
     pbody.replaceChildren();
     params.hidden = !ps.length;
     if (!ps.length) return;
@@ -154,18 +165,26 @@ export function mount(host, opts) {
     const groups = new Map();
     for (const p of ps) { if (!groups.has(p.group)) groups.set(p.group, []); groups.get(p.group).push(p); }
     const global = groups.get('Global') || [];
+    let gi = 0;
+    ids.clear();
     for (const [g, list] of groups) {
       if (g === 'Global' && groups.size > 1) continue;
       const box = el('div', 'lscad-pg');
       if (groups.size > 1 || g !== 'Parameters') box.append(el('h4', '', g));
-      for (const p of (g === 'Global' ? list : list.concat(global))) box.append(row(p));
+      for (const p of (g === 'Global' ? list : list.concat(global))) box.append(row(p, gi));
       pbody.append(box);
+      gi++;
     }
-    if (keep) { const f = pbody.querySelector(`[data-p="${CSS.escape(keep)}"]`); if (f) f.focus(); }
+    if (keep) { const f = pbody.querySelector(`[data-p="${CSS.escape(keep[0])}"][data-g="${keep[1]}"]`); if (f) f.focus(); }
   }
-  function row(p) {
+  //  `gi` is the group the row is drawn in: a Global parameter has a row
+  //  in every group, and each after the first has an id of its own (a
+  //  name holds no hyphen, so none can be another parameter's)
+  function row(p, gi) {
     const r = el('div', 'lscad-p');
-    const id = 'lscad-' + p.name;
+    let id = 'lscad-' + p.name;
+    if (ids.has(id)) id += '-' + gi;
+    ids.add(id);
     const lab = el('label', '', p.name.replace(/_/g, ' '));
     lab.htmlFor = id; lab.title = p.name;
     const cur = defs.has(p.name) ? defs.get(p.name) : p.value;
@@ -179,20 +198,25 @@ export function mount(host, opts) {
       f.onchange = () => commit(p, p.options[Number(f.value)].value);
     } else if (p.type === 'number' && !Array.isArray(p.value) && p.min !== undefined && p.max !== undefined && p.max > p.min) {
       f = el('input'); f.type = 'range'; f.min = p.min; f.max = p.max; f.step = p.step || 1; f.value = cur;
-      v.textContent = fmtValue(cur, p.step);
-      f.oninput = () => { const x = Number(f.value); v.textContent = fmtValue(x, p.step); live(p, x); };
+      v.textContent = fmtValue(cur);
+      f.oninput = () => { const x = Number(f.value); v.textContent = fmtValue(x); live(p, x); };
       f.onchange = () => commit(p, Number(f.value));
     } else if (p.type === 'number' && !Array.isArray(p.value)) {
+      //  a field that is emptied, or holds no number, changes nothing and
+      //  shows its value again: it is never read as 0
       f = el('input'); f.type = 'number'; f.step = p.step || 'any'; f.value = cur;
-      f.onchange = () => { const x = Number(f.value); if (Number.isFinite(x)) commit(p, x); };
+      f.onchange = () => { const x = readNumber(f.value); if (x === null) f.value = cur; else commit(p, x); };
     } else if (Array.isArray(p.value)) {
       f = el('input'); f.type = 'text'; f.value = fmtValue(cur);
-      f.onchange = () => { const x = f.value.replace(/^\[|\]$/g, '').split(',').map((s) => Number(s.trim())); if (x.length === p.value.length && x.every(Number.isFinite)) commit(p, x); else f.value = fmtValue(cur); };
+      f.onchange = () => { const x = readVector(f.value, p.value.length); if (x === null) f.value = fmtValue(cur); else commit(p, x); };
     } else {
-      f = el('input'); f.type = 'text'; f.value = cur; if (p.maxLength) f.maxLength = p.maxLength;
-      f.onchange = () => commit(p, f.value);
+      const ft = fieldText(String(cur));
+      f = el('input'); f.type = 'text'; f.value = ft.text;
+      if (ft.escaped) f.title = 'This text holds a line break or a tab, shown as \\n or \\t. Write \\\\ for a backslash and \\" for a quote.';
+      else if (p.maxLength) f.maxLength = p.maxLength;
+      f.onchange = () => { const x = readField(f.value, ft.escaped); if (x === null) f.value = ft.text; else commit(p, x); };
     }
-    f.id = id; f.dataset.p = p.name;
+    f.id = id; f.dataset.p = p.name; f.dataset.g = gi;
     r.append(lab, f, v);
     if (p.description) r.append(el('div', 'd', p.description));
     return r;
@@ -203,14 +227,17 @@ export function mount(host, opts) {
   //  keep it as a -D for this view only
   function commit(p, x) {
     defs.set(p.name, x);
+    let written = false;
     if (o.editable && o.onEdit) {
       const lines = text.split('\n');
       const old = lines[p.line];
       const nl = old === undefined ? null : rewriteLine(old, p, x);
-      if (nl === null || !o.onEdit(p.line, nl, old)) {
-        setSt('that line changed since it was read, so it was not written', true);
-      }
+      written = nl !== null && !!o.onEdit(p.line, nl, old);
+      if (!written) setSt('that line changed since it was read, so it was not written', true);
     }
+    //  a value kept for this view only reaches no update(): its other
+    //  rows (a Global parameter has one in each group) are drawn here
+    if (!written) paintParams();
     schedule(0);
   }
 
@@ -241,7 +268,13 @@ export function mount(host, opts) {
     //  the part on screen is the one wanted. A render under way is for
     //  text that was since taken back (an undo): stop it, or its part
     //  would replace this one.
-    if (k === lastKey && lastStl) { stop(); return; }
+    if (k === lastKey && lastStl) {
+      stop();
+      //  and what is said is of this part again, not of the text since
+      //  taken back
+      if (!shown && good) { showLog(good.log, inc.notes); setSt(good.st); shown = true; }
+      return;
+    }
     if (job && k === jobKey) return;
     //  a render under way finishes first when it is young, so a slider
     //  being dragged keeps drawing. One that has run a while is stopped:
@@ -263,8 +296,11 @@ export function mount(host, opts) {
     if (pending) { pending = false; schedule(0); }
     clearTimeout(busyT); busy.textContent = '';
     const errs = showLog(r.log, inc.notes);
+    shown = false;
     if (r.unloaded && o.onFail) o.onFail();
     if (r.timeout) { setSt(`stopped: the render ran past ${Math.round((o.timeout || 60000) / 1000)} s`, true); return; }
+    //  a render that did not run is not an empty model: say which
+    if (r.error) { setSt(r.unloaded ? 'OpenSCAD could not be loaded, see the console' : 'OpenSCAD stopped before it finished, see the console', true); return; }
     if (r.rc !== 0 || !r.data) {
       setSt(errs ? 'OpenSCAD reported an error, see the console' : 'no part: the model made nothing to draw', true);
       if (errs) con.open = true;
@@ -273,12 +309,14 @@ export function mount(host, opts) {
     const m = parseStl(r.data);
     if (m.error) { setSt(m.error, true); return; }
     lastKey = k; lastStl = r.data;
+    good = { log: r.log, st: `rendered in ${(r.ms / 1000).toFixed(1)} s` };
+    shown = true;
     msg.hidden = true;
     if (vw) vw.setMesh(m, { keepView: true });
     dims.textContent = m.tris
       ? `${mm(m.max[0] - m.min[0])} × ${mm(m.max[1] - m.min[1])} × ${mm(m.max[2] - m.min[2])} mm · ${m.tris.toLocaleString()} triangles`
       : 'empty';
-    setSt(`rendered in ${(r.ms / 1000).toFixed(1)} s`);
+    setSt(good.st);
   }
   function askNow() {
     msg.hidden = false;
@@ -288,17 +326,35 @@ export function mount(host, opts) {
     msg.append(b);
   }
 
+  //  an export nobody is waiting for any more: stop its worker
+  function stopExport() {
+    xseq++;
+    if (xjob) xjob.cancel();
+    xjob = null;
+  }
   async function exportAs(fmt) {
+    if (dead) return;
+    //  an export fetches and runs the runtime as a render does, so it
+    //  waits for the same answer
+    if (!asked) { askNow(); return; }
+    stopExport();
+    //  the page it is of: its name and its turn, taken before any wait
+    const mine = xseq, name = leaf(o.name), main = mainFile();
     const inc = await gather();
-    if (fmt === 'stl' && lastStl && lastKey === key(inc)) { download(leaf(o.name) + '.stl', lastStl, 'model/stl'); return; }
+    if (mine !== xseq || dead) return;
+    if (fmt === 'stl' && lastStl && lastKey === key(inc)) { download(name + '.stl', lastStl, 'model/stl'); return; }
     setSt('making the ' + fmt.toUpperCase() + '…');
+    shown = false;
     const out = '/out.' + fmt;
-    const args = [mainFile(), '-o', out, '--export-format', fmt === 'stl' ? 'binstl' : '3mf'];
+    const args = [main, '-o', out, '--export-format', fmt === 'stl' ? 'binstl' : '3mf'];
     for (const [n, x] of defs) { const p = ps.find((q) => q.name === n); if (p) args.push('-D', defineArg(p, x)); }
-    const r = await runner.run({ files: inc.files, args, out, timeout: o.timeout }).promise;
+    xjob = runner.run({ files: inc.files, args, out, timeout: o.timeout });
+    const r = await xjob.promise;
+    if (mine !== xseq || r.cancelled || dead) return;
+    xjob = null;
     if (r.rc !== 0 || !r.data) { showLog(r.log, inc.notes); setSt('could not make the ' + fmt.toUpperCase(), true); return; }
     if (fmt === 'stl' && r.data.length > 84 + MAX_TRIS * 50 * 4) { setSt('the part is too large to export here', true); return; }
-    download(leaf(o.name) + '.' + fmt, r.data, fmt === 'stl' ? 'model/stl' : 'model/3mf');
+    download(name + '.' + fmt, r.data, fmt === 'stl' ? 'model/stl' : 'model/3mf');
     setSt(fmt.toUpperCase() + ' downloaded');
   }
 
@@ -313,8 +369,10 @@ export function mount(host, opts) {
     //  for its own
     if (moved) {
       stop();
+      stopExport();
       defs.clear();
       lastKey = lastStl = null;
+      good = null; shown = false;
       if (vw) vw.clear();
       dims.textContent = '';
       setSt('');
@@ -329,7 +387,7 @@ export function mount(host, opts) {
     //  that went away takes its -D with it
     for (const [n, x] of [...defs]) {
       const p = ps.find((q) => q.name === n);
-      if (!p || fmtValue(p.value, p.step) === fmtValue(x, p.step)) defs.delete(n);
+      if (!p || fmtValue(p.value) === fmtValue(x)) defs.delete(n);
     }
     paintParams();
     schedule(was === '' ? 0 : 350);
@@ -351,6 +409,7 @@ export function mount(host, opts) {
       dead = true;
       clearTimeout(timer); clearTimeout(busyT);
       if (job) job.cancel();
+      stopExport();
       mq.removeEventListener('change', onScheme);
       if (vw) vw.destroy();
       host.replaceChildren();
