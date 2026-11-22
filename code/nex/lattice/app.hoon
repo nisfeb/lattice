@@ -3478,6 +3478,9 @@
     ::  write above, also durable), THEN cull what the ship wrote, its moons'
     ::  too: a ban that freed no slots left the page full (security audit run-1).
     ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
+    ::  and off every private board's roster, which is what lets a ship
+    ::  post there: left on it, an unban gave the posting back
+    ;<  ~  bind:m  (strip-forum-rosters u.who)
     ;<  *  bind:m  (cull-comments-of u.who)
     ;<  ~  bind:m  (poke-eval [%pub-threads ~])
     ;<  ~  bind:m  (poke-eval [%forum-cull u.who])
@@ -3507,6 +3510,10 @@
       ?.  (~(has in bans) u.who)  (pure:n `0)
       (drop-ban-groups (silt ~[u.who]))
     ?~  dropped  (ug-refused eyre-id)
+    ::  the rosters too, for a ship banned before a ban cleared them
+    ;<  ~  bind:m
+      ?.  (~(has in bans) u.who)  (pure:(fiber:fiber:nexus ,~) ~)
+      (strip-forum-rosters u.who)
     ;<  ~  bind:m
       (over:io (ban-road up) [[/lattice %banned] (~(del in bans) u.who)])
     (send-ok eyre-id)
@@ -8631,6 +8638,41 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   (put-file (rf up /forum/members nom) [/ %noun] [%1 who])
+::  +strip-forum-rosters: every ship a ban of `who` covers (+ban-drop:ls:
+::  the ship, a planet's moons, every comet for the comets) comes off
+::  every board's roster. The roster is what the member gate reads
+::  (+forum-remote-apply), and a ban takes back all a ship was given, so
+::  an unban must not find it still a member. A roster nothing changes
+::  in is not written.
+++  strip-forum-rosters
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io (rv up /forum/members) ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  =/  noms=(list @ta)
+    ?~  fil.ball.u.vw  ~
+    ~(tap in ~(key by contents.u.fil.ball.u.vw))
+  =/  bans=banned:ls  (silt ~[who])
+  |-  ^-  form:m
+  ?~  noms  (pure:m ~)
+  ;<  mem=(set @p)  bind:m  (read-forum-members i.noms)
+  =/  left=(set @p)  (ban-drop:ls bans mem)
+  ?:  =(left mem)  $(noms t.noms)
+  ;<  ~  bind:m  (write-forum-members i.noms left)
+  $(noms t.noms)
+::  +forum-readers: the ships a private board's read group holds
+::  (+forum-group-name), none when it was never made or will not read
+++  forum-readers
+  |=  nom=@ta
+  =/  m  (fiber:fiber:nexus ,(set @p))
+  ^-  form:m
+  ;<  ub=path  bind:m  ug-dir
+  =/  gdir=path  (snoc ub (crip (weld (trip (forum-group-name nom)) ".grp")))
+  ;<  wv=(unit view:nexus)  bind:m  (peek-soft:io [%& %& gdir %'who.ships'] ~)
+  ?.  ?=([~ %file *] wv)  (pure:m ~)
+  (pure:m (fall (mole |.(;;((set @p) (sang-noun:tarball sang.u.wv)))) ~))
 ::  +handle-forum-invite: POST /forum-invite and /forum-revoke ?board=&ship=.
 ::  add=%.y invites, %.n revokes. Owner-only (the owner session is the route's
 ::  gate, as for /share-file). Only a PRIVATE board has members to manage.
@@ -9551,6 +9593,12 @@
 ::  its /forum.sig, fire-and-forget as a refusal note is, at its base in
 ::  the peers record (+forum-note-send says why). A comet runs no
 ::  lattice to tell; the desktop reader finds its replies on its own.
+::
+::  The note holds the thread's title and a clip of the reply, so a ship
+::  is told only while it may read the board (+reply-tell-ok:ln): not
+::  once banned, and on a private board only while its read group holds
+::  it. The stored posts keep an author who was revoked, or who posted
+::  while the board was public, and that author hears no more.
 ++  forum-reply-tell
   |=  [now=@da src=@p brd=board:ft post=post-id:ft parent=(unit comment-id:ft) body=@t]
   =/  m  (fiber:fiber:nexus ,~)
@@ -9560,12 +9608,18 @@
   =/  title=@t  (post-title:ln brd post)
   =/  nom=@tas  name.info.brd
   ;<  known=(map @t json)  bind:m  read-peers
+  ;<  bans=banned:ls  bind:m  read-banned
+  ;<  readers=(set @p)  bind:m
+    ?:  public.info.brd  (pure:(fiber:fiber:nexus ,(set @p)) ~)
+    (forum-readers nom)
   |-  ^-  form:m
   ?~  who  (pure:m ~)
   ;<  ~  bind:m
     ?:  =(i.who our)
       (notify-add now (make:ln %reply now src our nom post title body))
     ?:  (is-comet:fr i.who)  (pure:m ~)
+    ?.  (reply-tell-ok:ln public.info.brd readers (is-banned:ls bans i.who) i.who)
+      (pure:m ~)
     =/  note=reply-note:ln  [%reply-1 nom post (clip:ln title) src (clip:ln body)]
     =/  req=load:remo:nexus
       :-  [/forum-note %& (known-base:lu known i.who) %'forum.sig']

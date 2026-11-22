@@ -110,6 +110,20 @@
     (expect-eq !>(nec) !>((source-of:ln r)))
     (expect-eq !>(pla) !>((source-of:ln (it t1 'a'))))
   ==
+::  a reply note goes only to a ship that may read the board now
+++  test-reply-tell-ok
+  =/  mem=(set @p)  (sy ~[pla])
+  ;:  weld
+    ::  a public board: anyone not banned
+    (expect !>((reply-tell-ok:ln & ~ | nec)))
+    (expect !>(!(reply-tell-ok:ln & ~ & nec)))
+    ::  a private board: only a ship its group holds
+    (expect !>((reply-tell-ok:ln | mem | pla)))
+    (expect !>(!(reply-tell-ok:ln | mem | nec)))
+    (expect !>(!(reply-tell-ok:ln | ~ | pla)))
+    ::  and never a banned one, member or not
+    (expect !>(!(reply-tell-ok:ln | mem & pla)))
+  ==
 ::  the note gate: note-cap an hour per sender, then held and counted,
 ::  and free again once the window passes
 ++  test-note-gate-cap

@@ -238,6 +238,18 @@
       (~(get by (~(gut by comments.brd) post ~)) u.parent)
     ?~(c out (~(put in out) author.u.c))
   (~(del in out) src)
+::  +reply-tell-ok: may a reply note for a board go to `who`? The note
+::  carries the thread's title and a clip of the reply, so it goes only
+::  to a ship that may read the board now: never one the owner banned
+::  (`banned`, +is-banned:lattice-share), and on a private board only a
+::  ship its read group holds (`readers`). An author who was revoked, or
+::  who posted while the board was public, stays in the stored posts
+::  and must hear nothing more.
+++  reply-tell-ok
+  |=  [public=? readers=(set @p) banned=? who=@p]
+  ^-  ?
+  ?:  banned  |
+  |(public (~(has in readers) who))
 ::  +post-title: a post's title, '' when it is gone
 ++  post-title
   |=  [brd=board:ft post=post-id:ft]
