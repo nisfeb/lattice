@@ -1093,6 +1093,27 @@ mod tests {
     }
 
     #[test]
+    fn what_is_no_drawing_here_is_no_drawing_to_the_picture_cache_either() {
+        // the cache draws what it takes to be a drawing with a reader that reads files, so every drawing must be
+        // one `is_drawing` knows, and so be drawn here. What it does not know is read by the cache as no drawing
+        const SVG: &str = "http://www.w3.org/2000/svg";
+        let dir = std::env::temp_dir().join(format!("lattice-cache-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("red.svg");
+        std::fs::write(&file, format!("<svg xmlns='{SVG}' width='100' height='100'><rect width='100' height='100' fill='#ff0000'/></svg>")).unwrap();
+        let named = format!("<svg xmlns='{SVG}' width='10' height='10'><image href='{}' width='10' height='10'/></svg>", file.display());
+        let cache = rune::ImageCache::new(std::sync::Arc::new(|| {}));
+        for lead in ["\0", "\u{a0}", "x", "\u{b}", "\u{feff}\u{feff}", "\u{2028}"] {
+            let bytes = format!("{lead}{named}").into_bytes();
+            if is_drawing(&bytes) {
+                continue;
+            }
+            assert!(cache.load(bytes).wait().is_err(), "{lead:?}: the cache drew what is no drawing here");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn broken_pages_do_not_panic_or_hang() {
         for bad in ["", "<", "<<<", "<a", "<a href=", "<a href=\"", "</", "</p>", "<p", "<!--", "<!-- x", "&", "&#", "&#x;", "&#99999999999;", "<p =>", "<p a=b =c>", "<table><td>x", "<li>x", "<ul><ul><ul>", "<pre>", "<script>", "é<é>é", "<a\u{0}b>"] {
             let _ = to_markdown(bad);
