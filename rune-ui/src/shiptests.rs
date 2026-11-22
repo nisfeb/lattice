@@ -1066,3 +1066,53 @@ fn a_move_the_ship_refuses_for_now_holds_back_only_what_is_under_it_for_the_watc
     assert!(c.ops().is_empty() && c.queue().is_empty());
     let _ = api::bg_sent(&c.url, true);
 }
+
+#[test]
+fn a_waiting_list_that_cannot_be_written_stops_the_sending_and_is_said() {
+    use std::os::unix::fs::PermissionsExt;
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "one\n");
+    let mut r = Run::new(&ship);
+    r.settle();
+    let c = ship.conn();
+    c.change_waiting(|_, q| api::enqueue(q, &Page { name: "notes/a".into(), body: "two\n".into(), kind: "md".into(), rev: 1 }, Some(1), false, 0)).unwrap();
+    let before = ship.saves_of("notes/a").len();
+    // the folder the list is kept in cannot be written, as on a full disk
+    std::fs::set_permissions(ship.dir(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    drain(&mut r.s);
+    r.secs(3.0);
+    let sent = ship.saves_of("notes/a").len() - before;
+    assert_eq!(sent, 1, "the same save was sent {sent} times");
+    assert!(r.s.note.contains("could not be written"), "and it is said: {:?}", r.s.note);
+    // a later look at what waits sends it no more while the file cannot be written
+    drain(&mut r.s);
+    r.settle();
+    r.sync();
+    assert_eq!(ship.saves_of("notes/a").len() - before, 1, "the ship has it: it is not sent again");
+    assert!(r.s.note.contains("could not be written"), "{:?}", r.s.note);
+    // the folder can be written again: what the ship took is taken out of the list, and not sent again
+    std::fs::set_permissions(ship.dir(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    drain(&mut r.s);
+    r.settle();
+    assert_eq!(ship.saves_of("notes/a").len() - before, 1);
+    assert!(c.queue().is_empty() && r.s.queue.is_empty(), "{:?}", r.s.note);
+    assert_eq!(ship.body("notes/a"), "two\n");
+    // a delete the ship did that cannot be taken out of the file is not sent again: a page made at that name since would go with it
+    ship.write("gone", "md", "x\n");
+    c.change_waiting(|ops, q| api::enqueue_op(ops, q, api::QueuedOp::Del("gone".into()))).unwrap();
+    std::fs::set_permissions(ship.dir(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    drain(&mut r.s);
+    r.settle();
+    assert_eq!(ship.body("gone"), "<none>");
+    assert!(r.s.note.contains("could not be written"), "{:?}", r.s.note);
+    ship.write("gone", "md", "made again\n");
+    drain(&mut r.s);
+    r.settle();
+    r.sync();
+    assert_eq!(ship.body("gone"), "made again\n", "the delete was sent again");
+    std::fs::set_permissions(ship.dir(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    drain(&mut r.s);
+    r.settle();
+    assert!(c.ops().is_empty() && ship.body("gone") == "made again\n");
+}

@@ -973,6 +973,8 @@ struct App {
     /// The saves that waited, on their way to the ship: each as it was sent, and how it came out.
     /// In turn, so it is on its way until its answer is taken: a `Latest` that has landed and not yet been looked at reads as done, and what waited was then sent a second time
     drain_req: inturn::InTurn<Drained>,
+    /// What the ship took from what waited but could not be taken out of the files that keep it (a full disk). It is taken out before anything more is sent: read from there again, it would be sent again, a new revision each time.
+    unwritten: Vec<api::BgSent>,
     /// The deletes and moves made with the ship away, waiting in the order they were made.
     ops: Vec<api::QueuedOp>,
     next_sync: f64,
@@ -1421,6 +1423,7 @@ fn init() -> App {
         offline: None,
         queue: conn.as_ref().map(Conn::queue).unwrap_or_default(),
         save_sent: None,
+        unwritten: Vec::new(),
         drain_req: inturn::InTurn::default(),
         ops: conn.as_ref().map(Conn::ops).unwrap_or_default(),
         next_sync: 0.0,
@@ -5591,6 +5594,23 @@ fn drain(s: &mut App) {
         return;
     }
     let Some(c) = s.conn.clone() else { return };
+    // what the ship has already is taken out of the files first. Until it can be, nothing is sent
+    if !s.unwritten.is_empty() {
+        let done = std::mem::take(&mut s.unwritten);
+        let out = change_waiting(s, |ops, q| {
+            for x in &done {
+                match x {
+                    api::BgSent::Op(op) => api::drop_first(ops, op),
+                    api::BgSent::Save(name, item) => api::drop_sent(q, name, item),
+                }
+            }
+        });
+        if let Err(e) = out {
+            s.unwritten = done;
+            s.note = format!("{UNWRITTEN} ({e})");
+            return;
+        }
+    }
     // what waits is read again from its files: another window on this ship keeps its own there, and a window that was closed left its own there too
     (s.ops, s.queue) = (c.ops(), c.queue());
     if s.queue.is_empty() && s.ops.is_empty() {
@@ -5611,7 +5631,7 @@ fn drain(s: &mut App) {
             let refused = r.as_ref().err().filter(|e| !api::replay_drop(e)).cloned();
             if refused.as_ref().is_some_and(|e| api::gone(e) || e.starts_with("401")) {
                 did.push((op, r));
-                return (did, Vec::new());
+                return (did, Vec::new(), None);
             }
             // refused for now: it and the deletes and moves after it wait, in their order. The saves they do not change still go
             if refused.is_some() {
@@ -5619,17 +5639,17 @@ fn drain(s: &mut App) {
                 break;
             }
             // one that cannot be taken out of the file stops here: it would be read from there again, and sent without end
-            let stop = c.change_waiting(|ops, _| api::drop_first(ops, &op)).is_err();
-            did.push((op, r));
-            if stop {
-                return (did, Vec::new());
+            let stop = c.change_waiting(|ops, _| api::drop_first(ops, &op)).err();
+            did.push((op.clone(), r));
+            if let Some(e) = stop {
+                return (did, Vec::new(), Some((api::BgSent::Op(op), e)));
             }
         }
         // a save at or under a path a waiting delete or move changes goes after it
         let ops = c.ops();
         let mut all: Vec<(String, api::Queued)> = c.queue().into_iter().filter(|(name, _)| !api::held_by(&ops, name)).collect();
         all.sort_by_key(|(_, q)| !q.is_new);
-        let mut out = Vec::new();
+        let (mut out, mut unwritten) = (Vec::new(), None);
         for (name, q) in all {
             // only if it still waits as it was read: a page renamed or deleted meanwhile took its save with it
             if c.queue().get(&name) != Some(&q) {
@@ -5639,17 +5659,21 @@ fn drain(s: &mut App) {
             let stop = match &sent {
                 // a ship that is away, or a session it has ended, takes none of the rest either. Any other refusal is of this one save
                 api::Sent::Stop(why) => ship_away(why, links.contains(&name)) || why.starts_with("401"),
-                _ => {
-                    let _ = c.change_waiting(|_, w| api::drop_sent(w, &name, &q));
-                    false
-                }
+                // the ship has it. One that cannot be taken out of the file stops the sending: read from there again, it would be sent without end
+                _ => match c.change_waiting(|_, w| api::drop_sent(w, &name, &q)) {
+                    Err(e) => {
+                        unwritten = Some((api::BgSent::Save(name.clone(), q.clone()), e));
+                        true
+                    }
+                    Ok(_) => false,
+                },
             };
             out.push((name, q, sent));
             if stop {
                 break;
             }
         }
-        (did, out)
+        (did, out, unwritten)
     });
 }
 
@@ -5678,19 +5702,29 @@ fn bg_taken(s: &mut App) {
     }
 }
 
-/// How sending what waited came out: each delete or move with the ship's answer, then each save as it was sent.
-type Drained = (Vec<(api::QueuedOp, Result<(), String>)>, Vec<(String, api::Queued, api::Sent)>);
+/// How sending what waited came out: each delete or move with the ship's answer, then each save as it was sent,
+/// and one the ship took that could not be taken out of the files, with why.
+type Drained = (Vec<(api::QueuedOp, Result<(), String>)>, Vec<(String, api::Queued, api::Sent)>, Option<(api::BgSent, String)>);
+
+/// What is said while something the ship took cannot be taken out of the list of what waits.
+const UNWRITTEN: &str = "the ship has what was sent, but the list of what waits on this device could not be written: nothing more is sent until it can be";
 
 /// What sending the waiting saves came to: each one the ship has, or
 /// that was kept aside, leaves the list, unless the page was saved again
 /// meanwhile, and that newer save then goes. A conflict or a refusal is
 /// said with the name its other text is kept under.
-fn drained(s: &mut App, (did, out): Drained) {
+fn drained(s: &mut App, (did, out, unwritten): Drained) {
     bg_taken(s);
     // taken whatever comes of it: it speaks for this sending and no later one
     let read_save = std::mem::take(&mut s.read_save);
     let mut hist = false;
     let (mut gone_to_ship, mut stopped, mut said) = (0, false, Vec::new());
+    // what the ship took and the files still hold is not sent again: it is taken out before the next sending, which waits until it can be
+    if let Some((x, e)) = unwritten {
+        s.unwritten.push(x);
+        stopped = true;
+        said.push(format!("{UNWRITTEN} ({e})"));
+    }
     for (op, r) in did {
         let what = match &op {
             api::QueuedOp::Del(n) => format!("the delete of {n}"),

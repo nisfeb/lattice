@@ -879,7 +879,8 @@ pub fn ship_sessions() -> Vec<(String, String)> {
     Vec::new()
 }
 
-/// One thing the watcher sent to a ship while it was not in front.
+/// One thing that waited and was sent to a ship: by the watcher while the ship was not in front,
+/// or by the window when the files could not be written after it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BgSent {
     Save(String, Queued),
