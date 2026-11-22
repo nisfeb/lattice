@@ -697,6 +697,28 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   check.eq('moveRefs: only the bracketed references are respelled', moveRefs('x is-between([.A5] , "[.A5]") and [.$B$7]', 'S', { sheet: 'S', dim: 'r', at: 0, n: 2 }), 'x is-between([.A7] , "[.A5]") and [.$B$9]');
   check('moveRefs: nothing moved gives the same string, an open bracket gives null', moveRefs('a([.A1])', 'S', { sheet: 'S', dim: 'r', at: 5, n: 1 }) === 'a([.A1])' && moveRefs('a([.A1)', 'S', { sheet: 'S', dim: 'r', at: 0, n: 1 }) === null);
 }
+{
+  //  results Calc gives, each run in LibreOffice
+  const b = new Book(blankText);
+  const at = (f) => { b.enter(0, 0, 0, f); return b.cell(0, 0, 0).text; };
+  const T = [['=MROUND(-7.5,5)', '-10'], ['=MROUND(-2.5,1)', '-3'], ['=MROUND(7.5,5)', '10'], ['=MROUND(2.5,-1)', '3'], ['=MROUND(-7,5)', '-5'], ['=MROUND(7.5,-5)', '10'], ['=MROUND(0,5)', '0'], ['=MROUND(5,0)', '0'],
+    ['=MROUND(1.25,0.5)', '1.5'], ['=MROUND(-1.25,0.5)', '-1.5'], ['=MROUND(7,5)', '5'], ['=MROUND(8,5)', '10'],
+    ['=ROUND(1.4999999999,0)', '1'], ['=TRUNC(0.9999999995)', '0'], ['=ROUNDDOWN(1.9999999999,0)', '1'], ['=ROUNDUP(1.0000000001,0)', '2'],
+    ['=ROUND(-1.4999999999,0)', '-1'], ['=ROUNDUP(-1.0000000001,0)', '-2'], ['=ROUNDDOWN(-1.9999999999,0)', '-1'], ['=TRUNC(-0.29*100)', '-29'],
+    ['=ROUND(2.675,2)', '2.68'], ['=ROUND(1.005,2)', '1.01'], ['=ROUND(0.5,0)', '1'], ['=ROUND(-0.5,0)', '-1'], ['=ROUND(-2.5,0)', '-3'], ['=ROUND(123456789.125,2)', '123456789.13'],
+    ['=ROUNDUP(2.0000000000000004,0)', '2'], ['=ROUNDDOWN(0.3*10,0)', '3'], ['=ROUNDUP(0.1*3*10,0)', '3'], ['=TRUNC(0.29*100)', '29'],
+    ['=ROUND(0.285,2)', '0.29'], ['=ROUND(1.15,1)', '1.2'], ['=ROUND(8.345,2)', '8.35'], ['=ROUNDUP(1.1,1)', '1.1'], ['=ROUNDUP(0.3,1)', '0.3'], ['=ROUNDDOWN(0.7,1)', '0.7'],
+    ['=ROUNDUP(3.3*3,1)', '9.9'], ['=ROUNDDOWN(4.35*100,0)', '435'], ['=TRUNC(1.005*1000)', '1005'], ['=ROUND(5.015,2)', '5.02'], ['=ROUND(1.0049999999999999,2)', '1.01'],
+    ['=ROUND(1234.5678,-2)', '1200'], ['=ROUNDUP(1234.5678,-2)', '1300'], ['=ROUNDDOWN(-1234.5678,-2)', '-1200'],
+    ['=ROUND(2.5,400)', '2.5'], ['=ROUND(-2.5,400)', '-2.5'], ['=ROUNDUP(2.5,400)', '2.5'], ['=ROUNDDOWN(2.5,400)', '2.5'], ['=TRUNC(2.5,400)', '2.5'], ['=ROUND(123.456,300)', '123.456'],
+    ['=ROUND(2.5,-400)', '0'], ['=ROUND(-2.5,-400)', '0'], ['=ROUNDUP(2.5,-400)', '0'], ['=ROUNDDOWN(2.5,-400)', '0'], ['=TRUNC(2.5,-400)', '0'], ['=ROUND(1E300,-300)', '1E+300'], ['=ROUND(1E300,2)', '1E+300'],
+    ['=SUBSTITUTE("hello","l","X",0)', 'Err:502'], ['=SUBSTITUTE("hello","l","X",-1)', 'Err:502'], ['=SUBSTITUTE("hello","l","X",0.5)', 'Err:502'], ['=SUBSTITUTE("hello","","X",0)', 'Err:502'],
+    ['=SUBSTITUTE("hello","l","X",1)', 'heXlo'], ['=SUBSTITUTE("hello","l","X",2.9)', 'helXo'], ['=SUBSTITUTE("hello","l","X",3)', 'hello'], ['=SUBSTITUTE("hello","l","X")', 'heXXo'],
+    ['=REPLACE("abc",0,1,"x")', 'Err:502'], ['=REPLACE("abc",-1,1,"x")', 'Err:502'], ['=REPLACE("abc",1,-1,"x")', 'Err:502'], ['=REPLACE("abc",0.5,1,"x")', 'Err:502'],
+    ['=REPLACE("abc",1,0,"x")', 'xabc'], ['=REPLACE("abc",5,1,"x")', 'abcx'], ['=REPLACE("abc",1.9,1,"x")', 'xbc'], ['=REPLACE("abc",1.9,1.9,"x")', 'xbc'], ['=REPLACE("abc",2,100,"x")', 'ax']];
+  const off = T.filter(([f, want]) => at(f) !== want).map(([f, want]) => `${f} gave ${at(f)}, Calc ${want}`);
+  check(`${T.length} rounding and text results are Calc's`, off.length === 0, off.join(' | '));
+}
 
 console.log('==> hostile input');
 {

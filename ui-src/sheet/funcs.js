@@ -221,14 +221,24 @@ function pairs(test, other, ok, fn) {
   return ok(null) ? test.rows * test.cols - rows * cols : 0;
 }
 
+//  n to d decimal places, half away from zero, or away from zero ('up')
+//  or toward it ('down'), as Calc rounds
 const round = (n, d, mode) => {
   const f = 10 ** d;
-  const x = n * f;
-  let y;
-  if (mode === 'up') y = n < 0 ? -Math.ceil(-x - 1e-9) : Math.ceil(x - 1e-9);
-  else if (mode === 'down') y = n < 0 ? -Math.floor(-x + 1e-9) : Math.floor(x + 1e-9);
-  else y = n < 0 ? -Math.round(-x + 1e-9) : Math.round(x + 1e-9);
-  return y / f;
+  //  more places than a number can have: there is nothing to round
+  if (!Number.isFinite(f)) return n;
+  //  fewer than it has digits: nothing is left
+  if (f === 0) return 0;
+  const x = Math.abs(n) * f;
+  //  too large to have a fraction at this place
+  if (!(x < 4503599627370496)) return n;
+  //  a product a hair off a whole number through binary arithmetic is
+  //  that number: 0.29*100 is 29. The allowance is relative, about the
+  //  last of a double's digits, as in styles.js +fixed. An absolute one
+  //  rounded 1.4999999999 up.
+  const fuzz = x * 4 * Number.EPSILON;
+  const y = mode === 'up' ? Math.ceil(x - fuzz) : mode === 'down' ? Math.floor(x + fuzz) : Math.round(x + fuzz);
+  return (n < 0 ? -y : y) / f;
 };
 
 const num1 = (f) => (a) => { const n = toNum(scalar(a)); return isErr(n) ? n : f(n); };
@@ -435,7 +445,7 @@ export const FUNCS = {
   FACT: (a) => num1((n) => { if (n < 0) return E.illegal; if (!(n < 171)) return E.value; let f = 1; for (let i = 2; i <= Math.floor(n); i++) f *= i; return f; })(a[0]),
   CEILING: (a) => num2((n, s) => (s === 0 ? 0 : n < 0 && s < 0 ? Math.floor(n / s + 1e-12) * s : Math.ceil(n / s - 1e-12) * s))(a[0], a[1] ?? 1),
   FLOOR: (a) => num2((n, s) => (s === 0 ? E.div0 : n < 0 && s < 0 ? Math.ceil(n / s - 1e-12) * s : Math.floor(n / s + 1e-12) * s))(a[0], a[1] ?? 1),
-  MROUND: (a) => num2((n, s) => (s === 0 ? 0 : Math.round(n / s) * s))(a[0], a[1]),
+  MROUND: (a) => num2((n, s) => (s === 0 ? 0 : round(n / s, 0) * s))(a[0], a[1]),
   GCD: (a) => stat(a, (ns) => ns.map((n) => Math.floor(Math.abs(n))).reduce((x, y) => { while (y) [x, y] = [y, x % y]; return x; }, 0)),
   LCM: (a) => stat(a, (ns) => ns.map((n) => Math.floor(Math.abs(n))).reduce((x, y) => { if (!x || !y) return 0; let g = x, h = y; while (h) [g, h] = [h, g % h]; return x / g * y; }, 1)),
   RAND: () => Math.random(),
@@ -500,19 +510,24 @@ export const FUNCS = {
     const s = scalar(a[0]), from = scalar(a[1]), to = scalar(a[2]);
     for (const x of [s, from, to]) if (isErr(x)) return x;
     const S = toStr(s), F = toStr(from), T = toStr(to);
-    if (!F) return S;
-    if (a[3] === undefined) return S.split(F).join(T);
-    const n = toNum(scalar(a[3]));
+    const n = a[3] === undefined ? null : toNum(scalar(a[3]));
     if (isErr(n)) return n;
+    //  which occurrence: the first is 1, and a fraction is cut off
+    if (n !== null && n < 1) return E.illegal;
+    if (!F) return S;
+    if (n === null) return S.split(F).join(T);
     let at = -1;
-    for (let i = 0; i < n; i++) { at = S.indexOf(F, at + 1); if (at < 0) return S; }
+    for (let i = 0; i < Math.floor(n); i++) { at = S.indexOf(F, at + 1); if (at < 0) return S; }
     return S.slice(0, at) + T + S.slice(at + F.length);
   },
   REPLACE: (a) => {
     const s = scalar(a[0]), st = toNum(scalar(a[1])), n = toNum(scalar(a[2])), w = scalar(a[3]);
     for (const x of [s, st, n, w]) if (isErr(x)) return x;
+    //  the first character is 1, and a count is not negative
+    if (st < 1 || n < 0) return E.illegal;
     const ch = [...toStr(s)];
-    return ch.slice(0, st - 1).join('') + toStr(w) + ch.slice(st - 1 + n).join('');
+    const from = Math.floor(st) - 1;
+    return ch.slice(0, from).join('') + toStr(w) + ch.slice(from + Math.floor(n)).join('');
   },
   VALUE: (a) => { const v = scalar(a[0]); const n = typeof v === 'string' ? toNum(v.replace(/,/g, '')) : toNum(v); return n === E.value ? E.illegal : n; },
   CHAR: (a) => num1((n) => (n < 1 || n > 255 ? E.arg : String.fromCharCode(n)))(a[0]),
