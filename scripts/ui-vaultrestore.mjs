@@ -28,7 +28,7 @@ const load = new Function('window', 'fetch', 'document', 'FileReader', 'setTimeo
 
 // a ship that answers ok to everything except the names in `refuse`, and
 // remembers each request as "METHOD path?query"
-function fakeShip({ refuse = [], dump = null, know = null, scopes = null } = {}) {
+function fakeShip({ refuse = [], dump = null, know = null, scopes = null, fail = [] } = {}) {
   const log = [];
   const fetch = async (url, opts) => {
     const method = (opts && opts.method) || 'GET';
@@ -45,7 +45,8 @@ function fakeShip({ refuse = [], dump = null, know = null, scopes = null } = {})
     if (u.pathname.endsWith('/page-save')) {
       return { ok: !refuse.includes(u.searchParams.get('name')), status: 400 };
     }
-    return { ok: true, status: 200 };
+    //  `fail`: routes the ship answers 500 on
+    return fail.some((f) => u.pathname.endsWith(f)) ? { ok: false, status: 500 } : { ok: true, status: 200 };
   };
   return { log, fetch };
 }
@@ -131,6 +132,69 @@ console.log('\nrestoreVault end to end');
   const at = (f) => ship.log.findIndex(f);
   eq('marks land before share modes',
     at((r) => r.url.includes('/page-sensitive?')) < at((r) => r.url.includes('/page-share?')), true);
+}
+
+console.log('\nrestoreVault: the last word says what failed');
+{
+  // every stage writes to the one status line. A failure in an early stage
+  // must still be on it when the last stage has run.
+  const { tarBlob } = load({}, null, null, null, () => {});
+  const files = [
+    { name: 'pages/notes/todo.md', body: '# todo\n', mtime: MT },
+    { name: 'pages/bad.md', body: 'x\n', mtime: MT },
+    { name: 'share.json', body: '{"notes/todo":"clearweb"}', mtime: MT },
+    { name: 'names.json', body: '{"notes":"Notes"}', mtime: MT },
+    { name: 'sensitive.json', body: '["notes/todo"]', mtime: MT },
+    { name: 'know.json', body: '{"items":[{"key":"/k","body":"b"}]}', mtime: MT },
+  ];
+  const run = async (opts, list = files) => {
+    const arc = await tarBlob(list).arrayBuffer();
+    const ship = fakeShip(opts);
+    const said = [];
+    let asked = '';
+    const v = load({ confirm: (m) => { asked = m; return true; } }, ship.fetch, null, null, () => {});
+    v.configure({ status: (m, ok) => said.push([m, ok]) });
+    await v.restoreVault({ arrayBuffer: async () => arc });
+    return { last: said[said.length - 1] || ['', null], asked, ship };
+  };
+  let r = await run({ refuse: ['bad'] });
+  eq('a refused page is still named at the end', /1 failed: bad/.test(r.last[0]), true);
+  eq('and the end is an error', r.last[1], false);
+  eq('which also says the memories came back', /memories restored/.test(r.last[0]), true);
+  r = await run({ fail: ['/page-sensitive'] });
+  eq('a failed sensitive mark is still named at the end', /sensitive marks: 1 failed/.test(r.last[0]), true);
+  eq('as an error', r.last[1], false);
+  r = await run({ fail: ['/page-share'] });
+  eq('a failed share mode too', /share modes: 0 restored, 1 failed/.test(r.last[0]) && r.last[1] === false, true);
+  r = await run({ fail: ['/page-move'] });
+  eq('and a failed display name', /display names: 1 failed/.test(r.last[0]) && r.last[1] === false, true);
+  r = await run({ fail: ['/know-import'] });
+  eq('memories that did not come back are an error', /memories did not/.test(r.last[0]) && r.last[1] === false, true);
+  eq('beside the pages that did', /pages: 2 restored/.test(r.last[0]), true);
+  r = await run({});
+  eq('a clean restore ends as a success', r.last[1], true);
+  eq('naming the pages and the memories', /pages: 2 restored/.test(r.last[0]) && /memories restored/.test(r.last[0]), true);
+
+  console.log('\nrestoreVault: an archive short of its own manifest');
+  // manifest.json says what the export meant to write. An archive holding
+  // less than that is said to, before anything is written and at the end.
+  const manifest = (m) => ({ name: 'manifest.json', body: JSON.stringify(m), mtime: MT });
+  r = await run({}, [...files, manifest({ pages: 5, memories: 3, missing: [] })]);
+  eq('the confirm says pages are missing', /2 of the 5 pages/.test(r.asked), true);
+  eq('and memories', /1 of the 3 memories/.test(r.asked), true);
+  eq('and so does the last word, as an error', /2 of the 5 pages/.test(r.last[0]) && r.last[1] === false, true);
+  r = await run({}, [...files.filter((f) => f.name !== 'know.json'), manifest({ pages: 2, memories: 3, missing: [] })]);
+  eq('memories the manifest counts and the archive lacks', /0 of the 3 memories/.test(r.asked), true);
+  r = await run({}, [...files, manifest({ pages: 3, memories: 1, missing: ['notes/gone'] })]);
+  eq('a page the export itself could not read is not counted as cut', /of the 3 pages/.test(r.asked), false);
+  eq('but is named', /could not read: notes\/gone/.test(r.asked) && /notes\/gone/.test(r.last[0]) && r.last[1] === false, true);
+  r = await run({}, [...files, manifest({ pages: 2, memories: 1, missing: [] })]);
+  eq('an archive that matches its manifest says nothing of it', /manifest|of the/.test(r.asked + r.last[0]), false);
+  eq('and ends as a success', r.last[1], true);
+  r = await run({}, [...files, { name: 'manifest.json', body: 'not json', mtime: MT }]);
+  eq('an unreadable manifest is said', /manifest\.json is unreadable/.test(r.asked), true);
+  r = await run({});
+  eq('an archive with no manifest (an older export, or one made by hand) restores as before', r.last[1], true);
 }
 
 console.log('\nrestoreVault: cancelling the confirm writes nothing');
