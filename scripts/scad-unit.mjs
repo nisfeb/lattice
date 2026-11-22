@@ -16,7 +16,7 @@ import { fileURLToPath } from 'url';
 import { makeCheck } from './lib/check.mjs';
 import { parseParams, rewriteLine, fmtValue, defineArg, parseLiteral } from '../ui-src/scad/customizer.js';
 import { scanIncludes, resolveRef, collect } from '../ui-src/scad/includes.js';
-import { parseStl, MAX_TRIS } from '../ui-src/scad/stl.js';
+import { parseStl, smoothNormals, MAX_TRIS } from '../ui-src/scad/stl.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FX = join(here, '..', 'tests', 'scad', 'customizer');
@@ -147,6 +147,48 @@ console.log('\nSTL: OpenSCAD\'s binary STL');
   check.eq('an empty part', parseStl(stl([])).tris, 0);
   check('a corner that is not a finite number is refused', /no size/.test(parseStl(stl([[0, 0, 0, Infinity, 0, 0, 0, 1, 0]])).error || '')
     && /no size/.test(parseStl(stl([[0, 0, 0, NaN, 0, 0, 0, 1, 0]])).error || ''));
+}
+
+console.log('\nsmooth shading: bounded where many faces share a point');
+{
+  const mesh = (tris) => {
+    const b = new ArrayBuffer(84 + tris.length * 50), dv = new DataView(b);
+    dv.setUint32(80, tris.length, true);
+    tris.forEach((t, i) => t.forEach((v, k) => dv.setFloat32(84 + i * 50 + 12 + k * 4, v, true)));
+    return parseStl(new Uint8Array(b));
+  };
+  //  a cone's side: every triangle meets at the apex
+  const fan = (n) => mesh(Array.from({ length: n }, (_, t) => { const a = t / n * 2 * Math.PI, b = (t + 1) / n * 2 * Math.PI; return [0, 0, 10, 10 * Math.cos(a), 10 * Math.sin(a), 0, 10 * Math.cos(b), 10 * Math.sin(b), 0]; }));
+  const steps = (m) => { const t = {}; smoothNormals(m, t); return t.steps; };
+  const s4 = steps(fan(4000)), s8 = steps(fan(8000)), s16 = steps(fan(16000));
+  check('a fan of 8,000 costs about twice one of 4,000', s8 <= s4 * 2.2, `${s4} then ${s8}`);
+  check('  and 16,000 about twice that', s16 <= s8 * 2.2, `${s8} then ${s16}`);
+  check('  far under one comparison per pair', s16 < 16000 * 16000 / 20, String(s16));
+  //  what it draws: unit normals, the apex shaded within the sharp-edge
+  //  angle of each face, a ring corner as the exact mean of its two faces
+  const m = fan(2000), out = smoothNormals(m);
+  let unit = true, near = true;
+  for (let c = 0; c < m.tris * 3; c++) {
+    const l = Math.hypot(out[c * 3], out[c * 3 + 1], out[c * 3 + 2]);
+    if (Math.abs(l - 1) > 1e-3) unit = false;
+    if (out[c * 3] * m.nor[c * 3] + out[c * 3 + 1] * m.nor[c * 3 + 1] + out[c * 3 + 2] * m.nor[c * 3 + 2] < Math.cos(41 * Math.PI / 180)) near = false;
+  }
+  check('every normal of the fan has length 1', unit);
+  check('  and stays within the sharp-edge angle of its face', near);
+  //  the exact answer at the apex, by the plain all-pairs sum, for a fan
+  //  small enough to afford it: the bounded path is close to it
+  const exact = (mm, c) => { const cos = Math.cos(40 * Math.PI / 180); let sx = 0, sy = 0, sz = 0; for (let d = 0; d < mm.tris * 3; d += 3) { const g = [mm.nor[d * 3], mm.nor[d * 3 + 1], mm.nor[d * 3 + 2]]; if (g[0] * mm.nor[c * 3] + g[1] * mm.nor[c * 3 + 1] + g[2] * mm.nor[c * 3 + 2] >= cos) { sx += g[0]; sy += g[1]; sz += g[2]; } } const l = Math.hypot(sx, sy, sz); return [sx / l, sy / l, sz / l]; };
+  let worst = 1;
+  for (let t = 0; t < m.tris; t += 97) { const e = exact(m, t * 3); worst = Math.min(worst, e[0] * out[t * 9] + e[1] * out[t * 9 + 1] + e[2] * out[t * 9 + 2]); }
+  check('  the apex within 10 degrees of the all-pairs answer', worst >= Math.cos(10 * Math.PI / 180), `${(Math.acos(Math.min(1, worst)) * 180 / Math.PI).toFixed(2)} degrees`);
+  //  small meshes are exact, as before: a cube keeps its edges, a prism's
+  //  side is smoothed across its shallow edges
+  const cube = mesh([[0, 0, 0, 1, 0, 0, 0, 1, 0], [0, 0, 0, 0, 0, 1, 1, 0, 0], [0, 0, 0, 0, 1, 0, 0, 0, 1]]);
+  check.eq('three faces at a right-angled corner keep their own normals', [...smoothNormals(cube)].map((v) => Math.round(v)).join(), [...cube.nor].map((v) => Math.round(v)).join());
+  const few = fan(24), fo = smoothNormals(few);
+  const fe = exact(few, 0);
+  check('a fan of 24 is the all-pairs answer exactly', Math.abs(fe[0] - fo[0]) < 1e-6 && Math.abs(fe[1] - fo[1]) < 1e-6 && Math.abs(fe[2] - fo[2]) < 1e-6);
+  check.eq('an empty mesh', smoothNormals(mesh([])).length, 0);
 }
 
 check.done();
