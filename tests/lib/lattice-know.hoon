@@ -522,4 +522,96 @@
     %+  expect-eq  !>(`(unit @ud)``2)
     !>((coalesce-victim ~[[3 (add t0 ~m2) 'w-b'] [2 (add t0 ~m1) 'w-b'] [1 t0 'w-a']] ~m5))
   ==
+::  the sensitive mark fails closed: any case of the key, a quoted key or
+::  value, CRLF, a value that is not plainly a no, and a block that is
+::  odd or has no closing fence all leave the entry sensitive
+++  test-sensitive-closed
+  =/  s  |=(b=@t (sensitive [b ~2026.1.1 ~ ~]))
+  ;:  weld
+    (expect !>((s '---\0aSensitive: yes\0a---\0ax')))
+    (expect !>((s '---\0aSENSITIVE: True\0a---\0ax')))
+    (expect !>((s '---\0asensitive: "yes"\0a---\0ax')))
+    (expect !>((s '---\0asensitive: \'yes\'\0a---\0ax')))
+    (expect !>((s '---\0a"sensitive": yes\0a---\0ax')))
+    (expect !>((s '---\0d\0aSensitive: "Yes"\0d\0a---\0d\0ax')))
+    (expect !>((s '--- \0asensitive: yes\0a---\0ax')))
+    (expect !>((s '---\0asensitive: yes # keep\0a---\0ax')))
+    (expect !>((s '---\0asensitive: maybe\0a---\0ax')))
+    (expect !>((s '---\0asensitive: no\0asensitive: yes\0a---\0ax')))
+    (expect !>((s '---\0atags:\0a  - a\0asensitive: yes\0a---\0ax')))
+    (expect !>((s '---\0asensitive: yes\0astray words\0a---\0ax')))
+    (expect !>((s '---\0asensitive: yes\0ano closing fence')))
+    ::  a plain no, and a line that is not in a block at the top
+    (expect !>(!(s '---\0asensitive: No\0a---\0ax')))
+    (expect !>(!(s '---\0asensitive: "false"\0a---\0ax')))
+    (expect !>(!(s '---\0asensitive:\0a---\0ax')))
+    (expect !>(!(s 'sensitive: yes')))
+    (expect !>(!(s 'x\0a---\0asensitive: yes\0a---')))
+    (expect !>(!(s '---\0aa: b\0a---\0asensitive: yes')))
+  ==
+::  a front-matter rewrite never lowers the mark, whatever the block's shape
+++  test-rewrite-keeps-sensitive
+  =/  s  |=(b=@t (sensitive [b ~2026.1.1 ~ ~]))
+  =/  shapes=(list @t)
+    :~  '---\0d\0asensitive: yes\0d\0a---\0d\0asecret'
+        '---\0aSensitive: yes\0a---\0asecret'
+        '---\0asensitive: "yes"\0a---\0asecret'
+        '---\0asensitive: yes\0astray words\0a---\0asecret'
+        '---\0asensitive: yes\0asecret with no closing fence'
+        '---\0atags:\0a  - a\0asensitive: yes\0a---\0asecret'
+    ==
+  ^-  tang
+  %-  zing
+  ^-  (list tang)
+  %+  turn  shapes
+  |=  b=@t
+  ^-  tang
+  ;:  weld
+    (expect !>((s b)))
+    (expect !>((s (front-set b 'verified' '2026-11-22'))))
+    (expect !>((s (front-set (front-set b 'verified' '2026-11-22') 'verified-by' 'k'))))
+    (expect !>((s (front-set b 'superseded-by' '/a/b'))))
+    (expect !>((s (front-set b 'superseded-by' ''))))
+    (expect !>((s (front-set (front-set b 'source' 'user') 'kept' '2026-11-22'))))
+    (expect !>((s (raise-sens b))))
+    ::  the secret is still there, to the byte
+    (expect !>(?=(^ (find "secret" (trip (front-set b 'verified' '2026-11-22'))))))
+  ==
+::  +front reads the shapes +sensitive does: CRLF, and a key in any case
+++  test-front-shapes
+  ;:  weld
+    (expect-eq !>([`(list [k=@t v=@t])`~[['author' 'a'] ['sensitive' 'yes']] 'x']) !>((front '---\0d\0aAuthor: a\0d\0asensitive:\09yes\0d\0a---\0d\0ax')))
+    (expect-eq !>(`(unit @t)``'/a') !>((meta-get meta:(front '---\0aSuperseded-By: /a\0a---\0ax') 'superseded-by')))
+    (expect-eq !>([`(list [k=@t v=@t])`~ 'x']) !>((front '---\0a---\0ax')))
+    ::  two rules with prose between them are body, not front matter
+    (expect-eq !>([`(list [k=@t v=@t])`~ '---\0aIntro line\0a---\0arest']) !>((front '---\0aIntro line\0a---\0arest')))
+    ::  a list, a comment and a continued value do not stop a block
+    (expect-eq !>('x') !>(rest:(front '---\0atags:\0a  - a\0a- b\0a# c\0at: |\0a  two\0a\0a---\0ax')))
+  ==
+::  +front-set changes the one field's line and passes every other byte
+++  test-front-set-bytes
+  =/  y=@t  '---\0atags:\0a  - a\0a  - b\0a# a comment\0atitle: |\0a  two\0a  lines\0a---\0ax\0a'
+  ;:  weld
+    %+  expect-eq
+      !>('---\0atags:\0a  - a\0a  - b\0a# a comment\0atitle: |\0a  two\0a  lines\0averified: 2026-11-22\0a---\0ax\0a')
+    !>((front-set y 'verified' '2026-11-22'))
+    %+  expect-eq  !>('---\0aa: 1\0averified: new\0ab:  2\0a---\0ax')
+    !>((front-set '---\0aa: 1\0aVerified: old\0ab:  2\0a---\0ax' 'verified' 'new'))
+    %+  expect-eq  !>('---\0aa: 1\0a---\0ax')
+    !>((front-set '---\0aa: 1\0asuperseded-by: /o\0a---\0ax' 'superseded-by' ''))
+    (expect-eq !>(y) !>((front-set y 'superseded-by' '')))
+    %+  expect-eq  !>('---\0d\0aa: 1\0d\0averified: d\0d\0a---\0d\0ax\0d\0a')
+    !>((front-set '---\0d\0aa: 1\0d\0a---\0d\0ax\0d\0a' 'verified' 'd'))
+    (expect-eq !>('---\0averified: d\0a---\0aplain') !>((front-set 'plain' 'verified' 'd')))
+    (expect-eq !>('plain') !>((front-set 'plain' 'superseded-by' '')))
+    (expect-eq !>('---\0averified: d\0a---\0ax') !>((front-set '---\0a---\0ax' 'verified' 'd')))
+    %+  expect-eq  !>('---\0averified: d\0a---\0a---\0aIntro line\0a---\0arest')
+    !>((front-set '---\0aIntro line\0a---\0arest' 'verified' 'd'))
+    ::  a value cannot add a line
+    (expect-eq !>('---\0averified-by: ab\0a---\0ax') !>((front-set 'x' 'verified-by' 'a\0d\0ab')))
+    ::  and it reads back
+    (expect-eq !>(`(unit @t)``'d') !>((meta-get meta:(front (front-set y 'verified' 'd')) 'verified')))
+    (expect-eq !>('x\0a') !>(rest:(front (front-set y 'verified' 'd'))))
+    (expect-eq !>(`(unit @t)`~) !>((meta-get meta:(front (front-set (front-set y 'kept' 'd') 'kept' '')) 'kept')))
+  ==
 --

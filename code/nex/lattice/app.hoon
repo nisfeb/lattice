@@ -2961,11 +2961,14 @@
     ?~  e  (send-err eyre-id 404 'not found')
     ?.  (may-see key u.e)  (send-err eyre-id 404 'not found')
     ;<  now=@da  bind:m  ?~(key bowl-now (pure:(fiber:fiber:nexus ,@da) rnow))
-    =/  f  (front:lk body.u.e)
-    =/  meta  (meta-put:lk meta.f 'verified' (iso-day:lk now))
+    ::  +front-set:lk changes the one field's line and nothing else, and
+    ::  keeps the sensitive mark. Rebuilding the block from its parsed
+    ::  fields dropped every line that was not `name: value`, and for a
+    ::  block the parser could not read it dropped the mark.
+    =/  bod=@t  (front-set:lk body.u.e 'verified' (iso-day:lk now))
     =/  by=@t  ?^(key by.u.key (~(gut by args) 'author' ''))
-    =?  meta  !=('' by)  (meta-put:lk meta 'verified-by' by)
-    ;<  ~  bind:m  (poke-know [%save (spat u.ko) (with-front:lk meta rest.f)])
+    =?  bod  !=('' by)  (front-set:lk bod 'verified-by' by)
+    ;<  ~  bind:m  (poke-know [%save (spat u.ko) bod])
     (send-ok eyre-id)
   ::  know-supersede: old= is replaced by new=, which must exist. Search then
   ::  leaves old out and reading it points at new; history keeps both. An
@@ -2988,9 +2991,7 @@
     ;<  n=(unit know-entry:lk)  bind:m  (know-one (fall nk u.ok))
     ?:  &(?=(^ nk) ?=(~ n))  (send-err eyre-id 404 'no such new entry')
     ?:  &(?=(^ nk) ?=(^ n) !(may-see key u.n))  (send-err eyre-id 404 'no such new entry')
-    =/  f  (front:lk body.u.e)
-    =/  meta  (meta-put:lk meta.f 'superseded-by' ?~(nk '' (spat u.nk)))
-    =/  bod=@t  (with-front:lk meta rest.f)
+    =/  bod=@t  (front-set:lk body.u.e 'superseded-by' ?~(nk '' (spat u.nk)))
     ;<  ~  bind:m  (poke-know ?~(key [%save (spat u.ok) bod] [%key-save (spat u.ok) bod id.u.key]))
     (send-ok eyre-id)
   ::
@@ -5647,9 +5648,9 @@
     ;<  e=(unit know-entry:lk)  bind:m  (know-one u.ko)
     ?~  e  (send-err eyre-id 404 'not found')
     ;<  now=@da  bind:m  bowl-now
-    =/  f  (front:lk body.u.e)
-    =/  meta  (meta-put:lk (meta-put:lk meta.f 'source' 'user') 'kept' (iso-day:lk now))
-    ;<  ~  bind:m  (poke-know [%save (spat u.ko) (with-front:lk meta rest.f)])
+    =/  bod=@t
+      (front-set:lk (front-set:lk body.u.e 'source' 'user') 'kept' (iso-day:lk now))
+    ;<  ~  bind:m  (poke-know [%save (spat u.ko) bod])
     (send-ok eyre-id)
   ::
   ::  ── skills (lib/lattice-skills, docs/agent-knowledge.md, Skills) ──

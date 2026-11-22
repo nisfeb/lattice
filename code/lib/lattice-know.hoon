@@ -186,7 +186,7 @@
 ::  (stopp-ed). Without it release stemmed to release and released to
 ::  releas, which never met. +stem-ver names this rule set: the term cache
 ::  is rebuilt when it changes.
-++  stem-ver  ^-(@ud 2)
+++  stem-ver  ^-(@ud 3)
 ++  stem
   |=  w=tape
   ^-  tape
@@ -229,24 +229,119 @@
 ::  provenance there (author, source, created, verified, superseded-by), so
 ::  it travels with the entry through moves, trash, history, import and
 ::  export, and an older reader just sees text.
+::
+::  This is the one reader. Lines end in LF or CRLF, a name reads in
+::  lower case whatever case it is written in, and lines that are not
+::  `name: value` (a YAML list, a comment, a continued value) are skipped
+::  here and kept by +front-set. A block with a line of plain prose in it
+::  is not front matter: a body that opens with a rule and has another
+::  further down is all body.
 ++  front
   |=  body=@t
   ^-  [meta=(list [k=@t v=@t]) rest=@t]
-  =/  t=tape  (trip body)
-  ?.  =("---\0a" (scag 4 t))  [~ body]
-  =/  aft=tape  (slag 4 t)
-  =/  e=(unit @ud)  (find "\0a---" aft)
-  ?~  e  [~ body]
-  =/  tail=tape  (slag (add u.e 4) aft)
-  =?  tail  &(?=(^ tail) =(10 i.tail))  t.tail
-  :_  (crip tail)
-  %+  murn  (to-wain:format (crip (scag u.e aft)))
-  |=  l=@t
+  =/  s  (front-split body)
+  ?~  s  [~ body]
+  [(murn head.u.s field-of) (crip rest.u.s)]
+::  +take-line: the first line of `t` with its line end, and what follows
+++  take-line
+  |=  t=tape
+  ^-  [l=tape r=tape]
+  =|  acc=tape
+  |-  ^-  [l=tape r=tape]
+  ?~  t  [(flop acc) ~]
+  ?:  =('\0a' i.t)  [(flop [i.t acc]) t.t]
+  $(t t.t, acc [i.t acc])
+::  +drop-ws, +trim-ws, +bare: without leading blanks (space, tab, CR,
+::  LF), without blanks at both ends, and a line without its line end
+::  and trailing blanks
+++  drop-ws
+  |=  t=tape
+  ^-  tape
+  ?~  t  ~
+  ?.  |(=(' ' i.t) =('\09' i.t) =('\0d' i.t) =('\0a' i.t))  t
+  $(t t.t)
+++  trim-ws  |=(t=tape ^-(tape (flop (drop-ws (flop (drop-ws t))))))
+++  bare  |=(l=tape ^-(tape (flop (drop-ws (flop l)))))
+::  +unq: without one pair of quotes around it
+++  unq
+  |=  t=tape
+  ^-  tape
+  =/  n=@ud  (lent t)
+  ?:  (lth n 2)  t
+  =/  a=@tD  (snag 0 t)
+  ?.  &(|(=('"' a) =('\'' a)) =(a (snag (dec n) t)))  t
+  (scag (sub n 2) (slag 1 t))
+++  fence-line  |=(l=tape =("---" (bare l)))
+::  +prose-line: a line no front matter holds. Not blank, not indented,
+::  not a list item or a comment, and with no colon.
+++  prose-line
+  |=  l=tape
+  ^-  ?
+  =/  s=tape  (bare l)
+  ?~  s  |
+  ?:  |(=(' ' i.s) =('\09' i.s) =('-' i.s) =('#' i.s))  |
+  ?=(~ (find ":" s))
+::  +field-of: a front-matter line as its name and value. The name is
+::  lower-cased and unquoted, the value trimmed and otherwise as written.
+++  field-of
+  |=  l=tape
   ^-  (unit [k=@t v=@t])
-  =/  lt=tape  (trip l)
-  =/  c=(unit @ud)  (find ":" lt)
+  =/  s=tape  (bare l)
+  =/  c=(unit @ud)  (find ":" s)
   ?~  c  ~
-  `[(crip (trim-sp (scag u.c lt))) (crip (trim-sp (slag +(u.c) lt)))]
+  `[(crip (cass (unq (trim-ws (scag u.c s))))) (crip (trim-ws (slag +(u.c) s)))]
+::  +front-split: a body that opens with front matter, in pieces that
+::  weld back to it byte for byte: the opening fence, the lines between,
+::  the closing fence, and the text after. Each line keeps its line end.
+++  front-split
+  |=  body=@t
+  ^-  (unit [open=tape head=(list tape) close=tape rest=tape])
+  =/  a  (take-line (trip body))
+  ?.  (fence-line l.a)  ~
+  =|  head=(list tape)
+  =/  t=tape  r.a
+  |-  ^-  (unit [open=tape head=(list tape) close=tape rest=tape])
+  ?~  t  ~
+  =/  b  (take-line t)
+  ?:  (fence-line l.b)  `[l.a (flop head) l.b r.b]
+  ?:  (prose-line l.b)  ~
+  $(t r.b, head [l.b head])
+::  +front-put: `body` with front-matter field `k` set to `v`, or taken
+::  out when `v` is ''. Only that field's line changes: every other byte
+::  of the block and of the text passes through, so a YAML list, a
+::  comment or a continued value survives. A body with no front matter
+::  gets a block in front of it, and keeps all of its own text.
+++  front-put
+  |=  [body=@t k=@t v=@t]
+  ^-  @t
+  =/  val=tape  (skip (trip v) |=(c=@tD |(=('\0a' c) =('\0d' c))))
+  =/  s  (front-split body)
+  ?~  s
+    ?~  val  body
+    (crip :(weld "---\0a" (trip k) ": " val "\0a---\0a" (trip body)))
+  =/  is  |=(l=tape =(`k (bind (field-of l) |=([a=@t @t] a))))
+  =/  eol=tape  ?:(?=(^ (find "\0d" open.u.s)) "\0d\0a" "\0a")
+  =/  line=tape  :(weld (trip k) ": " val eol)
+  =/  old=(list tape)  head.u.s
+  =/  head=(list tape)
+    ?~  val  (skip old is)
+    ?.  (lien old is)  (snoc old line)
+    =/  done=?  |
+    |-  ^-  (list tape)
+    ?~  old  ~
+    ?:  &(!done (is i.old))  [line $(old t.old, done &)]
+    [i.old $(old t.old)]
+  (crip :(weld open.u.s `tape`(zing head) close.u.s rest.u.s))
+::  +front-set: +front-put that never lowers the sensitive mark. The
+::  routes that stamp an entry (verify, supersede, keep) write through
+::  here. Whatever shape the entry's front matter has, an entry that
+::  was sensitive before the write is sensitive after it.
+++  front-set
+  |=  [body=@t k=@t v=@t]
+  ^-  @t
+  =/  out=@t  (front-put body k v)
+  ?:  &((sens-text body) !(sens-text out))  (raise-sens out)
+  out
 ++  drop-sp
   |=  t=tape
   ^-  tape
@@ -737,22 +832,43 @@
   (with-front meta prose)
 ::  +sensitive: marked `sensitive: yes` in its front matter. Only the owner
 ::  and keys cleared for it see such an entry (docs/agent-knowledge.md).
-::  It fails closed on the shapes a hand edit or an import brings: any case,
-::  a tab, and CRLF line endings.
+::  It fails closed. In doubt the entry is sensitive.
 ++  sensitive
   |=  e=know-entry
   ^-  ?
-  =/  b=@t
-    ?.  =("---\0d\0a" (scag 5 (trip body.e)))  body.e
-    (crip (skip (trip body.e) |=(c=@tD =('\0d' c))))
-  =/  v=(unit @t)  (meta-get meta:(front b) 'sensitive')
-  ?~(v | (yes-word u.v))
+  (sens-text body.e)
+::  +sens-text: does a body carry the mark? Every line from the opening
+::  fence to the closing one is read with +field-of, as +front reads it,
+::  so the name counts in any case and with CRLF line ends. It also
+::  counts where +front sees no front matter: in a block with a line of
+::  prose in it, and under an opening fence that is never closed.
+++  sens-text
+  |=  body=@t
+  ^-  ?
+  =/  a  (take-line (trip body))
+  ?.  (fence-line l.a)  |
+  =/  t=tape  r.a
+  |-  ^-  ?
+  ?~  t  |
+  =/  b  (take-line t)
+  ?:  (fence-line l.b)  |
+  =/  f  (field-of l.b)
+  ?:  &(?=(^ f) =('sensitive' k.u.f) (sens-on v.u.f))  &
+  $(t r.b)
 ::  +yes-word: a front-matter yes or true, in any case, with no tab or CR
 ++  yes-word
   |=  v=@t
   ^-  ?
   =/  w=tape  (cass (skip (trip v) |=(c=@tD |(=('\09' c) =('\0d' c)))))
   |(=("yes" w) =("true" w))
+::  +sens-on: does a value of the mark set it? Anything but a plain no:
+::  a quoted yes, a yes with a comment after it and a word we do not
+::  know all leave the entry sensitive.
+++  sens-on
+  |=  v=@t
+  ^-  ?
+  =/  w=@t  (crip (cass (unq (trim-ws (trip v)))))
+  !(~(has in (silt `(list @t)`~['' 'no' 'false' 'off' 'n' '0' 'null' '~'])) w)
 ::  +is-core: tagged core, so every session loads it (+index-text). Only
 ::  the owner adds or removes the tag. An agent key may not rewrite or
 ::  supersede an entry that has it.
@@ -779,9 +895,8 @@
 ++  raise-sens
   |=  body=@t
   ^-  @t
-  ?:  (sensitive [body *@da ~ ~])  body
-  =/  f  (front body)
-  (with-front (meta-put meta.f 'sensitive' 'yes') rest.f)
+  ?:  (sens-text body)  body
+  (front-put body 'sensitive' 'yes')
 ::  +core-tag: does a requested tag name core once the writer case-folds
 ::  it? An untag drops the folded tag, so 'Core' removes 'core' too.
 ++  core-tag
