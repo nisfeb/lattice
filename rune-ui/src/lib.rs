@@ -5482,6 +5482,13 @@ fn write(s: &mut App) {
     // a page of this ship's can wait for it. A memory, or a page of another ship, cannot yet
     let own = remote.is_none() && s.conn.is_some();
     let waits_as = if memory { api::know_queue_name(&p.name) } else { p.name.clone() };
+    // a page just moved does not know its revision yet (`moved_wait`): the save waits a moment for it. Before anything else: put by with the others that wait, it would claim the revision the page had under its old name
+    if own && s.moved_wait.as_deref() == Some(p.name.as_str()) {
+        // kept in mind, and made when the tree has said what revision the page now has
+        s.note = "the page was just moved: saving in a moment".into();
+        s.moved_save = true;
+        return;
+    }
     // the ship is known not to answer: the save is not tried, as the web client does not try it.
     // And a page with a save still waiting, or on its way, goes behind it: sent straight, the older one could land after it
     if own && (s.offline.is_some() || s.queue.contains_key(&waits_as) || s.drain_req.is_pending()) {
@@ -5503,13 +5510,6 @@ fn write(s: &mut App) {
                 drain(s);
             }
         }
-        return;
-    }
-    // a page just moved does not know its revision yet (`moved_wait`): the save waits a moment for it
-    if own && s.moved_wait.as_deref() == Some(p.name.as_str()) {
-        // kept in mind, and made when the tree has said what revision the page now has
-        s.note = "the page was just moved: saving in a moment".into();
-        s.moved_save = true;
         return;
     }
     // a page this window has never seen on the ship is saved only if the ship has none of that name
@@ -14117,8 +14117,15 @@ fn update_restart(s: &mut App) {
 /// what libmesa holds is written.
 fn closing(s: &mut App) {
     // what is typed is kept on this device, to be sent when the app is next opened. A window cannot be held open to ask
-    // ponytail: an edit that cannot be left by itself (another ship's page, a page changed elsewhere, a save on its way) is still lost at a close. A close that can be refused, when Rune has one, is the fix
-    let _ = leave_edit(s);
+    // ponytail: any other edit that cannot be left by itself (another ship's page, a page changed elsewhere, a save on its way) is still lost at a close. A close that can be refused, when Rune has one, is the fix
+    if !leave_edit(s) {
+        // a page just moved does not know its revision yet, and its editor is not left while it waits to. At a close there is no later moment: what is typed is kept all the same, claiming no revision, as a save carried by a move made with the ship away claims none
+        if let Some(mut p) = s.open.clone().filter(|p| s.editing && s.remote.is_none() && !s.memory && s.moved_wait.as_deref() == Some(p.name.as_str())) {
+            p.body = edited(s);
+            let at = api::since_epoch().map_or(0, |d| d.as_secs());
+            let _ = change_waiting(s, |_, q| api::enqueue(q, &p, None, false, at));
+        }
+    }
     #[cfg(unix)]
     if let Some(e) = s.engine.take() {
         e.close();

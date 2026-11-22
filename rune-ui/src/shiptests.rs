@@ -463,6 +463,27 @@ fn edit_pressed_while_a_cell_is_being_saved_and_then_left_keeps_the_cell() {
 }
 
 #[test]
+fn closing_while_a_renamed_page_waits_for_its_revision_keeps_what_was_typed() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("notes/a", "md", "first\n");
+    let mut r = Run::new(&ship);
+    r.open("notes/a");
+    start_edit(&mut r.s);
+    r.typ("typed and precious");
+    // the read of the tree that follows the rename is slow to be answered
+    ship.st().dump_slow = 3.0;
+    rename(&mut r, "notes/a", "notes/b");
+    r.until("the rename", |s| s.moved_wait.is_some());
+    closing(&mut r.s);
+    let kept = ship.conn().queue();
+    let q = kept.get("notes/b").expect("what was typed waits under the page's new name");
+    assert!(q.body.contains("precious"));
+    assert_eq!((q.base, q.is_new), (None, false), "it claims no revision: the moved page's is not known");
+    assert!(!kept.contains_key("notes/a"));
+}
+
+#[test]
 fn a_renamed_page_edited_on_is_saved_under_its_new_name_once_its_revision_is_read() {
     let _one = one();
     let ship = Ship::start();
