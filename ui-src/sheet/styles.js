@@ -26,6 +26,7 @@ export function px(len) {
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const p2 = (n) => String(n).padStart(2, '0');
+const year4 = (y) => (y < 0 ? '-' : '') + String(Math.abs(y)).padStart(4, '0');
 
 //  a number with fixed decimals, rounded half away from zero on its
 //  decimal spelling (1.005 to two places is 1.01, as Calc shows it)
@@ -64,7 +65,7 @@ function compile(el, src) {
         else { const d = parseInt(dp, 10) || 0; parts.push((v) => fixed(v / factor, d, minInt, group)); }
         break;
       }
-      case 'number:year': parts.push((v, d) => (long ? String(d.getUTCFullYear()) : p2(d.getUTCFullYear() % 100))); break;
+      case 'number:year': parts.push((v, d) => (long ? year4(d.getUTCFullYear()) : p2(d.getUTCFullYear() % 100))); break;
       case 'number:month': {
         const textual = attr(k, 'number:textual') === 'true';
         parts.push((v, d) => (textual ? (long ? MONTHS[d.getUTCMonth()] : MONTHS[d.getUTCMonth()].slice(0, 3)) : long ? p2(d.getUTCMonth() + 1) : String(d.getUTCMonth() + 1)));
@@ -205,7 +206,7 @@ export class Styles {
     if (vt === 'percentage') return fixed(v * 100, 2) + '%';
     if (vt === 'date') {
       const d = new Date((Math.floor(v + 1e-9) + this.doc.nullDate) * 86400000);
-      return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`;
+      return `${year4(d.getUTCFullYear())}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`;
     }
     if (vt === 'time') {
       const s = Math.round((v - Math.floor(v)) * 86400);
@@ -338,7 +339,7 @@ const DATA_FN = {
   number: (v) => fixed(v, 2, 1, true),
   percent: (v) => fixed(v * 100, 2) + '%',
   currency: (v) => (v < 0 ? '-$' : '$') + fixed(Math.abs(v), 2, 1, true),
-  date: (v, nd) => { const d = new Date((Math.floor(v + 1e-9) + nd) * 86400000); return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`; },
+  date: (v, nd) => { const d = new Date((Math.floor(v + 1e-9) + nd) * 86400000); return `${year4(d.getUTCFullYear())}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`; },
   time: (v) => { const s = Math.round((v - Math.floor(v)) * 86400); return `${p2(Math.floor(s / 3600))}:${p2(Math.floor(s / 60) % 60)}:${p2(s % 60)}`; },
 };
 
