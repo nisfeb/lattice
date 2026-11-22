@@ -258,10 +258,10 @@
 ::
 ::  This is the one reader. Lines end in LF or CRLF, a name reads in
 ::  lower case whatever case it is written in, and lines that are not
-::  `name: value` (a YAML list, a comment, a continued value) are skipped
-::  here and kept by +front-set. A block with a line of plain prose in it
-::  is not front matter: a body that opens with a rule and has another
-::  further down is all body.
+::  `name: value` (a YAML list, a comment, a continued value, a stray
+::  word) are skipped here and kept by +front-set. A block is front
+::  matter only when one of its lines is a field (+key-line): a body that
+::  opens with a rule, a line of prose and another rule is all body.
 ++  front
   |=  body=@t
   ^-  [meta=(list [k=@t v=@t]) rest=@t]
@@ -298,15 +298,15 @@
   ?.  &(|(=('"' a) =('\'' a)) =(a (snag (dec n) t)))  t
   (scag (sub n 2) (slag 1 t))
 ++  fence-line  |=(l=tape =("---" (bare l)))
-::  +prose-line: a line no front matter holds. Not blank, not indented,
-::  not a list item or a comment, and with no colon.
-++  prose-line
+::  +key-line: a field line, `name: value` with a name that is one word.
+::  Prose with a colon in it (`see http://x for it`) names no field.
+++  key-line
   |=  l=tape
   ^-  ?
-  =/  s=tape  (bare l)
-  ?~  s  |
-  ?:  |(=(' ' i.s) =('\09' i.s) =('-' i.s) =('#' i.s))  |
-  ?=(~ (find ":" s))
+  =/  f  (field-of l)
+  ?~  f  |
+  =/  k=tape  (trip k.u.f)
+  &(!=(~ k) !(lien k |=(c=@tD |(=(' ' c) =('\09' c)))))
 ::  +field-of: a front-matter line as its name and value. The name is
 ::  lower-cased and unquoted, the value trimmed and otherwise as written.
 ++  field-of
@@ -319,6 +319,9 @@
 ::  +front-split: a body that opens with front matter, in pieces that
 ::  weld back to it byte for byte: the opening fence, the lines between,
 ::  the closing fence, and the text after. Each line keeps its line end.
+::  A rule right under the opening one closes nothing (the reader before
+::  CRLF support read on past it too), and a block with no field in it
+::  is no front matter.
 ++  front-split
   |=  body=@t
   ^-  (unit [open=tape head=(list tape) close=tape rest=tape])
@@ -326,12 +329,45 @@
   ?.  (fence-line l.a)  ~
   =|  head=(list tape)
   =/  t=tape  r.a
+  =/  top=?  &
   |-  ^-  (unit [open=tape head=(list tape) close=tape rest=tape])
   ?~  t  ~
   =/  b  (take-line t)
-  ?:  (fence-line l.b)  `[l.a (flop head) l.b r.b]
-  ?:  (prose-line l.b)  ~
-  $(t r.b, head [l.b head])
+  ?:  &((fence-line l.b) !top)
+    ?.  (lien head key-line)  ~
+    `[l.a (flop head) l.b r.b]
+  $(t r.b, head [l.b head], top |)
+::  +prose-of: what a stamped save (+stamp) keeps of the body it was
+::  sent. The stamp writes the entry's front matter itself, so a block of
+::  the sender's own goes when it holds nothing but the fields the stamp
+::  writes or carries (+stamped) and lines the entry's block holds as
+::  they are (the entry sent back as it was read). Any other block is
+::  kept whole as text: it is the sender's, and no byte of it is lost.
+++  prose-of
+  |=  [bod=@t old=(unit know-entry)]
+  ^-  @t
+  =/  s  (front-split bod)
+  ?~  s  bod
+  =/  had=(list tape)
+    =/  o  ?~(old ~ (front-split body.u.old))
+    ?~(o ~ (turn head.u.o bare))
+  =/  ours
+    |=  l=tape
+    ?|  ?=(~ (bare l))
+        (lien had |=(h=tape =(h (bare l))))
+        =/  f  (field-of l)
+        &(?=(^ f) (~(has in stamped) k.u.f))
+    ==
+  ?.  (levy head.u.s ours)  bod
+  (crip rest.u.s)
+::  +stamped: the fields +stamp writes, or carries from the entry it
+::  replaces, whatever the sender's body says
+++  stamped
+  ^~  %-  silt
+  ^-  (list @t)
+  :~  'created'  'author'  'source'  'verified'  'verified-by'
+      'sensitive'  'superseded-by'  'kept'
+  ==
 ::  +front-put: `body` with front-matter field `k` set to `v`, or taken
 ::  out when `v` is ''. Only that field's line changes: every other byte
 ::  of the block and of the text passes through, so a YAML list, a
@@ -664,11 +700,33 @@
 ::  `superseded-by:` line (a hand edit, an import) names nowhere, and
 ::  the entry is live: read as superseded it left search, recall and
 ::  the index with nothing in its place.
+::  An entry the reader before CRLF support read as superseded still is
+::  (+front-v1), whatever this reader makes of its block.
 ++  superseded
   |=  e=know-entry
   ^-  (unit @t)
   =/  v=(unit @t)  (meta-get meta:(front body.e) 'superseded-by')
+  =?  v  |(?=(~ v) =(`'' v))  (meta-get (front-v1 body.e) 'superseded-by')
   ?:(=(`'' v) ~ v)
+::  +front-v1: the front matter fields as the reader before CRLF support
+::  read them: from a first line of `---` to the next line that starts
+::  with `---`, every line with a colon a field, its name and value
+::  trimmed of spaces
+++  front-v1
+  |=  body=@t
+  ^-  (list [k=@t v=@t])
+  =/  t=tape  (trip body)
+  ?.  =("---\0a" (scag 4 t))  ~
+  =/  aft=tape  (slag 4 t)
+  =/  e=(unit @ud)  (find "\0a---" aft)
+  ?~  e  ~
+  %+  murn  (to-wain:format (crip (scag u.e aft)))
+  |=  l=@t
+  ^-  (unit [k=@t v=@t])
+  =/  lt=tape  (trip l)
+  =/  c=(unit @ud)  (find ":" lt)
+  ?~  c  ~
+  `[(crip (trim-sp (scag u.c lt))) (crip (trim-sp (slag +(u.c) lt)))]
 ::  +search: the query path the tools and the routes share. Words rank by
 ::  BM25; a query in double quotes must appear verbatim (key or body) and
 ::  ranks by its words. Superseded entries are left out unless old. tc is
@@ -875,17 +933,35 @@
 ::  matter, created kept (or set), author and source set when given,
 ::  verified today (by the author when there is one), and marked sensitive
 ::  or not as sens says.
+::  The old entry's block passes through, every byte of it but the lines
+::  of the fields set here (+front-put), so a YAML list, a comment or a
+::  field this lib does not know survives a save.
 ++  stamp
   |=  [old=(unit know-entry) prose=@t author=@t source=@t now=@da sens=?]
   ^-  @t
   =/  meta=(list [k=@t v=@t])  ?~(old ~ meta:(front body.u.old))
-  =?  meta  =(~ (meta-get meta 'created'))  (meta-put meta 'created' (iso-day ?~(old now updated.u.old)))
-  =?  meta  !=('' author)  (meta-put meta 'author' author)
-  =?  meta  !=('' source)  (meta-put meta 'source' source)
-  =.  meta  (meta-put meta 'verified' (iso-day now))
-  =?  meta  !=('' author)  (meta-put meta 'verified-by' author)
-  =.  meta  (meta-put meta 'sensitive' ?:(sens 'yes' ''))
-  (with-front meta prose)
+  =/  sets=(list [k=@t v=@t])
+    ;:  weld
+      ?^  (meta-get meta 'created')  ~
+      ~[['created' (iso-day ?~(old now updated.u.old))]]
+      ?:(=('' author) ~ ~[['author' author]])
+      ?:(=('' source) ~ ~[['source' source]])
+      ~[['verified' (iso-day now)]]
+      ?:(=('' author) ~ ~[['verified-by' author]])
+      ~[['sensitive' ?:(sens 'yes' '')]]
+    ==
+  =/  s  ?~(old ~ (front-split body.u.old))
+  ?~  s
+    (with-front (roll sets |=([[k=@t v=@t] m=_meta] (meta-put m k v))) prose)
+  ::  the old block alone, its closing fence ended, then the fields set
+  =/  eol=tape  ?:(?=(^ (find "\0d" open.u.s)) "\0d\0a" "\0a")
+  =/  close=tape
+    =/  fc=tape  (flop close.u.s)
+    ?:  &(?=(^ fc) =('\0a' i.fc))  close.u.s
+    (weld close.u.s eol)
+  =/  blk=@t  (crip :(weld open.u.s `tape`(zing head.u.s) close))
+  =.  blk  (roll sets |=([[k=@t v=@t] b=_blk] (front-put b k v)))
+  (cat 3 blk prose)
 ::  +sensitive: marked `sensitive: yes` in its front matter. Only the owner
 ::  and keys cleared for it see such an entry (docs/agent-knowledge.md).
 ::  It fails closed. In doubt the entry is sensitive.
@@ -896,21 +972,24 @@
 ::  +sens-text: does a body carry the mark? Every line from the opening
 ::  fence to the closing one is read with +field-of, as +front reads it,
 ::  so the name counts in any case and with CRLF line ends. It also
-::  counts where +front sees no front matter: in a block with a line of
-::  prose in it, and under an opening fence that is never closed.
+::  counts where +front sees no front matter: in a block with no field
+::  or a line of prose in it, and under an opening fence that is never
+::  closed. A rule right under the opening one closes nothing: the
+::  reader before CRLF support read the mark below it.
 ++  sens-text
   |=  body=@t
   ^-  ?
   =/  a  (take-line (trip body))
   ?.  (fence-line l.a)  |
   =/  t=tape  r.a
+  =/  top=?  &
   |-  ^-  ?
   ?~  t  |
   =/  b  (take-line t)
-  ?:  (fence-line l.b)  |
+  ?:  &((fence-line l.b) !top)  |
   =/  f  (field-of l.b)
   ?:  &(?=(^ f) =('sensitive' k.u.f) (sens-on v.u.f))  &
-  $(t r.b)
+  $(t r.b, top |)
 ::  +yes-word: a front-matter yes or true, in any case, with no tab or CR
 ++  yes-word
   |=  v=@t

@@ -105,12 +105,36 @@
   ^-  ?
   ?=  ?(%script %style %head %noscript %iframe %template %textarea)
   (crip n)
-::  +self-closed: is a tag written as an empty element, <svg ../>?
+::  +url-of: an attribute's value as the url a browser reads: entities
+::  decoded, and the control bytes it drops (a tab or line break inside,
+::  blanks in front) gone, so +safe-url tests the scheme that is written
+++  url-of
+  |=  v=tape
+  ^-  tape
+  (lead-strip (skip (unent v) |=(c=@tD (lth c 32))))
+::  +self-closed: is a tag written as an empty element, <svg ../>? The
+::  `/` must stand alone, or follow an attribute's name or quoted value:
+::  after an unquoted value it is the value's last byte (`a=/`, `a=b/`).
 ++  self-closed
   |=  att=tape
   ^-  ?
   =/  a=tape  (lead-strip (flop att))
-  &(?=(^ a) =('/' i.a))
+  ?.  &(?=(^ a) =('/' i.a))  |
+  ::  the word the `/` ends, back to the blank before it
+  =/  w=tape
+    =|  acc=tape
+    =/  r=tape  t.a
+    |-  ^-  tape
+    ?~  r  acc
+    ?:  (lth `@`i.r 33)  acc
+    $(r t.r, acc [i.r acc])
+  =/  e=(unit @ud)  (find "=" w)
+  ?~  e  &
+  =/  v=tape  (slag +(u.e) w)
+  ?&  ?=([@ @ *] v)
+      |(=('"' i.v) =('\'' i.v))
+      =(i.v (rear v))
+  ==
 ::  +md-url: an address as markdown's ( ) can hold it. A ')' ends the
 ::  address there, and a space or a quote starts a title, so those are
 ::  percent-encoded. Control bytes go: a browser drops them from a url.
@@ -267,6 +291,10 @@
   ::  ng: no '>' is left in the input, so no later '<' can open a tag
   =/  ng=?   |
   =|  lnk=(unit tape)
+  ::  miss: the dropped tags whose closing tag is not in the rest of the
+  ::  input. It is not in any later rest either, so it is looked for once:
+  ::  a page of unclosed tags would look again at each one (quadratic).
+  =|  miss=(set tape)
   |-  ^-  tape
   ?~  t  (flop acc)
   ::  `?~` above narrows t to a non-empty tape, and a WET gate (scag/slag/find)
@@ -312,12 +340,19 @@
     ::  drop the tag AND its content
     ?:  &(!cls.g (drop-tag n))
       ::  scan for the closer without lowercasing the whole remainder,
-      ::  which every dropped tag used to do (+find-ci)
-      ?:  (self-closed att.g)  $(t rest.g, sp &)
-      =/  e=(unit @ud)  (find-ci (weld "</" n) rest.g)
+      ::  which every dropped tag used to do (+find-ci). A `/>` empties
+      ::  a tag that holds markup. It does not empty one that holds raw
+      ::  text (a browser ignores it there), so what follows up to the
+      ::  closing tag is its content. With no closing tag at all, such a
+      ::  tag written as empty costs only itself.
+      =/  sc=?  (self-closed att.g)
+      ?:  &(sc !(raw-tag n))  $(t rest.g, sp &)
+      =/  e=(unit @ud)
+        ?:  (~(has in miss) n)  ~
+        (find-ci (weld "</" n) rest.g)
       ?~  e
-        ?:  (raw-tag n)  (flop acc)
-        $(t rest.g, sp &)
+        ?:  &((raw-tag n) !sc)  (flop acc)
+        $(t rest.g, sp &, miss (~(put in miss) n))
       =/  aft=tape  (slag u.e `tape`rest.g)
       =/  g2=(unit @ud)  (find ">" aft)
       ?~  g2  (flop acc)
@@ -367,11 +402,11 @@
       ::  the address is the attribute's VALUE: entities decoded first, so
       ::  "a=1&amp;b=2" is archived as the url it names and a scheme spelled
       ::  with entities is tested as the scheme it is
-      =/  src=tape  (lead-strip (unent (attr att.g "src")))
+      =/  src=tape  (url-of (attr att.g "src"))
       ?.  (safe-url src)  $(t r)
       $(t r, acc (emit acc :(weld "![" (alt-text (attr att.g "alt")) "](" (md-url src) ")")), sp |)
     ?:  =("a" n)
-      =/  href=tape  (lead-strip (unent (attr att.g "href")))
+      =/  href=tape  (url-of (attr att.g "href"))
       ::  an unsafe or missing href keeps the link TEXT and drops the link
       ?.  (safe-url href)  $(t r, lnk ~)
       $(t r, lnk `(md-url href), acc (emit flu "["), sp |)

@@ -288,4 +288,47 @@
     (yes (has "<p>after" (crip (render-md:md o))))
     (yes (has "> after" (m '<blockquote><pre>code</pre>after</blockquote>')))
   ==
+::  a browser drops tabs and line breaks inside a url, so the scheme is
+::  tested on the url with them gone, as it is written
+++  test-url-control-bytes
+  ;:  weld
+    (no (has "](" (m '<a href="java&#9;script:alert(1)">x</a>')))
+    (no (has "](" (m '<a href="java\09script:alert(1)">x</a>')))
+    (no (has "](" (m '<a href="java&#10;script:alert(1)//">x</a>')))
+    (no (has "](" (m '<a href="j&#x0D;avascript:alert(1)">x</a>')))
+    (no (has "](" (m '<a href="java&#1;script:alert(1)">x</a>')))
+    (no (has "![" (m '<img src="da&#9;ta:image/png,x" alt="a">')))
+    (no (has "![" (m '<img src="java&#9;script:x" alt="a">')))
+    (yes (has "x" (m '<a href="java&#9;script:alert(1)">x</a>')))
+    ::  a safe url keeps its link, written without the byte
+    (yes (has "[t](http://x/ab)" (m '<a href="http://x/a&#9;b">t</a>')))
+    (yes (has "![p](/a.png)" (m '<img src="/a&#10;.png" alt="p">')))
+  ==
+::  `/>` makes no script, style or other raw text element empty: what
+::  follows up to its closing tag is its content, and goes with it. On
+::  any tag, a `/` that ends an unquoted value is that value's.
+++  test-self-closed-raw
+  ;:  weld
+    (no (has "hidden" (m 'a<script src="x" />hidden</script>z')))
+    (yes (has "z" (m 'a<script src="x" />hidden</script>z')))
+    (no (has "color" (m 'a<style/>b{color:red}</style>c')))
+    (no (has "hidden" (m 'a<iframe src=x />hidden</iframe>c')))
+    (no (has "hidden" (m 'a<textarea/>hidden <b>x</b></textarea>c')))
+    (no (has "hidden" (m 'a<button a=/>hidden</button>b')))
+    (no (has "hidden" (m 'a<svg x=y/>hidden</svg>c')))
+    ::  with no closing tag, an empty one costs only itself
+    (yes (has "after" (m 'a<script src="x" />after')))
+    (yes (has "after" (m 'a<svg x="1"/>after')))
+    (yes (has "after" (m 'a<svg a/>after</svg>')))
+  ==
+::  a tag whose closing tag is not there is looked for once. Each such
+::  tag looked again through the rest, which made a page of them take
+::  minutes.
+++  test-unclosed-tags-linear
+  =/  navs=@t  (crip (zing (reap 4.000 "<nav>")))
+  =/  btns=@t  (crip (zing (reap 2.000 "<button a=/>")))
+  ;:  weld
+    (yes (has "end" (m (cat 3 navs '<p>end</p>'))))
+    (yes (has "end" (m (cat 3 btns '<p>end</p>'))))
+  ==
 --

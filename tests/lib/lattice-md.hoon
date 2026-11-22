@@ -378,4 +378,56 @@
     ::  a remote image the reader chose to load keeps its query
     (yes (has "<img src=\"https://x.example/i.png?w=2\"" (~(render-md md &) '![a](https://x.example/i.png?w=2)')))
   ==
+::  a line that only looks like a fence, in a list item or a table row,
+::  opens no code block: the footnotes and reference links below it are
+::  read. A definition +rb never sees (it is taken out first) does not
+::  change which lines are code.
+++  test-fence-look-in-blocks
+  =/  lnk=tape  "<a href=\"/u\""
+  ;:  weld
+    (yes (has "<sup" (r 'p[^1]\0a\0a- item\0a  ```sh npm i```\0a\0apara [t][r]\0a\0a[^1]: note\0a[r]: /u')))
+    (yes (has lnk (r 'p[^1]\0a\0a- item\0a  ```sh npm i```\0a\0apara [t][r]\0a\0a[^1]: note\0a[r]: /u')))
+    (yes (has "<sup" (r 'p[^1]\0a\0a- item\0a  ```not closed\0a\0apara [^1]\0a\0a[^1]: note')))
+    (yes (has "<sup" (r 'p[^1]\0a\0a1. a\0a   ```\0a   x\0a\0a2. b[^1]\0a\0a[^1]: note')))
+    (yes (has "<sup" (r 'a | b\0a--|--\0a``` | [^1]\0a\0ap[^1]\0a\0a[^1]: note')))
+    (yes (has "<sup" (r 'x[^1]\0a\0a- item\0a[r]: /u\0a  ```sh\0a\0apara[^1]\0a\0a[^1]: note')))
+    ::  a real fence is still code, at the top and in a quote
+    (yes (has "<code>[^1]: no\0a</code>" (r 'p[^1]\0a\0a```\0a[^1]: no\0a```\0a\0a[^1]: note')))
+    (yes (has "<sup" (r 'p[^1]\0a\0a```\0a[^1]: no\0a```\0a\0a[^1]: note')))
+    (yes (has "[^1]: no" (r 'p[^1]\0a\0a> ```\0a> [^1]: no\0a> ```\0a\0a[^1]: note')))
+    (yes (has "<sup" (r 'p[^1]\0a\0a> ```\0a> [^1]: no\0a> ```\0a\0a[^1]: note')))
+    ::  an unclosed fence is code to the end
+    (yes (has "<code>unclosed\0a\0a[^1]: note" (r 'p[^1]\0a\0a```\0aunclosed\0a\0a[^1]: note')))
+  ==
+::  a link's address may be as long as 4,096 characters, as in the
+::  browser's preview. A reference label too.
+++  test-long-link
+  =/  u=tape  (weld "https://x.example/" (reap 3.000 'a'))
+  =/  lnk=tape  (weld "<a href=\"" u)
+  ;:  weld
+    (yes (has lnk (r (crip :(weld "[t](" u ")")))))
+    =/  i=tape  :(weld "/" (reap 3.000 'a') ".png")
+    (yes (has (weld "<img src=\"" i) (r (crip :(weld "![t](" i ")")))))
+    (yes (has lnk (r (crip :(weld "[t][" (reap 1.000 'k') "]\0a\0a[" (reap 1.000 'k') "]: " u)))))
+    ::  past the cap it is text, as in the browser
+    (yes !(has "<a href" (r (crip :(weld "[t](https://x.example/" (reap 5.000 'a') ")")))))
+  ==
+::  a reference label's scan stops where another link starts, as the
+::  ( ) scan does: a run of "[a][" costs one pass
+++  test-open-refs-bounded
+  =/  o=tape  (zing (reap 30.000 "[a]["))
+  =/  h=tape  (r (crip :(weld o " [x][k] " o "\0a\0a[k]: /u")))
+  (yes (has "<a href=\"/u\"" h))
+::  a fenced block's lines are the block's to the byte: a line of more
+::  than 32 quote marks in one is not cut, at the top or in a quote. A
+::  quote outside a fence is still cut at 32.
+++  test-fence-keeps-quote-marks
+  =/  q=tape  (reap 40 '>')
+  =/  gt=tape  (zing (reap 40 "&gt;"))
+  ;:  weld
+    (yes (has (weld "<code>" gt) (r (crip :(weld "```\0a" q " x\0a```")))))
+    (yes (has (weld "<code>" gt) (r (crip :(weld "> ```\0a> " q " x\0a> ```")))))
+    (yes (has (weld "<code>" gt) (r (crip :(weld "~~~\0a" q "\0a" q "\0a~~~")))))
+    (expect-eq !>(32) !>((lent (fand "<blockquote>" (r (crip (weld q " x")))))))
+  ==
 --

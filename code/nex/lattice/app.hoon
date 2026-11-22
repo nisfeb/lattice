@@ -1554,10 +1554,6 @@
     %-  poke-eval
     ?:  new  [%make-new (pax-of u.name) src wid]
     [%make-by (pax-of u.name) src wid claim]
-  ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
-  ::  client only when the typed name was not a valid path and the path is
-  ::  its slug. Absent on every ordinary save, so autosave never touches them.
-  ;<  ~  bind:m  (poke-dnames args (pax-of u.name))
   ::  answer once the write is down: the writer took the poke above
   ::  before it applied it. The next save's base check, and the rev
   ::  below, then see it.
@@ -1576,6 +1572,14 @@
   ::  a create that finds another body at its name lost the race for it,
   ::  and the writer left that page as it was
   ?:  &(!mine new)  (send-err eyre-id 409 'page exists')
+  ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
+  ::  client only when the typed name was not a valid path and the path is
+  ::  its slug. Absent on every ordinary save, so autosave never touches
+  ::  them. Only for a save that was written: one refused above, a lost
+  ::  create or a stale claim, leaves the names the page has.
+  =/  dacts=(list eval-action:le)  (dname-acts-of args (pax-of u.name))
+  ;<  ~  bind:m  (poke-dnames args (pax-of u.name))
+  ;<  ~  bind:m  ?~(dacts (pure:(fiber:fiber:nexus ,~) ~) writer-drain)
   ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
   %+  send-json  eyre-id
   %-  pairs:enjs:format
@@ -1687,6 +1691,19 @@
   ;<  ub=path  bind:m  ug-dir
   =/  gdir=path  (snoc ub (crip (weld (trip u.gname) ".grp")))
   ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
+  =/  pre=path  (weld sb /page)
+  ::  an index line (<folder>/dir-index) grants nothing of its own. The
+  ::  list gives one with each folder line (+share-groups-json), so a save
+  ::  that holds it was read from a list that showed that folder (`seen`).
+  =/  seen=(set path)
+    (~(gas in *(set path)) (murn (weld u.pkp u.mkp) |=(p=path (index-line:ls pre p))))
+  =/  idx  |=(p=path ?=(^ (index-line:ls pre p)))
+  =/  pkp=(list path)  (skip u.pkp idx)
+  =/  mkp=(list path)  (skip u.mkp idx)
+  ::  no grant may be a road on our whole page tree or a dir above it, or
+  ::  on a path in it that names nothing yet (+page-grant-bad)
+  ;<  bad=(unit @t)  bind:m  (page-grant-bad (weld pkp mkp))
+  ?^  bad  (send-err eyre-id 400 u.bad)
   ::  ABSOLUTE, as the grantee's weir matches them. A group weir is read
   ::  as written into each member's weir under /sys/ames/ships, so a
   ::  relative road there is relative to the peer's dir and grants
@@ -1698,22 +1715,48 @@
   ::  page's owner-only grubs (share, show, sensitive, own-grants), and as
   ::  a make road let a member write them, and so publish a page. It is
   ::  shared below as /share-file shares a folder (+share-folder-grant-in).
-  ;<  fmk=(list path)  bind:m  (page-folders u.mkp)
-  ;<  fpk=(list path)  bind:m  (page-folders u.pkp)
+  ;<  fmk=(list path)  bind:m  (page-folders u.gname mkp)
+  ;<  fpk=(list path)  bind:m  (page-folders u.gname pkp)
   =/  named=(set path)  (silt (weld fmk fpk))
   =/  plain
     |=  ps=(list path)
     ^-  (list path)
-    =/  pre=path  (weld sb /page)
     %+  skip  ps
     |=  p=path
     &(=(pre (scag (lent pre) p)) (~(has in named) (slag (lent pre) p)))
-  ;<  mkr=(set road:tarball)  bind:m  (page-roads (plain u.mkp))
-  ;<  pkr=(set road:tarball)  bind:m  (page-roads (plain u.pkp))
+  ;<  mkr=(set road:tarball)  bind:m  (page-roads (plain mkp))
+  ;<  pkr=(set road:tarball)  bind:m  (page-roads (plain pkp))
+  ::  a folder the group holds whole that this save neither names nor was
+  ::  shown (no index line, no page under it named): the list it was read
+  ::  from is older than that share, or older than folder lines. A save
+  ::  takes out no grant it never showed, so the folder stays shared, and
+  ::  its pages' roads with it.
+  =/  below
+    |=  [f=path p=path]
+    =/  a=path  (weld pre f)
+    &((gth (lent p) (lent a)) =(a (scag (lent a) p)))
+  ;<  noted=(list path)  bind:m  (folders-noted sb u.gname peek.old)
+  =/  keep=(list path)
+    %+  skip  noted
+    |=  f=path
+    ?|  (~(has in named) f)
+        (~(has in seen) f)
+        (lien (weld pkp mkp) |=(p=path (below f p)))
+    ==
+  =/  kept
+    |=  rs=(set road:tarball)
+    ^-  (set road:tarball)
+    %-  ~(gas in *(set road:tarball))
+    %+  skim  ~(tap in rs)
+    |=  r=road:tarball
+    ?&  ?=([%& %& *] r)
+        =(%code name.p.p.r)
+        (lien keep |=(f=path (below f path.p.p.r)))
+    ==
   =/  =weir:nexus
-    :+  (~(uni in (ug-keep make.old)) mkr)
+    :+  (~(uni in (~(uni in (ug-keep make.old)) mkr)) (kept make.old))
       poke.old
-    (~(uni in (ug-keep peek.old)) pkr)
+    (~(uni in (~(uni in (ug-keep peek.old)) pkr)) (kept peek.old))
   ;<  bans=banned:ls  bind:m  read-banned
   =/  who=(set @p)  (~(gas in *(set @p)) (murn ships same))
   ::  a group save must not smuggle a banned ship back in. Reject rather than
@@ -1729,7 +1772,7 @@
   ::  the pages this save named by their code path, so the list gives
   ::  them back that way and the client's own unshare finds them
   ::  (+code-named)
-  ;<  ~  bind:m  (put-code-named u.gname (code-named (weld u.pkp u.mkp) weir))
+  ;<  ~  bind:m  (put-code-named u.gname (code-named (weld pkp mkp) weir))
   ::  a page this save grants, regrants or takes out has that as its own
   ::  grant in the group, so a folder's unshare leaves it (+ungrant:ls)
   ;<  ~  bind:m
@@ -1751,8 +1794,8 @@
   ::  a folder shared with the group (+share-folder-with) whose last
   ::  page this save took out is unshared, rule and index too, so a page
   ::  added to it later is not shared again (+unshare-folder). So is one
-  ::  the group list named (+folder-lines) that this save leaves out: its
-  ::  line was taken out (+folder-out:ls).
+  ::  the group list named (+folder-lines) that this save leaves out and
+  ::  was shown: its line was taken out (+folder-out:ls).
   ;<  ~  bind:m
     =/  fs=(list path)  (folders-granted sb peek.old)
     |-  ^-  form:m
@@ -1763,6 +1806,7 @@
           (page-roads-under sb i.fs peek.weir)
           (~(has by sg) u.gname)
           (~(has in named) i.fs)
+          (~(has in seen) i.fs)
         ==
       $(fs t.fs)
     ;<  ~  bind:m  (unshare-folder u.gname i.fs)
@@ -1784,7 +1828,7 @@
     ;<  *  bind:m  (share-folder-grant-in u.gname ~ md i.fs |)
     $(fs t.fs)
   ::  a folder granted here lists its pages to the group (+dir-index-acts)
-  ;<  ~  bind:m  (dir-index-pokes (weld sb /page) u.pkp)
+  ;<  ~  bind:m  (dir-index-pokes pre pkp)
   ;<  h1=holds:ls  bind:m  holds-now
   ;<  ~  bind:m  (tell-holds h0 h1)
   (send-ok eyre-id)
@@ -4198,7 +4242,11 @@
     ?~  dpax  (send-err eyre-id 400 'bad name')
     ::  a page named here goes alone: what is under it stays, unless
     ::  ?tree=1 asks for all of it. A folder goes with all under it.
-    ;<  ~  bind:m  (page-del-run u.dpax (~(has by args) 'tree'))
+    ::  Only 1 or true is yes: tree=0 says no, and is no.
+    =/  tree=(unit ?)  (arg-flag args 'tree')
+    ?~  tree  (send-err eyre-id 400 'tree: 1 or 0')
+    ;<  no=(unit [code=@ud msg=@t])  bind:m  (page-del-run u.dpax u.tree)
+    ?^  no  (send-err eyre-id code.u.no msg.u.no)
     (send-ok eyre-id)
   ::  page-move: server-side move/rename of a page or a whole folder subtree.
   ::  Replaces the old client choreography (page-source + page-save + page-del
@@ -7531,7 +7579,9 @@
     [%| 400 'source must be user or agent']
   ?:  (save-plain key args)
     [%& [%save (spat ko) bod] (pairs:enjs:format ~[['ok' b+&]])]
-  =/  prose=@t  rest:(front:lk bod)
+  ::  the stamp writes the front matter. A block the body brought that
+  ::  holds anything else is kept as text (+prose-of:lk), not dropped.
+  =/  prose=@t  (prose-of:lk bod old)
   ?:  =('' prose)  [%| 400 'empty body']
   ?:  &(?=(^ old) !(may-see key u.old))
     [%| 403 'that key is not available to this agent key']
@@ -9251,7 +9301,8 @@
     ::  the page at pax alone. No page there (a folder, or nothing), or
     ::  a page with nothing under it: that is %del. Else what is under
     ::  it stays, each page with all it had, and only the page's own
-    ::  grubs go (+page-own-grubs), which leaves the name a folder.
+    ::  grubs go (+page-own-grubs), which leaves the name a folder,
+    ::  noted as one a page left (`page-gone`, +page-gone-kept).
     =/  pdir=path  (weld /page pax.act)
     ;<  ex=?  bind:m  (peek-exists:fio (rv up pdir))
     ?.  ex  $(act [%del pax.act])
@@ -9259,8 +9310,15 @@
     ?.  ?=([%ball *] dv)  $(act [%del pax.act])
     ;<  lex=?  bind:m  (peek-exists:fio (rv up (weld /links pax.act)))
     =/  fils  ?~(fil.ball.dv ~ contents.u.fil.ball.dv)
+    ::  this same delete, done already: the page is gone and what it left
+    ::  stays (+page-gone-kept). +page-del-run refuses one, so this is
+    ::  two of them at once.
+    ?^  (page-gone-kept ball.dv lex)  (pure:m ~)
     ?.  &((~(has by fils) %code) |(lex ?=(^ dir.ball.dv)))
       $(act [%del pax.act])
+    ::  the name is left a folder that was a page: noted first, so a
+    ::  delete cut short after the source goes still reads as this one
+    ;<  ~  bind:m  (put-file (rf up pdir %'page-gone') [/ %noun] now)
     ::  what a folder granted this page goes with it. The ball is cut
     ::  to the page's own grubs, so no page under it is counted.
     ;<  ~  bind:m  (revoke-folder-grants pax.act ball.dv(dir ~))
@@ -13022,22 +13080,71 @@
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
   ?.  (valid-name name)  (pure:m [400 'bad name'])
-  ;<  ~  bind:m  (page-del-run (pax-of name) tree)
+  ;<  no=(unit [code=@ud msg=@t])  bind:m  (page-del-run (pax-of name) tree)
+  ?^  no  (pure:m u.no)
   (pure:m [200 ''])
 ::  +page-del-run: POST /page-del and the lick %page-del. A folder goes
 ::  with everything under it. A page goes alone (%del-page): the pages,
 ::  folders and links under it stay, and its name is left a folder.
 ::  `tree` takes those too, for a caller that has told its user so.
+::  The answer is ~, or why nothing was deleted.
+::
+::  A delete without `tree` of a name whose page was deleted on its own,
+::  with the pages it left still under it (+page-gone-kept), is that
+::  same delete again: a retry, a replayed offline queue, a second
+::  click. It is refused, so it never turns into the folder's delete.
 ++  page-del-run
   |=  [pax=path tree=?]
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,(unit [code=@ud msg=@t]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
+  ;<  kept=(unit @ud)  bind:m
+    =/  n  (fiber:fiber:nexus ,(unit @ud))
+    ?:  tree  (pure:n ~)
+    ;<  ex=?  bind:n  (peek-exists:fio (rv up (weld /page pax)))
+    ?.  ex  (pure:n ~)
+    ;<  dv=view:nexus  bind:n  (peek:fio (rv up (weld /page pax)) ~)
+    ?.  ?=([%ball *] dv)  (pure:n ~)
+    ;<  lex=?  bind:n  (peek-exists:fio (rv up (weld /links pax)))
+    (pure:n (page-gone-kept ball.dv lex))
+  ?^  kept
+    %-  pure:m
+    :+  ~  409
+    %-  crip
+    ;:  weld  (slag 1 (spud pax))
+      " is a folder: its page was deleted on its own, and the "
+      (a-co:co u.kept)  ?:(=(1 u.kept) " page" " pages")
+      " under it stay. tree=1 deletes them too"
+    ==
   ;<  ~  bind:m  (poke-eval ?:(tree [%del pax] [%del-page pax]))
   ::  a name still there is a page that left what was under it: the
   ::  grants on that page's own grubs go, and the rest stay
   ;<  left=?  bind:m  (peek-exists:fio (rv up (weld /page pax)))
-  (move-grants-in pax ~ left)
+  ;<  ~  bind:m  (move-grants-in pax ~ left)
+  (pure:m ~)
+::  +page-gone-kept: how many pages are under a name whose page was
+::  deleted on its own (`page-gone`, written by %del-page), while that
+::  name holds no page and still has pages or links under it. ~ else.
+++  page-gone-kept
+  |=  [bl=ball:tarball lex=?]
+  ^-  (unit @ud)
+  =/  fils  ?~(fil.bl ~ contents.u.fil.bl)
+  ?:  (~(has by fils) %code)  ~
+  ?.  (~(has by fils) %'page-gone')  ~
+  =/  n=@ud  (lent (skim (collect-tree bl ~) |=([p=path page=?] page)))
+  ?:  &(=(0 n) !lex)  ~
+  `n
+::  +arg-flag: a yes-or-no query flag. Absent, 0 or false is no, 1 or
+::  true is yes, and ~ is any other value: guessing what it meant could
+::  delete what the caller wanted kept.
+++  arg-flag
+  |=  [args=(map @t @t) k=@t]
+  ^-  (unit ?)
+  =/  v=(unit @t)  (~(get by args) k)
+  ?~  v  `|
+  ?:  |(=('1' u.v) =('true' u.v))  `&
+  ?:  |(=('0' u.v) =('false' u.v))  `|
+  ~
 ::  +fs-move: move/rename a page or a folder subtree (POST /page-move + lick
 ::  %page-move), answering how many pages moved. Display names are the HTTP
 ::  route's own (?dname= / ?dnames=).
@@ -13192,7 +13299,9 @@
       %page-del
     =/  name=(unit @t)  (~(get by q) 'name')
     ?~  name  (pure:m [400 'missing name'])
-    (fs-del u.name (~(has by q) 'tree'))
+    =/  tree=(unit ?)  (arg-flag q 'tree')
+    ?~  tree  (pure:m [400 'tree: 1 or 0'])
+    (fs-del u.name u.tree)
       %beacon-rev
     ;<  t=@t  bind:m  beacon-token
     (pure:m [200 t])
@@ -14323,9 +14432,12 @@
   $(kids t.kids, acc (weld acc (all-groups (snoc pax nom) kid)))
 ::  +page-folders: the folders of our page tree among the absolute grant
 ::  paths `ps`, each by its path under /page: a dir below /page that has
-::  no code grub. Not /page itself, which is no one folder.
+::  no code grub, or one that group `g` holds as a folder (its note names
+::  `g`) with a page made at its own name since. That path is the folder's
+::  line in the group list, and the page there is named by its code path
+::  (+share-groups-json). Not /page itself, which is no one folder.
 ++  page-folders
-  |=  ps=(list path)
+  |=  [g=@t ps=(list path)]
   =/  m  (fiber:fiber:nexus ,(list path))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -14337,9 +14449,63 @@
   =/  rel=path  (slag (lent pre) i.ps)
   ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))  $(ps t.ps)
   ;<  dx=?  bind:m  (peek-exists:fio (rv up (weld /page rel)))
+  ?.  dx  $(ps t.ps)
   ;<  cx=?  bind:m  (peek-exists:fio (rf up (weld /page rel) %code))
-  ?:  |(!dx cx)  $(ps t.ps)
+  ;<  sg=(map @t @t)  bind:m
+    ?.  cx  (pure:(fiber:fiber:nexus ,(map @t @t)) ~)
+    (read-share-grants rel)
+  ?:  &(cx !(~(has by sg) g))  $(ps t.ps)
   $(ps t.ps, out [rel out])
+::  +folders-noted: the folders group `g` holds whole: each folder whose
+::  index its peek roads `rs` list and whose note names `g`
+++  folders-noted
+  |=  [sb=path g=@t rs=(set road:tarball)]
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  =/  fs=(list path)  (folders-granted sb rs)
+  =|  out=(list path)
+  |-  ^-  form:m
+  ?~  fs  (pure:m out)
+  ?~  i.fs  $(fs t.fs)
+  ;<  sg=(map @t @t)  bind:m  (read-share-grants i.fs)
+  $(fs t.fs, out ?.((~(has by sg) g) out [i.fs out]))
+::  +page-grant-bad: why a group may not be granted one of the absolute
+::  paths `ps`, or ~. Each of these would be stored as a road on a dir,
+::  and a dir road reaches every grub under it: the sensitive pages and
+::  every page's owner-only grubs (share, sensitive), which a make road
+::  lets a member write, and so publish a page. A weir has no deny to
+::  take them back out. So: our whole page tree or a dir above it, and a
+::  path in it that names nothing (no page or folder there, and no
+::  page's code grub). A folder in it is shared as a folder share
+::  (+share-folder-grant-in), and a page by its code grub (+page-roads),
+::  once it is there.
+++  page-grant-bad
+  |=  ps=(list path)
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sb=path  bind:m  self-base
+  =/  pre=path  (weld sb /page)
+  |-  ^-  form:m
+  ?~  ps  (pure:m ~)
+  ?:  =(i.ps (scag (lent i.ps) pre))
+    %-  pure:m
+    :-  ~
+    %-  crip
+    ;:  weld  "a grant on "  (spud i.ps)
+      " would reach every page, the sensitive ones too. Share a folder or a page in it"
+    ==
+  =/  rel=path  (slag (lent pre) i.ps)
+  ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))  $(ps t.ps)
+  ;<  dx=?  bind:m  (peek-exists:fio (rv up (weld /page rel)))
+  ?:  dx  $(ps t.ps)
+  =/  cp=(unit path)  (code-page:ls rel)
+  ;<  cx=?  bind:m
+    ?~  cp  (pure:(fiber:fiber:nexus ,?) |)
+    (peek-exists:fio (rf up (weld /page u.cp) %code))
+  ?:  cx  $(ps t.ps)
+  %-  pure:m
+  `(crip :(weld "nothing at " (slag 1 (spud rel)) " to share yet: make the folder first, then share it"))
 ::  +page-roads: grant paths as roads. A page is granted by a file road on
 ::  its code grub, which is all a grantee opens (+share-file), so the grant
 ::  reaches neither the page's owner-only grubs (share, show, forms, the
@@ -14770,11 +14936,15 @@
   =/  n=@ud  (lent old)
   ::  dir roads and file roads alike (a page grant is a file road on its
   ::  code grub, +share-file)
+  ::  with `own`, the page's own grubs only (+page-own-grubs): its dir is
+  ::  a folder now, and the roads on the folder's grubs (its index) stay
   =/  under
     |=  r=road:tarball
     ?+  r  |
       [%& %| *]  &(!own =(old (scag n p.p.r)))
-      [%& %& *]  ?:(own =(old path.p.p.r) =(old (scag n path.p.p.r)))
+        [%& %& *]
+      ?.  own  =(old (scag n path.p.p.r))
+      &(=(old path.p.p.r) (lien page-own-grubs |=(g=@ta =(g name.p.p.r))))
     ==
   =/  re
     |=  rs=(set road:tarball)
@@ -14856,20 +15026,26 @@
       (mole |.((sort ~(tap in ;;((set @p) (sang-noun:tarball sang.wv))) lth)))
     ~
   ;<  w=weir:nexus  bind:m  (ug-read-weir gdir)
-  =/  cn=(set path)  (~(gut by cns) base ~)
+  ::  a folder shared with the group whole is a line of its own, by its
+  ::  path, as a folder's road was: the line a save leaves out to unshare
+  ::  it (+folder-lines). Its index road is then no rule the list hides:
+  ::  it is listed too, as `<folder>/dir-index`, and a save that still
+  ::  holds it was read from a list that showed the folder (+folder-out:ls).
+  ;<  fo=[pk=(list @t) mk=(list @t)]  bind:m  (folder-lines sb base peek.w)
+  ::  a page at a shared folder's own name is listed by its code path,
+  ::  as the folder's line is by the plain one
+  =/  cn=(set path)
+    (~(uni in (~(gut by cns) base ~)) (~(gas in *(set path)) (turn pk.fo stab)))
   =/  pk  (ug-dirfold-paths cn peek.w)
   =/  mk  (ug-dirfold-paths cn make.w)
   =/  po  (ug-dirfold-paths ~ poke.w)
-  ::  a folder shared with the group whole is a line of its own, by its
-  ::  path, as a folder's road was: the line a save leaves out to unshare
-  ::  it (+folder-lines). Its index road is then no rule the list hides.
-  ;<  fo=[pk=(list @t) mk=(list @t)]  bind:m  (folder-lines sb base peek.w)
+  =/  ix=(list @t)  (turn pk.fo |=(t=@t (crip (weld (trip t) "/dir-index"))))
   =/  less  |=([a=(list @t) b=(list @t)] (skip a |=(t=@t ?=(^ (find ~[t] b)))))
   =/  gj=json
     %-  pairs:enjs:format
     :~  ['name' s+base]
         ['ships' a+(turn ships |=(s=@p s+(scot %p s)))]
-        ['peek' a+(turn (weld (less pk.fo ps.pk) ps.pk) |=(t=@t s+t))]
+        ['peek' a+(turn :(weld (less pk.fo ps.pk) ix ps.pk) |=(t=@t s+t))]
         ['make' a+(turn (weld (less mk.fo ps.mk) ps.mk) |=(t=@t s+t))]
         ['poke' a+(turn ps.po |=(t=@t s+t))]
         :-  'opaque'
@@ -22341,7 +22517,12 @@
   ;<  sb=path  bind:m  self-base
   ;<  ~  bind:m  (poke-eval [%dir-index pax])
   ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page pax)) ~)
-  =/  all=(list [p=path page=?])  ?.(?=([%ball *] dv) ~ (collect-tree ball.dv ~))
+  ::  the pages under the folder. A page at the folder's own name is not
+  ::  one of them, as +grant-new grants it no folder's share either: it is
+  ::  shared by a grant of its own.
+  =/  all=(list [p=path page=?])
+    ?.  ?=([%ball *] dv)  ~
+    (skip (collect-tree ball.dv ~) |=([p=path page=?] ?=(~ p)))
   =/  at  |=(r=path :(weld sb /page pax r))
   ::  a folder share never grants a sensitive page: that needs a share of
   ::  its own (+tree-sens), as a folder rule never publishes one

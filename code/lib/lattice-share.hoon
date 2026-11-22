@@ -830,11 +830,26 @@
 ::  that group's paths? When the save took out the last page road under
 ::  it (`had` before, `has` after), as before folders were listed. And
 ::  when the group list named the folder (`noted`: it has the folder's
-::  note) and the save does not (`named`): the owner took its line out.
+::  note), the save does not (`named`), and the save was read from a list
+::  that showed the folder (`seen`: it holds the folder's index line): the
+::  owner took its line out. A list that never showed the line (read
+::  before the folder was shared, or before folder lines were listed)
+::  cannot take it out.
 ++  folder-out
-  |=  [had=? has=? noted=? named=?]
+  |=  [had=? has=? noted=? named=? seen=?]
   ^-  ?
-  |(&(had !has) &(noted !named))
+  |(&(had !has) &(noted !named seen))
+::  +index-line: the folder a group list's index line names, or ~. The
+::  list gives `<folder>/dir-index` with each folder line, a road the
+::  group holds, so a save that still has it was read from a list that
+::  showed the folder. `pre` is our /page path, absolute.
+++  index-line
+  |=  [pre=path p=path]
+  ^-  (unit path)
+  =/  n=@ud  (lent pre)
+  ?.  &((gth (lent p) +(n)) =(pre (scag n p)))  ~
+  ?.  =(%'dir-index' (rear p))  ~
+  `(snip `path`(slag n p))
 ::  +own-infer: a page's own grant in a group (`own-grants`), as a folder
 ::  starts to share it: `own` as noted, never wider than the group now
 ::  grants it (`held`, so a group made again keeps no stale note), and

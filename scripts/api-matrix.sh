@@ -789,6 +789,146 @@ is "share with no such header arrives"  200 "$(sc "$B/share?text=hello")"
 is "clip as an image is refused"        403 "$(sc -H 'Sec-Fetch-Dest: image' "$B/clip")"
 is "clip as a navigation arrives"       400 "$(sc -H 'Sec-Fetch-Dest: document' "$B/clip")"
 
+echo "==> page-del: tree= is read for its value, and a delete sent again is that delete"
+E="$P-tree"
+for n in z0 z0/k zf zf/k zb zb/k tw tw/k tw/sub/deep; do
+  sc -X POST "$B/page-save?name=$E/$n&type=md&new=1" --data-binary "body $n" >/dev/null
+done
+is "tree=0 deletes the page alone"          200 "$(sc -X POST "$B/page-del?name=$E/z0&tree=0")"
+has "  the page under it stays"             'body z0/k' "$(G "$B/page-source?name=$E/z0/k")"
+is "tree=false deletes the page alone"      200 "$(sc -X POST "$B/page-del?name=$E/zf&tree=false")"
+has "  the page under it stays"             'body zf/k' "$(G "$B/page-source?name=$E/zf/k")"
+is "tree=yes is refused"                    400 "$(sc -X POST "$B/page-del?name=$E/zb&tree=yes")"
+is "an empty tree= is refused"              400 "$(sc -X POST "$B/page-del?name=$E/zb&tree=")"
+has "  and nothing went"                    'body zb' "$(G "$B/page-source?name=$E/zb")"
+is "a page with pages under it, alone"      200 "$(sc -X POST "$B/page-del?name=$E/tw")"
+is "  the same delete again is refused"     409 "$(sc -X POST "$B/page-del?name=$E/tw")"
+has "  and says how to take what is under it" 'tree=1' "$(G -X POST "$B/page-del?name=$E/tw")"
+has "  the page under it stays"             'body tw/k' "$(G "$B/page-source?name=$E/tw/k")"
+has "  and the one two down"                'body tw/sub/deep' "$(G "$B/page-source?name=$E/tw/sub/deep")"
+is "  tree=1 takes them"                    200 "$(sc -X POST "$B/page-del?name=$E/tw&tree=1")"
+is "  and they are gone"                    404 "$(sc "$B/page-source?name=$E/tw/k")"
+is "the page left under a deleted one goes" 200 "$(sc -X POST "$B/page-del?name=$E/z0/k")"
+is "  then the emptied name goes too"       200 "$(sc -X POST "$B/page-del?name=$E/z0")"
+is "  and is gone"                          "<missing>" "$(field page-tree "$E/z0" page)"
+is "a folder that was never a page goes whole" 200 "$(sc -X POST "$B/page-del?name=$E")"
+is "  with what a deleted page left in it"  "<missing>" "$(field page-tree "$E/zf/k" kind)"
+
+echo "==> group lists: folder lines, stale lists, and what a grant may name"
+H="$P-grp"
+SB=$(G "$B/streams" | python3 -c 'import json,sys;print(json.load(sys.stdin)["base"])')
+# gin <group> <peek|make> <path under SB>: yes when the group list holds the line
+gin() { G "$B/share-groups" | python3 -c "
+import json,sys
+g=[x for x in json.load(sys.stdin) if x['name']==sys.argv[1]]
+print('yes' if g and sys.argv[4]+sys.argv[3] in g[0][sys.argv[2]] else 'no')" "$1" "$2" "$3" "$SB"; }
+# glist <group>: the group as listed, ready to save back
+glist() { G "$B/share-groups" | python3 -c "
+import json,sys
+g=[x for x in json.load(sys.stdin) if x['name']==sys.argv[1]]
+g=g[0] if g else {'ships':[],'peek':[],'make':[]}
+print(json.dumps({'ships':g['ships'],'peek':g['peek'],'make':g['make']}))" "$1"; }
+# gdrop <json> <path under SB>: that list with the line taken out
+gdrop() { python3 -c "
+import json,sys
+g=json.loads(sys.argv[1]); p=sys.argv[3]+sys.argv[2]
+print(json.dumps({'ships':g['ships'],'peek':[x for x in g['peek'] if x!=p],'make':[x for x in g['make'] if x!=p]}))" "$1" "$2" "$SB"; }
+gsave() { sc -X POST "$B/share-group-save?name=$1" --data-binary "$2"; }
+# wroads <group>: the roads the group's weir holds, as grubbery stores them
+wroads() { G "$URL/grubbery/api/peek$SB/ug/$1.grp/how.weir"; }
+# wline <group> <peek|make> <path under SB>: yes when the weir holds that road
+wline() { wroads "$1" | python3 -c "import sys; print('yes' if sys.argv[1] in sys.stdin.read().split(chr(10)) else 'no')" "$2 $SB$3"; }
+for n in f/a f/b g/a g/b s1 sf/a sf/b g9/a; do
+  sc -X POST "$B/page-save?name=$H/$n&type=md&new=1" --data-binary "body $n" >/dev/null
+done
+# a folder shared with a ship, then a page made at its name and deleted
+has "share a folder with a ship"            '"folder":true' "$(G -X POST "$B/share-file?ship=~nus&name=$H/f&mode=read")"
+is "  the list holds its line"              yes "$(gin nus peek "/page/$H/f")"
+is "  and its index line"                   yes "$(gin nus peek "/page/$H/f/dir-index")"
+is "a page made at the folder's name"       200 "$(sc -X POST "$B/page-save?name=$H/f&type=md&new=1" --data-binary 'index page')"
+is "  is not granted by the folder"         no "$(gin nus peek "/page/$H/f/code")"
+is "  and deleted alone"                    200 "$(sc -X POST "$B/page-del?name=$H/f")"
+is "  the folder keeps its line"            yes "$(gin nus peek "/page/$H/f")"
+is "  and its index"                        yes "$(gin nus peek "/page/$H/f/dir-index")"
+is "  the index road stays in the group"    yes "$(wline nus peek "/page/$H/f/dir-index")"
+is "  and its pages"                        yes "$(gin nus peek "/page/$H/f/a")"
+# a group's folder with a page made at its name, saved back as listed
+is "a group shares a folder"                200 "$(gsave sef "{\"ships\":[\"~sef\"],\"peek\":[\"$SB/page/$H/g\"],\"make\":[\"$SB/page/$H/g\"]}")"
+is "a page made at the folder's name"       200 "$(sc -X POST "$B/page-save?name=$H/g&type=md&new=1" --data-binary 'g index page')"
+is "the group saved as listed"              200 "$(gsave sef "$(glist sef)")"
+is "  keeps the folder line"                yes "$(gin sef peek "/page/$H/g")"
+is "  and edit on it"                       yes "$(gin sef make "/page/$H/g")"
+is "  and its pages"                        yes "$(gin sef make "/page/$H/g/a")"
+is "  grants nobody the page at its name"   no "$(gin sef peek "/page/$H/g/code")"
+is "  and holds no road on it"              no "$(wline sef peek "/page/$H/g/code")"
+is "  the folder's index road stays"        yes "$(wline sef peek "/page/$H/g/dir-index")"
+L=$(glist sef); L=$(python3 -c "
+import json,sys; g=json.loads(sys.argv[1]); g['peek'].append(sys.argv[2]); print(json.dumps(g))" "$L" "$SB/page/$H/g/code")
+is "that page granted by its code path"     200 "$(gsave sef "$L")"
+is "  is listed by it"                      yes "$(gin sef peek "/page/$H/g/code")"
+is "  and the folder line stays"            yes "$(gin sef peek "/page/$H/g")"
+# a list read before a folder was shared cannot unshare it
+has "a page shared with a ship"             '"ok":true' "$(G -X POST "$B/share-file?ship=~ped&name=$H/s1&mode=read")"
+L0=$(glist ped)
+has "then a folder"                         '"folder":true' "$(G -X POST "$B/share-file?ship=~ped&name=$H/sf&mode=read")"
+is "the list read before it, saved"         200 "$(gsave ped "$L0")"
+is "  keeps the folder"                     yes "$(gin ped peek "/page/$H/sf")"
+is "  and its pages"                        yes "$(gin ped peek "/page/$H/sf/a")"
+L1=$(python3 -c "
+import json,sys; g=json.loads(sys.argv[1]); g['peek']=[sys.argv[2]+'/s1',sys.argv[2]+'/sf/a',sys.argv[2]+'/sf/b']; print(json.dumps(g))" "$L0" "$SB/page/$H")
+is "a list that names its pages but has no folder line" 200 "$(gsave ped "$L1")"
+is "  keeps the folder too"                 yes "$(gin ped peek "/page/$H/sf")"
+is "its line taken out of the list as read" 200 "$(gsave ped "$(gdrop "$(glist ped)" "/page/$H/sf")")"
+is "  unshares it"                          no "$(gin ped peek "/page/$H/sf")"
+is "  and its pages"                        no "$(gin ped peek "/page/$H/sf/a")"
+is "  and leaves the page shared by itself" yes "$(gin ped peek "/page/$H/s1")"
+# what a grant may name
+g9() { gsave apimx-g9 "{\"ships\":[\"~bud\"],\"peek\":[\"$1\"],\"make\":[]}"; }
+is "a grant on the whole page tree is refused" 400 "$(g9 "$SB/page")"
+is "  and on a dir above it"                400 "$(g9 "$SB")"
+is "  and on a path that names nothing"     400 "$(g9 "$SB/page/$H/nothere")"
+is "  and on the code of no page"           400 "$(g9 "$SB/page/$H/nothere/code")"
+is "a grant on a folder that is there"      200 "$(g9 "$SB/page/$H/g9")"
+is "  and no road on its dir"               no "$(wline apimx-g9 peek "/page/$H/g9")"
+is "  is a folder share, with its index"    yes "$(gin apimx-g9 peek "/page/$H/g9/dir-index")"
+is "  and its page"                         yes "$(gin apimx-g9 peek "/page/$H/g9/a")"
+for g in nus sef ped apimx-g9; do sc -X POST "$B/share-group-del?name=$g" >/dev/null; done
+sc -X POST "$B/page-del?name=$H&tree=1" >/dev/null
+
+echo "==> memory saves keep a block of the sender's own"
+KF="apimx/$$-f6"
+is "a keyed-style save of a body with its own block" 200 "$(sc -X POST "$B/know-save?key=$KF&author=apimx&force_new=1" --data-binary $'---\nNote: intro\n---\nrest of the f6 note')"
+has "  keeps the block's line"              'Note: intro' "$(G "$B/know-read?key=$KF")"
+has "  and the text under it"               'rest of the f6 note' "$(G "$B/know-read?key=$KF")"
+sc -X POST "$B/know-delete?key=$KF" >/dev/null
+KS="apimx/$$-f4"
+is "an entry superseded, its block with a stray line" 200 "$(sc -X POST "$B/know-save?key=$KS" --data-binary $'---\ntags: [\n  a\n]\nsuperseded-by: /apimx/elsewhere\n---\nqornflaxe superseded body')"
+hasnt "  stays out of search"               "$KS" "$(G "$B/know-search?q=qornflaxe")"
+has "  and is found with superseded=1"      "$KS" "$(G "$B/know-search?q=qornflaxe&superseded=1")"
+sc -X POST "$B/know-delete?key=$KS" >/dev/null
+
+echo "==> a create that loses the race leaves the winner's display name"
+# a folder move keeps the writer busy, so two creates of one name both
+# pass the checks before either lands. The one written wins, and the
+# page holds its body and its display name, not the loser's.
+R="$P-race"
+python3 -c "
+import json,sys; print(json.dumps([{'name':sys.argv[1]+'/big/p%02d'%i,'type':'md','body':'big %d'%i,'base':None} for i in range(40)]))" "$R" |
+  sc -X POST "$B/page-save-batch" -H 'content-type: application/json' --data-binary @- >/dev/null
+RT=$(mktemp -d)
+( sc -X POST "$B/page-move?from=$R/big&to=$R/big2" > "$RT/mv" ) &
+sleep 0.3
+( G -X POST "$B/page-save?name=$R/n&type=md&new=1&dname=Alpha%20Name" --data-binary 'alpha body' > "$RT/a" ) &
+( G -X POST "$B/page-save?name=$R/n&type=md&new=1&dname=Beta%20Name" --data-binary 'beta body' > "$RT/b" ) &
+wait
+won=none; grep -q '"ok":true' "$RT/a" && won=alpha; grep -q '"ok":true' "$RT/b" && won="${won/none/}beta"
+is "one of the two creates is answered 200"  1 "$(cat "$RT/a" "$RT/b" | grep -c '"ok":true')"
+has "  the page holds the winner's body"     "$won body" "$(G "$B/page-source?name=$R/n")"
+w=$(tr '[:lower:]' '[:upper:]' <<<"${won:0:1}")${won:1}
+is "  and the winner's display name"         "$w Name" "$(field page-tree "$R/n" dname)"
+rm -rf "$RT"
+sc -X POST "$B/page-del?name=$R&tree=1" >/dev/null
+
 echo "==> recursive folder delete"
 is "page-del on folder" 200 "$(sc -X POST "$B/page-del?name=$P")"
 sleep 2
