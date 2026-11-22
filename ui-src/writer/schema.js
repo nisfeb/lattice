@@ -83,7 +83,8 @@ export const schema = new Schema({
     },
     table: {
       //  `pre` is the raw XML between the start tag and the first row (the
-      //  column declarations), `hdr` the raw start tag of
+      //  column declarations) and the cells a row had under them, `hdr`
+      //  the raw start tag of
       //  table:table-header-rows when the table has one
       attrs: { ...base, pre: { default: null }, hdr: { default: null } },
       content: 'table_row+',

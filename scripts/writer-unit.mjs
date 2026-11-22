@@ -484,6 +484,46 @@ console.log('# a table keeps its shape');
   check.eq('a table selected whole is still deleted', tables(whole.doc), tables(p.doc) - 1);
   const typed = run(TextSelection.create(p.doc, cells[0] + 2), type);
   check('typing in a cell still works', typed.changed && typed.again === kinds(p.doc));
+  //  some columns of a table, pasted as a table of their own, are written
+  //  under column declarations of their own width
+  const narrow = table.copy(Fragment.from(table.content.content.map((r) => r.copy(Fragment.from([r.child(0), r.child(1)])))));
+  const o = serializeFodt({ ...p, doc: p.doc.replace(0, 0, new Slice(Fragment.from(narrow.type.create({ ...narrow.attrs, src: null }, narrow.content)), 0, 0)) }, t);
+  const first = o.text && o.text.slice(o.text.indexOf('<table:table '), o.text.indexOf('</table:table>'));
+  const cols = (x) => [...x.matchAll(/<table:table-column\b([^>]*)>/g)].reduce((a, m) => a + Number((/number-columns-repeated="(\d+)"/.exec(m[1]) || [0, 1])[1]), 0);
+  check.eq('a table narrower than its column declarations gets its own', first ? cols(first) : o.error, 2);
+  check.eq('  and a table of the width it came with keeps them', cols(t.slice(t.indexOf('<table:table '), t.indexOf('</table:table>'))), w);
+}
+
+console.log('# what a paste may bring');
+{
+  const S = schema.nodes;
+  const st = parseFodt(read('01-paragraphs.fodt')).styles;
+  const P = (attrs, ...kids) => S.paragraph.create(attrs, kids);
+  const note = S.opaque_inline.create({ raw: '<text:note>x</text:note>', name: 'text:note', label: '1' });
+  const mark = S.opaque_inline.create({ raw: '<text:bookmark text:name="b"/>', name: 'text:bookmark' });
+  const cell = (...kids) => S.table_cell.create({ xattrs: [['a', '"><x/>']] }, kids);
+  const tbl = S.table.create({ pre: { text: '<x/>', end: 0, cols: 1 }, xattrs: [['a', '"><x/>']] }, S.table_row.create(null, cell(P(null, schema.text('in a cell'), note))));
+  //  from clipboard HTML: no opaque node, no table, whatever the slice
+  //  context claimed, and the open sides shrink with the wrappers
+  const out = core.fromOutside(new Slice(Fragment.from([tbl, S.opaque_block.create({ raw: '<x/>', name: 'x' })]), 4, 0));
+  const names = []; out.content.descendants((n) => { names.push(n.type.name); });
+  check.eq('a slice from outside loses its table, its opaque nodes and their attributes', names.join(), 'paragraph,text');
+  check.eq('  and is open as deep as what is left', out.openStart + ',' + out.openEnd, '1,0');
+  const brk = S.hard_break.create({ src: [1, 2] }, schema.text('inside'));
+  const leaf = core.fromOutside(new Slice(Fragment.from(P(null, brk)), 2, 2));
+  check('a leaf given content is a plain leaf', leaf.content.firstChild.firstChild.content.size === 0 && leaf.openStart === 1 && leaf.openEnd === 1);
+  //  attributes of the right kind
+  const h = core.fixPasted(S.heading.create({ level: '9"><x/>', pageBreak: 'x', quote: { a: 1 }, style: { a: 1 } }, schema.text('h')), st);
+  check('a pasted heading has a level, flags and a style of the right kind', h.attrs.level === 1 && h.attrs.pageBreak === false && h.attrs.quote === false && (h.attrs.style === null || typeof h.attrs.style === 'string'), JSON.stringify(h.attrs));
+  check.eq('  a level past 10 is 1, one inside is kept', [4000, 0, -3, 2.9, '7', 10].map((level) => core.fixPasted(S.heading.create({ level }, schema.text('h')), st).attrs.level).join(), '1,1,1,2,7,10');
+  const li = core.fixPasted(S.list.create({ xattrs: 'x', kind: { a: 1 } }, S.list_item.create({ header: 'x', xattrs: 7 }, P(null, schema.text('i')))), st);
+  check('a pasted list whose attributes are not a list is this document\'s own', li.attrs.kind === null && Array.isArray(li.attrs.xattrs) && li.firstChild.attrs.header === false);
+  //  a copy made in this document comes back as it was, less its markers
+  const own = core.ownPasted(Fragment.from([tbl, P({ src: [5, 9], xattrs: [['k', 'v']] }, schema.text('t'), note, mark)]));
+  const on = []; own.descendants((n) => { on.push(n.type.name === 'opaque_inline' ? n.attrs.name : n.type.name); });
+  check.eq('a copy from this document keeps its table and footnotes, not a named marker', on.join(), 'table,table_row,table_cell,paragraph,text,text:note,paragraph,text,text:note');
+  check('  with the attributes it had', own.firstChild.attrs.pre.text === '<x/>' && own.lastChild.attrs.src[0] === 5 && own.lastChild.attrs.xattrs[0][1] === 'v');
+  check('what HTML cannot carry is told from what it can', core.beyondHtml(Fragment.from(tbl)) && core.beyondHtml(Fragment.from(P(null, note))) && !core.beyondHtml(Fragment.from(P(null, schema.text('t')))));
 }
 
 console.log('# speed');

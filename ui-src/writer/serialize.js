@@ -166,11 +166,13 @@ class Writer {
     const start = n.attrs.src ? n.attrs.src[0] : null;
     let out = open('table:table', n.attrs.xattrs);
     let prev;
-    if (n.attrs.pre) {
+    const w = n.firstChild ? n.firstChild.childCount : 1;
+    //  the column declarations it came with, while its rows are as wide
+    //  as they were under them: a copy of some of its columns is not
+    if (n.attrs.pre && n.attrs.pre.cols === w) {
       out += n.attrs.pre.text;
       prev = n.attrs.pre.end;
     } else {
-      const w = n.firstChild ? n.firstChild.childCount : 1;
       out += '\n' + ' '.repeat(indent + 1) + (w > 1
         ? `<table:table-column table:number-columns-repeated="${w}"/>` : '<table:table-column/>');
       prev = -1;

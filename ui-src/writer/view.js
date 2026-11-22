@@ -188,7 +188,9 @@ function dedupe() {
         if (s) seen.add(s[0]);
         if (id) ids.add(id[1]);
         if (dupSrc || dupId) {
-          const attrs = { ...n.attrs, src: null, xattrs: xa.filter(([k]) => k !== 'xml:id') };
+          //  a table's name is its own too: the copy is written without one
+          const own = (k) => k === 'xml:id' || (n.type === S.table && k === 'table:name');
+          const attrs = { ...n.attrs, src: null, xattrs: xa.filter(([k]) => !own(k)) };
           if (dupSrc && 'pageBreak' in attrs) attrs.pageBreak = false;
           tr = (tr || state.tr).setNodeMarkup(pos, null, attrs);
         }
