@@ -1479,7 +1479,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     || skUnsaved();
   let everTyped = false;
   async function guardDirty() {
-    if (!dirty) return true;
+    const synced = writerSync();
+    if (!dirty) {
+      return synced || askConfirm('the last edit to ' + (current || pname.value.trim() || 'this')
+        + ' could not be written. discard it?', 'discard');
+    }
     if (grubPath)
       return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
     const label = current || pname.value.trim() || 'this';
@@ -4011,8 +4015,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     clearTimeout(autoTimer);
   }
   let wrSaid = false;
+  const wrLive = () => !!wr && !!wrFor && wrFor.tab === activeTab && wrFor.n === wrDoc;
   function writerSync() {
-    if (!wr) return true;
+    if (!wrLive()) return true;
     wrSaid = false;
     if (wr.sync() !== false) return true;
     if (!wrSaid) st('not saved: the edit in progress could not be written. Finish or undo it, then save', false);

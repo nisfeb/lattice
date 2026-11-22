@@ -182,8 +182,12 @@
   // that is not in it. The user is told here, once for every caller,
   // unless the editor said why itself (onRefuse).
   let wrSaid = false;
+  //  Only while the buffer is still the view's document. A tab change puts
+  //  the next page's text in src.value before the view is let go, and a
+  //  view writing then would put its own text over that page.
+  const wrLive = () => !!wr && !!wrFor && wrFor.tab === activeTab && wrFor.n === wrDoc;
   function writerSync() {
-    if (!wr) return true;
+    if (!wrLive()) return true;
     wrSaid = false;
     if (wr.sync() !== false) return true;
     if (!wrSaid) st('not saved: the edit in progress could not be written. Finish or undo it, then save', false);

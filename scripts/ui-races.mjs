@@ -19,6 +19,7 @@
 //
 //  Usage:  node scripts/ui-races.mjs [case ...]
 //  Setup:  npm ci --prefix scripts
+import { readFileSync } from 'fs';
 import { launchBrowser, makeCheck, sleep, waitFor } from './lib/harness.mjs';
 import { stubShip } from './lib/stub-ship.mjs';
 
@@ -396,6 +397,94 @@ cases.syncRefused = async () => {
   await waitFor(() => (body(x, 'm/map') || '').includes('2026-01-02T03:04:05Z'), 8000, 100);
   const b = body(x, 'm/map') || '';
   check('once the field can be written the save carries every edit', b.includes('"a one two"') && b.includes('2026-01-02T03:04:05Z'), b);
+  await x.done();
+};
+
+//  A rich view holds what is being typed (a map's detail field, a cell)
+//  outside the buffer until it is left. Closing its tab is leaving it, and
+//  the tab shown next owns the buffer by then: the typed text must reach
+//  its own page, and no page may be written with another page's view.
+const MAP1 = '{"type":"FeatureCollection","lattice":{},"features":[\n'
+  + '{"type":"Feature","geometry":{"type":"Point","coordinates":[-71,42]},"properties":{"name":"a"}}\n]}\n';
+const MAPQ = 'lat-map:not([hidden]) ';
+const mapF = (k) => MAPQ + '.lm-detail [data-k="' + k + '"]';
+const pickFeature = async (p) => {
+  await waitFor(() => p.$(MAPQ + '.lm-list [role=listitem]'), 20000, 100);
+  await p.click(MAPQ + '.lm-list [role=listitem]');
+  await waitFor(() => p.$(mapF('name')), 5000, 100);
+};
+const ctrlKey = async (p, k) => { await p.keyboard.down('Control'); await p.keyboard.press(k); await p.keyboard.up('Control'); };
+const appDlg = (p) => p.evaluate(() => { const d = document.getElementById('dlg'); return d && !d.hidden ? document.getElementById('dlgmsg').textContent : ''; });
+const pagesOf = (x) => [...x.S.pages.keys()];
+cases.closeMap = async () => {
+  for (const how of ['ctrl+w', 'middle click']) {
+    const x = await up({ 'm/map': [MAP1, 'geojson'], 'n/b': 'beta\nmy notes\n' }, '?name=n/b');
+    const p = x.page;
+    await p.evaluate(() => window.latTabs.openIn('page', 'm/map', { newTab: true }));
+    await pickFeature(p);
+    await p.focus(mapF('name'));
+    await p.keyboard.type(' TYPED');
+    await sleep(300);
+    if (how === 'ctrl+w') await ctrlKey(p, 'w');
+    else {
+      const tab = await p.evaluateHandle(() => [...document.querySelectorAll('.dtx')].pop().parentElement);
+      const bb = await tab.boundingBox();
+      await p.mouse.click(bb.x + 10, bb.y + bb.height / 2, { button: 'middle' });
+    }
+    await waitFor(async () => (await p.evaluate(() => window.latTabs.list().length)) === 1, 5000, 100);
+    await sleep(3500);
+    check.eq(how + ': the page in the next tab is not written over', body(x, 'n/b'), 'beta\nmy notes\n');
+    check(how + ': the map keeps what was typed in the field', (body(x, 'm/map') || '').includes('"a TYPED"'), (body(x, 'm/map') || '').slice(-80));
+    check(how + ': and what is shown is the next page', (await ed(p)) === 'beta\nmy notes\n', await ed(p));
+    await x.done();
+  }
+  //  the map is the only tab: a blank page takes its place, and the map's
+  //  text must not be filed there as a capture
+  const x = await up({ 'm/map': [MAP1, 'geojson'] }, '?name=m/map');
+  const p = x.page;
+  await pickFeature(p);
+  await p.focus(mapF('name'));
+  await p.keyboard.type(' LAST');
+  await sleep(300);
+  await ctrlKey(p, 'w');
+  await sleep(4500);
+  check('the last tab closed: no page was made of the map', !pagesOf(x).some((k) => k.startsWith('inbox/')), pagesOf(x).join(' '));
+  check('and the map has the typed text', (body(x, 'm/map') || '').includes('"a LAST"'), (body(x, 'm/map') || '').slice(-60));
+  check.eq('the blank page is empty', await ed(p), '');
+  await x.done();
+};
+//  A cell being typed is in no buffer either, and closing the tab asked
+//  nothing and lost it. And a map field the map cannot write asks.
+cases.closeUnwritten = async () => {
+  const FODS = readFileSync(new URL('../tests/sheet/corpus/01-values.fods', import.meta.url), 'utf8');
+  let x = await up({ 's/s': [FODS, 'fods'], 'n/b': 'beta\n' }, '?name=n/b');
+  let p = x.page;
+  await p.evaluate(() => window.latTabs.openIn('page', 's/s', { newTab: true }));
+  const C = 'lat-sheet:not([hidden]) .ls-c[data-r="6"][data-c="1"]';
+  await waitFor(() => p.$(C), 20000, 100);
+  await p.click(C); await sleep(200);
+  await p.keyboard.type('4242.5');
+  await sleep(300);
+  await ctrlKey(p, 'w');
+  await sleep(3500);
+  check('a cell being typed is saved when its tab is closed', (body(x, 's/s') || '').includes('4242.5'), 'saves ' + x.S.saves().length);
+  check.eq('and the next page is as it was', body(x, 'n/b'), 'beta\n');
+  await x.done();
+  x = await up({ 'm/map': [MAP1, 'geojson'], 'n/b': 'beta\n' }, '?name=n/b');
+  p = x.page;
+  await p.evaluate(() => window.latTabs.openIn('page', 'm/map', { newTab: true }));
+  await pickFeature(p);
+  await waitFor(() => p.$(mapF('time')), 5000, 100);
+  await p.focus(mapF('time'));
+  await p.keyboard.type('not a date');
+  await sleep(300);
+  p.evaluate(() => { const l = window.latTabs.list(); return window.latTabs.closeTab(l.find((t) => t.key === 'm/map').id); }).catch(() => {});
+  await waitFor(async () => !!(await appDlg(p)), 5000, 100);
+  check('a field the map cannot write asks before its tab closes', /could not be written/.test(await appDlg(p)), await appDlg(p));
+  await p.click('#dlgcancel');
+  await sleep(500);
+  check.eq('and a cancel keeps the tab', await p.evaluate(() => window.latTabs.list().length), 2);
+  check.eq('with the field as typed', await p.$eval(mapF('time'), (e) => e.value), 'not a date');
   await x.done();
 };
 

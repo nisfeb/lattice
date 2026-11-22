@@ -45,7 +45,14 @@
   // asked to, so nothing here writes on its own: after any save already in
   // flight, unsaved text gets the question, with save as one answer.
   async function guardDirty() {
-    if (!dirty) return true;
+    //  a cell or a field being typed is in no buffer yet, and dirty says so
+    //  only after the view writes it. Written first. One it refuses is asked
+    //  about here, unless dirty makes the flush below ask for it too.
+    const synced = writerSync();
+    if (!dirty) {
+      return synced || askConfirm('the last edit to ' + (current || pname.value.trim() || 'this')
+        + ' could not be written. discard it?', 'discard');
+    }
     if (grubPath)
       return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
     const label = current || pname.value.trim() || 'this';
