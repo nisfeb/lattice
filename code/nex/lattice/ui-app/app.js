@@ -4,11 +4,11 @@
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
 const WRITER_H = '0v1.oeihn.h47ui.s0kd2.qk8a7.9s5i7';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
-const SHEET_H = '0v2.3fp0m.2f0k7.l5di6.1kmai.55lkd';
+const SHEET_H = '0v2.tvqvm.q4h9c.2dhgi.th80c.07jfr';
 // and map.js's, the map view (26-writer.js)
 const MAP_H = '0v1.ovhm4.m8gme.njo4b.e5g5o.i11kg';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)
-const SCAD_H = '0v4.iq23m.dbm3b.tlssr.m2osn.clskh';
+const SCAD_H = '0v4.50udo.0qbj6.9njfd.j9can.rl7ma';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
@@ -9179,21 +9179,24 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         b.onclick = fn;
         row.appendChild(b);
       };
-      const names = (x) => x === path || x === path + '/code';
+      const sole = !curFolder && (g.peek.includes(path + '/dir-index')
+        || nodes.some((x) => !x.page && x.path === target));
+      const grant = sole ? path + '/code' : path;
+      const names = (x) => x === grant || x === path + '/code';
       const canRead = g.peek.some(names);
       const canEdit = g.make.some(names);
       mk('read', canRead, () => {
         if (canRead) {
           g.peek = g.peek.filter((x) => !names(x));
           g.make = g.make.filter((x) => !names(x));
-        } else g.peek.push(path);
+        } else g.peek.push(grant);
         permSave(g);
       });
       mk('edit', canEdit, () => {
         if (canEdit) g.make = g.make.filter((x) => !names(x));
         else {
-          if (!g.peek.includes(path)) g.peek.push(path);   // edit implies read
-          g.make.push(path);
+          if (!g.peek.some(names)) g.peek.push(grant);   // edit implies read
+          g.make.push(grant);
         }
         permSave(g);
       });
@@ -10199,7 +10202,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     card.className = 'aclcard';
     card.appendChild(aclHead(g));
     aclShips(card, g);
-    aclSection(card, 'read', g.peek, (v) => {
+    aclSection(card, 'read', g.peek.filter((x) => !x.endsWith('/dir-index')), (v) => {
       g.peek = g.peek.filter((x) => x !== v);
       g.make = g.make.filter((x) => x !== v);
       permSave(g);
@@ -10227,7 +10230,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       grid.appendChild(e);
       return;
     }
-    const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
+    const allPaths = permGroups.flatMap((x) => [...x.peek.filter((p) => !p.endsWith('/dir-index')), ...x.make]);
     const disp = (v) => shortPath(v, allPaths);
     for (const g of permGroups) grid.appendChild(aclCard(g, disp));
   }

@@ -86,8 +86,18 @@ export function stubShip(seed = {}) {
       case 'page-save-batch':
         return fin(200, { items: JSON.parse(body).map((it) => ({ name: it.name, ...landed(it.name, it.body, it.type, it.base) })) });
       case 'tree-job': return fin(200, { job: null });
-      //  the live stream never answers: the editor falls back to its poll
-      case 'streams': return;
+      //  the live stream never answers: the editor falls back to its poll.
+      //  A suite that needs the install path sets S.base, and it is answered
+      case 'streams': return S.base ? fin(200, { base: S.base }) : undefined;
+      //  the permission editor's groups, as the ship lists them: S.groups
+      case 'legacy-groups': return fin(200, []);
+      case 'share-groups': return fin(200, S.groups || []);
+      case 'share-group-save': {
+        const g = (S.groups || []).find((x) => x.name === q.name);
+        if (!g) return fin(404, { error: 'no such group' });
+        Object.assign(g, JSON.parse(body));
+        return fin(200, {});
+      }
       default: return /stream|beacon/.test(ev.path) ? undefined : fin(200, {});
     }
   });

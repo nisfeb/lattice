@@ -300,7 +300,9 @@
     card.className = 'aclcard';
     card.appendChild(aclHead(g));
     aclShips(card, g);
-    aclSection(card, 'read', g.peek, (v) => {
+    //  a folder's `<folder>/dir-index` line is the ship's own bookkeeping of
+    //  the folder line beside it: kept in g.peek and sent back, not shown
+    aclSection(card, 'read', g.peek.filter((x) => !x.endsWith('/dir-index')), (v) => {
       // dropping read must drop edit too. Edit without read is a grant that
       // cannot be exercised, and it would silently reappear as "read" on the
       // next save because addPath re-adds it.
@@ -333,7 +335,7 @@
     }
     // one disambiguation scope for the whole pane, so the same page shows
     // the same short name in every card
-    const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
+    const allPaths = permGroups.flatMap((x) => [...x.peek.filter((p) => !p.endsWith('/dir-index')), ...x.make]);
     const disp = (v) => shortPath(v, allPaths);
     for (const g of permGroups) grid.appendChild(aclCard(g, disp));
   }
