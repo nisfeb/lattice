@@ -6,7 +6,7 @@
 //  engine in step, and gives back the flat ODS text.
 
 import {
-  parseFods, serializeFods, cellAt, setCell, setStyle, ownRow, bumpRows, extent, rowCount, MAX_ROWS, MAX_COLS, dateSerial,
+  parseFods, serializeFods, cellAt, setCell, setStyle, ownRow, bumpRows, extent, rowCount, MAX_ROWS, MAX_COLS, dateSerial, serialDate,
 } from './model.js';
 import { Engine } from './engine.js';
 import { Styles, fixed } from './styles.js';
@@ -23,16 +23,27 @@ export function readTyped(text, nullDate) {
   const t = text.trim();
   if (t === '') return { vt: null, v: null, kind: null };
   if (text[0] === "'") return { vt: 'string', v: text.slice(1), kind: null };
-  if (/\d/.test(t) && NUM.test(t)) return { vt: 'float', v: Number(t.replace(/,/g, '')), kind: null };
+  if (/\d/.test(t) && NUM.test(t)) {
+    //  a number no double holds (1e999) is the text typed, not 0
+    const v = Number(t.replace(/,/g, ''));
+    if (Number.isFinite(v)) return { vt: 'float', v, kind: null };
+  }
   let m = /^([+-]?(?:\d+\.?\d*|\.\d+))\s*%$/.exec(t);
   if (m) return { vt: 'percentage', v: Number(m[1]) / 100, kind: 'percent' };
   m = /^(-)?\$\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)$/.exec(t);
   if (m) return { vt: 'currency', v: Number(m[2].replace(/,/g, '')) * (m[1] ? -1 : 1), kind: 'currency', cur: 'USD' };
   if (/^true$/i.test(t)) return { vt: 'boolean', v: true, kind: null };
   if (/^false$/i.test(t)) return { vt: 'boolean', v: false, kind: null };
-  m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t);
-  if (m && +m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31) {
-    return { vt: 'date', v: dateSerial(`${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`, nullDate), kind: 'date' };
+  //  a date, or a date and a time of day as the bar shows one
+  m = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(t);
+  if (m && (m[4] === undefined || (+m[4] < 24 && +m[5] < 60 && +(m[6] || 0) < 60))) {
+    const iso = `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    const day = dateSerial(iso, nullDate);
+    //  only a date that exists. The 31st of February would be read as the
+    //  2nd of March: it stays the text typed, as in Calc.
+    if (day !== null && serialDate(day, nullDate) === iso) {
+      return { vt: 'date', v: day + (m[4] === undefined ? 0 : (+m[4] * 3600 + +m[5] * 60 + +(m[6] || 0)) / 86400), kind: 'date' };
+    }
   }
   m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(t);
   if (m && +m[2] < 60 && +(m[3] || 0) < 60) return { vt: 'time', v: (+m[1] * 3600 + +m[2] * 60 + +(m[3] || 0)) / 86400, kind: 'time' };

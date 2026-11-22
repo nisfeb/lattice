@@ -698,6 +698,44 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   check('moveRefs: nothing moved gives the same string, an open bracket gives null', moveRefs('a([.A1])', 'S', { sheet: 'S', dim: 'r', at: 5, n: 1 }) === 'a([.A1])' && moveRefs('a([.A1)', 'S', { sheet: 'S', dim: 'r', at: 0, n: 1 }) === null);
 }
 {
+  //  what is typed is the date typed, or it is text
+  const b = new Book(blankText);
+  const typed = (t, r = 0) => { b.enter(0, r, 0, t); const c = b.cell(0, r, 0); return c.vt + ':' + c.text; };
+  check.eq('a date that does not exist is kept as the text typed', ['2024-02-31', '2023-02-29', '2024-04-31', '0000-01-01', '2024-13-01', '2024-00-10'].map((t) => typed(t)).join(' '),
+    'string:2024-02-31 string:2023-02-29 string:2024-04-31 string:0000-01-01 string:2024-13-01 string:2024-00-10');
+  check.eq('a date that does exist is a date', ['2024-02-29', '2023-02-28', '2024-4-30', '1999-12-31', '2024-1-5'].map((t) => typed(t)).join(' '),
+    'date:2024-02-29 date:2023-02-28 date:2024-04-30 date:1999-12-31 date:2024-01-05');
+  check('and nothing of a refused date is written as a date', (() => { b.enter(0, 1, 0, '2024-02-31'); return !b.text().includes('office:date-value="2024-03-02"') && b.text().includes('<text:p>2024-02-31</text:p>'); })());
+  check.eq('the bar shows the text as typed', b.input(0, 1, 0), '2024-02-31');
+  //  a number no double holds is the text typed, not 0
+  check.eq('a number too large is kept as text', ['1e999', '5E1000', '-1e400'].map((t) => typed(t, 2)).join(' ') + ' ' + ['1e308', '1E-400'].map((t) => typed(t, 2)).join(' '), 'string:1e999 string:5E1000 string:-1e400 float:1E+308 float:0');
+  check('and saved as text', (() => { b.enter(0, 2, 0, '5E1000'); const t = b.text(); return t.includes('<text:p>5E1000</text:p>') && !/office:value="0"[^>]*>\s*<text:p>#NUM!/.test(t); })());
+  //  a date with a time of day: the bar's own spelling reads back
+  b.enter(0, 3, 0, '2024-01-15 10:30:00');
+  const dt = b.cell(0, 3, 0);
+  check.eq('a date and time typed is a date with a time', dt.vt + ' ' + b.input(0, 3, 0) + ' ' + serialDate(dt.v, b.doc.nullDate), 'date 2024-01-15 10:30:00 2024-01-15T10:30:00');
+  const was = dt.v;
+  b.enter(0, 3, 0, b.input(0, 3, 0) + ' ');
+  check('what the bar shows, typed back, is the same date and time', b.cell(0, 3, 0).vt === 'date' && b.cell(0, 3, 0).v === was);
+  check.eq('with a T, without seconds, and one that is not a time', ['2024-01-15T10:30:00', '2024-01-15 7:05', '2024-01-15 25:00', '2024-02-30 10:00', '2024-01-15 10:61'].map((t) => typed(t, 4) + '|' + b.input(0, 4, 0)).join(' '),
+    'date:2024-01-15|2024-01-15 10:30:00 date:2024-01-15|2024-01-15 07:05:00 string:2024-01-15 25:00|2024-01-15 25:00 string:2024-02-30 10:00|2024-02-30 10:00 string:2024-01-15 10:61|2024-01-15 10:61');
+  //  a cell a file gives a date and time format keeps both through an edit in the bar
+  const style = '<number:date-style style:name="NDT"><number:year number:style="long"/><number:text>-</number:text><number:month number:style="long"/><number:text>-</number:text><number:day number:style="long"/><number:text> </number:text>'
+    + '<number:hours number:style="long"/><number:text>:</number:text><number:minutes number:style="long"/><number:text>:</number:text><number:seconds number:style="long"/></number:date-style>'
+    + '<style:style style:name="ceDT" style:family="table-cell" style:parent-style-name="Default" style:data-style-name="NDT"/>';
+  const cellDT = '<table:table-row><table:table-cell table:style-name="ceDT" office:value-type="date" office:date-value="2024-01-15T10:30:00" calcext:value-type="date"><text:p>2024-01-15 10:30:00</text:p></table:table-cell></table:table-row>';
+  const src = corpus('01-values');
+  const lo = new Book(src.replace('</office:automatic-styles>', style + '</office:automatic-styles>').replace('</table:table>', cellDT + '</table:table>'));
+  const at = lo.error ? -1 : lo.extent(0)[0] - 1;
+  check.eq('the fixture holds a date and time cell, shown in the bar', lo.error || lo.cell(0, at, 0).vt + ' ' + lo.input(0, at, 0), 'date 2024-01-15 10:30:00');
+  if (!lo.error) {
+    lo.enter(0, at, 0, '2024-01-15 10:45:00');
+    const after = lo.cell(0, at, 0);
+    check.eq('a minute changed in the bar: still a date and time, in the cell\'s own format', after.vt + ' ' + after.text + ' ' + serialDate(after.v, lo.doc.nullDate), 'date 2024-01-15 10:45:00 2024-01-15T10:45:00');
+    check('and saved as one', lo.text().includes('office:date-value="2024-01-15T10:45:00"'));
+  }
+}
+{
   //  results Calc gives, each run in LibreOffice
   const b = new Book(blankText);
   const at = (f) => { b.enter(0, 0, 0, f); return b.cell(0, 0, 0).text; };
