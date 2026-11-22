@@ -597,7 +597,7 @@
   ?~  lines  |
   =/  s=tape  (trim i.lines)
   ?~  s  &
-  ?:  (gth (atx s) 0)  &
+  ?:  (gth (atx i.lines) 0)  &
   ?:  =('>' i.s)  &
   ?:  |((has "```" s) (has "~~~" s))  &
   ?:  |((allrun s "-" 3) (allrun s "*" 3) (allrun s "_" 3))  &
@@ -692,9 +692,10 @@
   ?:  |((allrun s "-" 3) (allrun s "*" 3) (allrun s "_" 3))
     (weld "<hr>" (rb t.lines refs))
   ::  atx heading
-  =/  n=@ud  (atx s)
+  =/  n=@ud  (atx ln)
   ?:  (gth n 0)
-    =/  txt=tape  (trim (hash-strip (sl n s)))
+    =/  aft=tape  (sl n s)
+    =/  txt=tape  (trim (hash-strip (sl (lead aft) aft)))
     =/  tag=tape  (weld "h" (a-co:co n))
     (weld :(weld "<" tag ">" (ib txt refs) "</" tag ">") (rb t.lines refs))
   ::  setext heading
@@ -717,14 +718,20 @@
   ::  paragraph
   =/  pr=[tape (list tape)]  (take-para lines refs)
   (weld -.pr (rb +.pr refs))
-::  +atx: the level of the ATX heading the trimmed line `s` is, 0 for
-::  none. +rb and +block-start both ask here, so they cannot disagree
-::  about which lines are headings.
+::  +atx: the level of the ATX heading the line `ln` is, 0 for none.
+::  +rb and +block-start both ask here, so they cannot disagree about
+::  which lines are headings. One to six hashes, then a space or a tab:
+::  the rule of the browser preview and its outline, so "#tag" and "#12"
+::  at the start of a line stay text on both sides.
 ++  atx
-  |=  s=tape
+  |=  ln=tape
   ^-  @ud
+  =/  s=tape  (ltrm ln)
   =/  n=@ud  (lead-hash s)
-  ?:(&((gth n 0) (lte n 6)) n 0)
+  ?.  &((gth n 0) (lte n 6))  0
+  =/  aft=tape  (sl n s)
+  ?:  &(?=(^ aft) |(=(' ' i.aft) =(`@tD`9 i.aft)))  n
+  0
 ++  lead-hash  |=(t=tape =|(n=@ud |-(^-(@ud ?~(t n ?:(=('#' i.t) $(t t.t, n +(n)) n))))))
 ++  hash-strip  |=(t=tape (rtrm (flop (ltrm-hash (flop (rtrm t))))))
 ++  ltrm-hash  |=(t=tape ^-(tape ?~(t t ?:(|(=('#' i.t) =(' ' i.t)) $(t t.t) t))))

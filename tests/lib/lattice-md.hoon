@@ -216,4 +216,21 @@
         (gte (lent (r (crip (weld "x\0a" a)))) 0)
     ==
   (yes ok)
+::  a heading needs a space or a tab after its hashes, as the browser
+::  preview and the outline have it. A hashtag, an issue number or a
+::  shebang at the start of a line is text.
+++  test-heading-needs-space
+  ;:  weld
+    (expect-eq !>("<p>#tag line</p>") !>((r '#tag line')))
+    (expect-eq !>("<p>#123</p>") !>((r '#123')))
+    (expect-eq !>("<p>#!/bin/sh</p>") !>((r '#!/bin/sh')))
+    (expect-eq !>("<p>######x</p>") !>((r '######x')))
+    (expect-eq !>("<p>#</p>") !>((r '#')))
+    (expect-eq !>("<h1></h1>") !>((r '# ')))
+    (expect-eq !>("<h2>t</h2>") !>((r '##\09t')))
+    (expect-eq !>("<h3>t</h3>") !>((r '  ### t ###')))
+    ::  a line of text is not cut at a hashtag line under it
+    (expect-eq !>("<p>a #tag</p>") !>((r 'a\0a#tag')))
+    (expect-eq !>("<p>a</p><h1>h</h1>") !>((r 'a\0a# h')))
+  ==
 --
