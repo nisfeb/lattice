@@ -10,7 +10,7 @@ import {
 } from './model.js';
 import { Engine } from './engine.js';
 import { Styles, fixed } from './styles.js';
-import { toOf, toUser, FormulaError, moveFormula, moveAddrs, offsetFormula, cutFormula, hasBadRef, bodyOf, quoteSheet, renameInFormula, parseAddrs } from './formula.js';
+import { toOf, toUser, FormulaError, moveFormula, moveRefs, moveAddrs, offsetFormula, cutFormula, hasBadRef, bodyOf, quoteSheet, renameInFormula, parseAddrs } from './formula.js';
 import { general } from './funcs.js';
 import { attr, escAttr } from '../writer/xml.js';
 
@@ -331,6 +331,15 @@ export class Book {
             return;
           }
         }
+        //  a rule or a name whose references cannot all be read cannot be
+        //  moved, and must not be left behind while its cells move
+        for (const [a, kind] of known) {
+          const val = kind === 'expr' ? attr(k, a) : null;
+          if (val && val.includes('[') && moveRefs(val, '', { sheet: sheet.name, dim, at, n }) === null) {
+            why = `a ${k.name.replace(/^[a-z]+:/, '').replace(/-/g, ' ')} here holds a reference lattice cannot read, so it cannot be moved safely`;
+            return;
+          }
+        }
         if (k.name !== 'table:table-row') walk(k);
         else {
           //  inside rows only shapes carry addresses
@@ -410,12 +419,7 @@ export class Book {
           const val = attr(k, a);
           let next;
           if (kind === 'addr') next = moveAddrs(val, op, home);
-          else if (!val.includes('[')) next = val;
-          else {
-            const head = bodyOf(val) === null ? 'of:=' : '';
-            const moved = moveFormula(head + val, home, op);
-            next = moved === null ? null : moved.slice(head.length);
-          }
+          else next = val.includes('[') ? moveRefs(val, home, op) : val;
           if (next === null || next === val) continue;
           const open = text.slice(k.start, k.openEnd);
           const at0 = open.indexOf(` ${a}="${raw[1]}"`);

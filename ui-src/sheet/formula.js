@@ -152,27 +152,10 @@ export function tokenize(text, mode) {
       continue;
     }
     if (mode === 'of' && ch === '[') {
-      const close = text.indexOf(']', i);
-      if (close < 0) bad('a reference that is not closed');
-      const a = readEnd(text, i + 1, 'of');
-      let ref = fullRef(text.slice(i + 1, close), 'of');
-      if (a) {
-        if (a.end === close) ref = { a: strip(a), b: null };
-        else if (text[a.end] === ':') {
-          const b = readEnd(text, a.end + 1, 'of');
-          if (b && b.end === close) ref = { a: strip(a), b: strip(b) };
-        }
-      }
-      //  what is left is either a reference to deleted cells, which is
-      //  the error it says it is, or one lattice does not read (another
-      //  file's cells, a range across sheets written some other way). The
-      //  second is not an error: it is kept as written and never guessed at.
-      if (!ref) {
-        const inner = text.slice(i + 1, close);
-        ref = inner.includes('#REF!') ? { bad: true } : { unknown: true, raw: text.slice(i, close + 1) };
-      }
-      i = close + 1;
-      out.push({ t: 'ref', ref, s, e: i });
+      const b = readBracket(text, i);
+      if (!b) bad('a reference that is not closed');
+      i = b.end;
+      out.push({ t: 'ref', ref: b.ref, s, e: i });
       continue;
     }
     if (mode === 'user') {
@@ -232,6 +215,31 @@ export function tokenize(text, mode) {
   return out;
 }
 const strip = (e) => ({ sheet: e.sheet, sheetAbs: e.sheetAbs, c: e.c, cAbs: e.cAbs, r: e.r, rAbs: e.rAbs });
+
+//  the stored reference whose "[" is at text[i]: { ref, end }, or null
+//  when it is not closed
+function readBracket(text, i) {
+  const close = text.indexOf(']', i);
+  if (close < 0) return null;
+  const a = readEnd(text, i + 1, 'of');
+  let ref = fullRef(text.slice(i + 1, close), 'of');
+  if (a) {
+    if (a.end === close) ref = { a: strip(a), b: null };
+    else if (text[a.end] === ':') {
+      const b = readEnd(text, a.end + 1, 'of');
+      if (b && b.end === close) ref = { a: strip(a), b: strip(b) };
+    }
+  }
+  //  what is left is either a reference to deleted cells, which is
+  //  the error it says it is, or one lattice does not read (another
+  //  file's cells, a range across sheets written some other way). The
+  //  second is not an error: it is kept as written and never guessed at.
+  if (!ref) {
+    const inner = text.slice(i + 1, close);
+    ref = inner.includes('#REF!') ? { bad: true } : { unknown: true, raw: text.slice(i, close + 1) };
+  }
+  return { ref, end: close + 1 };
+}
 
 //  a whole-column or whole-row reference: [.A:.C] or [.2:.5] as stored,
 //  A:C or 2:5 as typed. It is a range with `full` set ('c' or 'r'), so
@@ -487,6 +495,36 @@ export function moveFormula(stored, home, op) {
     changed = true;
   }
   return changed ? head + out + body.slice(pos) : stored;
+}
+
+//  +moveRefs: the references in a text that is not a whole formula, after
+//  the edit: a validation's condition, a conditional format's value, a
+//  named expression. Such a text holds words and separators a formula
+//  does not, so it is never tokenized. Only its bracketed references are
+//  read and respelled, and text in quotes is passed over. Returns the
+//  same string when nothing moved, and null when a reference in it cannot
+//  be read: the caller must not guess.
+export function moveRefs(text, home, op) {
+  let out = '';
+  let pos = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '"') {
+      //  to the closing quote, a doubled one being a quote in the text
+      for (i++; i < text.length; i++) {
+        if (text[i] !== '"') continue;
+        if (text[i + 1] !== '"') break;
+        i++;
+      }
+      continue;
+    }
+    if (text[i] !== '[') continue;
+    const b = readBracket(text, i);
+    if (!b || b.ref.unknown) return null;
+    const moved = moveRef(b.ref, home, op);
+    if (moved !== b.ref) { out += text.slice(pos, i) + printRef(moved, 'of'); pos = b.end; }
+    i = b.end - 1;
+  }
+  return pos ? out + text.slice(pos) : text;
 }
 
 //  a sheet rename: every reference naming `from` names `to`

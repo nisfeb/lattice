@@ -24,7 +24,7 @@ import { makeCheck } from './lib/check.mjs';
 import { parseFods, serializeFods, cellAt, extent, rowCount, serialDate } from '../ui-src/sheet/model.js';
 import { Engine, cellValue } from '../ui-src/sheet/engine.js';
 import { Err, Unsupported, general } from '../ui-src/sheet/funcs.js';
-import { toUser, toOf, moveFormula, moveAddrs, offsetFormula, cutFormula, parseAddrs, colName, colIndex } from '../ui-src/sheet/formula.js';
+import { toUser, toOf, moveFormula, moveRefs, moveAddrs, offsetFormula, cutFormula, parseAddrs, colName, colIndex } from '../ui-src/sheet/formula.js';
 import { Book, readTyped } from '../ui-src/sheet/book.js';
 import { fixed } from '../ui-src/sheet/styles.js';
 
@@ -588,6 +588,70 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   check.eq('criteria over empty cells past the used rows, as Calc counts them', got, T.map((x) => x[1]).join(' '));
   b.enter(0, 9, 4, 'far');
   check.eq('and the same once the sheet is used further down', T.map(([f]) => at(f)).join(' '), got);
+}
+{
+  //  a rule's references move with the rows, as its base address does
+  const cv = (rules) => '<table:content-validations>' + rules.map(([n, cond, base]) => `<table:content-validation table:name="${n}" table:condition="${cond}" table:allow-empty-cell="true" table:base-cell-address="${base}"/>`).join('') + '</table:content-validations>';
+  const withRules = (name, rules, cf = '') => {
+    const src = corpus(name);
+    const i = src.indexOf('<table:table ');
+    let t = src.slice(0, i) + cv(rules) + src.slice(i);
+    if (cf) { const j = t.indexOf('</table:table>'); t = t.slice(0, j) + cf + t.slice(j); }
+    return t;
+  };
+  const cond = (b, n) => { const m = new RegExp(`table:name="${n}" table:condition="([^"]*)"[^>]*table:base-cell-address="([^"]*)"`).exec(b.text()); return m ? m[1] + ' @ ' + m[2] : 'gone'; };
+  const rules = [
+    ['list', 'of:cell-content-is-in-list([$Ranges.$E$2:.$E$4])', 'Ranges.A2'],
+    ['between', 'of:cell-content-is-between([.B2];[.B3])', 'Ranges.A2'],
+    ['mixed', 'of:cell-content-is-in-list([.$E2:.E$4])', 'Ranges.A2'],
+    ['text', 'of:cell-content-is-in-list(&quot;[.A5]&quot;;&quot;b &quot;&quot;[.A6]&quot;&quot;&quot;)', 'Ranges.A2'],
+    ['and', 'of:cell-content-is-decimal-number() and cell-content-is-between([.B2];[$Ranges.B9])', 'Ranges.A2'],
+    ['whole', 'of:cell-content-is-in-list([$Ranges.$E:.$E])', 'Ranges.A2'],
+  ];
+  const cf = '<calcext:conditional-formats><calcext:conditional-format calcext:target-range-address="Ranges.C2:Ranges.C5">'
+    + '<calcext:condition calcext:apply-style-name="Default" calcext:value="between([.A2],[.B2])" calcext:base-cell-address="Ranges.C2"/></calcext:conditional-format></calcext:conditional-formats>';
+  const text = withRules('07-ranges', rules, cf);
+  const top = new Book(text);
+  check('a sheet with validation rules opens, and its rows can move', !top.error && top.blocked(0, 'r', 0, 1) === null, top.error || top.blocked(0, 'r', 0, 1));
+  check('insert a row at the top', top.shift(0, 'r', 0, 1).ok);
+  check.eq('a list from a cell range moves with its cells', cond(top, 'list'), 'of:cell-content-is-in-list([$Ranges.$E$3:.$E$5]) @ Ranges.A3');
+  check.eq('the limits of a between rule move', cond(top, 'between'), 'of:cell-content-is-between([.B3];[.B4]) @ Ranges.A3');
+  check.eq('mixed references move', cond(top, 'mixed'), 'of:cell-content-is-in-list([.$E3:.E$5]) @ Ranges.A3');
+  check.eq('text that looks like a reference is left alone', cond(top, 'text'), 'of:cell-content-is-in-list(&quot;[.A5]&quot;;&quot;b &quot;&quot;[.A6]&quot;&quot;&quot;) @ Ranges.A3');
+  check.eq('a rule of two parts moves in both', cond(top, 'and'), 'of:cell-content-is-decimal-number() and cell-content-is-between([.B3];[$Ranges.B10]) @ Ranges.A3');
+  check.eq('a whole column does not move with rows', cond(top, 'whole'), 'of:cell-content-is-in-list([$Ranges.$E:.$E]) @ Ranges.A3');
+  check('a conditional format written with a comma moves', top.text().includes('calcext:value="between([.A3],[.B3])" calcext:base-cell-address="Ranges.C3"'));
+  const mid = new Book(text);
+  check('insert a row inside the list', mid.shift(0, 'r', 2, 1).ok);
+  check.eq('a list that straddles the insert grows', cond(mid, 'list'), 'of:cell-content-is-in-list([$Ranges.$E$2:.$E$5]) @ Ranges.A2');
+  check.eq('and a limit below it moves while the one above stays', cond(mid, 'between'), 'of:cell-content-is-between([.B2];[.B4]) @ Ranges.A2');
+  const col = new Book(text);
+  check('insert a column before E', col.shift(0, 'c', 4, 1).ok);
+  check.eq('the list moves a column right', cond(col, 'list') + ' | ' + cond(col, 'whole'), 'of:cell-content-is-in-list([$Ranges.$F$2:.$F$4]) @ Ranges.A2 | of:cell-content-is-in-list([$Ranges.$F:.$F]) @ Ranges.A2');
+  const del = new Book(text);
+  check('delete the rows of the list', del.shift(0, 'r', 1, -3).ok);
+  check('a list whose cells are all gone says so', cond(del, 'list').startsWith('of:cell-content-is-in-list(#REF!)'), cond(del, 'list'));
+  const cut = new Book(text);
+  check('delete one row of the list', cut.shift(0, 'r', 2, -1).ok);
+  check.eq('a list cut by a delete shrinks', cond(cut, 'list'), 'of:cell-content-is-in-list([$Ranges.$E$2:.$E$3]) @ Ranges.A2');
+  //  rules that read another sheet
+  const two = withRules('05-sheets', [['here', 'of:cell-content-is-in-list([$Data.$A$2:.$A$4])', 'Data.B2'], ['there', "of:cell-content-is-in-list([$&apos;My Sheet&apos;.$A$2:.$A$4])", 'Data.B2'], ['rel', 'of:cell-content-is-between([.A2];[.A3])', "&apos;My Sheet&apos;.B2"]]);
+  const a = new Book(two);
+  check('insert a row on the first sheet of two', a.shift(0, 'r', 0, 1).ok);
+  check.eq('a list on this sheet moves', cond(a, 'here'), 'of:cell-content-is-in-list([$Data.$A$3:.$A$5]) @ Data.B3');
+  check.eq('a list on the other sheet stays, its base cell moves', cond(a, 'there'), "of:cell-content-is-in-list([$&apos;My Sheet&apos;.$A$2:.$A$4]) @ Data.B3");
+  check.eq('a rule based on the other sheet stays whole', cond(a, 'rel'), "of:cell-content-is-between([.A2];[.A3]) @ &apos;My Sheet&apos;.B2");
+  const z = new Book(two);
+  check('insert a row on the second sheet', z.shift(1, 'r', 0, 1).ok);
+  check.eq('then the other sheet\'s list moves, and this one stays', cond(z, 'there') + ' | ' + cond(z, 'here'), "of:cell-content-is-in-list([$&apos;My Sheet&apos;.$A$3:.$A$5]) @ Data.B2 | of:cell-content-is-in-list([$Data.$A$2:.$A$4]) @ Data.B2");
+  check.eq('and the rule based there moves', cond(z, 'rel'), "of:cell-content-is-between([.A3];[.A4]) @ &apos;My Sheet&apos;.B3");
+  //  a reference lattice cannot read stops the move, as in a formula
+  const ext = new Book(withRules('07-ranges', [['far', 'of:cell-content-is-in-list([&apos;file:///other.ods&apos;#$Sheet1.A1:.A5])', 'Ranges.A2']]));
+  const why = ext.shift(0, 'r', 0, 1);
+  check('a rule that reads another file refuses the move, and says why', /cannot read/.test(why.error || ''), JSON.stringify(why));
+  check('and nothing changed', ext.text() === withRules('07-ranges', [['far', 'of:cell-content-is-in-list([&apos;file:///other.ods&apos;#$Sheet1.A1:.A5])', 'Ranges.A2']]));
+  check.eq('moveRefs: only the bracketed references are respelled', moveRefs('x is-between([.A5] , "[.A5]") and [.$B$7]', 'S', { sheet: 'S', dim: 'r', at: 0, n: 2 }), 'x is-between([.A7] , "[.A5]") and [.$B$9]');
+  check('moveRefs: nothing moved gives the same string, an open bracket gives null', moveRefs('a([.A1])', 'S', { sheet: 'S', dim: 'r', at: 5, n: 1 }) === 'a([.A1])' && moveRefs('a([.A1)', 'S', { sheet: 'S', dim: 'r', at: 0, n: 1 }) === null);
 }
 
 console.log('==> hostile input');
