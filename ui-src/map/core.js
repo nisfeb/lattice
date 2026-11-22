@@ -16,6 +16,10 @@ export const BIG = 4 * 1024 * 1024;        // bytes: over this, the map is read-
 export const MAX_TEXT = 16 * 1024 * 1024;  // over this, it is not parsed at all
 export const MAX_FEATURES = 20000;
 export const MAX_POSITIONS = 500000;
+//  a longitude past ten turns of the world is no place. Leaflet's tile and
+//  grid loops step along the longitude, and at 1e20 a step is lost in the
+//  size of the number, so they never end.
+export const MAX_LON = 3600;
 export const MAX_DEPTH = 64;               // brackets deep, members included
 export const STYLES = ['streets', 'outdoors', 'satellite', 'dark'];
 export const MAX_LAYERS = 20;
@@ -74,6 +78,7 @@ const no = (m) => { throw new Refusal(m); };
 function position(p, n) {
   if (!Array.isArray(p) || p.length < 2 || p.length > 4) no('a position is not [lon, lat]');
   for (const v of p) if (!fin(v)) no('a coordinate is not a number');
+  if (Math.abs(p[0]) > MAX_LON) no('a longitude is out of range');
   if (++n.pos > n.max) no(`more than ${n.max} positions`);
 }
 function positions(a, n, min) {

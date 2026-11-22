@@ -23,7 +23,7 @@ import { fileURLToPath } from 'url';
 import { makeCheck } from './lib/check.mjs';
 import {
   parse, serialize, props, view, title, text, outline, render, renderBody, dp, simplify,
-  sourceLink, iconOf, orreryLink, gridStep, depthOf, BLANK, BIG, MAX_FEATURES, MAX_POSITIONS, MAX_DEPTH, RENDER_MAX,
+  sourceLink, iconOf, orreryLink, gridStep, depthOf, BLANK, BIG, MAX_LON, MAX_FEATURES, MAX_POSITIONS, MAX_DEPTH, RENDER_MAX,
 } from '../ui-src/map/core.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -91,6 +91,17 @@ console.log('2. refusals');
   refuses('a collection in a collection', fc([{ type: 'Feature', geometry: { type: 'GeometryCollection', geometries: [{ type: 'GeometryCollection', geometries: [] }] } }]), /inside another/);
   refuses('properties that are a list', fc([{ type: 'Feature', geometry: null, properties: [1] }]), /properties/);
   refuses('a lattice member that is a list', fc([], { lattice: [] }), /lattice member/);
+  //  a longitude no map has: Leaflet's tile loops never end on one
+  const G = (g) => fc([{ type: 'Feature', geometry: g, properties: {} }]);
+  refuses('a longitude of 1e20', G({ type: 'Point', coordinates: [1e20, 0] }), /longitude/);
+  refuses('a longitude of 1e300', G({ type: 'Point', coordinates: [1e300, 0] }), /longitude/);
+  refuses('a longitude of -1e20', G({ type: 'Point', coordinates: [-1e20, 0] }), /longitude/);
+  refuses('a longitude just past the limit', G({ type: 'Point', coordinates: [MAX_LON + 0.001, 0] }), /longitude/);
+  refuses('a line that ends at one', G({ type: 'LineString', coordinates: [[0, 0], [1e300, 0]] }), /longitude/);
+  refuses('one inside a ring', G({ type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1e20, 1], [0, 0]]] }), /longitude/);
+  refuses('one inside a collection', G({ type: 'GeometryCollection', geometries: [{ type: 'MultiPoint', coordinates: [[1, 1], [-1e30, 1]] }] }), /longitude/);
+  check('a longitude a few turns round still opens', !parse(G({ type: 'LineString', coordinates: [[720, 10], [-MAX_LON, 0], [MAX_LON, 0]] })).error);
+  check.eq('an imported file with one is refused', io.importText('geojson', JSON.stringify({ type: 'Feature', geometry: { type: 'Point', coordinates: [1e30, 0] }, properties: {} })).error, 'a longitude is out of range');
   check('a null geometry is allowed', !parse(fc([{ type: 'Feature', geometry: null, properties: null }])).error);
   //  what the ship saves, the editor opens: its check (+gj-check) asks
   //  for no geometry member and no range, and these are its caps

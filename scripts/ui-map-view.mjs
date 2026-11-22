@@ -693,6 +693,19 @@ console.log('==> a detail field in use is saved, and kept');
   await m.close();
 }
 
+console.log('==> a longitude no map has');
+{
+  //  a longitude no map has is refused at once, on open and on import
+  const m = await open(body([pt(-71, 42, { name: 'a' })]));
+  const bad = await m.page.evaluate((t) => { const h = document.createElement('div'); document.body.append(h); const t0 = performance.now(); const c = window.LatMap.mount(h, { text: t, cur: () => t }); h.remove(); return { error: c.error || '', ms: performance.now() - t0 }; },
+    body([pt(1e20, 0, { name: 'far' })]));
+  check('a page with a longitude of 1e20 is refused, not hung on', /longitude/.test(bad.error), JSON.stringify(bad));
+  const before = await m.page.evaluate(() => window.buf);
+  const imp = await m.page.evaluate(() => window.ctl.importFiles([new File(['{"type":"Feature","geometry":{"type":"LineString","coordinates":[[0,0],[1e30,0]]},"properties":{}}'], 'far.geojson')]));
+  check('a file with one imports nothing, and says why', imp === false && before === await m.page.evaluate(() => window.buf) && /longitude/.test(await m.note()), await m.note());
+  await m.close();
+}
+
 check('no page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
 await browser.close();
 check.done();
