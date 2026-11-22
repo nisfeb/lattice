@@ -479,6 +479,92 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   check('and the saved cell holds the new text', num.text().includes('<text:p>100.00%</text:p>'));
 }
 
+{
+  //  how the work grows. Counted, not timed: every read of a row run goes
+  //  through a counting proxy.
+  const num = (v) => `<table:table-cell office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  const fx = (f) => `<table:table-cell table:formula="${f}" office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell>`;
+  const sheetOf = (N, f) => {
+    let rows = '';
+    for (let i = 1; i <= N; i++) rows += `<table:table-row>${num(i)}${num(i * 2)}${fx(f(i, N))}</table:table-row>`;
+    return new Book(HEAD + `<table:table table:name="S">${rows}</table:table>` + TAIL);
+  };
+  const reads = (N, f) => {
+    const b = sheetOf(N, f);
+    const sh = b.sheets[0];
+    let n = 0;
+    sh.rows = new Proxy(sh.rows, { get(t, k, r) { if (typeof k === 'string' && k.charCodeAt(0) < 58) n++; return Reflect.get(t, k, r); } });
+    b.enter(0, 0, 0, '7');
+    return [n, b];
+  };
+  const grows = (label, f, right) => {
+    const [a] = reads(150, f), [z, b] = reads(300, f);
+    //  twice the rows is four times the cells read. Eight times is a
+    //  scan of the rows for every cell.
+    check(`${label}: twice the rows is about four times the work, not eight`, z / a < 5.5, `${a} then ${z}, ${(z / a).toFixed(1)} times`);
+    check.eq(`${label}: and the results are right`, [0, 6, 299].map((r) => b.cell(0, r, 2).v + (b.stale(0, r, 2) ? ' stale' : '')).join(), right);
+  };
+  grows('COUNTIF down a column', (i, N) => `of:=COUNTIF([.$A$1:.$A$${N}];[.A${i}])`, '2,2,1');
+  grows('VLOOKUP down a column', (i, N) => `of:=VLOOKUP([.A${i}];[.$A$1:.$B$${N}];2;0)`, '2,2,600');
+  grows('SUMIFS down a column', (i, N) => `of:=SUMIFS([.$B$1:.$B$${N}];[.$A$1:.$A$${N}];[.A${i}])`, '16,16,600');
+  grows('SUMPRODUCT down a column', (i, N) => `of:=SUMPRODUCT([.$A$1:.$A$${N}];[.$B$1:.$B$${N}])-[.A${i}]`, '18090105,18090105,18089812');
+  grows('MATCH down a column', (i, N) => `of:=MATCH([.A${i}];[.$A$1:.$A$${N}];0)`, '1,1,300');
+  grows('SUM down a column', (i, N) => `of:=SUM([.$A$1:.$A$${N}])+[.A${i}]`, '45163,45163,45456');
+}
+{
+  //  a chain of formulas, each reading the one above
+  const chain = (N) => {
+    let rows = '<table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>';
+    for (let i = 2; i <= N; i++) rows += `<table:table-row><table:table-cell table:formula="of:=[.A${i - 1}]+1" office:value-type="float" office:value="${i}"><text:p>${i}</text:p></table:table-cell></table:table-row>`;
+    return new Book(HEAD + `<table:table table:name="S">${rows}</table:table>` + TAIL);
+  };
+  const b2 = chain(2000), b4 = chain(4000);
+  b2.enter(0, 0, 0, '101');
+  b4.enter(0, 0, 0, '101');
+  check('finding what an edit reaches: twice the chain is about twice the checks', b4.engine.checks / b2.engine.checks < 2.5, `${b2.engine.checks} then ${b4.engine.checks}`);
+  check.eq('a chain of 4,000 follows its first cell', b4.cell(0, 3999, 0).v, 4100);
+  const big = chain(12000);
+  const r = big.enter(0, 0, 0, '101');
+  check.eq('a chain of 12,000 is followed to its end', big.cell(0, 11999, 0).v + ' ' + big.cell(0, 10001, 0).v + ' ' + big.stale(0, 11999, 0), '12100 10102 false');
+  check.eq('and every link changed', r.changed.length, 12000);
+  //  past the bound on that search, what was not reached is marked, never left looking right
+  const cut = chain(3000);
+  cut.engine.maxChecks = 500;
+  cut.enter(0, 0, 0, '101');
+  let wrong = 0, stale = 0, right = 0;
+  for (let i = 1; i < 3000; i++) { const ok = cut.cell(0, i, 0).v === i + 101; if (cut.stale(0, i, 0)) stale++; else if (ok) right++; else wrong++; }
+  check('past the bound on that search, a cell is right or is marked stale', wrong === 0 && stale > 0 && right > 0, `${right} right, ${stale} stale, ${wrong} wrong and unmarked`);
+  cut.engine.maxChecks = 20000000;
+  cut.enter(0, 0, 0, '201');
+  check('and a later edit within the bound clears the marks', !cut.stale(0, 2999, 0) && cut.cell(0, 2999, 0).v === 3200);
+  //  a formula typed over and over leaves nothing behind for the search to wade through
+  const again = chain(50);
+  for (let i = 0; i < 400; i++) again.enter(0, 1, 0, i % 2 ? '=A1+1' : '=A1+2');
+  again.enter(0, 0, 0, '101');
+  check('a formula retyped 400 times is found once', again.engine.checks < 200 && again.cell(0, 49, 0).v === 150, `${again.engine.checks} checks, ${again.cell(0, 49, 0).v}`);
+}
+{
+  //  a few hundred bytes of file, and formulas over all of it: each stops
+  //  at the walk budget, keeps its cached value and is marked
+  const bomb = (f) => new Book(HEAD + '<table:table table:name="B"><table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="16384" office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>'
+    + `<table:table-row><table:table-cell table:formula="${f}" office:value-type="float" office:value="7"><text:p>7</text:p></table:table-cell></table:table-row></table:table>` + TAIL);
+  for (const f of ['of:=COUNTIF([.A1:.XFD1000];1)', 'of:=SUMPRODUCT([.A1:.XFD1000];[.A1:.XFD1000])', 'of:=COUNTIFS([.A1:.XFD1000];1)', 'of:=COM.MICROSOFT.TEXTJOIN(&quot;&quot;;1;[.A1:.XFD1000])', 'of:=SUMIF([.A1:.XFD1000];1)', 'of:=VLOOKUP(2;[.A1:.XFD1000];1;0)+SUM([.A1:.XFD1000])']) {
+    const b = bomb(f);
+    b.enter(0, 0, 0, '5');
+    check(`${f.slice(4, 14)} over 16 million cells stops at the budget, marked, its value kept`, b.cell(0, 1000, 0).v === 7 && b.stale(0, 1000, 0) && b.engine.steps <= 5000001, `${b.cell(0, 1000, 0).v} ${b.stale(0, 1000, 0)} ${b.engine.steps}`);
+  }
+  //  many such formulas: the whole recalculation has a budget too
+  let cells = '';
+  for (let i = 0; i < 200; i++) cells += '<table:table-cell table:formula="of:=COUNTIF([.A1:.CV1000];1)" office:value-type="float" office:value="7"><text:p>7</text:p></table:table-cell>';
+  const many = new Book(HEAD + '<table:table table:name="B"><table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="100" office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>'
+    + `<table:table-row>${cells}</table:table-row></table:table>` + TAIL);
+  many.engine.maxTotal = 2000000;
+  many.enter(0, 0, 0, '5');
+  let done = 0, marked = 0, off = 0;
+  for (let c = 0; c < 200; c++) { if (many.stale(0, 1000, c)) { marked++; if (many.cell(0, 1000, c).v !== 7) off++; } else if (many.cell(0, 1000, c).v === 99999) done++; else off++; }
+  check('past the budget of one recalculation the rest are marked, none left wrong', off === 0 && done > 0 && marked > 0 && done + marked === 200 && many.engine.total <= 2200000, `${done} done, ${marked} marked, ${off} wrong, ${many.engine.total} steps`);
+}
+
 console.log('==> hostile input');
 {
   const head = '<?xml version="1.0"?>\n<office:document xmlns:office="o" xmlns:table="t" xmlns:text="x" office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet>';
@@ -500,6 +586,14 @@ console.log('==> hostile input');
   const deep = head + '<table:table table:name="B"><table:table-row><table:table-cell table:formula="of:=' + '('.repeat(500) + '1' + ')'.repeat(500) + '"/></table:table-row></table:table>' + tail;
   const bd = new Book(deep);
   check('a formula nested 500 deep is left alone, not crashed on', !bd.error && bd.enter(0, 0, 1, '1').changed.length === 1);
+  const long = head + '<table:table table:name="B"><table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell><table:table-cell table:formula="of:=[.A1]' + '+1'.repeat(20000) + '" office:value-type="float" office:value="20001"><text:p>20001</text:p></table:table-cell></table:table-row></table:table>' + tail;
+  const bl = new Book(long);
+  check('a file with a formula of 20,000 terms opens', !bl.error, bl.error);
+  if (!bl.error) {
+    bl.enter(0, 0, 0, '5');
+    check('its formula is left to LibreOffice: the cached value kept, and marked', bl.cell(0, 0, 1).v === 20001 && bl.stale(0, 0, 1) && bl.text().includes('+1+1+1'));
+    check('and the cell beside it took the edit', bl.cell(0, 0, 0).v === 5);
+  }
   const names = head + '<table:table table:name="A&amp;&lt;b&gt;&quot;"><table:table-row><table:table-cell office:value-type="string"><text:p>&lt;script&gt;alert(1)&lt;/script&gt;</text:p></table:table-cell></table:table-row></table:table>' + tail;
   const bn = new Book(names);
   check.eq('markup in a name and a cell is text', bn.sheets[0].name + ' ' + bn.cell(0, 0, 0).text, 'A&<b>" <script>alert(1)</script>');

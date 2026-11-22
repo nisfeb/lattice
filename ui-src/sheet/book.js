@@ -6,7 +6,7 @@
 //  engine in step, and gives back the flat ODS text.
 
 import {
-  parseFods, serializeFods, cellAt, setCell, setStyle, ownRow, extent, rowCount, MAX_ROWS, MAX_COLS, dateSerial,
+  parseFods, serializeFods, cellAt, setCell, setStyle, ownRow, bumpRows, extent, rowCount, MAX_ROWS, MAX_COLS, dateSerial,
 } from './model.js';
 import { Engine } from './engine.js';
 import { Styles, fixed } from './styles.js';
@@ -432,6 +432,7 @@ export class Book {
     // 2. the rows or columns themselves
     if (dim === 'r') this.shiftRows(sheet, at, n, cnt);
     else this.shiftCols(sheet, at, n, cnt);
+    bumpRows(sheet);
 
     // 3. spans moved: start again from the new text, then recompute what
     //    now points at nothing
