@@ -757,17 +757,17 @@ const blankText = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods')
   //  a column insert into a row already as long as the sheet
   const full = HEAD + '<table:table table:name="S"><table:table-column table:number-columns-repeated="16384"/>'
     + '<table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell><table:table-cell table:style-name="ce1" table:number-columns-repeated="16383"/></table:table-row>'
-    + '<table:table-row><table:table-cell table:number-columns-repeated="16383"/><table:table-cell office:value-type="string"><text:p>last</text:p></table:table-cell></table:table-row>'
+    + '<table:table-row><table:table-cell table:number-columns-repeated="16383"/><table:table-cell table:style-name="ce1"/></table:table-row>'
     + '<table:table-row><table:table-cell table:number-columns-repeated="16384"/></table:table-row></table:table>' + TAIL;
   const b = new Book(full);
   check('insert two columns into rows that reach the last column', b.shift(0, 'c', 1, 2).ok, b.error);
   const d = parseFods(b.text());
   check.eq('no row is longer than the sheet', d.sheets[0].rows.map((r) => r.cells.reduce((n, c) => n + c.rep, 0)).join(), '16384,16384,16384');
   check.eq('nor the column list', d.sheets[0].cols.reduce((n, c) => n + c.rep, 0), 16384);
-  check.eq('the cell pushed off the edge is gone, and the first is where it was', cellAt(d.sheets[0], 1, 16383).text + '|' + cellAt(d.sheets[0], 0, 0).v, '|1');
+  check.eq('the empty cell pushed off the edge is gone, and the first is where it was', (cellAt(d.sheets[0], 1, 16383).st || '') + '|' + cellAt(d.sheets[0], 0, 0).v, '|1');
   const one = new Book(full);
   one.shift(0, 'c', 16383, 1);
-  check.eq('an insert before the last column pushes that cell off', new Book(one.text()).cell(0, 1, 16383).text + '|' + parseFods(one.text()).sheets[0].rows.map((r) => r.cells.reduce((n, c) => n + c.rep, 0)).join(), '|16384,16384,16384');
+  check.eq('an insert before the last column pushes an empty cell off', (new Book(one.text()).cell(0, 1, 16383).st || '') + '|' + parseFods(one.text()).sheets[0].rows.map((r) => r.cells.reduce((n, c) => n + c.rep, 0)).join(), '|16384,16384,16384');
 }
 {
   //  results Calc gives, each run in LibreOffice
@@ -870,6 +870,24 @@ console.log('==> a bound is never a wrong value shown as right');
     check(`an insert (${dim} ${at}) in a ${N}-row sheet marks nothing`, r.ok && b.engine.stale.size === 0, `${b.engine.stale.size} marked`);
     if (dim === 'r' && at === 4000) check.eq('and the formula over the running totals is right', b.cell(0, 0, 1).v, (N * (N + 1)) / 2);
   }
+}
+
+console.log('==> an insert never pushes a filled cell off the sheet');
+{
+  const cellOf = (v) => `<table:table-cell office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  const edgeCol = new Book(HEAD + '<table:table table:name="S"><table:table-row><table:table-cell table:number-columns-repeated="16383"/>' + cellOf(7)
+    + '</table:table-row><table:table-row><table:table-cell table:formula="of:=[.XFD1]" office:value-type="float" office:value="7"><text:p>7</text:p></table:table-cell></table:table-row></table:table>' + TAIL);
+  check('a column insert is refused when a cell is in the last column', edgeCol.shift(0, 'c', 1, 1).error && /pushed past/.test(edgeCol.shift(0, 'c', 1, 1).error), JSON.stringify(edgeCol.shift(0, 'c', 1, 1)));
+  check('and nothing moved', edgeCol.cell(0, 0, 16383).v === 7 && edgeCol.cell(0, 1, 0).f === 'of:=[.XFD1]');
+  check('an insert at that column is refused too', !!edgeCol.shift(0, 'c', 16384 - 1, 1).error === true);
+  check('a delete is allowed', edgeCol.shift(0, 'c', 1, -1).ok && edgeCol.cell(0, 0, 16382).v === 7);
+  const edgeRow = new Book(HEAD + '<table:table table:name="S"><table:table-row table:number-rows-repeated="1048575"><table:table-cell/></table:table-row><table:table-row>' + cellOf(9) + '</table:table-row></table:table>' + TAIL);
+  check('a row insert is refused when a cell is in the last row', !!edgeRow.shift(0, 'r', 3, 1).error && edgeRow.cell(0, 1048575, 0).v === 9);
+  check('and a delete is not', edgeRow.shift(0, 'r', 3, -1).ok && edgeRow.cell(0, 1048574, 0).v === 9);
+  const roomy = new Book(HEAD + '<table:table table:name="S"><table:table-row><table:table-cell table:number-columns-repeated="16000"/>' + cellOf(7) + '</table:table-row></table:table>' + TAIL);
+  check('an insert with room to spare is accepted', roomy.shift(0, 'c', 1, 5).ok && roomy.cell(0, 0, 16005).v === 7);
+  check('and so is one that fills the room exactly', roomy.shift(0, 'c', 1, 16384 - 16006).ok && roomy.cell(0, 0, 16383).v === 7);
+  check('then one more is refused', !!roomy.shift(0, 'c', 1, 1).error);
 }
 
 console.log('==> hostile input');

@@ -361,6 +361,12 @@ export class Book {
     };
     walk(body);
     if (why) return why;
+    //  cells pushed past the last row or column are lost: Calc refuses an
+    //  insert that would, and so does lattice
+    if (n > 0) {
+      const used = extent(sheet)[dim === 'r' ? 0 : 1];
+      if (used > max - cnt && at < used) return `the last ${dim === 'r' ? 'rows' : 'columns'} of this sheet are filled, and they would be pushed past its edge`;
+    }
     //  a merged cell the edit would cut through
     let r = 0;
     for (const row of sheet.rows) {
