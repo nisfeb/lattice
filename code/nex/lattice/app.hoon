@@ -7804,8 +7804,11 @@
     ?^  old  (refuse "a skill restore: a live skill has the name: {(trip nm)}")
     ;<  t=(unit skill:lsk)  bind:m  (read-skill troad)
     ?~  t  (refuse "a skill restore: it is not in the trash: {(trip nm)}")
+    ::  stamped `updated` now, as a memory's restore is: the same bytes the
+    ::  dead road last held would be deduped to nothing (see %restore in
+    ::  +apply)
     ;<  ~  bind:m  (ensure-dirs up /skills/vault /[`@ta`nm])
-    ;<  ~  bind:m  (put-file road [/lattice %skill] u.t)
+    ;<  ~  bind:m  (put-file road [/lattice %skill] u.t(updated now))
     ;<  ~  bind:m  (gain:fio road %.y)
     (cull:fio troad)
   ::
@@ -22896,9 +22899,13 @@
     ;<  live=(unit know-entry:lk)  bind:m  (read-entry road)
     ?^  live  (refuse "a restore: a live note has the key: {(spud key)}")
     ::  MOVE back from the trash vault: write the live grub, then cull the trash
-    ::  copy, then swing the index rows.
+    ::  copy, then swing the index rows. The entry goes back stamped `updated`
+    ::  now. Unchanged, it is the same bytes the dead road last held, and a
+    ::  kernel that dedupes a write against a dead road's last version
+    ::  (de92127a) writes nothing: the restore answers ok, the trash copy is
+    ::  culled, and the note is gone from both.
     ;<  ~  bind:m  (ensure-dirs up vbase key)
-    ;<  ~  bind:m  (put-file road [/lattice %know-entry] u.old)
+    ;<  ~  bind:m  (put-file road [/lattice %know-entry] u.old(updated now))
     ;<  ~  bind:m  (gain:fio road %.y)
     ;<  ~  bind:m  (cull:fio troad)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
