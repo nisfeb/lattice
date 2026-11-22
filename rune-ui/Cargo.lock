@@ -2011,6 +2011,7 @@ dependencies = [
  "js-sys",
  "minisign-verify",
  "pulldown-cmark",
+ "resvg",
  "ring",
  "rune",
  "rune-kit",
@@ -2019,8 +2020,6 @@ dependencies = [
  "urb",
  "urb-gateway",
  "ureq",
- "usvg 0.45.1",
- "usvg 0.48.1",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -4766,6 +4765,8 @@ dependencies = [
 [[package]]
 name = "usvg"
 version = "0.45.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80be9b06fbae3b8b303400ab20778c80bbaf338f563afe567cf3c9eea17b47ef"
 dependencies = [
  "base64 0.22.1",
  "data-url",

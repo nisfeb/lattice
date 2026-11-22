@@ -21,6 +21,9 @@ pulldown-cmark = { version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 flate2 = "1"
+# the one that draws SVG pictures a page shows (`html::drawing`), the version Rune's picture cache draws them with, and
+# already in the build under it. Drawn here, with options that resolve no file, so no drawing reaches a copy of it that does
+resvg = { version = "0.45", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # the file dialog is the desktop's
@@ -56,12 +59,6 @@ blake3 = { version = "1", features = ["pure"] }
 # the build already, under rustls
 ring = "0.17"
 
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-# a test reads drawings as Blitz and Rune do, to hold both copies in `vendor` to reading no file. In the
-# build already, under blitz-dom and under Rune's resvg
-usvg = "=0.48.1"
-usvg-rune = { package = "usvg", version = "=0.45.1", default-features = false }
-
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Rune's own, already in the lock: the browser's entry point, clock, requests and storage
 wasm-bindgen = "0.2"
@@ -78,8 +75,6 @@ accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca
 
 # usvg with a default that reads no file from this computer's disk: see `vendor/usvg/Cargo.toml`
 usvg = { path = "vendor/usvg" }
-# and the older usvg that Rune's own picture cache reads drawings with, changed the same way
-usvg-rune = { path = "vendor/usvg-0.45", package = "usvg" }
 
 # Rune's layout crate with one arm added, so it builds beside Blitz: see `vendor/rune-taffy/Cargo.toml`
 [patch."https://github.com/anomalyco/rune"]

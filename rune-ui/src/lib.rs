@@ -4402,9 +4402,19 @@ fn take_pics(s: &mut App) -> bool {
             (Ok(bytes), _) if !html::fetched_ok(&bytes) => {
                 s.pics_failed.insert(src);
             }
-            (Ok(bytes), Some(cache)) => {
-                s.pics.insert(src, cache.load(bytes));
-            }
+            // a drawing is drawn here, by a reader that resolves no file: the cache's own would read any file the drawing names
+            (Ok(bytes), Some(cache)) => match html::drawing(&bytes) {
+                None => {
+                    s.pics.insert(src, cache.load(bytes));
+                }
+                Some(Ok((w, h, px))) => {
+                    s.pics.insert(src, cache.rgba(w, h, px));
+                }
+                Some(Err(e)) => {
+                    s.note = format!("an image did not load: {e}");
+                    s.pics_failed.insert(src);
+                }
+            },
             (Err(e), _) => {
                 s.note = format!("an image did not load: {e}");
                 s.pics_failed.insert(src);

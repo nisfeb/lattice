@@ -276,31 +276,39 @@ fn ifs(e: &mut Engine, sum: Option<&V>, tests: &[V], step: impl Fn(f64, &V) -> f
 }
 
 /// Rounded as Calc rounds: half away from nothing (`r`), away from it (`u`) or towards it
-/// (`d`). A product a hair off a whole number through binary arithmetic is that number:
-/// 0.29*100 is 29. The allowance is by the number's size, about the last of a double's
-/// figures. A set one took 8.2-8, which is under 0.2 by more than a hair, for 0.2.
+/// (`d`). The scaled number is taken as Calc takes it, so 0.29*100 is 29 and 8.2-8, which is
+/// under 0.2 by more than a hair, is not 0.2. Down and half-up read it to fifteen figures
+/// (`approx_value`). Up forgives only what is within a few parts in 10^12 of a whole number:
+/// 5.00000000000001 stays 5 and 5.00000000001 goes up to 6, as in Calc.
 fn round(n: f64, d: f64, mode: u8) -> f64 {
     // the count of places is a whole number: 2.9 places are 2
-    let f = 10f64.powf(d.trunc());
-    let x = n.abs() * f;
-    // more places than a number can have leave it as it is, and fewer than it has digits leave nothing
+    let places = d.trunc();
+    let f = 10f64.powf(places.abs());
+    let scale = |v: f64, forward: bool| if (places >= 0.0) == forward { v * f } else { v / f };
+    let x = scale(n.abs(), true);
+    // fewer places than a number has digits leave nothing, and more than it can have leave it as it is
+    if places < 0.0 && f.is_infinite() {
+        return 0.0;
+    }
     if !f.is_finite() || !x.is_finite() {
         return n;
-    }
-    if f == 0.0 {
-        return 0.0;
     }
     // too large to have a fraction at this place
     if x >= 4_503_599_627_370_496.0 {
         return n;
     }
-    let hair = x * 4.0 * f64::EPSILON;
     let y = match mode {
-        b'u' => (x - hair).ceil(),
-        b'd' => (x + hair).floor(),
-        _ => js_round(x + hair),
+        b'u' => {
+            let m = x.floor();
+            // the allowance goes with the number's first figure, and not past what is plainly a fraction
+            let hair = if x < 2_199_023_255_552.0 { 7.5e-12 * 10f64.powi(x.log10().floor() as i32) } else { 0.0 };
+            if x - m <= hair { m } else { x.ceil() }
+        }
+        b'd' => crate::calc::approx_value(x).floor(),
+        _ => js_round(crate::calc::approx_value(x)),
     };
-    if n < 0.0 { -y / f } else { y / f }
+    let out = scale(y, false);
+    if n < 0.0 { -out } else { out }
 }
 
 /// JavaScript's `Math.round`: a half goes up, toward the larger number.
@@ -1027,14 +1035,15 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         "VALUE" => {
             let v = scalar(e, &arg(0));
             let got = match &v {
-                // a comma groups the figures before the point in threes, or the text is no number: 1,5 is not 15
+                // a comma groups the figures before the point in threes, the first group of any length: 1234,567
+                // is 1234567, and 1,5 is not 15
                 V::Str(s) => {
                     let t = s.trim();
                     let body = t.strip_prefix(['+', '-']).unwrap_or(t);
                     let whole = &body[..body.find(['.', 'e', 'E']).unwrap_or(body.len())];
                     let mut groups = whole.split(',');
-                    let grouped = groups.next().is_some_and(|g| (1..=3).contains(&g.len())) && groups.all(|g| g.len() == 3);
-                    if whole.contains(',') && !grouped { err(VALUE) } else { to_num(&V::Str(s.replace(',', ""))) }
+                    let grouped = groups.next().is_some_and(|g| !g.is_empty() && g.bytes().all(|b| b.is_ascii_digit())) && groups.all(|g| g.len() == 3);
+                    if (whole.contains(',') && !grouped) || body[whole.len()..].contains(',') { err(VALUE) } else { to_num(&V::Str(s.replace(',', ""))) }
                 }
                 other => to_num(other),
             };

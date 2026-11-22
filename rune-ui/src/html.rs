@@ -534,9 +534,9 @@ const PICTURE_SIDE: u64 = 8192;
 /// decoded. A drawing (SVG) that draws other files in is refused too.
 /// That is a second guard, and it reads the text only as it is plainly
 /// written: a drawing that is zipped, or spelt with a prefix, passes
-/// it. What holds is that neither crate that reads drawings resolves
-/// an address to a file (`vendor/usvg` for an HTML page's, and
-/// `vendor/usvg-0.45` for the pictures a Markdown page shows).
+/// it. What holds is that nothing that reads drawings resolves an
+/// address to a file: `vendor/usvg` for an HTML page's, and `drawing`
+/// for the pictures a Markdown page shows.
 /// What is not a picture this knows (a style sheet, a font) passes.
 // ponytail: PNG, GIF, JPEG, WebP and BMP are measured. A bomb in another format the decoder knows is not caught here. A size limit in the decoder itself is the fix
 pub fn fetched_ok(b: &[u8]) -> bool {
@@ -587,15 +587,63 @@ pub fn fetched_ok(b: &[u8]) -> bool {
     true
 }
 
+/// Whether bytes are a drawing as Rune's picture cache takes them to be: gzip (SVGZ), or markup after an optional
+/// byte order mark and white space. No raster format starts with `<`.
+pub fn is_drawing(bytes: &[u8]) -> bool {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return true;
+    }
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<')
+}
+
+/// The longest side, in pixels, a drawing is drawn at.
+const DRAWING_SIDE: u32 = 2048;
+
+/// A drawing a page shows, drawn as straight RGBA at twice its own size, as Rune's picture cache draws one but
+/// with a reader that resolves no address to a file: a drawing may hold only the pictures written out in it
+/// (`data:`). `None` when the bytes are no drawing by `is_drawing`, which are for the cache to decode. Every
+/// drawing that comes to the cache is drawn here, since the one it draws with reads any file a drawing names.
+pub fn drawing(bytes: &[u8]) -> Option<Result<(u32, u32, Vec<u8>), String>> {
+    use resvg::{tiny_skia, usvg};
+    if !is_drawing(bytes) {
+        return None;
+    }
+    let draw = || {
+        if bytes.len() > 32 << 20 {
+            return Err("the drawing is too large".to_owned());
+        }
+        let options = usvg::Options { image_href_resolver: usvg::ImageHrefResolver { resolve_string: Box::new(|_, _| None), ..Default::default() }, ..Default::default() };
+        let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| format!("drawing: {e}"))?;
+        let size = tree.size();
+        let side = size.width().max(size.height());
+        let px = if side > 0.0 && side.is_finite() { (side * 2.0).ceil().clamp(1.0, DRAWING_SIDE as f32) as u32 } else { return Err("the drawing is empty".to_owned()) };
+        let k = px as f32 / side;
+        let (w, h) = (((size.width() * k).round() as u32).clamp(1, px), ((size.height() * k).round() as u32).clamp(1, px));
+        let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("the drawing is empty")?;
+        resvg::render(&tree, tiny_skia::Transform::from_scale(k, k), &mut pixmap.as_mut());
+        Ok((
+            w,
+            h,
+            pixmap
+                .pixels()
+                .iter()
+                .flat_map(|p| {
+                    let c = p.demultiply();
+                    [c.red(), c.green(), c.blue(), c.alpha()]
+                })
+                .collect(),
+        ))
+    };
+    Some(draw())
+}
+
 /// HTML as it is given to what draws it. A drawing set into the page
 /// may name a file to draw in: such an element is made one that means
 /// nothing. As in `fetched_ok` this is the second guard, and
-/// `vendor/usvg`, which reads no file, is the first. A page nested past
-/// what the drawing's stack holds is put aside for a line that says so.
+/// `vendor/usvg`, which reads no file, is the first. How deep a page nests
+/// is measured on the tree that draws it (`htmlview::document`).
 pub fn tamed(html: &str) -> std::borrow::Cow<'_, str> {
-    if deeper_than(html, DEEPEST) {
-        return std::borrow::Cow::Borrowed("<html><body><p>This page is nested too deeply to draw.</p></body></html>");
-    }
     if !draws_a_file(html) {
         return std::borrow::Cow::Borrowed(html);
     }
@@ -685,238 +733,6 @@ fn draws_a_file(s: &str) -> bool {
             return true;
         }
         rest = &rest[at + len..];
-    }
-    false
-}
-
-/// The deepest a page's elements may stand one inside another and be drawn.
-pub const DEEPEST: usize = 4096;
-
-/// Where the tag whose name ends at `at` ends, at its `>` (the text's
-/// length when it has none), and whether it closes itself. Read as a
-/// browser reads a tag: a quote hides a `>` only in a value that began
-/// with it, and a `/` closes the tag only outside a value, so `r=1/>`
-/// is a value of `1/` and an element left open.
-fn tag_close(b: &[u8], at: usize) -> (usize, bool) {
-    #[derive(PartialEq)]
-    enum In {
-        Name,
-        Before,
-        Attr,
-        After,
-        Value,
-        Quoted(u8),
-        Bare,
-        Slash,
-    }
-    let (mut i, mut st) = (at, In::Name);
-    while i < b.len() {
-        let c = b[i];
-        let space = c.is_ascii_whitespace();
-        // a `/` that no `>` follows closes nothing: what follows it is read as the start of an attribute
-        if st == In::Slash {
-            if c == b'>' {
-                return (i, true);
-            }
-            st = In::Before;
-        }
-        st = match st {
-            In::Quoted(q) => if c == q { In::Before } else { In::Quoted(q) },
-            _ if c == b'>' => return (i, false),
-            In::Value if space => In::Value,
-            In::Value if c == b'"' || c == b'\'' => In::Quoted(c),
-            In::Value | In::Bare => if space { In::Before } else { In::Bare },
-            _ if c == b'/' => In::Slash,
-            In::Name => if space { In::Before } else { In::Name },
-            In::Before => if space { In::Before } else { In::Attr },
-            _ if c == b'=' => In::Value,
-            _ => if space { In::After } else { In::Attr },
-        };
-        i += 1;
-    }
-    (b.len(), false)
-}
-
-/// Where the closing tag of an element whose inside is text stands, at
-/// or after `from`: the text's length when it has none. `name` is in
-/// small letters. A script's inside may hide its own closing tag, as a
-/// browser reads it: after `<!--`, a `<script>` makes the next
-/// `</script>` part of the text, until `-->`.
-fn text_end(src: &str, from: usize, name: &str) -> usize {
-    let b = src.as_bytes();
-    let tag_at = |at: usize, lead: &str, word: &str| {
-        let end = at + lead.len() + word.len();
-        b[at..].starts_with(lead.as_bytes()) && b.get(at + lead.len()..end).is_some_and(|w| w.eq_ignore_ascii_case(word.as_bytes())) && b.get(end).is_some_and(|c| c.is_ascii_whitespace() || *c == b'/' || *c == b'>')
-    };
-    // 0: plain, 1: after `<!--`, 2: after a `<script>` inside that
-    let (mut i, mut hidden, script) = (from, 0u8, name == "script");
-    while i < b.len() {
-        match b[i] {
-            b'<' if hidden < 2 && tag_at(i, "</", name) => return i,
-            // the two dashes are read again: `<!-->` hides nothing
-            b'<' if script && hidden == 0 && b[i..].starts_with(b"<!--") => (hidden, i) = (1, i + 1),
-            b'<' if hidden == 1 && tag_at(i, "<", name) => hidden = 2,
-            b'<' if hidden == 2 && tag_at(i, "</", name) => hidden = 1,
-            b'-' if hidden > 0 && b[i..].starts_with(b"-->") => hidden = 0,
-            _ => {}
-        }
-        i += 1;
-    }
-    b.len()
-}
-
-/// Where what opens at `lt` with `<!`, `<?` or a `</` that names nothing
-/// ends: one past its last byte. A comment ends as a browser ends it,
-/// and marked text (`<![CDATA[`) is that only inside a drawing or a
-/// formula: anywhere else it ends at the first `>`.
-fn note_end(src: &str, lt: usize, foreign: bool) -> usize {
-    let b = src.as_bytes();
-    let first = |from: usize, ends: &[&str]| ends.iter().filter_map(|e| src.get(from..).and_then(|t| t.find(e)).map(|p| from + p + e.len())).min().unwrap_or(b.len());
-    if b[lt..].starts_with(b"<!--") {
-        // `<!-->` and `<!--->` are whole comments
-        return match b.get(lt + 4..) {
-            Some([b'>', ..]) => lt + 5,
-            Some([b'-', b'>', ..]) => lt + 6,
-            _ => first(lt + 4, &["-->", "--!>"]),
-        };
-    }
-    if foreign && b[lt..].starts_with(b"<![CDATA[") {
-        return first(lt + 9, &["]]>"]);
-    }
-    first(lt, &[">"])
-}
-
-/// Whether HTML has elements one inside another deeper than `most`.
-/// Counted from its tags alone, so an element left open counts as one
-/// that holds all that follows: the count errs towards deep.
-///
-/// Inside a drawing (`<svg>`) or a formula (`<math>`) a tag that ends
-/// `/>` opens nothing, where in HTML proper it does. A chart of
-/// thousands of such shapes is four deep, not thousands. That reading
-/// is kept only while the text is surely inside the drawing: an element
-/// of HTML's set into it ends the drawing, as it does in a browser, and
-/// so does a closing tag that closes nothing open in it.
-pub fn deeper_than(src: &str, most: usize) -> bool {
-    // elements with no inside, and those a browser closes by itself when the next of their kind opens: a list of five thousand items written with no closing tags is not five thousand deep
-    const VOID: [&str; 28] = ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr", "li", "p", "td", "th", "tr", "option", "dt", "dd", "thead", "tbody", "tfoot", "colgroup", "optgroup", "rp"];
-    // HTML's own elements: one of them inside a drawing ends the drawing and stands in the page
-    const BREAKS: [&str; 45] = ["b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt", "em", "embed", "font", "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s", "small", "span", "strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var"];
-    // a drawing's and a formula's elements whose inside is read as HTML
-    const HOLDS_HTML: [&str; 9] = ["foreignobject", "desc", "title", "mi", "mo", "mn", "ms", "mtext", "annotation-xml"];
-    // elements whose inside is text: no drawing starts before one of these closes
-    const HOLDS_TEXT: [&str; 7] = ["title", "textarea", "xmp", "iframe", "noembed", "noframes", "plaintext"];
-    let is = |list: &[&str], name: &str| list.iter().any(|v| v.eq_ignore_ascii_case(name));
-    let (b, mut i, mut depth) = (src.as_bytes(), 0, 0usize);
-    // the elements open inside the drawing the text is surely in, the drawing first: empty when it is in none, or may not be
-    let mut open: Vec<&str> = Vec::new();
-    // whether the innermost of them is one whose inside is read as HTML: only text has stood in it so far
-    let mut held = false;
-    // before this place no drawing starts: the text is inside a tag, a comment, or an element that holds text
-    let mut quiet = 0;
-    // inside a list of choices a drawing's tag is passed over
-    let mut choosing = false;
-    // whether the text may still be inside a drawing that was taken to have ended. There a script's inside is markup, and no element closes by itself
-    let mut unsure = false;
-    while let Some(lt) = b[i..].iter().position(|c| *c == b'<').map(|p| p + i) {
-        i = lt + 1;
-        let closing = b.get(i) == Some(&b'/');
-        let from = if closing { i + 1 } else { i };
-        if !open.is_empty() {
-            // inside a drawing the text is read as a browser reads it, token by token: nothing inside a comment or a tag is a tag
-            if !b.get(from).is_some_and(u8::is_ascii_alphabetic) {
-                if matches!(b.get(i), Some(b'!' | b'?' | b'/')) {
-                    i = note_end(src, lt, true);
-                }
-                continue;
-            }
-            let len = b[from..].iter().take_while(|c| !c.is_ascii_whitespace() && **c != b'/' && **c != b'>').count();
-            let name = &src[from..from + len];
-            let (end, alone) = tag_close(b, from + len);
-            if closing {
-                i = (end + 1).min(b.len());
-                match open.iter().rposition(|n| n.eq_ignore_ascii_case(name)) {
-                    Some(at) => {
-                        depth = depth.saturating_sub(open.len() - at);
-                        open.truncate(at);
-                    }
-                    // it closes something outside the drawing, or nothing: which is not known, so the drawing is taken to have ended and nothing to have closed
-                    None => {
-                        open.clear();
-                        unsure = true;
-                    }
-                }
-                held = false;
-                continue;
-            }
-            if !held && !is(&BREAKS, name) {
-                i = (end + 1).min(b.len());
-                if end < b.len() && !alone {
-                    depth += 1;
-                    if depth > most {
-                        return true;
-                    }
-                    open.push(name);
-                    held = is(&HOLDS_HTML, name);
-                }
-                continue;
-            }
-            // an element of HTML's: the drawing is left, and the tag is counted as any tag of the page is
-            open.clear();
-            held = false;
-        }
-        let len = b[from.min(b.len())..].iter().take_while(|c| c.is_ascii_alphanumeric()).count();
-        if len == 0 {
-            if lt >= quiet && matches!(b.get(i), Some(b'!' | b'?' | b'/')) {
-                quiet = note_end(src, lt, unsure);
-            }
-            continue;
-        }
-        let name = &src[from..from + len];
-        // a drawing starts only at a tag that is one: not inside another tag's value, a comment, or text that only looks like it
-        let clean = lt >= quiet;
-        let (mut ended, mut alone) = (false, false);
-        if clean {
-            let (end, slash) = tag_close(b, from + len);
-            (quiet, ended, alone) = ((end + 1).min(b.len()), end < b.len(), slash);
-        }
-        let next = b.get(from + len).copied().unwrap_or(b'>');
-        // an element of HTML's is read as HTML wherever it stands
-        if clean && !closing && (next.is_ascii_whitespace() || next == b'/' || next == b'>') && is(&BREAKS, name) {
-            unsure = false;
-        }
-        // a script's or a style's inside is not markup: `i<n` there opens nothing. Neither its opening nor its closing is counted
-        if !unsure && (name.eq_ignore_ascii_case("script") || name.eq_ignore_ascii_case("style")) {
-            // one that only looks like a tag, inside a comment or a value, hides nothing
-            if !closing && clean {
-                i = text_end(src, quiet, &name.to_ascii_lowercase());
-            }
-            continue;
-        }
-        let mut drawing = false;
-        if clean {
-            if name.eq_ignore_ascii_case("select") && (next.is_ascii_whitespace() || next == b'/' || next == b'>') {
-                choosing = !closing;
-            }
-            drawing = !choosing && !closing && !alone && ended && (next.is_ascii_whitespace() || next == b'>') && (name.eq_ignore_ascii_case("svg") || name.eq_ignore_ascii_case("math"));
-            if !closing && is(&HOLDS_TEXT, name) {
-                quiet = if name.eq_ignore_ascii_case("plaintext") { b.len() } else { text_end(src, quiet, &name.to_ascii_lowercase()) };
-            }
-        }
-        if !unsure && VOID.iter().any(|v| v.eq_ignore_ascii_case(name)) {
-            continue;
-        }
-        if closing {
-            depth = depth.saturating_sub(1);
-        } else {
-            depth += 1;
-            if depth > most {
-                return true;
-            }
-            if drawing {
-                open.push(name);
-                i = quiet;
-            }
-        }
     }
     false
 }
@@ -1088,16 +904,6 @@ mod tests {
         // a `>` inside a quoted value does not end the tag before its address is read
         assert_eq!(tamed("<svg><image title=\"a>b\" href=\"file:///etc/passwd\"/></svg>"), "<svg><x-image title=\"a>b\" href=\"file:///etc/passwd\"/></svg>");
         assert!(!fetched_ok(b"<svg><feImage result='>' xlink:href='/dev/zero'/></svg>"));
-        // scripts between do not hide how deep a page is
-        assert!(deeper_than(&"<div><script></script>".repeat(100_000), DEEPEST));
-        // a long list written with no closing tags is not deep, nor is a script that compares
-        let list = format!("<html><body><ul>{}</ul></body></html>", "<li>item\n".repeat(30_000));
-        assert!(!deeper_than(&list, DEEPEST));
-        assert!(!deeper_than(&format!("<script>{}</script><p>x", "if(i<n){}".repeat(30_000)), DEEPEST));
-        let deep = format!("<html><body>{}x</body></html>", "<span>".repeat(100_000));
-        assert!(tamed(&deep).contains("too deeply"));
-        assert!(!deeper_than(&format!("{}x{}", "<div>".repeat(100), "</div>".repeat(100)), 200));
-        assert!(!deeper_than(&"<br><img><p>a</p>".repeat(50_000), 10));
         // many skipped elements are passed over in one reading
         let t = std::time::Instant::now();
         let _ = to_markdown(&"<svg></svg>".repeat(80_000));
@@ -1154,7 +960,6 @@ mod tests {
                 let _ = tamed(page);
                 let _ = fetched_ok(page.as_bytes());
                 let _ = fetched_ok(format!("<svg>{page}").as_bytes());
-                let _ = deeper_than(page, 2);
                 let _ = to_markdown(page);
                 let _ = decode(page);
             });
@@ -1227,67 +1032,30 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_shape_that_closes_itself_inside_a_drawing_opens_nothing() {
-        let deep = |page: &str| deeper_than(page, 100);
-        let many = |one: &str| one.repeat(5_000);
-        // a chart: thousands of shapes, groups, a title on each, a style, a comment, marked text
-        assert!(!tamed(&format!("<html><head><title>T</title><style>p{{}}</style></head><body><svg>{}</svg></body></html>", many("<circle r=\"1\"/>"))).contains("too deeply"));
-        assert!(!deep(&format!("<svg>{}</svg>", many("<g id='a'><path d=\"M0 0\" /><rect x=1 /><title>tip</title><text>t</text></g><!-- <g> --><![CDATA[ <g> ]]><use href='#a'/>"))));
-        assert!(!deep(&format!("<svg><style>a>b{{}}</style><defs><linearGradient><stop/></linearGradient></defs>{}</svg>", many("<circle/>"))));
-        assert!(!deep(&format!("<p>x</p><math>{}</math>", many("<mspace/><mi>x</mi>"))));
-        assert!(!deep(&many("<svg><circle/><circle/></svg>")));
-        // outside a drawing such a tag opens, as it does in a browser
-        assert!(deep(&many("<circle/>")) && deep(&many("<div/>")) && deep(&format!("<svg></svg>{}", many("<circle/>"))));
-        // a `/` that is the end of a value closes nothing, nor does one a `>` does not follow
-        assert!(deep(&format!("<svg>{}", many("<circle r=1/>"))) && deep(&format!("<svg>{}", many("<circle r= />"))) && deep(&format!("<svg>{}", many("<circle / r>"))));
-        assert!(!deep(&format!("<svg>{}", many("<circle r='1'/>"))) && !deep(&format!("<svg>{}", many("<circle r/>"))) && !deep(&format!("<svg>{}", many("<circle r=\"a>b\" t='/>' />"))));
-        // an element of HTML's ends the drawing, and so does one set in where HTML is read
-        assert!(deep(&format!("<svg>{}", many("<div/>"))) && deep(&format!("<svg><p>{}", many("<circle/>"))) && deep(&format!("<svg><font>{}", many("<circle/>"))));
-        assert!(deep(&format!("<svg><foreignObject>{}", many("<circle/>"))) && deep(&format!("<svg><title><b>x</b></title>{}", many("<circle/>"))) && deep(&format!("<math><mi>{}", many("<x/>"))));
-        // a closing tag that closes nothing in the drawing may have closed the drawing
-        assert!(deep(&format!("<div><svg></div>{}", many("<circle/>"))) && deep(&format!("<g><svg><g></g></g>{}", many("<circle/>"))));
-        assert!(!deep(&format!("<svg><g><g></g></g>{}", many("<circle/>"))));
-        // what only looks like a drawing's tag starts none
-        for lead in ["<!-- <svg> -->", "<a title=\"<svg>\">", "<textarea><svg></textarea>", "<title><svg></title>", "<script>'<svg>'</script>", "<style><svg></style>", "<select><svg></select>", "<!doctype <svg>", "<![CDATA[<svg>]]>", "</ <svg>", "<? <svg>", "<svg/>", "<svg-x>", "<svg", "<script><!--<script></script><svg><script>--></script>", "<textarea></textareax><svg><textarea></textarea>", "<script x=\"</script>\"><svg><script></script>", "<!--!><svg><!-- -->", "<xmp><svg></xmp>", "<plaintext><svg>"] {
-            assert!(deep(&format!("{lead}{}", many("<circle/>"))), "{lead}");
-        }
-        // and what only looks like the end of a comment or of a script's text does not hide one that is
-        for lead in ["<!--><svg>", "<!----><svg>", "<!-- a --!><svg>", "<!---><svg>", "<script></scriptx></script><svg>", "<script><!--<script></script>--></script><svg>", "<a title='>'><svg>", "<SVG >", "<svg\n>", "<svg x='/'>", "<select></select><svg>", "<title></title><svg>"] {
-            assert!(!deep(&format!("{lead}{}", many("<circle/>"))), "{lead}");
-        }
-        // inside a drawing the elements that HTML closes by itself stand one in another
-        assert!(deep(&format!("<svg>{}", many("<td>"))) && deep(&format!("<svg>{}", many("<g>"))) && !deep(&format!("<svg>{}", many("<g></g>"))));
-        // a page that is deep outside its drawings is still deep
-        assert!(deep(&format!("{}<svg><circle/></svg>", many("<div>"))) && deep(&format!("<svg><circle/></svg>{}", many("<div>"))));
+    /// Straight RGBA of the middle of a drawing as `drawing` draws it, or what it said.
+    fn middle(bytes: &[u8]) -> Result<[u8; 4], String> {
+        let (w, h, px) = drawing(bytes).expect("a drawing")?;
+        let at = ((h / 2 * w + w / 2) * 4) as usize;
+        Ok([px[at], px[at + 1], px[at + 2], px[at + 3]])
     }
 
-    /// A test that a drawing which names a file does not read it, for one of the two crates that read drawings: `usvg` reads those an HTML page holds (through Blitz) and `usvg_rune` those a Markdown page shows (through Rune's picture cache). Each is read as it is there, with the options the crate gives by default.
-    #[cfg(not(target_arch = "wasm32"))]
-    macro_rules! reads_no_file {
-        ($test:ident, $usvg:ident) => {
     #[test]
-    fn $test() {
+    fn a_drawing_a_markdown_page_shows_that_names_a_file_does_not_read_it() {
         use std::io::Write;
-        // how many pictures a drawing holds, those of its filters too. `None` when it is no drawing
-        fn pictures(bytes: &[u8]) -> Option<usize> {
-            fn count(g: &$usvg::Group) -> usize {
-                let filtered: usize = g.filters().iter().flat_map(|f| f.primitives()).map(|p| if let $usvg::filter::Kind::Image(i) = p.kind() { count(i.root()) } else { 0 }).sum();
-                filtered + g.children().iter().map(|n| match n { $usvg::Node::Image(_) => 1, $usvg::Node::Group(g) => count(g), _ => 0 }).sum::<usize>()
-            }
-            $usvg::Tree::from_data(bytes, &$usvg::Options::default()).ok().map(|t| count(t.root()))
-        }
         const SVG: &str = "http://www.w3.org/2000/svg";
-        // a picture that is really there, so that a reading of it would show
-        let png = [0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R', 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89];
-        let file = std::env::temp_dir().join(format!("lattice-drawing-test-{}-{}.png", stringify!($usvg), std::process::id()));
-        std::fs::write(&file, png).unwrap();
-        let path = file.to_str().unwrap();
+        // a drawing in a file that would paint the middle red if it were read
+        let red = format!("<svg xmlns='{SVG}' width='100' height='100'><rect width='100' height='100' fill='#ff0000'/></svg>");
+        let dir = std::env::temp_dir().join(format!("lattice-drawing-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("red.svg");
+        std::fs::write(&file, &red).unwrap();
         let gz = |text: &str| {
             let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
             e.write_all(text.as_bytes()).unwrap();
             e.finish().unwrap()
         };
+        let enc = |text: &str| text.replace('<', "%3C").replace('>', "%3E").replace('\'', "%27");
+        // every spelling by which a drawing may name an address: the same of a file, and of the drawing written out
         let spelt = |href: &str| {
             let plain = format!("<svg xmlns='{SVG}' width='10' height='10'><image href='{href}' width='10' height='10'/></svg>");
             vec![
@@ -1295,34 +1063,55 @@ mod tests {
                 ("xlink", format!("<svg xmlns='{SVG}' xmlns:xlink='http://www.w3.org/1999/xlink' width='10' height='10'><image xlink:href='{href}' width='10' height='10'/></svg>").into_bytes()),
                 ("past the first 4096 bytes", format!("<?xml version='1.0'?><!--{}-->{plain}", "x".repeat(4100)).into_bytes()),
                 ("a prefix for the namespace", format!("<s:svg xmlns:s='{SVG}' width='10' height='10'><s:image href='{href}' width='10' height='10'/></s:svg>").into_bytes()),
+                ("a byte order mark and white space", format!("\u{feff} \n{plain}").into_bytes()),
                 ("gzip", gz(&plain)),
                 ("gzip of a prefix", gz(&format!("<s:svg xmlns:s='{SVG}' width='10' height='10'><s:image href='{href}' width='10' height='10'/></s:svg>"))),
-                ("set into a page, with a prefix", format!("<svg xmlns:x=\"{SVG}\" width=\"10\" height=\"10\"><x:image href=\"{href}\" width=\"10\" height=\"10\"></x:image></svg>").into_bytes()),
                 ("an entity for the address", format!("<!DOCTYPE svg [<!ENTITY e \"{href}\">]><svg xmlns='{SVG}' width='10' height='10'><image href='&e;' width='10' height='10'/></svg>").into_bytes()),
-                ("a filter", format!("<svg xmlns='{SVG}' width='10' height='10'><filter id='f'><feImage href='{href}'/></filter><rect width='10' height='10' filter='url(#f)'/></svg>").into_bytes()),
+                ("a filter", format!("<svg xmlns='{SVG}' width='10' height='10'><filter id='f' x='0' y='0' width='1' height='1'><feImage href='{href}' width='10' height='10'/></filter><rect width='10' height='10' filter='url(#f)'/></svg>").into_bytes()),
+                ("a drawing in a drawing", format!("<svg xmlns='{SVG}' width='10' height='10'><image href=\"data:image/svg+xml,{}\" width='10' height='10'/></svg>", enc(&plain)).into_bytes()),
             ]
         };
-        for (how, drawing) in spelt(path) {
-            assert_eq!(pictures(&drawing), Some(0), "{how}: the drawing is read, and the file it names is not");
+        let data = format!("data:image/svg+xml;base64,{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, red.as_bytes()));
+        let mut read = Vec::new();
+        for ((how, named), (_, written)) in spelt(file.to_str().unwrap()).into_iter().zip(spelt(&data)) {
+            // the control: the drawing written out in the drawing is drawn, so a read of the file would be seen
+            if how != "a drawing in a drawing" {
+                let control = middle(&written).unwrap();
+                assert!(control[0] > 200 && control[1] < 50 && control[3] > 200, "{how}: the control draws {control:?}");
+            }
+            let got = middle(&named).unwrap();
+            if got[3] != 0 {
+                read.push(format!("{how}: {got:?}"));
+            }
         }
-        // the same drawings with the picture written out in them hold it: the count above would have shown a file read
-        for (how, drawing) in spelt("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ") {
-            assert_eq!(pictures(&drawing), Some(1), "{how}");
-        }
-        // a drawing held in a drawing reads no file either
-        let inner = format!("<svg xmlns='{SVG}' width='10' height='10'><image href='{path}' width='10' height='10'/></svg>").replace('<', "%3C").replace('>', "%3E").replace('\'', "%27");
-        let nested = format!("<svg xmlns='{SVG}' width='10' height='10'><image href=\"data:image/svg+xml,{inner}\" width='10' height='10'/></svg>");
-        if let Some($usvg::Node::Image(held)) = $usvg::Tree::from_data(nested.as_bytes(), &$usvg::Options::default()).unwrap().root().children().first() {
-            assert!(matches!(held.kind(), $usvg::ImageKind::SVG(t) if t.root().children().is_empty()), "the inner drawing read the file");
-        }
-        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(read.is_empty(), "drawn from the file: {read:?}");
+        // what is no drawing is left to the picture cache, and what is one is said when it cannot be drawn
+        assert!(drawing(b"\x89PNG\r\n\x1a\n").is_none() && drawing(b"GIF89a").is_none() && drawing(b"").is_none());
+        assert!(matches!(drawing(b"<svg"), Some(Err(_))) && matches!(drawing(b"\x1f\x8b\x08"), Some(Err(_))));
+        assert!(is_drawing(b"\xef\xbb\xbf\n <svg>") && !is_drawing(b"\xef\xbb\xbf\n x <svg>"));
     }
-        };
+
+    #[test]
+    fn what_is_no_drawing_here_is_no_drawing_to_the_picture_cache_either() {
+        // the cache draws what it takes to be a drawing with a reader that reads files, so every drawing must be
+        // one `is_drawing` knows, and so be drawn here. What it does not know is read by the cache as no drawing
+        const SVG: &str = "http://www.w3.org/2000/svg";
+        let dir = std::env::temp_dir().join(format!("lattice-cache-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("red.svg");
+        std::fs::write(&file, format!("<svg xmlns='{SVG}' width='100' height='100'><rect width='100' height='100' fill='#ff0000'/></svg>")).unwrap();
+        let named = format!("<svg xmlns='{SVG}' width='10' height='10'><image href='{}' width='10' height='10'/></svg>", file.display());
+        let cache = rune::ImageCache::new(std::sync::Arc::new(|| {}));
+        for lead in ["\0", "\u{a0}", "x", "\u{b}", "\u{feff}\u{feff}", "\u{2028}"] {
+            let bytes = format!("{lead}{named}").into_bytes();
+            if is_drawing(&bytes) {
+                continue;
+            }
+            assert!(cache.load(bytes).wait().is_err(), "{lead:?}: the cache drew what is no drawing here");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    reads_no_file!(a_drawing_in_an_html_page_that_names_a_file_does_not_read_it, usvg);
-    #[cfg(not(target_arch = "wasm32"))]
-    reads_no_file!(a_drawing_a_markdown_page_shows_that_names_a_file_does_not_read_it, usvg_rune);
 
     #[test]
     fn broken_pages_do_not_panic_or_hang() {
