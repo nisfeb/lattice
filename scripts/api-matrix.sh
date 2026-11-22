@@ -895,6 +895,18 @@ is "  and its page"                         yes "$(gin apimx-g9 peek "/page/$H/g
 for g in nus sef ped apimx-g9; do sc -X POST "$B/share-group-del?name=$g" >/dev/null; done
 sc -X POST "$B/page-del?name=$H&tree=1" >/dev/null
 
+echo "==> memory saves keep a block of the sender's own"
+KF="apimx/$$-f6"
+is "a keyed-style save of a body with its own block" 200 "$(sc -X POST "$B/know-save?key=$KF&author=apimx&force_new=1" --data-binary $'---\nNote: intro\n---\nrest of the f6 note')"
+has "  keeps the block's line"              'Note: intro' "$(G "$B/know-read?key=$KF")"
+has "  and the text under it"               'rest of the f6 note' "$(G "$B/know-read?key=$KF")"
+sc -X POST "$B/know-delete?key=$KF" >/dev/null
+KS="apimx/$$-f4"
+is "an entry superseded, its block with a stray line" 200 "$(sc -X POST "$B/know-save?key=$KS" --data-binary $'---\ntags: [\n  a\n]\nsuperseded-by: /apimx/elsewhere\n---\nqornflaxe superseded body')"
+hasnt "  stays out of search"               "$KS" "$(G "$B/know-search?q=qornflaxe")"
+has "  and is found with superseded=1"      "$KS" "$(G "$B/know-search?q=qornflaxe&superseded=1")"
+sc -X POST "$B/know-delete?key=$KS" >/dev/null
+
 echo "==> a create that loses the race leaves the winner's display name"
 # a folder move keeps the writer busy, so two creates of one name both
 # pass the checks before either lands. The one written wins, and the
