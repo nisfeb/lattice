@@ -2,13 +2,13 @@
 (function () {
 'use strict';
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
-const WRITER_H = '0v3.nm6k7.4k7eg.i0bfe.baj4s.uumr7';
+const WRITER_H = '0v1.oeihn.h47ui.s0kd2.qk8a7.9s5i7';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
 const SHEET_H = '0v2.3fp0m.2f0k7.l5di6.1kmai.55lkd';
 // and map.js's, the map view (26-writer.js)
 const MAP_H = '0v1.ovhm4.m8gme.njo4b.e5g5o.i11kg';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)
-const SCAD_H = '0v3.83q9u.qhgj4.1bo0q.2nelf.nbkkr';
+const SCAD_H = '0v4.iq23m.dbm3b.tlssr.m2osn.clskh';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
@@ -4221,7 +4221,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   function backCh(p, n, lo){ while(n-- > 0 && p > lo) p = prevCh(p); return p > lo ? p : lo; }
   function snapCh(p){ return p > 0 && pairAt(val(), p - 1) ? p - 1 : p; }
 
-  function lineStart(p){ var v = val(); var i = v.lastIndexOf("\n", p - 1); return i + 1; }
+  function lineStart(p){ if(p <= 0) return 0; var i = val().lastIndexOf("\n", p - 1); return i + 1; }
   function lineEnd(p){ var v = val(); var i = v.indexOf("\n", p); return i < 0 ? v.length : i; }
   function lineText(p){ return val().slice(lineStart(p), lineEnd(p)); }
   function col(p){ return p - lineStart(p); }
@@ -4347,7 +4347,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     var v = val(), len = v.length;
     for(var k = 0; k < n; k++){
       if(p >= len - 1){ p = len - 1 < 0 ? 0 : len - 1; break; }
-      p++;
+      p = nextCh(p);
       while(p < len && (charClass(v[p]) === "sp" || charClass(v[p]) === "nl")) p++;
       if(p >= len){ p = len - 1; break; }
       var cls = charClass(v[p]);
@@ -4689,7 +4689,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     var p = pos();
     switch(k){
       case "h": case "ArrowLeft":  setPos(backCh(p, n, lineStart(p))); fixCaret(); break;
-      case "l": case "ArrowRight": case " ": setPos(fwdCh(p, n, Math.max(p, lineLastCol(p)))); break;
+      case "l": case "ArrowRight": case " ": setPos(fwdCh(p, n, Math.max(p, lineLastCol(p)))); fixCaret(); break;
       case "j": case "ArrowDown":  setPos(vertical(p, n)); break;
       case "k": case "ArrowUp":    setPos(vertical(p, -n)); break;
       case "w": setPos(normClamp(wordFwd(p, n))); break;
@@ -8093,8 +8093,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   let mdGhosts = null;
 
   const CD_RE = /&CD(\d+);/g;
-  const SCAN = 2048, LSCAN = 512;
-  const PAREN = '\\((?=[^)]{0,' + LSCAN + '}\\))((?:[^)\\s\\]]|\\](?!\\())+)(?:\\s[^)]*)?\\)';
+  const SCAN = 2048, LSCAN = 4096;
+  const PAREN = '\\((?=(?:[^)\\]]|\\](?!\\())' + '{0,' + LSCAN + '}\\))((?:[^)\\s\\]]|\\](?!\\())+)(?:\\s[^)]*)?\\)';
   const IMG_RE = new RegExp('!\\[((?:[^\\]!]|!(?!\\[)){0,' + SCAN + '})\\]' + PAREN, 'g');
   const LINK_RE = new RegExp('\\[([^\\]\\[]{1,' + SCAN + '})\\]' + PAREN, 'g');
   const WIKI_RE = /\[\[((?:[^\]|[]|\[(?!\[))+)(?:\|((?:[^\][]|\[(?!\[))+))?\]\]/g;
@@ -8158,7 +8158,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   };
   const tableSep = (l) => l.indexOf('|', 1) > 0 && /^[\s:|-]+$/.test(l);
   function mdToHtml(input, tasks, base = 0) {
-    const lines = String(input == null ? '' : input).split('\n').map((l) => capQuote(l.replace(/\r$/, '')));
+    const lines = String(input == null ? '' : input).split('\n').map((l) => l.replace(/\r$/, ''));
     const out = [];
     let i = 0;
     const listStack = [];
@@ -8200,7 +8200,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         closeLists(0);
         const q = [];
         while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
-          q.push(lines[i].replace(/^\s*>\s?/, ''));
+          q.push(capQuote(lines[i]).replace(/^\s*>\s?/, ''));
           i += 1;
         }
         out.push('<blockquote>' + mdToHtml(q.join('\n'), tasks, base + i - q.length) + '</blockquote>');

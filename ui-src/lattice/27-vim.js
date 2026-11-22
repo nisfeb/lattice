@@ -181,7 +181,7 @@
   // a position inside a pair, moved to the pair's start
   function snapCh(p){ return p > 0 && pairAt(val(), p - 1) ? p - 1 : p; }
 
-  function lineStart(p){ var v = val(); var i = v.lastIndexOf("\n", p - 1); return i + 1; }
+  function lineStart(p){ if(p <= 0) return 0; var i = val().lastIndexOf("\n", p - 1); return i + 1; }
   function lineEnd(p){ var v = val(); var i = v.indexOf("\n", p); return i < 0 ? v.length : i; }
   function lineText(p){ return val().slice(lineStart(p), lineEnd(p)); }
   function col(p){ return p - lineStart(p); }
@@ -317,7 +317,7 @@
     var v = val(), len = v.length;
     for(var k = 0; k < n; k++){
       if(p >= len - 1){ p = len - 1 < 0 ? 0 : len - 1; break; }
-      p++;
+      p = nextCh(p);
       while(p < len && (charClass(v[p]) === "sp" || charClass(v[p]) === "nl")) p++;
       if(p >= len){ p = len - 1; break; }
       var cls = charClass(v[p]);
@@ -699,7 +699,7 @@
     switch(k){
       // motions
       case "h": case "ArrowLeft":  setPos(backCh(p, n, lineStart(p))); fixCaret(); break;
-      case "l": case "ArrowRight": case " ": setPos(fwdCh(p, n, Math.max(p, lineLastCol(p)))); break;
+      case "l": case "ArrowRight": case " ": setPos(fwdCh(p, n, Math.max(p, lineLastCol(p)))); fixCaret(); break;
       case "j": case "ArrowDown":  setPos(vertical(p, n)); break;
       case "k": case "ArrowUp":    setPos(vertical(p, -n)); break;
       case "w": setPos(normClamp(wordFwd(p, n))); break;

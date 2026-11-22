@@ -63,16 +63,21 @@ export function fromOutside(slice) {
     if (isOpaque(n)) return [];
     const kids = [];
     n.content.forEach((c) => kids.push(...strip(c)));
-    if (BARE.has(n.type)) return kids;
-    return [n.isLeaf ? n.type.create(null, null, n.marks) : n.copy(Fragment.from(kids))];
+    if (n.isLeaf) return [n.type.create(null, null, n.marks)];
+    //  a wrapper that cannot hold what is left in it goes too, as a
+    //  context naming a list item inside a paragraph would otherwise
+    //  make a node the editor cannot place
+    if (BARE.has(n.type) || !n.type.validContent(Fragment.from(kids))) { gone.add(n); return kids; }
+    return [n.copy(Fragment.from(kids))];
   };
+  const gone = new Set();
   //  how deep a side is still open once the wrappers on it are gone
   const open = (depth, last) => {
     let kept = 0;
     for (let f = slice.content, d = 0; d < depth && f.childCount; d++) {
       const n = last ? f.lastChild : f.firstChild;
       if (n.isLeaf) break;
-      if (!BARE.has(n.type)) kept++;
+      if (!gone.has(n)) kept++;
       f = n.content;
     }
     return kept;
@@ -153,25 +158,51 @@ class ClipSerializer extends DOMSerializer {
 const KEY = 'data-lw-clip';
 const NOT_KEPT = 'Pasted as plain text: footnotes, fields, pictures and tables are kept only when copied and pasted inside one document.';
 
-export function pastePlugin(ctl, st) {
+//  The copies that held more than HTML carries, by the document they were
+//  made in, a few deep, each under a key no page can guess. They outlive the
+//  editor over a document: a tab switch or Source view mounts it again.
+const MEMORY = new Map();
+const DEPTH = 8, DOCS = 16;
+function memory(name) {
+  const id = String(name == null ? '' : name);
+  let m = MEMORY.get(id);
+  if (!m) {
+    m = { nonce: [...crypto.getRandomValues(new Uint32Array(4))].map((x) => x.toString(36)).join(''), n: 0, slices: new Map() };
+    MEMORY.set(id, m);
+    if (MEMORY.size > DOCS) MEMORY.delete(MEMORY.keys().next().value);
+  }
+  return {
+    keep(slice) {
+      const key = m.nonce + '-' + (++m.n);
+      m.slices.set(key, slice);
+      if (m.slices.size > DEPTH) m.slices.delete(m.slices.keys().next().value);
+      return key;
+    },
+    get: (key) => m.slices.get(key) || null,
+  };
+}
+
+export function pastePlugin(ctl, st, name) {
   //  the last copy that held more than HTML carries, and its key
-  let kept = null, copying = null, pasting = null, lost = false, n = 0;
-  const nonce = [...crypto.getRandomValues(new Uint32Array(4))].map((x) => x.toString(36)).join('');
+  let copying = null, pasting = null, lost = false, dragging = false;
+  const mem = memory(name);
   const stamp = (out) => {
-    const slice = copying;
+    const slice = copying, drag = dragging;
     copying = null;
-    const el = slice && beyondHtml(slice.content) ? out.firstElementChild : null;
+    //  a drag is a move inside the view, which has its own slice: it must
+    //  not take the place of a copy the clipboard still names
+    const el = slice && !drag && beyondHtml(slice.content) ? out.firstElementChild : null;
     if (!el) return;
-    kept = { key: nonce + '-' + (++n), slice };
-    el.setAttribute(KEY, kept.key);
+    el.setAttribute(KEY, mem.keep(slice));
   };
   return new Plugin({
     props: {
+      handleDOMEvents: { dragstart() { dragging = true; setTimeout(() => { dragging = false; }, 0); return false; } },
       clipboardSerializer: new ClipSerializer(stamp),
       transformCopied(slice) { copying = slice; return slice; },
       transformPastedHTML(html) {
         const m = /\sdata-lw-clip="([a-z0-9-]+)"/.exec(html);
-        pasting = m && kept && m[1] === kept.key ? kept.slice : null;
+        pasting = m ? mem.get(m[1]) : null;
         lost = !!m && !pasting;
         return html;
       },

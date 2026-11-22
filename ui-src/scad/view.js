@@ -272,7 +272,7 @@ export function mount(host, opts) {
       stop();
       //  and what is said is of this part again, not of the text since
       //  taken back
-      if (!shown && good) { showLog(good.log, inc.notes); setSt(good.st); shown = true; }
+      if (!shown && good) { showLog(good.log, inc.notes); setSt(good.st, good.bad); shown = true; }
       return;
     }
     if (job && k === jobKey) return;
@@ -309,14 +309,18 @@ export function mount(host, opts) {
     const m = parseStl(r.data);
     if (m.error) { setSt(m.error, true); return; }
     lastKey = k; lastStl = r.data;
-    good = { log: r.log, st: `rendered in ${(r.ms / 1000).toFixed(1)} s` };
+    //  a page the model includes that was not read is not a part drawn
+    //  without it: say so where it is seen, and open the console
+    const left = inc.notes.length;
+    good = { log: r.log, st: `rendered in ${(r.ms / 1000).toFixed(1)} s` + (left ? ', but not all it includes was read, see the console' : ''), bad: left > 0 };
+    if (left) con.open = true;
     shown = true;
     msg.hidden = true;
     if (vw) vw.setMesh(m, { keepView: true });
     dims.textContent = m.tris
       ? `${mm(m.max[0] - m.min[0])} × ${mm(m.max[1] - m.min[1])} × ${mm(m.max[2] - m.min[2])} mm · ${m.tris.toLocaleString()} triangles`
       : 'empty';
-    setSt(good.st);
+    setSt(good.st, good.bad);
   }
   function askNow() {
     msg.hidden = false;
@@ -337,12 +341,18 @@ export function mount(host, opts) {
     //  an export fetches and runs the runtime as a render does, so it
     //  waits for the same answer
     if (!asked) { askNow(); return; }
+    //  the part on screen needs no worker and cancels nothing: an export
+    //  of the other kind that is under way goes on
+    if (fmt === 'stl' && lastStl) {
+      const was = xseq, nm = leaf(o.name), i0 = await gather();
+      if (dead) return;
+      if (was === xseq && lastStl && lastKey === key(i0)) { download(nm + '.stl', lastStl, 'model/stl'); return; }
+    }
     stopExport();
     //  the page it is of: its name and its turn, taken before any wait
     const mine = xseq, name = leaf(o.name), main = mainFile();
     const inc = await gather();
     if (mine !== xseq || dead) return;
-    if (fmt === 'stl' && lastStl && lastKey === key(inc)) { download(name + '.stl', lastStl, 'model/stl'); return; }
     setSt('making the ' + fmt.toUpperCase() + '…');
     shown = false;
     const out = '/out.' + fmt;

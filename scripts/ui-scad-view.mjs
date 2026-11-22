@@ -373,6 +373,17 @@ console.log('\nan export that outlives its page');
   check.eq('  and downloads nothing afterwards', (await names(page)).join(), '');
   await page.close();
 
+  //  the STL of the part on screen needs no worker: a 3MF under way goes on
+  page = await open(SLOW, { name: 'parts/alpha', timeout: 120000 });
+  await settled(page, 120);
+  await click(page, '3MF');
+  await exporting(page);
+  await click(page, 'STL');
+  for (let i = 0; i < 400 && (await names(page)).length < 2; i++) await sleep(100);
+  check.eq('an STL asked for during a 3MF is made and the 3MF still arrives', (await names(page)).slice().sort().join(), 'alpha.3mf,alpha.stl');
+  check('  and the status says the 3MF came', /3MF downloaded/.test(await page.$eval('.lscad-st', (e) => e.textContent)), await page.$eval('.lscad-st', (e) => e.textContent));
+  await page.close();
+
   //  a phone is asked before the runtime is fetched: an export waits for
   //  the answer as a render does
   const before = hits.length;
@@ -398,6 +409,16 @@ console.log('\na page and its child page, both included without .scad');
   s = await settled(page);
   check('the render still runs', /rendered in/.test(s) && /^3 × 2 × 1 mm/.test(await dims(page)), s + ' ' + await dims(page));
   check('  and the include left out is said', /a\/b: not read/.test(await con(page)), (await con(page)).slice(0, 200));
+  await page.close();
+}
+
+console.log('\na page and its child page, the model needs the one left out');
+{
+  page = await open('include <a>\ninclude <a/b>\ncube([x, y, 1]);\n', { pages: { 'parts/a': 'x = 3;', 'parts/a/b': 'y = 4;' } });
+  s = await settled(page);
+  const stc = await page.$eval('.lscad-st', (e) => e.className);
+  check('the status does not pass for a plain render', /left out|not all/.test(s) && /err/.test(stc), s + ' ' + stc);
+  check('  and the console is open on the include left out', await page.$eval('.lscad-con', (e) => e.open) && /a\/b: not read/.test(await con(page)), (await con(page)).slice(0, 200));
   await page.close();
 }
 

@@ -325,12 +325,14 @@ editor, or git will do if you only want to look.
 
     const pages = [];
     let knowJson = null, shareJson = null, namesJson = null, sensJson = null, manifestJson = null;
+    // the control files are JSON: an editor's byte order mark is no part of it
+    const bare = (t) => t.replace(/^\uFEFF/, '');
     for (const e of entries) {
-      if (e.name === 'know.json') knowJson = e.text;
-      else if (e.name === 'manifest.json') manifestJson = e.text;
-      else if (e.name === 'share.json') shareJson = e.text;
-      else if (e.name === 'names.json') namesJson = e.text;
-      else if (e.name === 'sensitive.json') sensJson = e.text;
+      if (e.name === 'know.json') knowJson = bare(e.text);
+      else if (e.name === 'manifest.json') manifestJson = bare(e.text);
+      else if (e.name === 'share.json') shareJson = bare(e.text);
+      else if (e.name === 'names.json') namesJson = bare(e.text);
+      else if (e.name === 'sensitive.json') sensJson = bare(e.text);
       else if (e.name.startsWith('pages/')) pages.push({ rel: e.name.slice(6), text: e.text });
     }
     if (!pages.length && !knowJson) { st('that archive has no pages/ and no know.json in it', false); return; }

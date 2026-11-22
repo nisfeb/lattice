@@ -175,6 +175,17 @@ console.log('\nrestoreVault: the last word says what failed');
   eq('a clean restore ends as a success', r.last[1], true);
   eq('naming the pages and the memories', /pages: 2 restored/.test(r.last[0]) && /memories restored/.test(r.last[0]), true);
 
+  //  an editor on the unpacked archive may put a byte order mark on a
+  //  control file. The page that has one keeps it, the JSON does not.
+  const bom = (f) => (f.name.endsWith('.json') ? { ...f, body: '\uFEFF' + f.body } : f);
+  r = await run({}, [...files, { name: 'manifest.json', body: JSON.stringify({ pages: 2, memories: 1, missing: [] }), mtime: MT }].map(bom));
+  eq('control files with a byte order mark restore as before', r.last[1] === true && !/unreadable/.test(r.last[0] + r.asked), true);
+  eq('the share mode comes back', r.ship.log.filter((x) => x.url.includes('/page-share?')).length, 1);
+  eq('and the display name', r.ship.log.filter((x) => x.url.includes('/page-move?')).length, 1);
+  eq('and the sensitive mark', r.ship.log.filter((x) => x.url.includes('/page-sensitive?')).length >= 1, true);
+  const ki = r.ship.log.find((x) => x.url.includes('/know-import'));
+  eq('know.json goes to the ship without it', ki && String(ki.body).charCodeAt(0), 123);
+
   console.log('\nrestoreVault: an archive short of its own manifest');
   // manifest.json says what the export meant to write. An archive holding
   // less than that is said to, before anything is written and at the end.

@@ -246,8 +246,22 @@ export function tablesKept(tr) {
   if (ok) tr.before.descendants((n, pos) => {
     if (n.type === S.table) {
       const m = tr.mapping.mapResult(pos, 1);
-      const now = m.deleted ? null : tr.doc.nodeAt(m.pos);
-      if (now && now.type === S.table && rowsOf(now) !== rowsOf(n)) ok = false;
+      if (m.deleted) {
+        //  its start went. A table whose end stayed is cut, not deleted:
+        //  what is left of it, if any, must be the shape it had.
+        if (!tr.mapping.mapResult(pos + n.nodeSize, -1).deleted) {
+          const same = rowsOf(n);
+          let kept = false;
+          tr.doc.nodesBetween(tr.mapping.map(pos, -1), tr.mapping.map(pos + n.nodeSize, 1), (x) => {
+            if (x.type === S.table && rowsOf(x) === same) kept = true;
+            return !kept;
+          });
+          if (!kept) ok = false;
+        }
+      } else {
+        const now = tr.doc.nodeAt(m.pos);
+        if (now && now.type === S.table && rowsOf(now) !== rowsOf(n)) ok = false;
+      }
     }
     return ok && !n.isTextblock;
   });
@@ -358,6 +372,18 @@ export function mount(host, opts = {}) {
       return false;
     },
   });
+  //  a triple click selects the line, in a cell too: left to the table
+  //  plugin it selects the cell, and that copies as a table of one cell
+  const tripleClick = new Plugin({
+    props: {
+      handleTripleClick(v, pos) {
+        const $p = v.state.doc.resolve(pos);
+        if (!$p.parent.inlineContent) return false;
+        v.dispatch(v.state.tr.setSelection(TextSelection.create(v.state.doc, $p.start(), $p.end())));
+        return true;
+      },
+    },
+  });
   const toolbar = buildToolbar(bar, ctl, { schema, st });
   //  the caret starts in the first text, never as a node selection of a
   //  hidden declaration block the first key would replace
@@ -367,7 +393,7 @@ export function mount(host, opts = {}) {
     //  the table plugin goes last, its keys and mouse after everyone's: a
     //  drag or Shift+arrow across cells selects cells, and Delete or
     //  typing over them empties them, as LibreOffice does
-    plugins: [guard, dedupe(), keepHidden(), ...buildKeys(ctl), history(), dropCursor(), gapCursor(), pastePlugin(ctl, st),
+    plugins: [guard, tripleClick, dedupe(), keepHidden(), ...buildKeys(ctl), history(), dropCursor(), gapCursor(), pastePlugin(ctl, st, opts.name),
       tableEditing({ allowTableNodeSelection: true })],
   });
   const view = new EditorView(sheet, {

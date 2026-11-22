@@ -926,6 +926,15 @@ cases.vimAstral = async () => {
   await run('abc', 0, ['t', 'c'], 'abc', 1);
   await run('abc', 0, ['v', 'l', 'd'], 'c', 0);
   await run('abc', 1, ['a', 'Z', 'Escape'], 'abZc', 2);
+  //  e at the end of a run that ends in an emoji moves on, and d e takes the run
+  await run(' ' + E + 'ba' + E + E, 1, ['e'], ' ' + E + 'ba' + E + E, 4);
+  await run(E + 'b c', 0, ['d', 'e'], ' c', 0);
+  await run('ab ' + E + ' cd', 0, ['e', 'e'], 'ab ' + E + ' cd', 3);
+  //  l from a caret already past the last character comes back onto it
+  await run('_x', 2, ['l'], '_x', 1);
+  //  { from a text that starts with an empty line ends
+  await run('\nab', 1, ['{'], '\nab', 0);
+  await run('a\n\nab', 3, ['{'], 'a\n\nab', 2);
   await x.done();
 };
 

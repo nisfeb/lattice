@@ -54,6 +54,15 @@ async function open(text) {
     //  the view giving a selection), as the browser sends them
     window.clip = (kind) => { const dt = new DataTransfer(); window.ctl.view.dom.dispatchEvent(new ClipboardEvent(kind, { clipboardData: dt, bubbles: true, cancelable: true })); return { html: dt.getData('text/html'), text: dt.getData('text/plain') }; };
     window.paste = (c) => { const dt = new DataTransfer(); if (c.html) dt.setData('text/html', c.html); dt.setData('text/plain', c.text || ''); window.ctl.view.dom.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); };
+    //  the editor over the same text again, as a tab switch makes it
+    window.remount = () => {
+      window.ctl.sync(); window.ctl.destroy();
+      window.ctl = window.LatWriter.mount(document.getElementById('h'), {
+        text: window.buf, editable: true, cur: () => window.buf, onChange() {},
+        onText: (x) => { window.buf = x; }, onRefuse: (e) => window.notes.push('REFUSED ' + e), onNote: (m) => window.notes.push(m),
+      });
+      return window.ctl.error || '';
+    };
     window.toEnd = () => { const v = window.ctl.view; v.dispatch(v.state.tr.setSelection(window.LatWriter.pm.state.Selection.atEnd(v.state.doc))); };
     window.find = (type) => { let pos = -1; window.ctl.view.state.doc.descendants((n, p) => { if (pos < 0 && n.type.name === type) pos = p; return pos < 0; }); return pos; };
     return window.ctl.error || '';
@@ -175,6 +184,19 @@ console.log('==> a table keeps its shape');
   }
 }
 
+{
+  //  a triple click in a cell selects the line, and its copy pastes as text
+  const page = await open(corpus('08-tables'));
+  const at = await page.evaluate(() => { const td = document.querySelectorAll('lat-writer table')[0].querySelectorAll('td')[0]; td.scrollIntoView({ block: 'center' }); const r = td.querySelector('p').getBoundingClientRect(); return { x: r.left + 4, y: r.top + r.height / 2, text: td.textContent }; });
+  for (const n of [1, 2, 3]) await page.mouse.click(at.x, at.y, { clickCount: n });
+  const sel = await page.evaluate(() => { const s = window.ctl.view.state.selection; return { cells: !!s.$anchorCell, text: window.ctl.view.state.doc.textBetween(s.from, s.to) }; });
+  check('a triple click in a cell selects its line, not the cell', !sel.cells && sel.text === at.text, JSON.stringify([sel, at]));
+  const tables0 = count(await page.evaluate(() => window.saved()), /<table:table /g);
+  await page.evaluate(() => { const c = window.clip('copy'); window.toEnd(); window.paste(c); });
+  check.eq('  and pastes as text, not as a table of one cell', count(await page.evaluate(() => window.saved()), /<table:table /g), tables0);
+  await page.close();
+}
+
 console.log('==> cut, copy and paste inside one document');
 {
   let t = corpus('01-paragraphs');
@@ -226,6 +248,31 @@ console.log('==> cut, copy and paste inside one document');
     check('a made-up key pastes as plain text', forged.includes('forged') && count(forged, /<text:note /g) === 0);
     await page.evaluate(() => { window.notes.length = 0; window.toEnd(); window.paste({ html: '<p>plain <b>bold</b></p>', text: 'plain bold' }); });
     check('an ordinary paste says nothing', await page.evaluate(() => window.notes.length === 0 && window.saved().includes('plain ')));
+    await page.close();
+  }
+  {
+    //  the copy is still named after the editor was mounted again
+    const page = await open(t);
+    await selectPara(page);
+    const c = await page.evaluate(() => window.clip('cut'));
+    check.eq('the editor mounted again over the page', await page.evaluate(() => window.remount()), '');
+    await page.evaluate((c) => { window.toEnd(); window.ctl.view.focus(); window.paste(c); }, c);
+    const after = await page.evaluate(() => window.saved());
+    check.eq('a footnote cut before a tab switch pastes as a footnote', count(after, /<text:note /g), 1);
+    check('  with its body', after.includes('The footnote body.'));
+    await page.close();
+  }
+  {
+    //  a drag of something else, and a second copy, do not unname the first
+    const page = await open(t);
+    await selectPara(page);
+    const c = await page.evaluate(() => window.clip('copy'));
+    const at = await page.evaluate(() => { const v = window.ctl.view, r = v.coordsAtPos(v.state.selection.from + 3); return { x: r.left + 1, y: (r.top + r.bottom) / 2 }; });
+    await page.evaluate((at) => { window.ctl.view.dom.dispatchEvent(new DragEvent('dragstart', { clientX: at.x, clientY: at.y, bubbles: true, cancelable: true, dataTransfer: new DataTransfer() })); }, at);
+    await page.evaluate(() => window.clip('copy'));
+    await page.evaluate((c) => { window.toEnd(); window.ctl.view.focus(); window.paste(c); }, c);
+    const after = await page.evaluate(() => window.saved());
+    check.eq('a drag and a later copy leave the first copy pasting as a footnote', count(after, /<text:note /g), 2);
     await page.close();
   }
   {
