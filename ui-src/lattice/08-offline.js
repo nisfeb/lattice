@@ -581,7 +581,13 @@
       hay = hay.slice(i + ndl.length);
     }
   }
-  const moveBody = (b, from, to) => (from ? rwWiki(rwRoot(b, '/' + from, '/' + to), from, to) : b);
+  //  A path literal follows the move only in a page of code (hoon, a
+  //  folder's index). In the kinds below the body is the writer's own
+  //  text, where the same bytes are prose and stay as written, as the ship
+  //  does (+move-code, +content-builders). Wikilinks follow in every kind.
+  const PROSE = new Set(['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'geojson', 'scad']);
+  const moveBody = (b, from, to, kind) => (from
+    ? rwWiki(PROSE.has(kind) ? b : rwRoot(b, '/' + from, '/' + to), from, to) : b);
   async function enqueueOp(rec) {
     const stamp = qStamp();
     // mkdir affects no queued save (it carries no content), so the
@@ -590,7 +596,7 @@
     if (rec.op !== 'mkdir') {
       for (const q of await offAll()) {
         if (q.kind === 'know') continue;
-        if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
+        if (rec.op === 'del' && (rec.tree ? under(q.name, rec.name) : q.name === rec.name)) await offDel(q.name);
         if (rec.op === 'move' && under(q.name, rec.from)) {
           await offDel(q.name);
           // drop the CAS claim: a save rebased by a move cannot know the
@@ -604,18 +610,18 @@
           //  rather than written at the new name if the move is refused
           //  a page the user moved has a name the user gave: not drawn
           await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: null, bv: 1,
-            body: moveBody(q.body || '', rec.from, rec.to), via: stamp.id, from: q.name, drawn: false });
+            body: moveBody(q.body || '', rec.from, rec.to, q.kind), via: stamp.id, from: q.name, drawn: false });
         }
       }
       for (const k of [...pageCache.keys()])
-        if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
+        if (rec.op === 'del' && !rec.tree ? k === rec.name : under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
       // the boot snapshot names one page. If that page was just deleted or moved
       // away, the snapshot is stale: the next boot would paint a body whose name
       // no longer resolves in the tree (it reads as "my change reverted"). Drop
       // it so the boot defers to the network instead of painting a ghost.
       try {
         const p = JSON.parse(localStorage.appPage || 'null');
-        if (p && p.name && under(p.name, rec.op === 'del' ? rec.name : rec.from))
+        if (p && p.name && (rec.op === 'del' && !rec.tree ? p.name === rec.name : under(p.name, rec.op === 'del' ? rec.name : rec.from)))
           localStorage.removeItem('appPage');
       } catch {}
     }
@@ -848,7 +854,7 @@
       //  400 rather than a dropped bad record.
       if (o.op !== 'del' && o.op !== 'move' && o.op !== 'mkdir') { await opDel(o._k); continue; }
       const u = o.op === 'del'
-        ? api + '/page-del?name=' + encodeURIComponent(o.name)
+        ? api + '/page-del?name=' + encodeURIComponent(o.name) + (o.tree ? '&tree=1' : '')
         : o.op === 'mkdir'
           ? api + '/folder-new?name=' + encodeURIComponent(o.name)
           : api + '/page-move?from=' + encodeURIComponent(o.from) +

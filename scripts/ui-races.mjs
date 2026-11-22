@@ -10,6 +10,8 @@
 //    an edit queued offline claims the rev of the copy it was made on,
 //      when the page was opened offline and when it was left and reopened
 //    a queued edit with no rev to claim still gets their text kept
+//    a delete queued offline goes with what the user agreed to, and a move
+//      rewrites a queued edit as the ship does
 //    text typed before the fresh read lands is on the device when hidden
 //    a queued or live save claims the rev of the text it was made on, however
 //      the page was reached (reload, reopen, a drain on the wire, an old
@@ -709,6 +711,55 @@ cases.oldRecord = async () => {
   await comeBack(x);
   check.eq('it lands', body(x, 'n/a'), 'alpha\nOLD\nMINE\n');
   check('with no copy made of the page nobody else wrote', !kept(x), kept(x));
+  await x.done();
+};
+
+//  A page with a page under it, deleted offline after the user agreed to
+//  lose both, goes with the pages under it on the replay too, and the
+//  edits queued for them are dropped with it.
+const opsOf = (p) => p.evaluate(() => new Promise((res) => {
+  const r = indexedDB.open('lattice-offline');
+  r.onsuccess = () => {
+    const g = r.result.transaction('ops').objectStore('ops').getAll();
+    g.onsuccess = () => { r.result.close(); res(g.result); };
+  };
+}));
+cases.offlineDelete = async () => {
+  const x = await up({ 'p/a': 'parent\n', 'p/a/c': 'child\n', 'p/b': 'sibling\n' }, '?name=p/a/c');
+  const p = x.page;
+  x.S.down = true;
+  await typeEnd(p, 'CHILD EDIT');
+  await waitFor(() => queued(p, 'p/a/c'), 25000, 100);
+  await clickRow(p, 'p/a');
+  await waitFor(async () => (await ed(p)) === 'parent\n', 5000, 50);
+  await p.evaluate(() => document.getElementById('del').click());
+  await waitFor(() => p.evaluate(() => !document.getElementById('dlg').hidden), 5000, 50);
+  await p.click('#dlgok');
+  const op = await waitFor(async () => (await opsOf(p)).find((o) => o.op === 'del'), 15000, 100);
+  check('the delete is queued', !!op, JSON.stringify(await opsOf(p)));
+  check('as a delete of the pages under it too', !!op && op.tree === true, JSON.stringify(op));
+  check('the edit queued for a page under it is dropped', !(await queued(p, 'p/a/c')), JSON.stringify(await queued(p, 'p/a/c')));
+  await comeBack(x);
+  const del = x.S.log.find((e) => e.path === 'page-del' && e.q.name === 'p/a');
+  check('the replay sends tree=1', !!del && del.q.tree === '1', JSON.stringify(del && del.q));
+  await x.done();
+};
+//  A queued edit rides a queued move. The ship moves a page of prose as it
+//  is and follows only its wikilinks; path text in it is the writer's.
+cases.offlineMove = async () => {
+  const x = await up({ 'old/x': 'x\n', 'n/a': 'a\n' }, '?name=old/x');
+  const p = x.page;
+  x.S.down = true;
+  await typeEnd(p, 'see /old/x and [[old/x]] and [[old/x|label]]\n');
+  await waitFor(() => queued(p, 'old/x'), 25000, 100);
+  await p.evaluate(() => document.getElementById('mv').click());
+  await waitFor(() => p.evaluate(() => !document.getElementById('dlg').hidden), 5000, 50);
+  await p.$eval('#dlginput', (e) => { e.value = 'new/x'; });
+  await p.click('#dlgok');
+  const q = await waitFor(() => queued(p, 'new/x'), 15000, 100);
+  check('the edit follows the move', !!q, JSON.stringify(await queue(p)));
+  check('a path in prose stays as written', !!q && q.body.includes('see /old/x and'), q && q.body);
+  check('a wikilink follows', !!q && q.body.includes('[[new/x]] and [[new/x|label]]'), q && q.body);
   await x.done();
 };
 

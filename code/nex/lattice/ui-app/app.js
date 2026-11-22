@@ -440,24 +440,26 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       hay = hay.slice(i + ndl.length);
     }
   }
-  const moveBody = (b, from, to) => (from ? rwWiki(rwRoot(b, '/' + from, '/' + to), from, to) : b);
+  const PROSE = new Set(['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'geojson', 'scad']);
+  const moveBody = (b, from, to, kind) => (from
+    ? rwWiki(PROSE.has(kind) ? b : rwRoot(b, '/' + from, '/' + to), from, to) : b);
   async function enqueueOp(rec) {
     const stamp = qStamp();
     if (rec.op !== 'mkdir') {
       for (const q of await offAll()) {
         if (q.kind === 'know') continue;
-        if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
+        if (rec.op === 'del' && (rec.tree ? under(q.name, rec.name) : q.name === rec.name)) await offDel(q.name);
         if (rec.op === 'move' && under(q.name, rec.from)) {
           await offDel(q.name);
           await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: null, bv: 1,
-            body: moveBody(q.body || '', rec.from, rec.to), via: stamp.id, from: q.name, drawn: false });
+            body: moveBody(q.body || '', rec.from, rec.to, q.kind), via: stamp.id, from: q.name, drawn: false });
         }
       }
       for (const k of [...pageCache.keys()])
-        if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
+        if (rec.op === 'del' && !rec.tree ? k === rec.name : under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
       try {
         const p = JSON.parse(localStorage.appPage || 'null');
-        if (p && p.name && under(p.name, rec.op === 'del' ? rec.name : rec.from))
+        if (p && p.name && (rec.op === 'del' && !rec.tree ? p.name === rec.name : under(p.name, rec.op === 'del' ? rec.name : rec.from)))
           localStorage.removeItem('appPage');
       } catch {}
     }
@@ -620,7 +622,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     for (const o of ops) {
       if (o.op !== 'del' && o.op !== 'move' && o.op !== 'mkdir') { await opDel(o._k); continue; }
       const u = o.op === 'del'
-        ? api + '/page-del?name=' + encodeURIComponent(o.name)
+        ? api + '/page-del?name=' + encodeURIComponent(o.name) + (o.tree ? '&tree=1' : '')
         : o.op === 'mkdir'
           ? api + '/folder-new?name=' + encodeURIComponent(o.name)
           : api + '/page-move?from=' + encodeURIComponent(o.from) +
@@ -1634,7 +1636,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     try { u = new globalThis.URL(url, location.origin); } catch { return null; }
     const p = u.searchParams;
     if (u.pathname.endsWith('/page-del') && p.get('name'))
-      return { op: 'del', name: p.get('name') };
+      return { op: 'del', name: p.get('name'), ...(p.has('tree') && { tree: true }) };
     if (u.pathname.endsWith('/page-move') && p.get('from') && p.get('to'))
       return { op: 'move', from: p.get('from'), to: p.get('to') };
     if (u.pathname.endsWith('/folder-new') && p.get('name'))

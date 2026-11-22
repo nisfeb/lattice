@@ -331,7 +331,9 @@
     try { u = new globalThis.URL(url, location.origin); } catch { return null; }
     const p = u.searchParams;
     if (u.pathname.endsWith('/page-del') && p.get('name'))
-      return { op: 'del', name: p.get('name') };
+      //  `tree` is what the user agreed to: the ship deletes a page alone
+      //  unless it is asked for the pages under it too
+      return { op: 'del', name: p.get('name'), ...(p.has('tree') && { tree: true }) };
     if (u.pathname.endsWith('/page-move') && p.get('from') && p.get('to'))
       return { op: 'move', from: p.get('from'), to: p.get('to') };
     // folder-new carries no content, so it is a structural op like del/move,
