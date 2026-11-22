@@ -75,6 +75,22 @@
   // ESCAPED string: mdEsc does not touch backticks, so code spans are still
   // findable there and their contents are already escaped.
   const CD_RE = /&CD(\d+);/g;
+  // Every unmatched "[" used to cost a scan of the rest of the paragraph,
+  // and "[a](" that scan twice over, so a few KB of them held the tab for
+  // a minute. Two rules bound it. A scan for a closing bracket stops at
+  // the next opener of its own kind, so the scans of a paragraph do not
+  // overlap and together cost one pass. And it gives up where the ship
+  // does: +scan-cap and +link-scan-cap in code/lib/lattice-md.hoon. No
+  // real link text or address is near either length.
+  const SCAN = 2048, LSCAN = 512;
+  //  (url "title"): the paren must close within LSCAN, looked for once, so
+  //  the two runs after it never walk further than that
+  const PAREN = '\\((?=[^)]{0,' + LSCAN + '}\\))([^)\\s]+)(?:\\s[^)]*)?\\)';
+  //  an image's alt stops at the next "![", a link's text at the next "["
+  const IMG_RE = new RegExp('!\\[((?:[^\\]!]|!(?!\\[)){0,' + SCAN + '})\\]' + PAREN, 'g');
+  const LINK_RE = new RegExp('\\[([^\\]\\[]{1,' + SCAN + '})\\]' + PAREN, 'g');
+  //  a wikilink's target and label stop at the next "[["
+  const WIKI_RE = /\[\[((?:[^\]|[]|\[(?!\[))+)(?:\|((?:[^\][]|\[(?!\[))+))?\]\]/g;
   const mdInline = (t) => {
     let s = mdEsc(t);
     // code first: its (already-escaped) contents must not be re-processed for
@@ -91,7 +107,7 @@
     //  ![a[b](http://y) c](http://x/src/onerror=...//) did.
     const tags = [];
     const tag = (html) => { tags.push(html); return '&TG' + (tags.length - 1) + ';'; };
-    s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (m, alt, u) => {
+    s = s.replace(IMG_RE, (m, alt, u) => {
       if (remoteUrl(u) && !mdOutside) {
         mdBlocked = true;
         return tag('<span class="ximg">[image from another site' + (alt ? ': ' + alt : '') + ']</span>');
@@ -99,7 +115,7 @@
       const h = mdHref(u);
       return h ? tag('<img alt="' + alt + '" src="' + h + '">') : m;
     });
-    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (m, txt, u) => {
+    s = s.replace(LINK_RE, (m, txt, u) => {
       const h = mdHref(u);
       return h ? tag('<a href="' + h + '">') + txt + '</a>' : m;
     });
@@ -111,7 +127,7 @@
     //  href/target is unchanged, so navigation and backlinks are unaffected.
     //  A page not written yet is marked after the href, which outLinks
     //  (76-outline.js) reads first.
-    s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, tgt, label) => {
+    s = s.replace(WIKI_RE, (_, tgt, label) => {
       const t = mdUnesc(tgt).trim();
       return tag('<a href="' + mdHref('/apps/lattice/app?name=' + encodeURIComponent(t)) + '"'
         + (mdGhosts && mdGhosts(t) ? ' class="ghost" title="' + mdEsc(t + ' does not exist yet') + '"' : '') + '>')
@@ -133,9 +149,27 @@
   //  lists (including task lists), tables, paragraphs.
   //  tasks: live boxes, each with data-line, its source line (base: where
   //  this input starts, for a blockquote). Lines, not a count of boxes.
+  //  A line's leading quote marks, held to 32 (the ship's +cap-quote-depth).
+  //  Each level is one more pass over the quoted text and one more call
+  //  deep, so a line of thousands of ">" overflowed the stack. Marks may
+  //  have blanks between them. A line at or under the cap is not touched.
+  const QDEPTH = 32;
+  const capQuote = (l) => {
+    let n = 0, p = 0;
+    for (;;) {
+      let q = p;
+      while (l[q] === ' ' || l[q] === '\t') q++;
+      if (l[q] !== '>') break;
+      p = q + 1; n++;
+    }
+    return n > QDEPTH ? '>'.repeat(QDEPTH) + l.slice(p) : l;
+  };
+  //  a table's delimiter row: only blanks, colons, pipes and dashes, with a
+  //  pipe somewhere after the first character
+  const tableSep = (l) => l.indexOf('|', 1) > 0 && /^[\s:|-]+$/.test(l);
   function mdToHtml(input, tasks, base = 0) {
     //  CRLF: `.` stops at \r, so "(.*)$" failed on every line
-    const lines = String(input == null ? '' : input).split('\n').map((l) => l.replace(/\r$/, ''));
+    const lines = String(input == null ? '' : input).split('\n').map((l) => capQuote(l.replace(/\r$/, '')));
     const out = [];
     let i = 0;
     const listStack = [];
@@ -185,7 +219,7 @@
       }
 
       //  a table needs a delimiter row under the header
-      if (ln.includes('|') && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(lines[i + 1])) {
+      if (ln.includes('|') && i + 1 < lines.length && tableSep(lines[i + 1])) {
         closeLists(0);
         const cells = (r) => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
         const head = cells(ln);

@@ -161,6 +161,47 @@ for (const [n, v] of [['empty', ''], ['null', null], ['undefined', undefined],
   try { mdToHtml(v); check.ok('survives ' + n); } catch (e) { check.bad('survives ' + n, 'threw ' + e.message); }
 }
 
+console.log('\ncost: a hostile paragraph is linear, not quadratic or cubic');
+// The scans for a closing bracket or paren are capped (as the ship's
+// +scan-cap and +link-scan-cap are), so four times the text costs about
+// four times the work. A ratio, not a time: quadratic gives 16 and cubic
+// 64 whatever the machine. The sizes are past the caps, where the cost
+// per opener has stopped growing, and small enough that the renderer as
+// it was fails this in a minute instead of hanging the suite.
+const cost = (s) => {
+  let best = Infinity;
+  for (let k = 0; k < 3 && (!k || best < 200); k++) {
+    const t0 = performance.now(); mdToHtml(s); best = Math.min(best, performance.now() - t0);
+  }
+  return Math.max(best, 0.5);
+};
+const N = 2000;
+for (const [n, unit, tail] of [['[a]( runs', '[a](', ''], ['[ runs', '[', ''], ['[[ runs', '[[', ''],
+  ['![ runs', '![', ''], ['![a]( runs', '![a](', ''], ['[[a| runs', '[[a|', ''],
+  ['spaces after a link url', ' ', ''], ['a pipe run under a table row', '|', 'x']]) {
+  const make = (len) => (unit === ' ' ? '[a](b' : unit === '|' ? '|\n' : '')
+    + unit.repeat(Math.ceil(len / unit.length)) + tail;
+  const r = cost(make(4 * N)) / cost(make(N));
+  check('4x the text is under 9x the work: ' + n, r < 9, 'ratio ' + r.toFixed(1));
+}
+{
+  let threw = null;
+  try { mdToHtml('>'.repeat(3000) + ' deep'); mdToHtml('> '.repeat(3000) + 'deep'); } catch (e) { threw = e; }
+  check('3000 quote marks on a line do not overflow the stack', !threw, String(threw));
+  const d = mdToHtml('>'.repeat(40) + ' deep');
+  check('quotes nest 32 deep and no deeper', d.split('<blockquote>').length - 1 === 32, d.slice(0, 80));
+}
+has('a link with a title still links', '[a](https://e.com "the title")', '<a href="https://e.com">a</a>');
+has('a 500 character url still links', '[a](https://e.com/' + 'p'.repeat(482) + ')', '<a href="https://e.com/pppp');
+hasnt('a paren 513 characters on is no link', '[a](https://e.com/' + 'p'.repeat(500) + ')', '<a ');
+has('2000 characters of link text still link', '[' + 't'.repeat(2000) + '](https://e.com)', '<a href="https://e.com">tttt');
+hasnt('link text past the scan cap is no link', '[' + 't'.repeat(2100) + '](https://e.com)', '<a ');
+has('a table still renders', '| a | b |\n|---|:-:|\n| 1 | 2 |', '<table><thead><tr><th>a</th><th>b</th>');
+has('a table with no outer pipes still renders', 'a | b\n--- | ---\n1 | 2', '<td>1</td><td>2</td>');
+has('a bare pipe pair is a delimiter row, as before', 'a|b\n||\n1|2', '<table>');
+hasnt('a rule under a pipe line is no table', 'a|b\n---', '<table>');
+hasnt('one leading pipe is no delimiter row', 'a|b\n|', '<table>');
+
 console.log('\noutgoing links and outline (76-outline.js)');
 eqj('an empty body has no links', outLinks('', 'md'), []);
 eqj('an empty body has no outline', outline('', 'md'), []);

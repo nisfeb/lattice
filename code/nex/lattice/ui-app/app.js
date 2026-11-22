@@ -7946,6 +7946,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   let mdGhosts = null;
 
   const CD_RE = /&CD(\d+);/g;
+  const SCAN = 2048, LSCAN = 512;
+  const PAREN = '\\((?=[^)]{0,' + LSCAN + '}\\))([^)\\s]+)(?:\\s[^)]*)?\\)';
+  const IMG_RE = new RegExp('!\\[((?:[^\\]!]|!(?!\\[)){0,' + SCAN + '})\\]' + PAREN, 'g');
+  const LINK_RE = new RegExp('\\[([^\\]\\[]{1,' + SCAN + '})\\]' + PAREN, 'g');
+  const WIKI_RE = /\[\[((?:[^\]|[]|\[(?!\[))+)(?:\|((?:[^\][]|\[(?!\[))+))?\]\]/g;
   const mdInline = (t) => {
     let s = mdEsc(t);
     const code = [];
@@ -7955,7 +7960,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     });
     const tags = [];
     const tag = (html) => { tags.push(html); return '&TG' + (tags.length - 1) + ';'; };
-    s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (m, alt, u) => {
+    s = s.replace(IMG_RE, (m, alt, u) => {
       if (remoteUrl(u) && !mdOutside) {
         mdBlocked = true;
         return tag('<span class="ximg">[image from another site' + (alt ? ': ' + alt : '') + ']</span>');
@@ -7963,11 +7968,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       const h = mdHref(u);
       return h ? tag('<img alt="' + alt + '" src="' + h + '">') : m;
     });
-    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (m, txt, u) => {
+    s = s.replace(LINK_RE, (m, txt, u) => {
       const h = mdHref(u);
       return h ? tag('<a href="' + h + '">') + txt + '</a>' : m;
     });
-    s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, tgt, label) => {
+    s = s.replace(WIKI_RE, (_, tgt, label) => {
       const t = mdUnesc(tgt).trim();
       return tag('<a href="' + mdHref('/apps/lattice/app?name=' + encodeURIComponent(t)) + '"'
         + (mdGhosts && mdGhosts(t) ? ' class="ghost" title="' + mdEsc(t + ' does not exist yet') + '"' : '') + '>')
@@ -7982,8 +7987,20 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return s;
   };
 
+  const QDEPTH = 32;
+  const capQuote = (l) => {
+    let n = 0, p = 0;
+    for (;;) {
+      let q = p;
+      while (l[q] === ' ' || l[q] === '\t') q++;
+      if (l[q] !== '>') break;
+      p = q + 1; n++;
+    }
+    return n > QDEPTH ? '>'.repeat(QDEPTH) + l.slice(p) : l;
+  };
+  const tableSep = (l) => l.indexOf('|', 1) > 0 && /^[\s:|-]+$/.test(l);
   function mdToHtml(input, tasks, base = 0) {
-    const lines = String(input == null ? '' : input).split('\n').map((l) => l.replace(/\r$/, ''));
+    const lines = String(input == null ? '' : input).split('\n').map((l) => capQuote(l.replace(/\r$/, '')));
     const out = [];
     let i = 0;
     const listStack = [];
@@ -8032,7 +8049,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         continue;
       }
 
-      if (ln.includes('|') && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(lines[i + 1])) {
+      if (ln.includes('|') && i + 1 < lines.length && tableSep(lines[i + 1])) {
         closeLists(0);
         const cells = (r) => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
         const head = cells(ln);
