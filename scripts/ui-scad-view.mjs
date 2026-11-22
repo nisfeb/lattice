@@ -342,6 +342,56 @@ console.log('\nan error, then the text taken back');
   await page.close();
 }
 
+console.log('\nan export that outlives its page');
+{
+  const click = (pg, t) => pg.evaluate((x) => [...document.querySelectorAll('.lscad-bar button')].find((b) => b.textContent === x).click(), t);
+  const names = (pg) => pg.evaluate(() => window.downloads.map((d) => d.name));
+  const live = (pg) => pg.evaluate(() => window.workers.live);
+  //  until an export's worker is running
+  const exporting = async (pg) => { for (let i = 0; i < 100 && (await live(pg)) < 1; i++) await sleep(50); return live(pg); };
+  page = await open(SLOW, { name: 'parts/alpha', timeout: 120000 });
+  await settled(page, 120);
+  await click(page, '3MF');
+  check.eq('an export runs in a worker', await exporting(page), 1);
+  check.eq('another page in the pane ends it at once', await page.evaluate(() => { window.ctl.update('cube(3);\n', { name: 'parts/beta' }); return window.workers.live; }), 0);
+  await sleep(500);
+  s = await settled(page);
+  check('  and the new page says nothing of it', /rendered in/.test(s), s);
+  check.eq('  and nothing was downloaded under either name', (await names(page)).join(), '');
+  await click(page, '3MF');
+  for (let i = 0; i < 300 && !(await names(page)).length; i++) await sleep(100);
+  check.eq('the new page exports under its own name', (await names(page)).join(), 'beta.3mf');
+  await page.close();
+
+  page = await open(SLOW, { name: 'parts/alpha', timeout: 120000 });
+  await settled(page, 120);
+  await click(page, '3MF');
+  await exporting(page);
+  await page.evaluate(() => window.ctl.destroy());
+  check.eq('a pane that is closed ends its export', await live(page), 0);
+  await sleep(1500);
+  check.eq('  and downloads nothing afterwards', (await names(page)).join(), '');
+  await page.close();
+
+  //  a phone is asked before the runtime is fetched: an export waits for
+  //  the answer as a render does
+  const before = hits.length;
+  page = await open('cube(4);\n', { askFirst: 'This draws with OpenSCAD, about 4 MB. Download it?' });
+  await sleep(300);
+  await click(page, 'STL');
+  await click(page, '3MF');
+  await sleep(700);
+  const asked = await page.evaluate(() => ({ made: window.workers.made, q: !document.querySelector('.lscad-msg').hidden && !!document.querySelector('.lscad-msg button'), dl: window.downloads.length }));
+  check('an export before the answer fetches no runtime', !hits.slice(before).some((h) => /openscad/.test(h)) && asked.made === 0 && asked.dl === 0, hits.slice(before).join(' '));
+  check('  and the question is still there', asked.q);
+  await page.evaluate(() => document.querySelector('.lscad-msg button').click());
+  await settled(page);
+  await click(page, 'STL');
+  await sleep(300);
+  check.eq('after the answer the export works', (await names(page)).join(), 'box.stl');
+  await page.close();
+}
+
 console.log('\na page and its child page, both included without .scad');
 {
   page = await open('include <a>\ninclude <a/b>\ncube([x, 2, 1]);\n', { pages: { 'parts/a': 'x = 3;', 'parts/a/b': 'y = 4;' } });

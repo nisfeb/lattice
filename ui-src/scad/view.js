@@ -121,6 +121,9 @@ export function mount(host, opts) {
   //  and whether they are what is shown: a failed render or export shows
   //  its own, and the good ones come back with the good text
   let good = null, shown = false;
+  //  the export under way, and its turn: a later export, another page or
+  //  the pane's end makes it nobody's
+  let xjob = null, xseq = 0;
   const ids = new Set();
   const setSt = (t, bad) => { st.textContent = t; st.className = 'lscad-st' + (bad ? ' err' : ''); st.title = t; };
 
@@ -323,18 +326,35 @@ export function mount(host, opts) {
     msg.append(b);
   }
 
+  //  an export nobody is waiting for any more: stop its worker
+  function stopExport() {
+    xseq++;
+    if (xjob) xjob.cancel();
+    xjob = null;
+  }
   async function exportAs(fmt) {
+    if (dead) return;
+    //  an export fetches and runs the runtime as a render does, so it
+    //  waits for the same answer
+    if (!asked) { askNow(); return; }
+    stopExport();
+    //  the page it is of: its name and its turn, taken before any wait
+    const mine = xseq, name = leaf(o.name), main = mainFile();
     const inc = await gather();
-    if (fmt === 'stl' && lastStl && lastKey === key(inc)) { download(leaf(o.name) + '.stl', lastStl, 'model/stl'); return; }
+    if (mine !== xseq || dead) return;
+    if (fmt === 'stl' && lastStl && lastKey === key(inc)) { download(name + '.stl', lastStl, 'model/stl'); return; }
     setSt('making the ' + fmt.toUpperCase() + '…');
     shown = false;
     const out = '/out.' + fmt;
-    const args = [mainFile(), '-o', out, '--export-format', fmt === 'stl' ? 'binstl' : '3mf'];
+    const args = [main, '-o', out, '--export-format', fmt === 'stl' ? 'binstl' : '3mf'];
     for (const [n, x] of defs) { const p = ps.find((q) => q.name === n); if (p) args.push('-D', defineArg(p, x)); }
-    const r = await runner.run({ files: inc.files, args, out, timeout: o.timeout }).promise;
+    xjob = runner.run({ files: inc.files, args, out, timeout: o.timeout });
+    const r = await xjob.promise;
+    if (mine !== xseq || r.cancelled || dead) return;
+    xjob = null;
     if (r.rc !== 0 || !r.data) { showLog(r.log, inc.notes); setSt('could not make the ' + fmt.toUpperCase(), true); return; }
     if (fmt === 'stl' && r.data.length > 84 + MAX_TRIS * 50 * 4) { setSt('the part is too large to export here', true); return; }
-    download(leaf(o.name) + '.' + fmt, r.data, fmt === 'stl' ? 'model/stl' : 'model/3mf');
+    download(name + '.' + fmt, r.data, fmt === 'stl' ? 'model/stl' : 'model/3mf');
     setSt(fmt.toUpperCase() + ' downloaded');
   }
 
@@ -349,6 +369,7 @@ export function mount(host, opts) {
     //  for its own
     if (moved) {
       stop();
+      stopExport();
       defs.clear();
       lastKey = lastStl = null;
       good = null; shown = false;
@@ -388,6 +409,7 @@ export function mount(host, opts) {
       dead = true;
       clearTimeout(timer); clearTimeout(busyT);
       if (job) job.cancel();
+      stopExport();
       mq.removeEventListener('change', onScheme);
       if (vw) vw.destroy();
       host.replaceChildren();
