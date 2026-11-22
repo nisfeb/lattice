@@ -894,6 +894,8 @@ struct App {
     no_drain: bool,
     /// A page moved while it was being edited, until the tree says what revision it now has.
     moved_wait: Option<String>,
+    /// A page whose revision on the ship is not known (the tree did not say it after a move): its saves claim none, until one lands or the page is read again.
+    unclaimed: Option<String>,
     /// When the ship last heard from this window.
     here_beat: f64,
     /// Whether anyone is at the window (`sync_away`): a key or the pointer moved since the last look, when one last did, since when the window has not been in front, and when it is looked at again.
@@ -968,8 +970,8 @@ struct App {
     offline: Option<String>,
     /// The saves that could not reach the ship and wait to be sent, one for each page, as the file beside the session holds them.
     queue: api::Queue,
-    /// The page a save on its way carries, the revision it was written over, whether it is a memory, and when it was sent, in seconds: put by if the ship does not answer.
-    save_sent: Option<(Page, u64, bool, u64)>,
+    /// The page a save on its way carries, the revision it claims to be written over, whether it is a memory, and when it was sent, in seconds: put by if the ship does not answer.
+    save_sent: Option<(Page, Option<u64>, bool, u64)>,
     /// The saves that waited, on their way to the ship: each as it was sent, and how it came out.
     /// In turn, so it is on its way until its answer is taken: a `Latest` that has landed and not yet been looked at reads as done, and what waited was then sent a second time
     drain_req: inturn::InTurn<Drained>,
@@ -1377,6 +1379,7 @@ fn init() -> App {
         tree_behind: None,
         no_drain: false,
         moved_wait: None,
+        unclaimed: None,
         here_beat: 0.0,
         // a window is in front and in use when it opens
         touched: true,
@@ -4911,6 +4914,8 @@ fn show_page(s: &mut App, name: &str) {
     s.folder = None;
     s.old = None;
     (s.stale, s.moved_changed) = (false, false);
+    // the page is read again, with its revision
+    s.unclaimed = None;
     if let Some(p) = s.cache.get(name) {
         s.open = Some(p.clone());
     }
@@ -5412,7 +5417,7 @@ fn leave_edit(s: &mut App) -> bool {
         s.note = "A save is on its way. Try again in a moment".into();
         return false;
     }
-    let (base, memory) = (p.rev, s.memory);
+    let (base, memory) = (claim(s, &p), s.memory);
     p.body = body;
     (s.autosaving, s.save_again) = (false, false);
     queue_save(s, p, base, memory);
@@ -5495,9 +5500,20 @@ fn save(s: &mut App) {
     write(s);
 }
 
+/// The revision a save of `p` claims to be written over: its own, or none where it is not known.
+/// The ship takes any number, 0 included, as a claim (`+handle-page-save` in app.hoon), so a page
+/// whose revision is not known sends none. That is one the tree has not said since a move made
+/// while it was edited (`unclaimed`), and one under a move that waits to be sent: the ship numbers
+/// the moved page anew, as a save the move carried claims none (`enqueue_op`).
+fn claim(s: &App, p: &Page) -> Option<u64> {
+    let moved = s.ops.iter().any(|op| matches!(op, api::QueuedOp::Move { to, .. } if is_under(&p.name, to)));
+    (s.unclaimed.as_deref() != Some(p.name.as_str()) && !moved).then_some(p.rev)
+}
+
 fn write(s: &mut App) {
     let Some(mut p) = s.open.clone() else { return };
     let base = p.rev;
+    let claimed = claim(s, &p);
     p.body = edited(s);
     if s.capture && p.body.trim().is_empty() {
         s.note = "nothing to keep yet".into();
@@ -5518,7 +5534,7 @@ fn write(s: &mut App) {
     // the ship is known not to answer: the save is not tried, as the web client does not try it.
     // And a page with a save still waiting, or on its way, goes behind it: sent straight, the older one could land after it
     if own && (s.offline.is_some() || s.queue.contains_key(&waits_as) || s.drain_req.is_pending()) {
-        queue_save(s, p, base, memory);
+        queue_save(s, p, claimed, memory);
         if s.offline.is_none() {
             drain(s);
         }
@@ -5531,7 +5547,7 @@ fn write(s: &mut App) {
             s.save_again = true;
         } else {
             // another page's save is on its way, as a sheet's or a map's may be: this one is kept and sent behind it, not dropped with that one's answer
-            queue_save(s, p, base, memory);
+            queue_save(s, p, claimed, memory);
             if s.offline.is_none() {
                 drain(s);
             }
@@ -5543,7 +5559,7 @@ fn write(s: &mut App) {
     match s.conn.clone() {
         Some(c) => {
             let at = api::since_epoch().map_or(0, |d| d.as_secs());
-            s.save_sent = own.then(|| (p.clone(), base, memory, at));
+            s.save_sent = own.then(|| (p.clone(), claimed, memory, at));
             (s.save_for, s.save_half) = (Some(p.name.clone()), own.then_some(memory));
             s.save_req.request((c, p), move |(c, mut p)| {
                 if let Some(sh) = &remote {
@@ -5552,7 +5568,7 @@ fn write(s: &mut App) {
                 } else if memory {
                     c.know_save(&format!("/{}", p.name), &p.body)?;
                 } else {
-                    p.rev = c.save_as(&p, Some(base), fresh)?;
+                    p.rev = c.save_as(&p, claimed, fresh)?;
                 }
                 Ok(p)
             })
@@ -5772,6 +5788,9 @@ fn drained(s: &mut App, (did, out, unwritten): Drained) {
                     if let Some(behind) = &mut s.tree_behind {
                         behind.insert(name.clone());
                     }
+                    if s.unclaimed.as_deref() == Some(name.as_str()) {
+                        s.unclaimed = None;
+                    }
                     if let Some(p) = s.open.as_mut().filter(|p| !s.memory && s.remote.is_none() && p.name == name) {
                         p.rev = rev;
                         // the ship has a new revision of the page in front: its history is read again
@@ -5828,20 +5847,20 @@ fn drained(s: &mut App, (did, out, unwritten): Drained) {
 /// outlives this run, and shows it as the page's text from then on.
 /// When the file cannot be written the save is nowhere, and that is
 /// said in place of "saved": the editor stays open with the text.
-fn queue_save(s: &mut App, mut p: Page, base: u64, memory: bool) {
+fn queue_save(s: &mut App, mut p: Page, base: Option<u64>, memory: bool) {
     if s.conn.is_none() {
         return;
     }
     let at = crate::api::since_epoch().map_or(0, |d| d.as_secs());
     // a memory waits under its own name in the list, with no revision: the last write of a memory wins
-    let (as_page, claim, is_new) = if memory { (Page { name: api::know_queue_name(&p.name), ..p.clone() }, None, false) } else { (p.clone(), Some(base), !s.names.contains(&p.name)) };
+    let (as_page, claim, is_new) = if memory { (Page { name: api::know_queue_name(&p.name), ..p.clone() }, None, false) } else { (p.clone(), base, !s.names.contains(&p.name)) };
     // put into what the file holds now, not written over it from what this window holds: another window's waiting saves are in it too
     if let Err(e) = change_waiting(s, |_, q| api::enqueue(q, &as_page, claim, is_new, at)) {
         (s.save_again, s.autosaving, s.auto_held) = (false, false, true);
         s.note = format!("NOT SAVED. The ship does not answer and this change could not be kept on this device ({e}). Copy your text somewhere safe");
         return;
     }
-    p.rev = base;
+    p.rev = base.unwrap_or(p.rev);
     // the text is new and the revision is not yet: what was drawn from the old text is drawn again
     stale_views(s, &p.name);
     landed(s, p);
@@ -5944,16 +5963,16 @@ const SYNC_LAPSED: f64 = 900.0;
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     changed |= sync_scrub(s, clock, tx);
-    // a page moved while edited waits for the tree to say its revision. A ship that does not say within twenty seconds is not waited on for ever: the page is held at no revision, which the ship takes as no check
+    // a page moved while edited waits for the tree to say its revision. A ship that does not say within twenty seconds is not waited on for ever: its saves then claim no revision (`claim`), which the ship takes as no check. A revision of 0 would be a claim, refused or kept aside as a change made elsewhere
     if s.moved_wait.is_some() {
         if s.moved_at == 0.0 {
             s.moved_at = clock;
             tx.wake_after(std::time::Duration::from_secs(21));
         } else if clock > s.moved_at + 20.0 {
-            s.moved_wait = None;
             if let Some(p) = &mut s.open {
                 p.rev = 0;
             }
+            s.unclaimed = s.moved_wait.take();
             if std::mem::take(&mut s.moved_save) && s.editing {
                 write(s);
             }
@@ -6462,7 +6481,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                         s.cache.insert(n.path.clone(), Page { name: n.path.clone(), body: body.clone(), kind: n.kind.clone(), rev: n.rev });
                     }
                 }
-                // a page moved while it was being edited takes the revision the ship now has it at, and is not said to have changed elsewhere. A read that does not bring it leaves it with none, which the ship takes as no check
+                // a page moved while it was being edited takes the revision the ship now has it at, and is not said to have changed elsewhere. A read that does not bring it leaves it with none, and its saves claim none (`claim`), which the ship takes as no check
                 // That holds only if its text there is still the text this edit began from. If it is not, someone wrote it before the move, and the move must not hide that: it is said to have changed, as it would have been. The same for any page being edited whose revision is not known, as one opened just after a move
                 let waited = s.moved_wait.take();
                 if let Some(p) = s.open.as_mut().filter(|_| s.editing && !s.memory && !away) {
@@ -6473,6 +6492,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                             Some(c) => (p.rev, s.moved_changed) = (c.rev.saturating_sub(1), c.rev == 0),
                             None => p.rev = 0,
                         }
+                        s.unclaimed = s.cache.get(&p.name).is_none().then(|| p.name.clone());
                     }
                 }
                 // a page being edited that was written elsewhere: say so, since its save would be refused
@@ -6852,6 +6872,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         };
         match r {
             Ok(mut p) => {
+                // its revision on the ship is known again
+                if !sent.as_ref().is_some_and(|x| x.2) && s.unclaimed.as_deref() == Some(p.name.as_str()) {
+                    s.unclaimed = None;
+                }
                 // the ship has this text of the page now. What waits for the page is done with only when it is this text: one put by since this save was sent is newer and goes over it, and one put by before it is another window's
                 let (memory, sent_at) = sent.as_ref().map_or((false, 0), |x| (x.2, x.3));
                 let waited_as = if memory { api::know_queue_name(&p.name) } else { p.name.clone() };
