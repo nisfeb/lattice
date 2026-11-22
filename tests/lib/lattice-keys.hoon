@@ -176,6 +176,37 @@
     (expect !>((may-path k %local /notes/other %read)))    :: in read-set
     (expect !>(!(may-path k %local /elsewhere %read)))     :: ungranted
   ==
+::  a display name on a folder is a write there: scope, clearance, taint
+++  test-dname-ok  ^-  tang
+  =/  ps=paths  [(sy ~[/agents/bot]) (sy ~[/agents/bot])]
+  =/  k=key-row  (row [%none [%some ps] [%off ~] | ~ %none])
+  =/  c=key-row  (row [%none [%some ps] [%off ~] & ~ %none])
+  =/  t=key-row  c(taint `~2026.1.1)
+  =/  now=@da  ~2026.1.1..01.00.00
+  ;:  weld
+    ::  inside the write set, at it and under it
+    (expect !>((dname-ok k now /agents/bot 'Bot' | &)))
+    (expect !>((dname-ok k now /agents/bot/sub 'Sub' | &)))
+    ::  a folder above the write set, and the root
+    (expect !>(!(dname-ok k now /agents 'PWNED' | &)))
+    (expect !>(!(dname-ok k now / 'PWNED' | &)))
+    ::  a sibling
+    (expect !>(!(dname-ok k now /agents/other 'x' | &)))
+    ::  a sensitive folder takes a cleared key
+    (expect !>(!(dname-ok k now /agents/bot 'Bot' & &)))
+    (expect !>((dname-ok c now /agents/bot 'Bot' & &)))
+    ::  a tainted key names only a sensitive, unshared folder
+    (expect !>(!(dname-ok t now /agents/bot 'Bot' | |)))
+    (expect !>(!(dname-ok t now /agents/bot 'Bot' & |)))
+    (expect !>((dname-ok t now /agents/bot 'Bot' & &)))
+    ::  and is untainted again after twelve hours
+    (expect !>((dname-ok t ~2026.1.2 /agents/bot 'Bot' | |)))
+    ::  the cap is in bytes, and holds for an %all key too
+    (expect !>((dname-ok k now /agents/bot (crip (reap dname-cap 'a')) | &)))
+    (expect !>(!(dname-ok k now /agents/bot (crip (reap +(dname-cap) 'a')) | &)))
+    =/  all=key-row  (row [%none [%all %write] [%off ~] | ~ %none])
+    (expect !>(!(dname-ok all now /x (crip (reap +(dname-cap) 'a')) | &)))
+  ==
 ::  may-path %all: level-ok decides; %some: path membership decides
 ++  test-may-path-all-vs-some  ^-  tang
   =/  k-all=key-row

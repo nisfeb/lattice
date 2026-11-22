@@ -572,6 +572,22 @@ is  "scoped read granted"      200 "$(BC "$B/page-source?name=$P/note")"
 is  "scoped read ungranted"    403 "$(BC "$B/page-source?name=other/page")"
 is  "scoped write granted"     200 "$(BC -X POST "$B/page-save?name=$P/out/s1&type=md" --data-binary 'scoped write')"
 is  "scoped write ungranted"   403 "$(BC -X POST "$B/page-save?name=$P/note&type=md" --data-binary 'nope')"
+# ?dnames= names every folder on the saved path. A key names only the
+# folders its write scope covers: $P is above it, $P/out and below are in it
+is  "scoped save with dnames"  200 "$(BC -X POST "$B/page-save?name=$P/out/dn/leaf&type=md&dnames=PWNED%2FOut%20Dir%2FDn%20Dir%2FLeaf%20Page" --data-binary 'x')"
+sleep 1
+is  "  a folder above the scope is not named" "<none>" "$(field page-dump "$P" dname)"
+is  "  the scope's own folder is named" "Out Dir" "$(field page-dump "$P/out" dname)"
+is  "  a folder under it is named"  "Dn Dir" "$(field page-dump "$P/out/dn" dname)"
+is  "  the leaf is named"           "Leaf Page" "$(field page-dump "$P/out/dn/leaf" dname)"
+BIGNAME="$(printf 'n%.0s' $(seq 1 300))"
+is  "scoped save with an oversize dname" 200 "$(BC -X POST "$B/page-save?name=$P/out/dn/leaf&type=md&dname=$BIGNAME&dnames=%2F$BIGNAME" --data-binary 'x')"
+sleep 1
+is  "  the leaf keeps its name"     "Leaf Page" "$(field page-dump "$P/out/dn/leaf" dname)"
+is  "  and so does the folder"      "Out Dir" "$(field page-dump "$P/out" dname)"
+is  "the owner still names any folder" 200 "$(sc -X POST "$B/page-save?name=$P/out/dn/leaf&type=md&dnames=Top%20Dir" --data-binary 'x')"
+sleep 1
+is  "  the top folder is named"     "Top Dir" "$(field page-dump "$P" dname)"
 has "tree hides ungranted"     "$P/out" "$(BG "$B/page-tree")"
 is  "tree omits other ns"      "" "$(BG "$B/page-tree" | python3 -c 'import json,sys;print("".join(n["path"] for n in json.load(sys.stdin).get("nodes",[]) if not n["path"].startswith(sys.argv[1])))' "$P")"
 is  "scoped write hoon refused" 403 "$(BC -X POST "$B/page-save?name=$P/out/x&type=hoon" --data-binary '|=(x=@ x)')"
@@ -626,6 +642,12 @@ is "tainted flip existing nonsensitive refused" 403 "$(CC -X POST "$B/page-save?
 is "tainted write to new page allowed"   200 "$(CC -X POST "$B/page-save?name=$P/out/post&type=md" --data-binary 'secret')"
 sleep 1
 is "tainted new page force-marked sensitive" '{"on":true}' "$(G "$B/page-sensitive?name=$P/out/post")"
+# a tainted key names no folder that is not sensitive: the name of a
+# plain folder is listed to every key, so it would carry what the key read
+is "tainted save with dnames"            200 "$(CC -X POST "$B/page-save?name=$P/out/post&type=md&dnames=%2FLEAKED%2FSecret%20Page" --data-binary 'more')"
+sleep 1
+is "  the plain folder keeps its name"   "Out Dir" "$(field page-dump "$P/out" dname)"
+is "  the sensitive leaf is named"       "Secret Page" "$(field page-dump "$P/out/post" dname)"
 # the now-sensitive page may be rewritten by the tainted key
 is "tainted rewrite of sensitive page allowed" 200 "$(CC -X POST "$B/page-save?name=$P/out/post&type=md" --data-binary 'more')"
 CKID="$(printf '%s' "$CKEYJSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"]["id"])')"

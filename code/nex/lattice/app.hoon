@@ -624,7 +624,7 @@
         ::  access is deny-by-default.
         ;<  ~  bind:m  (send-public-how root)
         ::  page grants made before they were file roads (+narrow-page-grants)
-        ;<  ~  bind:m  narrow-page-grants
+        ;<  ~  bind:m  (narrow-page-grants root)
         ::  folder grants a crash left with no note (+fix-folder-grants)
         ;<  ~  bind:m  fix-folder-grants
         ::  lay down the built-in page-tree templates (idempotent; skips if the
@@ -1692,8 +1692,24 @@
   ::  relative road there is relative to the peer's dir and grants
   ::  nothing. Only the registry's %how resolves relative roads, and it
   ::  confines them to the sender's prefix, which this editor is not.
-  ;<  mkr=(set road:tarball)  bind:m  (page-roads u.mkp)
-  ;<  pkr=(set road:tarball)  bind:m  (page-roads u.pkp)
+  ::
+  ::  A folder of our page tree is never stored as a road on its dir. That
+  ::  road would hand the group the sensitive pages under it and every
+  ::  page's owner-only grubs (share, show, sensitive, own-grants), and as
+  ::  a make road let a member write them, and so publish a page. It is
+  ::  shared below as /share-file shares a folder (+share-folder-grant-in).
+  ;<  fmk=(list path)  bind:m  (page-folders u.mkp)
+  ;<  fpk=(list path)  bind:m  (page-folders u.pkp)
+  =/  named=(set path)  (silt (weld fmk fpk))
+  =/  plain
+    |=  ps=(list path)
+    ^-  (list path)
+    =/  pre=path  (weld sb /page)
+    %+  skip  ps
+    |=  p=path
+    &(=(pre (scag (lent pre) p)) (~(has in named) (slag (lent pre) p)))
+  ;<  mkr=(set road:tarball)  bind:m  (page-roads (plain u.mkp))
+  ;<  pkr=(set road:tarball)  bind:m  (page-roads (plain u.pkp))
   =/  =weir:nexus
     :+  (~(uni in (ug-keep make.old)) mkr)
       poke.old
@@ -1734,16 +1750,38 @@
     $(l t.l)
   ::  a folder shared with the group (+share-folder-with) whose last
   ::  page this save took out is unshared, rule and index too, so a page
-  ::  added to it later is not shared again (+unshare-folder)
+  ::  added to it later is not shared again (+unshare-folder). So is one
+  ::  the group list named (+folder-lines) that this save leaves out: its
+  ::  line was taken out (+folder-out:ls).
   ;<  ~  bind:m
     =/  fs=(list path)  (folders-granted sb peek.old)
     |-  ^-  form:m
     ?~  fs  (pure:m ~)
-    ?.  ?&  (page-roads-under sb i.fs peek.old)
-            !(page-roads-under sb i.fs peek.weir)
+    ;<  sg=(map @t @t)  bind:m  (read-share-grants i.fs)
+    ?.  %:  folder-out:ls
+          (page-roads-under sb i.fs peek.old)
+          (page-roads-under sb i.fs peek.weir)
+          (~(has by sg) u.gname)
+          (~(has in named) i.fs)
         ==
       $(fs t.fs)
     ;<  ~  bind:m  (unshare-folder u.gname i.fs)
+    $(fs t.fs)
+  ::  each folder this save names is shared with the group as /share-file
+  ::  shares one: its pages' code grubs, less the sensitive ones, and its
+  ::  indexes, with the folder's note, so a page made in it later is
+  ::  granted too (+grant-new). One the group already holds at this mode
+  ::  is left as it is, so a page taken out of it by this save stays out.
+  ;<  ~  bind:m
+    =/  fs=(list path)  ~(tap in named)
+    |-  ^-  form:m
+    ?~  fs  (pure:m ~)
+    =/  md=@t  ?:((lien fmk |=(f=path =(f i.fs))) 'edit' 'read')
+    ;<  sg=(map @t @t)  bind:m  (read-share-grants i.fs)
+    ;<  nw=weir:nexus  bind:m  (ug-read-weir gdir)
+    =/  ix=road:tarball  [%& %& :(weld sb /page i.fs) %'dir-index']
+    ?:  &(=(`md (~(get by sg) u.gname)) (~(has in peek.nw) ix))  $(fs t.fs)
+    ;<  *  bind:m  (share-folder-grant-in u.gname ~ md i.fs |)
     $(fs t.fs)
   ::  a folder granted here lists its pages to the group (+dir-index-acts)
   ;<  ~  bind:m  (dir-index-pokes (weld sb /page) u.pkp)
@@ -3490,6 +3528,9 @@
     ::  write above, also durable), THEN cull what the ship wrote, its moons'
     ::  too: a ban that freed no slots left the page full (security audit run-1).
     ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
+    ::  and off every private board's roster, which is what lets a ship
+    ::  post there: left on it, an unban gave the posting back
+    ;<  ~  bind:m  (strip-forum-rosters u.who)
     ;<  *  bind:m  (cull-comments-of u.who)
     ;<  ~  bind:m  (poke-eval [%pub-threads ~])
     ;<  ~  bind:m  (poke-eval [%forum-cull u.who])
@@ -3519,6 +3560,10 @@
       ?.  (~(has in bans) u.who)  (pure:n `0)
       (drop-ban-groups (silt ~[u.who]))
     ?~  dropped  (ug-refused eyre-id)
+    ::  the rosters too, for a ship banned before a ban cleared them
+    ;<  ~  bind:m
+      ?.  (~(has in bans) u.who)  (pure:(fiber:fiber:nexus ,~) ~)
+      (strip-forum-rosters u.who)
     ;<  ~  bind:m
       (over:io (ban-road up) [[/lattice %banned] (~(del in bans) u.who)])
     (send-ok eyre-id)
@@ -3940,6 +3985,9 @@
     ::  the key's write grant is explicit consent from the owner.
     ?.  (may-path:ky u.key %local (pax-of u.name) %write)
       (send-err eyre-id 403 'outside this key\'s scope')
+    ::  the scope check above is on the leaf. ?dnames= would also name the
+    ::  folders above it, so keep only the names this key may write
+    ;<  args=(map @t @t)  bind:m  (key-dname-args u.key rnow args (pax-of u.name))
     ;<  wf=(unit rich)  bind:m  (fodt-at (pax-of u.name))
     ?:  &(?=(^ wf) !=(`@t`u.wf (~(gut by args) 'type' 'hoon')))
       (send-err eyre-id 403 (fodt-key-msg u.wf))
@@ -8336,13 +8384,19 @@
     (forum-reply-tell now src p.lod post.act parent.act body.act)
   (pure:m ~)
 ::  +apply-forum-remote: a forum action from a REMOTE ship, author stamped from
-::  the transport. Runs, in the ONE writer, the gates the inbox used to run: a
-::  banned ship is dropped silently; the per-[ship board] rate limit is
-::  consulted BEFORE any refusal note and a cooldown is accrued on every
-::  attempt that clears the limit (success OR refusal), so a ship streaming
-::  refused pokes backs off; a refusal (bad board, owner-only, private, role,
-::  caps, or +act) rides back to the poster as a best-effort note. Always
-::  returns ~: a remote refusal is a note, never a fault.
+::  the transport. Runs, in the ONE writer, the gates the inbox used to run.
+::  A banned ship is dropped silently. The rate limit is consulted BEFORE any
+::  refusal note, and a cooldown is accrued on every attempt that clears the
+::  limit (success OR refusal), so a ship streaming refused pokes backs off.
+::  A refusal on a board we host (owner-only, private, role, caps, or +act)
+::  rides back to the poster as a best-effort note. Always returns ~: a
+::  remote refusal is a note, never a fault.
+::
+::  The cooldown is kept per family and board (+rate-key:fr). The board name
+::  is the sender's to choose, so a name that is no board of ours (bad,
+::  unknown, or unreadable) is counted under the family's one entry for all
+::  such names, and is answered with no note: a stream of made-up names then
+::  meets the cooldown, adds one small entry, and sends nothing out.
 ::
 ++  apply-forum-remote
   |=  [now=@da src=@p act=action:ft]
@@ -8374,12 +8428,14 @@
   ::  so the plain cooldown applies (this is +rate-ok:fr for the no-board case).
   ;<  lim=limits:fr  bind:m  read-forum-limits
   =/  mod=?  ?~(obrd %.n (is-mod:fr src u.obrd))
-  =/  entry  (~(get by lim) [src name])
+  =/  key=[@p board-name:ft]  (rate-key:fr (family:ls src) name ?=(^ obrd))
+  =/  entry  (~(get by lim) key)
   =/  ratek=?
     ?:  mod  %.y
     ?~  entry  %.y
     (gte (sub now last.u.entry) cooldown.u.entry)
   ?.  ratek
+    ?~  obrd  (pure:m ~)
     (forum-note-send src name 'forum: you are acting too fast, slow down and retry')
   ::  run the gates and the apply, collecting any refusal reason.
   ;<  reason=(unit @t)  bind:m  (forum-remote-apply now src name act obrd)
@@ -8387,8 +8443,9 @@
   ::  refused pokes keeps lengthening the cooldown.
   ;<  ~  bind:m
     ?:  mod  (pure:(fiber:fiber:nexus ,~) ~)
-    (write-forum-limits (rate-update:fr src name now lim))
+    (write-forum-limits (rate-update:fr -.key +.key now lim))
   ?~  reason  (pure:m ~)
+  ?~  obrd  (pure:m ~)
   (forum-note-send src name u.reason)
 ::  +apply-forum-comet: a forum action from a comet, such as the desktop's
 ::  reader without a node. It lands only as a post or a reply on a public
@@ -8649,6 +8706,41 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   (put-file (rf up /forum/members nom) [/ %noun] [%1 who])
+::  +strip-forum-rosters: every ship a ban of `who` covers (+ban-drop:ls:
+::  the ship, a planet's moons, every comet for the comets) comes off
+::  every board's roster. The roster is what the member gate reads
+::  (+forum-remote-apply), and a ban takes back all a ship was given, so
+::  an unban must not find it still a member. A roster nothing changes
+::  in is not written.
+++  strip-forum-rosters
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io (rv up /forum/members) ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  =/  noms=(list @ta)
+    ?~  fil.ball.u.vw  ~
+    ~(tap in ~(key by contents.u.fil.ball.u.vw))
+  =/  bans=banned:ls  (silt ~[who])
+  |-  ^-  form:m
+  ?~  noms  (pure:m ~)
+  ;<  mem=(set @p)  bind:m  (read-forum-members i.noms)
+  =/  left=(set @p)  (ban-drop:ls bans mem)
+  ?:  =(left mem)  $(noms t.noms)
+  ;<  ~  bind:m  (write-forum-members i.noms left)
+  $(noms t.noms)
+::  +forum-readers: the ships a private board's read group holds
+::  (+forum-group-name), none when it was never made or will not read
+++  forum-readers
+  |=  nom=@ta
+  =/  m  (fiber:fiber:nexus ,(set @p))
+  ^-  form:m
+  ;<  ub=path  bind:m  ug-dir
+  =/  gdir=path  (snoc ub (crip (weld (trip (forum-group-name nom)) ".grp")))
+  ;<  wv=(unit view:nexus)  bind:m  (peek-soft:io [%& %& gdir %'who.ships'] ~)
+  ?.  ?=([~ %file *] wv)  (pure:m ~)
+  (pure:m (fall (mole |.(;;((set @p) (sang-noun:tarball sang.u.wv)))) ~))
 ::  +handle-forum-invite: POST /forum-invite and /forum-revoke ?board=&ship=.
 ::  add=%.y invites, %.n revokes. Owner-only (the owner session is the route's
 ::  gate, as for /share-file). Only a PRIVATE board has members to manage.
@@ -8802,15 +8894,22 @@
     %+  notify-add  now
     (flood-item:ln now host board.u.rn post.u.rn over.gate)
   ?.  ok.gate  (pure:m ~)
+  ::  both fields cut to size before they are kept (+refusal:ln): the
+  ::  sender chose them, and nothing else bounds what one note stores
   =/  nn=(unit [board=board-name:ft reason=@t])
-    (mole |.(;;([board-name:ft @t] payload)))
+    =/  raw=(unit [@ @])  (mole |.(;;([@ @] payload)))
+    ?~(raw ~ (refusal:ln u.raw))
   ?~  nn  (pure:m ~)
   ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
-  =/  stored=@ud
-    ?.  ?=([%ball *] v)  0
-    ?~  fil.ball.v  0
-    ~(wyt by contents.u.fil.ball.v)
-  ?:  (gte stored 100)  (pure:m ~)
+  ::  bounded in all, and for one sender's family (+notes-full:ln)
+  =/  fams=(list @)
+    ?.  ?=([%ball *] v)  ~
+    ?~  fil.ball.v  ~
+    %+  turn  ~(val by contents.u.fil.ball.v)
+    |=  [=sang:tarball *]
+    =/  n  (mole |.(;;([host=@p @ @ @] (sang-noun:tarball sang))))
+    ?~(n 0 (family:ls host.u.n))
+  ?:  (notes-full:ln fams (family:ls host))  (pure:m ~)
   =/  note=[host=@p board=board-name:ft reason=@t at=@da]
     [host board.u.nn reason.u.nn now]
   =/  id=@ta  (scot %uv (sham note))
@@ -9466,20 +9565,19 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ?:  =('' body.act)  (pure:m ~)
-  ::  reject an empty page path (levy is vacuously true on ~) so a comment can't
-  ::  land loose in the /comments root. Value-eq, not ?=, so page.act keeps its
-  ::  general `path` type (a ?= refinement makes the levy below mull-grow).
-  ?:  =(~ page.act)  (pure:m ~)
-  ?.  (levy page.act |=(s=@ta &(!=(%$ s) ((sane %ta) s))))  (pure:m ~)
-  ;<  on=?  bind:m  (comments-on page.act)
-  ?.  on  (pure:m ~)
-  ::  the page must EXIST: comments-on walks flags upward, so a folder-level
-  ::  comment-on would otherwise let any un-banned ship spray grubs under
-  ::  invented sub-paths of a commentable site.
+  ::  an empty body or page path, or a path longer than any page's, is
+  ::  dropped before anything is read (+act-ok:lc)
+  ?.  (act-ok:lc act)  (pure:m ~)
+  ::  the page must EXIST, and that is asked first: one read. +comments-on
+  ::  walks the flags upward, a read for each segment of the path, so a
+  ::  path to nothing must not reach it. And a folder-level comment-on
+  ::  would otherwise let any un-banned ship spray grubs under invented
+  ::  sub-paths of a commentable site.
   ;<  ex=?  bind:m
     (peek-exists:fio (rf root (weld /page page.act) %code))
   ?.  ex  (pure:m ~)
+  ;<  on=?  bind:m  (comments-on page.act)
+  ?.  on  (pure:m ~)
   ::  and the store is BOUNDED, for the reason the shares inbox is bounded:
   ::  anyone may poke this road, each poke files a fresh time-salted grub,
   ::  and without a cap a hostile ship grows the pier without limit. 200
@@ -9660,6 +9758,12 @@
 ::  its /forum.sig, fire-and-forget as a refusal note is, at its base in
 ::  the peers record (+forum-note-send says why). A comet runs no
 ::  lattice to tell; the desktop reader finds its replies on its own.
+::
+::  The note holds the thread's title and a clip of the reply, so a ship
+::  is told only while it may read the board (+reply-tell-ok:ln): not
+::  once banned, and on a private board only while its read group holds
+::  it. The stored posts keep an author who was revoked, or who posted
+::  while the board was public, and that author hears no more.
 ++  forum-reply-tell
   |=  [now=@da src=@p brd=board:ft post=post-id:ft parent=(unit comment-id:ft) body=@t]
   =/  m  (fiber:fiber:nexus ,~)
@@ -9669,12 +9773,18 @@
   =/  title=@t  (post-title:ln brd post)
   =/  nom=@tas  name.info.brd
   ;<  known=(map @t json)  bind:m  read-peers
+  ;<  bans=banned:ls  bind:m  read-banned
+  ;<  readers=(set @p)  bind:m
+    ?:  public.info.brd  (pure:(fiber:fiber:nexus ,(set @p)) ~)
+    (forum-readers nom)
   |-  ^-  form:m
   ?~  who  (pure:m ~)
   ;<  ~  bind:m
     ?:  =(i.who our)
       (notify-add now (make:ln %reply now src our nom post title body))
     ?:  (is-comet:fr i.who)  (pure:m ~)
+    ?.  (reply-tell-ok:ln public.info.brd readers (is-banned:ls bans i.who) i.who)
+      (pure:m ~)
     =/  note=reply-note:ln  [%reply-1 nom post (clip:ln title) src (clip:ln body)]
     =/  req=load:remo:nexus
       :-  [/forum-note %& (known-base:lu known i.who) %'forum.sig']
@@ -12697,6 +12807,36 @@
   =/  rest  $(segs t.segs, i +(i))
   ?:  =('' i.segs)  rest
   [[%dname (scag i pax) i.segs] rest]
+::  +key-dname-args: a keyed save's args with only the display names the
+::  key may write. Each folder ?dnames= would name must pass what a save
+::  there passes (+dname-ok:ky): the route checked the leaf alone, and
+::  +dname-acts-of writes a name on every ancestor. A refused entry is
+::  blanked, which +dname-acts-of skips. The leaf's own name (the last
+::  entry, and ?dname=) is only held to the size cap.
+++  key-dname-args
+  |=  [k=key-row:ky now=@da args=(map @t @t) pax=path]
+  =/  m  (fiber:fiber:nexus ,(map @t @t))
+  ^-  form:m
+  =?  args  (gth (met 3 (~(gut by args) 'dname' '')) dname-cap:ky)
+    (~(del by args) 'dname')
+  =/  ds=(unit @t)  (~(get by args) 'dnames')
+  ?~  ds  (pure:m args)
+  =/  segs=(list @t)  (split-fas u.ds)
+  =/  n=@ud  (lent pax)
+  =/  i=@ud  1
+  =|  out=(list @t)
+  |-  ^-  form:m
+  ?:  |(?=(~ segs) (gth i n))
+    (pure:m (~(put by args) 'dnames' (rap 3 (join '/' (flop out)))))
+  ?:  =('' i.segs)  $(segs t.segs, i +(i), out ['' out])
+  ?:  =(i n)
+    $(segs t.segs, i +(i), out [?:((gth (met 3 i.segs) dname-cap:ky) '' i.segs) out])
+  =/  at=path  (scag i pax)
+  ;<  sens=?  bind:m  (page-sensitive at)
+  ;<  dest=?  bind:m
+    ?.  (tainted:ky k now)  (pure:(fiber:fiber:nexus ,?) &)
+    (taint-dest-at at)
+  $(segs t.segs, i +(i), out [?:((dname-ok:ky k now at i.segs sens dest) i.segs '') out])
 ::  +poke-dnames: apply +dname-acts-of, one writer poke each, in order.
 ++  poke-dnames
   |=  [args=(map @t @t) pax=path]
@@ -14176,11 +14316,33 @@
   ?:  (grp-name:ls nom)
     $(kids t.kids, acc [[(snoc pax nom) kid] acc])
   $(kids t.kids, acc (weld acc (all-groups (snoc pax nom) kid)))
+::  +page-folders: the folders of our page tree among the absolute grant
+::  paths `ps`, each by its path under /page: a dir below /page that has
+::  no code grub. Not /page itself, which is no one folder.
+++  page-folders
+  |=  ps=(list path)
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sb=path  bind:m  self-base
+  =/  pre=path  (weld sb /page)
+  =|  out=(list path)
+  |-  ^-  form:m
+  ?~  ps  (pure:m (flop out))
+  =/  rel=path  (slag (lent pre) i.ps)
+  ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))  $(ps t.ps)
+  ;<  dx=?  bind:m  (peek-exists:fio (rv up (weld /page rel)))
+  ;<  cx=?  bind:m  (peek-exists:fio (rf up (weld /page rel) %code))
+  ?:  |(!dx cx)  $(ps t.ps)
+  $(ps t.ps, out [rel out])
 ::  +page-roads: grant paths as roads. A page is granted by a file road on
 ::  its code grub, which is all a grantee opens (+share-file), so the grant
 ::  reaches neither the page's owner-only grubs (share, show, forms, the
-::  render cache) nor pages nested under it. Anything else, a folder, is
-::  a dir road: granting a folder is granting what is in it.
+::  render cache) nor pages nested under it. Anything else is a dir road.
+::  A folder of our page tree must not be stored as one: a group save
+::  shares it as a folder share instead (+handle-share-group-save), and
+::  one stored before that is made over on writer start
+::  (+narrow-folder-grants-in).
 ++  page-roads
   |=  ps=(list path)
   =/  m  (fiber:fiber:nexus ,(set road:tarball))
@@ -14212,10 +14374,11 @@
 ::  +narrow-page-grants: a page grant used to be a dir road on the page's
 ::  dir, which also reached its owner-only grubs and the pages nested under
 ::  it. On every writer start each dir road on one of our pages becomes the
-::  file road on its code grub (+page-roads), in every group. It only ever
-::  narrows: a folder's road stays, and so does every other road. Soft, so
-::  an install that refused the usergroup roads keeps its grants as they
-::  were.
+::  file road on its code grub (+page-roads), in every group, and each dir
+::  road on a folder of our page tree becomes the folder share it stands
+::  for (+narrow-folder-grants-in). It only ever narrows: every other road
+::  stays. Soft, so an install that refused the usergroup roads keeps its
+::  grants as they were.
 ::
 ::  The ships whose reads change hear of it (+share-tell-do, called here
 ::  and not through the writer's %share-tell, since this runs in the
@@ -14223,10 +14386,12 @@
 ::  was told of a folder that is not one: narrowed, it is told that
 ::  folder is gone and the page is shared.
 ++  narrow-page-grants
+  |=  root=@ud
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  h0=holds:ls  bind:m  holds-now
   ;<  ~  bind:m  narrow-page-grants-in
+  ;<  ~  bind:m  (narrow-folder-grants-in root)
   ;<  h1=holds:ls  bind:m  holds-now
   =/  d  (holds-diff:ls h0 h1)
   ?:  &(?=(~ add.d) ?=(~ del.d))  (pure:m ~)
@@ -14262,6 +14427,89 @@
   ;<  *  bind:m
     (ug-over [%& %& (weld ub rel.i.gs) %'how.weir'] [[/ %weir] nw])
   $(gs t.gs)
+::  +narrow-folder-grants-in: a folder granted from the group panel used
+::  to be a dir road on the folder. That road reaches the sensitive pages
+::  under it and every page's owner-only grubs, and as a make road lets a
+::  member write them. A weir has no deny, so each such road, in every
+::  group, becomes what /share-file stores for a folder (+folder-roads:ls:
+::  each page's code grub, less the sensitive ones, and each index), with
+::  the folder's note, so a page made in it later is granted (+grant-new).
+::  Run after +narrow-page-grants-in, so a dir road left below /page is a
+::  folder's or names nothing yet. One that names nothing stays, as a
+::  page's does, and is made over on the start after something is there.
+::  The weir goes first, in one write. A start cut short after it leaves
+::  index roads with no note, which +fix-folder-grants notes.
+++  narrow-folder-grants-in
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  ;<  ub=path  bind:m  ug-dir
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ub] ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  =/  pre=path  (weld sb /page)
+  =/  n=@ud  (lent pre)
+  =/  gs=(list [rel=path gb=ball:tarball])  (all-groups / ball.u.vw)
+  |-  ^-  form:m
+  ?~  gs  (pure:m ~)
+  =/  nm=tape  ?~(rel.i.gs "" (trip (rear rel.i.gs)))
+  =/  gname=@t  (crip (scag (sub (max 4 (lent nm)) 4) nm))
+  =/  fils  ?~(fil.gb.i.gs ~ contents.u.fil.gb.i.gs)
+  =/  hw  (~(get by fils) %'how.weir')
+  =/  w=(unit weir:nexus)
+    ?~  hw  ~
+    (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hw))))
+  ?~  w  $(gs t.gs)
+  ::  the dir roads below our /page, and whether each is a make road
+  =/  ds=(list [d=path ed=?])
+    %+  murn  ~(tap in (~(uni in peek.u.w) make.u.w))
+    |=  r=road:tarball
+    ^-  (unit [path ?])
+    ?.  ?=([%& %| *] r)  ~
+    ?.  &((gth (lent p.p.r) n) =(pre (scag n p.p.r)))  ~
+    `[p.p.r (~(has in make.u.w) r)]
+  ?~  ds  $(gs t.gs)
+  ;<  ~  bind:m  (narrow-folder-group root (weld ub rel.i.gs) gname n u.w ds)
+  $(gs t.gs)
+::  +narrow-folder-group: +narrow-folder-grants-in for one group, the
+::  dir roads `ds` of its weir `w`. `n` is how long our /page path is.
+++  narrow-folder-group
+  |=  [root=@ud gdir=path gname=@t n=@ud w=weir:nexus ds=(list [d=path ed=?])]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  nw=weir:nexus  w
+  =|  did=(list [f=path ed=?])
+  |-  ^-  form:m
+  ?^  ds
+    =/  frel=path  (slag n d.i.ds)
+    ;<  fv=view:nexus  bind:m  (peek:fio (rv up (weld /page frel)) ~)
+    ::  nothing there yet, or a page: the road stays
+    ?.  ?=([%ball *] fv)  $(ds t.ds)
+    ?:  (~(has by (ball-fils ball.fv ~)) %code)  $(ds t.ds)
+    ;<  fs=(set path)  bind:m  (tree-sens frel ball.fv)
+    =/  all=(list [p=path page=?])  (collect-tree ball.fv ~)
+    =/  rs  (folder-roads:ls d.i.ds all fs ed.i.ds)
+    =/  dr=road:tarball  [%& %| d.i.ds]
+    %=  $
+      ds   t.ds
+      did  [[frel ed.i.ds] did]
+      nw   :+  (~(uni in (~(del in make.nw) dr)) ;;((set road:tarball) make.rs))
+             poke.nw
+           (~(uni in (~(del in peek.nw) dr)) ;;((set road:tarball) peek.rs))
+    ==
+  ?:  =(nw w)  (pure:m ~)
+  ;<  ok=?  bind:m  (ug-over [%& %& gdir %'how.weir'] [[/ %weir] nw])
+  ?.  ok  (pure:m ~)
+  |-  ^-  form:m
+  ?~  did  (pure:m ~)
+  ::  at the road's mode, or the folder's own note when that is wider
+  ;<  sg=(map @t @t)  bind:m  (read-share-grants f.i.did)
+  =/  md=@t  ?:(|(ed.i.did =(`'edit' (~(get by sg) gname))) 'edit' 'read')
+  %-  (say 2 ~[leaf+"lattice: {(trip gname)} held a road on the whole folder {(spud f.i.did)}, now its pages and indexes"])
+  ;<  ~  bind:m  (folder-grant-do f.i.did gname md)
+  ;<  ~  bind:m  (write-dir-index root f.i.did)
+  $(did t.did)
 ::  +fix-folder-grants: a folder shared with a ship is two writes, the
 ::  group's weir (+ug-merge) and the folder's note (%folder-grant). A
 ::  crash or reload between them leaves roads no note covers, and an
@@ -14589,6 +14837,7 @@
   ::  so it refuses to change a nested one, which is the safe failure.
   =/  names=(list path)  (sort (turn (all-groups / ball.dn) head) aor)
   ;<  cns=(map @t (set path))  bind:m  read-code-named
+  ;<  sb=path  bind:m  self-base
   =|  out=(list json)
   |-  ^-  form:m
   ?~  names  (pure:m a+(flop out))
@@ -14606,16 +14855,43 @@
   =/  pk  (ug-dirfold-paths cn peek.w)
   =/  mk  (ug-dirfold-paths cn make.w)
   =/  po  (ug-dirfold-paths ~ poke.w)
+  ::  a folder shared with the group whole is a line of its own, by its
+  ::  path, as a folder's road was: the line a save leaves out to unshare
+  ::  it (+folder-lines). Its index road is then no rule the list hides.
+  ;<  fo=[pk=(list @t) mk=(list @t)]  bind:m  (folder-lines sb base peek.w)
+  =/  less  |=([a=(list @t) b=(list @t)] (skip a |=(t=@t ?=(^ (find ~[t] b)))))
   =/  gj=json
     %-  pairs:enjs:format
     :~  ['name' s+base]
         ['ships' a+(turn ships |=(s=@p s+(scot %p s)))]
-        ['peek' a+(turn ps.pk |=(t=@t s+t))]
-        ['make' a+(turn ps.mk |=(t=@t s+t))]
+        ['peek' a+(turn (weld (less pk.fo ps.pk) ps.pk) |=(t=@t s+t))]
+        ['make' a+(turn (weld (less mk.fo ps.mk) ps.mk) |=(t=@t s+t))]
         ['poke' a+(turn ps.po |=(t=@t s+t))]
-        ['opaque' (numb:enjs:format :(add opaque.pk opaque.mk opaque.po))]
+        :-  'opaque'
+        %-  numb:enjs:format
+        (sub :(add opaque.pk opaque.mk opaque.po) (min opaque.pk (lent pk.fo)))
     ==
   $(names t.names, out [gj out])
+::  +folder-lines: the folders a group holds whole, as the group list
+::  names them: each folder below our /page whose index road the group's
+::  peek roads `rs` hold and whose note names the group `g` (the folder
+::  itself, not the folders under it, which have an index road and no
+::  note). In `pk` by its absolute path, and in `mk` too when the note
+::  says edit.
+++  folder-lines
+  |=  [sb=path g=@t rs=(set road:tarball)]
+  =/  m  (fiber:fiber:nexus ,[pk=(list @t) mk=(list @t)])
+  ^-  form:m
+  =/  fs=(list path)  (folders-granted sb rs)
+  =|  out=[pk=(list @t) mk=(list @t)]
+  |-  ^-  form:m
+  ?~  fs  (pure:m out)
+  ?~  i.fs  $(fs t.fs)
+  ;<  sg=(map @t @t)  bind:m  (read-share-grants i.fs)
+  =/  md=(unit @t)  (~(get by sg) g)
+  ?~  md  $(fs t.fs)
+  =/  t=@t  (spat :(weld sb /page i.fs))
+  $(fs t.fs, out [[t pk.out] ?:(=('edit' u.md) [t mk.out] mk.out)])
 ::  +apply-share-notice: one inbox poke. Everything about it is defensive:
 ::  the payload is soft-cast (any ship can send anything), the path must be
 ::  under /apps, the mode must be one of ours, and %del from a foreign ship is
