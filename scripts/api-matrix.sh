@@ -170,6 +170,118 @@ has "  page landed"        'inside' "$(G "$B/page-source?name=$P/mvdir2/x")"
 is "  old folder gone"     "<missing>" "$(field page-tree "$P/mvdir/x" kind)"
 is "move under itself 400" 400 "$(sc -X POST "$B/page-move?from=$P/mvdir2&to=$P/mvdir2/sub")"
 is "move missing 404"      404 "$(sc -X POST "$B/page-move?from=$P/ghost-move&to=$P/anywhere")"
+# a move follows path literals in code and wikilinks. A content page's
+# body is the writer's own text: the old path spelled in it is prose
+is "seed prose that spells its folder's path" 200 "$(sc -X POST "$B/page-save?name=$P/mvp/readme&type=md&new=1" --data-binary "Call GET /$P/mvp/users (see /$P/mvp) and [[$P/mvp/readme]]")"
+is "  a folder index beside it" 200 "$(sc -X POST "$B/page-save?name=$P/mvp/index&type=index&new=1")"
+is "  a hoon page with a path literal" 200 "$(sc -X POST "$B/page-save?name=$P/mvp/code&new=1" --data-binary "|=(* [/$P/mvp/readme \"/$P/mvp\"])")"
+is "  move the folder"     200 "$(sc -X POST "$B/page-move?from=$P/mvp&to=$P/mvq")"
+sleep 2
+r=$(G "$B/page-source?name=$P/mvq/readme")
+has "  prose spelling the old path is left as written" "Call GET /$P/mvp/users (see /$P/mvp) and" "$r"
+has "  its wikilink follows the move" "[[$P/mvq/readme]]" "$r"
+has "  the folder index lists the new folder" "folder-index deps /$P/mvq)" "$(G "$B/page-source?name=$P/mvq/index")"
+has "  the hoon page's path literals follow" "[/$P/mvq/readme \\\"/$P/mvq\\\"]" "$(G "$B/page-source?name=$P/mvq/code")"
+is "  rename the page alone" 200 "$(sc -X POST "$B/page-move?from=$P/mvq/readme&to=$P/mvq/guide")"
+sleep 2
+r=$(G "$B/page-source?name=$P/mvq/guide")
+has "  a renamed page keeps its prose" "Call GET /$P/mvp/users (see /$P/mvp) and" "$r"
+has "  and its link to itself follows" "[[$P/mvq/guide]]" "$r"
+
+echo "==> a move asked twice keeps an edit made at the destination"
+# the same move asked again while the first still runs is run again, to
+# finish it. The second run must not copy over a page the first already
+# copied: an edit made there since would go under the old text.
+M="$P-mv2"
+T=$(mktemp -d)
+python3 -c "
+import json
+print(json.dumps([{'name':'$M/src/p%02d'%i,'type':'md','body':'original %d'%i} for i in range(16)]))" > "$T/seed"
+is "seed a folder of pages" 200 "$(sc -X POST "$B/page-save-batch" -H 'content-type: application/json' --data-binary @"$T/seed")"
+sc -X POST "$B/page-move?from=$M/src&to=$M/dst" > "$T/m1" &
+# once the first run has copied its last page, and before it deletes
+# the source, the same move again, and an edit of that page
+for i in $(seq 1 120); do
+  [ "$(sc "$B/page-source?name=$M/dst/p15")" = 200 ] && break
+  sleep 0.5
+done
+sc -X POST "$B/page-move?from=$M/src&to=$M/dst" > "$T/m2" &
+e=$(sc -X POST "$B/page-save?name=$M/dst/p15&type=md" --data-binary 'edited at the destination')
+wait
+is "the first run answers"  200 "$(cat "$T/m1")"
+is "the second run answers" 200 "$(cat "$T/m2")"
+is "the edit is taken"      200 "$e"
+sleep 2
+has "the edit is still the page's text" 'edited at the destination' "$(G "$B/page-source?name=$M/dst/p15")"
+has "a page nobody edited moved whole"  'original 3' "$(G "$B/page-source?name=$M/dst/p03")"
+is "the source is gone"     404 "$(sc "$B/page-source?name=$M/src/p15")"
+rm -rf "$T"
+sc -X POST "$B/page-del?name=$M" >/dev/null
+
+echo "==> create-only (?new=1) is decided where the write lands"
+# two creates of one name at once: one makes the page, the other is told
+# it exists, and the page holds one revision
+T=$(mktemp -d)
+both=0; lost=0; extra=0
+for i in 1 2 3 4 5 6; do
+  for k in a b; do
+    sc -X POST "$B/page-save?name=$P/race/n$i&type=md&new=1" --data-binary "body $k $i" > "$T/$k" &
+  done
+  wait
+  cs="$(sort "$T/a" "$T/b" | tr '\n' ' ')"
+  [ "$cs" = "200 409 " ] || both=$((both+1))
+  w=a; [ "$(cat "$T/b")" = 200 ] && w=b
+  G "$B/page-source?name=$P/race/n$i" | grep -qF "body $w $i" || lost=$((lost+1))
+  n=$(G "$B/page-history?name=$P/race/n$i" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["revisions"]))')
+  [ "$n" = 1 ] || extra=$((extra+1))
+done
+rm -rf "$T"
+is "one of two racing creates is refused, every round" 0 "$both"
+is "  the page holds the body of the create that was answered 200" 0 "$lost"
+is "  and one revision, not the loser's under it" 0 "$extra"
+is "a create at a taken name is still refused" 409 "$(sc -X POST "$B/page-save?name=$P/race/n1&type=md&new=1" --data-binary 'late')"
+is "a plain save over it still lands" 200 "$(sc -X POST "$B/page-save?name=$P/race/n1&type=md" --data-binary 'plain')"
+has "  with its body" 'plain' "$(G "$B/page-source?name=$P/race/n1")"
+has "a lone create answers its rev" '"rev":0' "$(G -X POST "$B/page-save?name=$P/race/solo&type=md&new=1" --data-binary 'solo')"
+
+echo "==> page-del of a page leaves the pages under it"
+D="$P-del"
+revs() { G "$B/page-history?name=$1" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["revisions"]))'; }
+for n in top top/kid top/sub/deep bare bare/kid; do
+  sc -X POST "$B/page-save?name=$D/$n&type=md&new=1" --data-binary "first $n" >/dev/null
+done
+sc -X POST "$B/page-save?name=$D/top/kid&type=md" --data-binary "second top/kid" >/dev/null
+sc -X POST "$B/page-save?name=$D/top&type=md" --data-binary "second top" >/dev/null
+for n in top top/kid bare/kid; do sc -X POST "$B/page-share?name=$D/$n&mode=clearweb" >/dev/null; done
+sleep 3
+is "seeded: the parent is published"   200 "$(code "$B/c/$D/top")"
+is "seeded: the page under it too"     200 "$(code "$B/c/$D/top/kid")"
+is "delete a page that has pages under it" 200 "$(sc -X POST "$B/page-del?name=$D/top")"
+sleep 2
+is "  the page is gone"                404 "$(sc "$B/page-source?name=$D/top")"
+is "  and no longer published"         404 "$(code "$B/c/$D/top")"
+has "  the page under it is still there" 'second top/kid' "$(G "$B/page-source?name=$D/top/kid")"
+is "  with its history"                2 "$(revs "$D/top/kid")"
+is "  still published"                 200 "$(code "$B/c/$D/top/kid")"
+has "  and the page two levels down"   'first top/sub/deep' "$(G "$B/page-source?name=$D/top/sub/deep")"
+is "  the name is a folder now"        False "$(field page-tree "$D/top" page)"
+is "an unpublished parent goes alone too" 200 "$(sc -X POST "$B/page-del?name=$D/bare")"
+sleep 2
+is "  it is gone"                      404 "$(sc "$B/page-source?name=$D/bare")"
+is "  the published page under it stays published" 200 "$(code "$B/c/$D/bare/kid")"
+is "a new page at the freed name"      200 "$(sc -X POST "$B/page-save?name=$D/top&type=md&new=1" --data-binary 'top again')"
+has "  holds the new body"             'top again' "$(G "$B/page-source?name=$D/top")"
+is "  starts with no history of the old one" 1 "$(revs "$D/top")"
+is "  is private, as a new page is"    private "$(field page-tree "$D/top" share)"
+is "tree=1 takes the page and all under it" 200 "$(sc -X POST "$B/page-del?name=$D/top&tree=1")"
+sleep 2
+is "  the page under it is gone"       404 "$(sc "$B/page-source?name=$D/top/kid")"
+is "  and unpublished"                 404 "$(code "$B/c/$D/top/kid")"
+is "  the name is gone from the tree"  "<missing>" "$(field page-tree "$D/top" page)"
+is "a folder's delete takes all under it" 200 "$(sc -X POST "$B/page-del?name=$D")"
+sleep 2
+is "  nothing of it is left"           "<missing>" "$(field page-tree "$D/bare/kid" kind)"
+is "  and its page is unpublished"     404 "$(code "$B/c/$D/bare/kid")"
 is "page-move gated"       403 "$(code -X POST "$B/page-move?from=$P/mvdir2&to=$P/free")"
 
 echo "==> public forms: the unauthenticated write surface"

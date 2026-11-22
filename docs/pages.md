@@ -89,7 +89,7 @@ create-only. A taken name is refused rather than overwritten.
 ```
 POST /page-save?name=<name>     body = the hoon source    create/replace code
 POST /page-cmd?name=<name>      cmd=<text> (query or form) send a command
-POST /page-del?name=<name>                                delete the page
+POST /page-del?name=<name>                                delete the page (the pages under it stay, unless &tree=1)
 POST /page-share?name=<name>&mode=private|shared|clearweb  set sharing
 ```
 

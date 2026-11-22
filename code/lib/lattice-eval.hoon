@@ -32,13 +32,27 @@
       ::  not written over it. A page gone since has moved past it too.
       ::  ~ claims nothing.
       [%make-by pax=path src=@t who=@t base=(unit @ud)]
+      ::  +make or +make-marked, for a page a move copies to pax from
+      ::  under `from`, where its source hashed to `had`. Not written
+      ::  when pax holds a page that an earlier run of the same move
+      ::  copied from that same text.
+      [%move-make pax=path src=@t marked=? from=path had=@uv]
+      ::  +make-by with no base, for a page that must not exist yet (a
+      ::  create-only save). Checked here in the writer, so of two
+      ::  creates of one name the second leaves the first as it is.
+      [%make-new pax=path src=@t who=@t]
       ::  N pages in ONE writer transaction. An upload used to be one HTTP
       ::  request (and one poke) per file, and every request pays the pier's
       ::  ~0.5s floor serially. A 20-file drop was ~20 round-trips of pure
       ::  overhead. Same per-page work, paid once.
       [%make-many pages=(list [pax=path src=@t])]
       [%cmd pax=path txt=@t bud=@ud]    ::  send a command (bud = poke budget)
-      [%del pax=path]                   ::  delete a page
+      ::  delete the page or folder at pax, and everything under it
+      [%del pax=path]
+      ::  delete the page at pax and leave what is under it, where +del
+      ::  takes that too. A folder, or a page with nothing under it,
+      ::  goes as +del.
+      [%del-page pax=path]
       ::  a move's last step: the source `from` goes, as %del, once every
       ::  page under it whose code is not the one the move copied (`seen`,
       ::  the sham of each page's code by its path under `from`) is copied

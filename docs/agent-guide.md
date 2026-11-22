@@ -94,7 +94,7 @@ curl -s -H "$CK" 'localhost:8080/apps/lattice/page-source?name=notes/todo'
 |---|---|---|---|
 | `POST /page-save?name=<p>&type=<kind>` | `name`, `type` (default `hoon`) | content | create/overwrite a page. **Always send `type`** matching the content (`md`/`gmi`/…) or it is stored as hoon. Add `&new=1` for create-only (409 if it exists). |
 | `POST /folder-new?name=<p>` | `name` | (none) | create an empty folder (nested ok) |
-| `POST /page-del?name=<p>` | `name` | (none) | delete a page, or a folder and everything under it |
+| `POST /page-del?name=<p>` | `name`, `tree` | (none) | delete a page, or a folder and everything under it. A page that has pages under it goes alone and they stay, unless `tree=1` |
 
 ```bash
 curl -s -X POST -H "$CK" --data-binary '# Todo

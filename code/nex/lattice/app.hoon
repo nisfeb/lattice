@@ -1490,6 +1490,8 @@
   ::  base check below reads the page as those saves left it.
   ;<  ~  bind:m  writer-drain
   ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of u.name))
+  ::  a page made while this create waited for the writer
+  ?:  &((~(has by args) 'new') ?=(^ src.pc))  (send-err eyre-id 409 'page exists')
   ::  a save into a folder move under way, or an overwrite of a page
   ::  that moved away, would be deleted or make the old folder again.
   ::  ?mount=1 (lattice-fs) puts its creates through the same check: a
@@ -1545,7 +1547,13 @@
   ::  this check and the write is not written over. A save that claims
   ::  nothing, or makes a page, is written as before.
   =/  claim=(unit @ud)  ?.(&(?=(^ base) ?=(^ src.pc)) ~ `prev)
-  ;<  ~  bind:m  (poke-eval [%make-by (pax-of u.name) src wid claim])
+  ::  a create-only save is checked again where it lands (%make-new):
+  ::  two creates of one name can both pass the checks above
+  =/  new=?  (~(has by args) 'new')
+  ;<  ~  bind:m
+    %-  poke-eval
+    ?:  new  [%make-new (pax-of u.name) src wid]
+    [%make-by (pax-of u.name) src wid claim]
   ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
   ::  client only when the typed name was not a valid path and the path is
   ::  its slug. Absent on every ordinary save, so autosave never touches them.
@@ -1565,6 +1573,9 @@
   =/  mine=?  =(src.ph `src)
   ?:  &(!mine ?=(^ claim))
     (send-err eyre-id 409 (crip "stale: the page is at rev {(num-tape:pg rev.ph)}"))
+  ::  a create that finds another body at its name lost the race for it,
+  ::  and the writer left that page as it was
+  ?:  &(!mine new)  (send-err eyre-id 409 'page exists')
   ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
   %+  send-json  eyre-id
   %-  pairs:enjs:format
@@ -4137,8 +4148,9 @@
     ::  name predates the dot-segment rule. Creation is where the rule belongs.
     =/  dpax=(unit path)  (raw-name-pax u.name)
     ?~  dpax  (send-err eyre-id 400 'bad name')
-    ;<  ~  bind:m  (poke-eval [%del u.dpax])
-    ;<  ~  bind:m  (move-grants u.dpax ~)
+    ::  a page named here goes alone: what is under it stays, unless
+    ::  ?tree=1 asks for all of it. A folder goes with all under it.
+    ;<  ~  bind:m  (page-del-run u.dpax (~(has by args) 'tree'))
     (send-ok eyre-id)
   ::  page-move: server-side move/rename of a page or a whole folder subtree.
   ::  Replaces the old client choreography (page-source + page-save + page-del
@@ -8939,6 +8951,33 @@
     ;<  ~  bind:m  (prune-page pax.act)
     ?:  old  (pure:m ~)
     (grant-new root pax.act)
+      %make-new
+    ::  create-only: a name taken since the route looked is left as it is
+    ;<  taken=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
+    ?.  taken  $(act [%make-by pax.act src.act who.act ~])
+    %-  (say 1 ~[leaf+"lattice: a create of {(spud pax.act)} found a page there and was not written"])
+    (pure:m ~)
+      %move-make
+    ::  a page a move copies to its new place, with a note beside it of
+    ::  the source text it was copied from (`moved`). A move can run
+    ::  twice at once: asked again while its first request still runs,
+    ::  or resumed after a reload. The later run reads the same source,
+    ::  so it would copy every page again, over whatever was saved at
+    ::  the new place since the first copy. A page that holds the note
+    ::  of this same text was copied already, and is left as it is now.
+    ::  A source that changed since has another hash, and is copied.
+    =/  pdir=path  (weld /page pax.act)
+    =/  mr=road:tarball  (rf up pdir %moved)
+    ;<  there=?  bind:m  (peek-exists:fio (rf up pdir %code))
+    ;<  mv=view:nexus  bind:m  (peek:fio mr ~)
+    =/  was=(unit [path @uv])
+      ?.  ?=([%file *] mv)  ~
+      (mole |.(;;([path @uv] (sang-noun:tarball sang.mv))))
+    ?:  &(there =(was `[from.act had.act]))  (pure:m ~)
+    ;<  ~  bind:m
+      %^  apply-eval  root  now
+      ?:(marked.act [%make-marked pax.act src.act] [%make pax.act src.act])
+    (put-file mr [/ %noun] [from.act had.act])
       %make-marked
     ;<  old=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
     ;<  ~  bind:m  (write-page root pax.act src.act |)
@@ -9104,6 +9143,69 @@
     ?.  hex  (pure:m ~)
     ;<  *  bind:m  (cull-soft:io (rv up hdir))
     (pure:m ~)
+      %del-page
+    ::  the page at pax alone. No page there (a folder, or nothing), or
+    ::  a page with nothing under it: that is %del. Else what is under
+    ::  it stays, each page with all it had, and only the page's own
+    ::  grubs go (+page-own-grubs), which leaves the name a folder.
+    =/  pdir=path  (weld /page pax.act)
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up pdir))
+    ?.  ex  $(act [%del pax.act])
+    ;<  dv=view:nexus  bind:m  (peek:fio (rv up pdir) ~)
+    ?.  ?=([%ball *] dv)  $(act [%del pax.act])
+    ;<  lex=?  bind:m  (peek-exists:fio (rv up (weld /links pax.act)))
+    =/  fils  ?~(fil.ball.dv ~ contents.u.fil.ball.dv)
+    ?.  &((~(has by fils) %code) |(lex ?=(^ dir.ball.dv)))
+      $(act [%del pax.act])
+    ::  what a folder granted this page goes with it. The ball is cut
+    ::  to the page's own grubs, so no page under it is counted.
+    ;<  ~  bind:m  (revoke-folder-grants pax.act ball.dv(dir ~))
+    ::  its published copy too. An unpublish of a key with no copy and
+    ::  no row is read as a folder's, and takes every page under it, so
+    ::  it is sent only for a page that has one of the two.
+    =/  key=path  (pub-path (crip (pax-str pax.act)))
+    =/  or=(unit vrail:lp)  (key-to-rail:lp /pub/vault key)
+    ;<  vx=?  bind:m
+      ?~  or  (pure:(fiber:fiber:nexus ,?) |)
+      (peek-exists:fio (rf up pax.u.or nom.u.or))
+    ;<  ix=pub-index:lp  bind:m  (read-pub-index (rf root /pub %index))
+    ;<  ~  bind:m
+      ?.  |(vx (~(has by ix) key))  (pure:m ~)
+      (apply-pub root now [%del-page (spat key)])
+    ::  every stored revision, as %del drops them: none is left for the
+    ::  next page made at this name
+    ;<  ~  bind:m  (prune-hist (rf up pdir %code) 0 ~s0)
+    ;<  ~  bind:m  (prune-hist (rf up pdir %data) 0 ~s0)
+    ::  each grub is checked first: a cull of an absent one veto-crashes
+    ::  the writer
+    ;<  ~  bind:m
+      =/  gs=(list @ta)  page-own-grubs
+      |-  ^-  form:m
+      ?~  gs  (pure:m ~)
+      ;<  gx=?  bind:m  (peek-exists:fio (rf up pdir i.gs))
+      ?.  gx  $(gs t.gs)
+      ;<  *  bind:m  (cull-soft:io (rf up pdir i.gs))
+      $(gs t.gs)
+    ;<  ~  bind:m  (refresh-dir-index-above root (snip `path`pax.act))
+    ;<  ~  bind:m  (send-public-how root)
+    ::  its comments and held comments, the files filed at its own path.
+    ::  The folders beside them are those of the pages under it.
+    =/  cds=(list path)  ~[(weld /comments pax.act) (weld /comments-held pax.act)]
+    |-  ^-  form:m
+    ?~  cds  (pure:m ~)
+    ;<  cex=?  bind:m  (peek-exists:fio (rv up i.cds))
+    ?.  cex  $(cds t.cds)
+    ;<  cv=view:nexus  bind:m  (peek:fio (rv up i.cds) ~)
+    =/  ids=(list @ta)
+      ?.  ?=([%ball *] cv)  ~
+      ?~  fil.ball.cv  ~
+      ~(tap in ~(key by contents.u.fil.ball.cv))
+    ;<  ~  bind:m
+      |-  ^-  form:m
+      ?~  ids  (pure:m ~)
+      ;<  *  bind:m  (cull-soft:io (rf up i.cds i.ids))
+      $(ids t.ids)
+    $(cds t.cds)
       %carry-state
     (carry-state from.act to.act)
       %carry
@@ -10025,7 +10127,7 @@
   ^-  form:m
   ?.  =([/lattice %eval-action] p.sage)  (pure:m |)
   =/  act=eval-action:le  !<(eval-action:le q.sage)
-  ?.  ?=(?(%make %make-marked %make-by) -.act)  (pure:m |)
+  ?.  ?=(?(%make %make-marked %make-by %make-new %move-make) -.act)  (pure:m |)
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
   =/  w=(unit pub-wait:lp)  (~(get by pen) (spat pax.act))
   (pure:m &(?=(^ w) |(dirty.u.w (gte sent.u.w now))))
@@ -10544,6 +10646,22 @@
   =/  out=tape  (weld pre ?:(&(bnd pbnd) to from))
   %+  weld  out
   $(hay aft, bef ?~(out bef `(rear out)))
+::  +move-code: a page's source as it reads once the tree at `from` is at
+::  `to`. A [[wikilink]] into the moved tree follows it in every page. A
+::  path literal under the old root (+rewrite-root) follows only in code,
+::  a hoon page or a folder index. A content page's body is the writer's
+::  own text, where the same bytes are prose (`GET /api/users`,
+::  `cd /home/me`) and stay as written.
+++  move-code
+  |=  [code=@t from=path to=path]
+  ^-  @t
+  =/  cb=(unit @tas)  (content-builder code)
+  =/  prose=?  &(?=(^ cb) (~(has in content-builders) u.cb))
+  %-  crip
+  %^  rewrite-wikilinks:gfm
+      ?:(prose (trip code) (rewrite-root (trip code) (spud from) (spud to)))
+    (pax-str from)
+  (pax-str to)
 ::  +copy-tree: copy every PAGE under src (a [base rel] like [%page /mysite] or
 ::  [%template /site]) to dst, rewriting the source root path to the dest root in
 ::  each page's code. live=%.y -> dest is under /page and each page is MADE
@@ -10589,10 +10707,6 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   =/  sdir=path  (weld /page from)
-  =/  from-str=tape   (spud from)
-  =/  to-str=tape     (spud to)
-  =/  from-bare=tape  (pax-str from)
-  =/  to-bare=tape    (pax-str to)
   ;<  dv=view:nexus  bind:m  (peek:fio (rv up sdir) ~)
   ;<  lv=view:nexus  bind:m  (peek:fio (rv up (weld /links from)) ~)
   ?.  |(?=([%ball *] dv) ?=([%ball *] lv))  (pure:m ~)
@@ -10700,16 +10814,13 @@
   =/  own=(unit share-mode:le)  (fils-own-share pf)
   =/  dn=(unit @t)  (fils-dname pf)
   =/  dst=path  (weld to i.rels)
-  =/  newcode=@t
-    %-  crip
-    %^  rewrite-wikilinks:gfm
-        (rewrite-root (trip code) from-str to-str)
-      from-bare
-    to-bare
+  =/  newcode=@t  (move-code code from to)
   ::  a peer-written page stays marked where it lands (+make-page-as)
   ;<  pw=?  bind:m  (peer-written (weld from i.rels))
   =/  acts=(list eval-action:le)
-    :-  ?:(pw [%make-marked dst newcode] [%make dst newcode])
+    ::  unless a run of this move has copied this text there already
+    ::  (%move-make): the same move asked again runs beside the first
+    :-  [%move-make dst newcode pw from (sham code)]
     %+  weld
       ^-  (list eval-action:le)  ?~(dn ~ [%dname dst u.dn]~)
     %+  weld
@@ -10719,6 +10830,18 @@
     %+  turn  ~(tap by (fils-own pf))
     |=([g=@t md=@t] `eval-action:le`[%grant-own dst g md])
   $(todo acts, rels t.rels, count ?:(late count +(count)))
+::  +page-own-grubs: the grubs in a page's dir that are the page's alone:
+::  its source, its evaluator's state, its own share setting and grants,
+::  its form and render state. %del-page culls these, the source first.
+::  The rest is also a folder's, and the pages under the name take it
+::  from there: the display name, the sensitive mark, the comment, comet
+::  and form flags, the folder's share setting and grants, its index.
+++  page-own-grubs
+  ^-  (list @ta)
+  :~  %code  %data  %cmd  %deps  %err  %seen  %show  %writers  %moved
+      %share  %'share-via'  %'grant-via'  %'own-grants'
+      %'forms-cfg'  %'forms-use'  %'fodt.cache'  %'render.json'
+  ==
 ::  +carried-grubs: a page's or folder's own state that goes with it on a
 ::  move, by grub name and mark. The rest is carried by the move's own
 ::  actions (code, name, share, sensitive mark, grants, links) or remade
@@ -10939,12 +11062,7 @@
   |-  ^-  form:m
   ?~  late  (pure:m ~)
   =/  code=@t  (fils-code (ball-fils ball.dv i.late))
-  =/  newcode=@t
-    %-  crip
-    %^  rewrite-wikilinks:gfm
-        (rewrite-root (trip code) (spud from) (spud to))
-      (pax-str from)
-    (pax-str to)
+  =/  newcode=@t  (move-code code from to)
   =/  dst=path  (weld to i.late)
   ;<  pw=?  bind:m  (peer-written (weld from i.late))
   ;<  ~  bind:m  (ensure-dirs up /page (snip dst))
@@ -11599,7 +11717,7 @@
 ++  tree-jobs
   |=  act=eval-action:le
   ^-  ?
-  ?=(?(%share-tree %share-dir %del %del-from %pub-regrow %unpub) -.act)
+  ?=(?(%share-tree %share-dir %del %del-page %del-from %pub-regrow %unpub) -.act)
 ::  +job-resume: as the writer starts, run again the whole-tree action a
 ::  reload cut short. Each such action (%share-tree, %del, %pub-regrow,
 ::  %unpub) is idempotent, so finishing it is running it. One the writer
@@ -12732,7 +12850,17 @@
     ?:  cx  (pure:(fiber:fiber:nexus ,(unit path)) ~)
     (link-above (pax-of name))
   ?^  la  (pure:m [409 (link-above-msg u.la)])
-  ;<  ~  bind:m  (poke-eval [%make (pax-of name) src])
+  ?.  new
+    ;<  ~  bind:m  (poke-eval [%make (pax-of name) src])
+    (pure:m [200 ''])
+  ::  a create is checked again where it lands (%make-new), since an
+  ::  HTTP create of the same name can pass the peek above beside this
+  ::  one. So wait for the writer and read the page back: a page that
+  ::  holds another body was made first.
+  ;<  ~  bind:m  (poke-eval [%make-new (pax-of name) src ''])
+  ;<  ~  bind:m  writer-drain
+  ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of name))
+  ?.  =(src.ph `src)  (pure:m [409 'page exists'])
   (pure:m [200 ''])
 ::  +fs-mkdir / +fs-del: folder create / page-or-folder delete.
 ++  fs-mkdir
@@ -12745,13 +12873,26 @@
   ;<  ~  bind:m  (poke-eval [%mkdir (pax-of name)])
   (pure:m [200 ''])
 ++  fs-del
-  |=  name=@t
+  |=  [name=@t tree=?]
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
   ?.  (valid-name name)  (pure:m [400 'bad name'])
-  ;<  ~  bind:m  (poke-eval [%del (pax-of name)])
-  ;<  ~  bind:m  (move-grants (pax-of name) ~)
+  ;<  ~  bind:m  (page-del-run (pax-of name) tree)
   (pure:m [200 ''])
+::  +page-del-run: POST /page-del and the lick %page-del. A folder goes
+::  with everything under it. A page goes alone (%del-page): the pages,
+::  folders and links under it stay, and its name is left a folder.
+::  `tree` takes those too, for a caller that has told its user so.
+++  page-del-run
+  |=  [pax=path tree=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ~  bind:m  (poke-eval ?:(tree [%del pax] [%del-page pax]))
+  ::  a name still there is a page that left what was under it: the
+  ::  grants on that page's own grubs go, and the rest stay
+  ;<  left=?  bind:m  (peek-exists:fio (rv up (weld /page pax)))
+  (move-grants-in pax ~ left)
 ::  +fs-move: move/rename a page or a folder subtree (POST /page-move + lick
 ::  %page-move), answering how many pages moved. Display names are the HTTP
 ::  route's own (?dname= / ?dnames=).
@@ -12906,7 +13047,7 @@
       %page-del
     =/  name=(unit @t)  (~(get by q) 'name')
     ?~  name  (pure:m [400 'missing name'])
-    (fs-del u.name)
+    (fs-del u.name (~(has by q) 'tree'))
       %beacon-rev
     ;<  t=@t  bind:m  beacon-token
     (pure:m [200 t])
@@ -14362,6 +14503,13 @@
 ::  or delete stands.
 ++  move-grants
   |=  [from=path to=(unit path)]
+  (move-grants-in from to |)
+::  +move-grants-in: +move-grants, which with `own` takes only the roads
+::  on the grubs of the page at `from` itself. A page deleted from over
+::  the pages under it leaves its folder, so a road on that folder, or
+::  on anything in it, stays.
+++  move-grants-in
+  |=  [from=path to=(unit path) own=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  sb=path  bind:m  self-base
@@ -14372,8 +14520,8 @@
   =/  under
     |=  r=road:tarball
     ?+  r  |
-      [%& %| *]  =(old (scag n p.p.r))
-      [%& %& *]  =(old (scag n path.p.p.r))
+      [%& %| *]  &(!own =(old (scag n p.p.r)))
+      [%& %& *]  ?:(own =(old path.p.p.r) =(old (scag n path.p.p.r)))
     ==
   =/  re
     |=  rs=(set road:tarball)
