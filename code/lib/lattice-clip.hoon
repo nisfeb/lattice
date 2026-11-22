@@ -83,15 +83,57 @@
   ?~  e  ~
   `(scag u.e `tape`(slag beg t))
 ::
-::  +drop-tag: tags whose CONTENT goes with them. Executable, or page chrome
-::  that is not the article. Everything else keeps its text.
+::  +drop-tag: tags whose CONTENT goes with them. Executable, page chrome
+::  that is not the article, or a form control. Everything else keeps its
+::  text. A form is not here: many pages wrap the whole article in one
+::  (ASP.NET, search and blog templates), and dropping it archived such a
+::  page as nothing but its header.
 ++  drop-tag
   |=  n=tape
   ^-  ?
   ?=  $?  %script  %style  %head  %noscript  %svg  %iframe
-          %form    %nav    %footer  %aside   %template  %button
+          %nav     %footer  %aside   %template  %button
+          %select  %textarea
       ==
   (crip n)
+::  +raw-tag: the dropped tags whose content is not markup. With no
+::  closing tag, the rest of the input is such a tag's source (a page
+::  cut off inside a script), and goes with it. Any other dropped tag
+::  with no closing tag costs only itself.
+++  raw-tag
+  |=  n=tape
+  ^-  ?
+  ?=  ?(%script %style %head %noscript %iframe %template %textarea)
+  (crip n)
+::  +self-closed: is a tag written as an empty element, <svg ../>?
+++  self-closed
+  |=  att=tape
+  ^-  ?
+  =/  a=tape  (lead-strip (flop att))
+  &(?=(^ a) =('/' i.a))
+::  +md-url: an address as markdown's ( ) can hold it. A ')' ends the
+::  address there, and a space or a quote starts a title, so those are
+::  percent-encoded. Control bytes go: a browser drops them from a url.
+++  md-url
+  |=  u=tape
+  ^-  tape
+  %-  zing
+  %+  turn  u
+  |=  c=@tD
+  ^-  tape
+  ?:  =('(' c)  "%28"
+  ?:  =(')' c)  "%29"
+  ?:  =(' ' c)  "%20"
+  ?:  =('"' c)  "%22"
+  ?:  (lth c 32)  ""
+  ~[c]
+::  +alt-text: an image's alt as markdown's [ ] can hold it: entities
+::  decoded, no bracket, a line break as a space
+++  alt-text
+  |=  a=tape
+  ^-  tape
+  %+  skip  (turn (unent a) |=(c=@tD ?:((lth c 32) ' ' c)))
+  |=(c=@tD |(=('[' c) =(']' c)))
 ::
 ::  +tag: at a '<', split off the tag: lowercased name, whether it closes,
 ::  the raw attribute text, and the input after the '>'. An unterminated '<'
@@ -271,8 +313,11 @@
     ?:  &(!cls.g (drop-tag n))
       ::  scan for the closer without lowercasing the whole remainder,
       ::  which every dropped tag used to do (+find-ci)
+      ?:  (self-closed att.g)  $(t rest.g, sp &)
       =/  e=(unit @ud)  (find-ci (weld "</" n) rest.g)
-      ?~  e  (flop acc)
+      ?~  e
+        ?:  (raw-tag n)  (flop acc)
+        $(t rest.g, sp &)
       =/  aft=tape  (slag u.e `tape`rest.g)
       =/  g2=(unit @ud)  (find ">" aft)
       ?~  g2  (flop acc)
@@ -284,7 +329,9 @@
     ?:  cls.g
       ::  ── closing tags ──
       ?:  =("pre" n)
-        $(t r, pre |, acc (emit acc (weld nl "```")), sp |)
+        ::  the closing fence has its line to itself. Text on that line
+        ::  is dropped by the markdown renderer.
+        $(t r, pre |, acc (emit acc :(weld nl "```" (brk quo))), sp |)
       ?:  =("a" n)
         ?~  lnk  $(t r)
         $(t r, lnk ~, acc (emit acc :(weld "](" u.lnk ")")), sp |)
@@ -317,14 +364,17 @@
     ?:  =("li" n)
       $(t r, acc (emit acc (weld (brk quo) "- ")), sp |)
     ?:  =("img" n)
-      =/  src=tape  (attr att.g "src")
+      ::  the address is the attribute's VALUE: entities decoded first, so
+      ::  "a=1&amp;b=2" is archived as the url it names and a scheme spelled
+      ::  with entities is tested as the scheme it is
+      =/  src=tape  (lead-strip (unent (attr att.g "src")))
       ?.  (safe-url src)  $(t r)
-      $(t r, acc (emit acc :(weld "![" (attr att.g "alt") "](" src ")")), sp |)
+      $(t r, acc (emit acc :(weld "![" (alt-text (attr att.g "alt")) "](" (md-url src) ")")), sp |)
     ?:  =("a" n)
-      =/  href=tape  (attr att.g "href")
+      =/  href=tape  (lead-strip (unent (attr att.g "href")))
       ::  an unsafe or missing href keeps the link TEXT and drops the link
       ?.  (safe-url href)  $(t r, lnk ~)
-      $(t r, lnk `href, acc (emit flu "["), sp |)
+      $(t r, lnk `(md-url href), acc (emit flu "["), sp |)
     ?:  |(=("strong" n) =("b" n))
       $(t r, acc (emit flu "**"), sp |)
     ?:  |(=("em" n) =("i" n))

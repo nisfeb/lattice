@@ -1,7 +1,7 @@
 ::  Unit tests for /lib/lattice-clip (HTML -> Markdown). Run via the run-tests
 ::  MCP tool.
 ::
-/+  *test, clip=lattice-clip
+/+  *test, clip=lattice-clip, md=lattice-md
 |%
 ++  m    to-md:clip
 ++  has  |=([n=tape h=@t] ^-(? ?=(^ (find n (trip h)))))
@@ -217,4 +217,75 @@
   =/  t=@t  (crip (zing (reap 16.000 "a <1 ")))
   (yes (has "a <1 a <1" (m (cat 3 t '>'))))
 ++  test-angle-before-space-is-text  (yes (has "1 < 2" (m '<p>1 < 2</p>')))
+::  a link or image address is the attribute's value, entities decoded,
+::  with the characters markdown would end it at percent-encoded
+++  test-url-entities
+  ;:  weld
+    (yes (has "[t](/s?a=1&b=2)" (m '<a href="/s?a=1&amp;b=2">t</a>')))
+    (yes (has "![x](/i?a=1&b=2)" (m '<img src="/i?a=1&amp;b=2" alt="x">')))
+    (yes (has "[t](/s?q=%22a%20b%22)" (m '<a href="/s?q=&quot;a b&quot;">t</a>')))
+  ==
+++  test-url-parens
+  ;:  weld
+    %-  yes
+    %+  has  "[M](https://en.wikipedia.org/wiki/Mercury_%28planet%29)"
+    (m '<a href="https://en.wikipedia.org/wiki/Mercury_(planet)">M</a>')
+    (yes (has "![p](/a%28b%29.png)" (m '<img src="/a(b).png" alt="p">')))
+    ::  the archived link renders as one link to the whole address
+    %-  yes
+    %+  has  "href=\"https://en.wikipedia.org/wiki/Mercury_%28planet%29\""
+    (crip (render-md:md (m '<a href="https://en.wikipedia.org/wiki/Mercury_(planet)">M</a>')))
+    %-  yes
+    %+  has  "href=\"/s?a=1&amp;b=2\""
+    (crip (render-md:md (m '<a href="/s?a=1&amp;b=2">t</a>')))
+  ==
+::  a scheme spelled with entities is still that scheme
+++  test-url-entity-scheme
+  ;:  weld
+    (no (has "](" (m '<a href="java&#115;cript:alert(1)">click</a>')))
+    (no (has "![" (m '<img src="&#106;avascript:x" alt="a">')))
+    (yes (has "click" (m '<a href="java&#115;cript:alert(1)">click</a>')))
+  ==
+::  alt text is text: entities decoded, and no bracket or line break that
+::  would end the image early
+++  test-img-alt
+  ;:  weld
+    (yes (has "![Tom & Jerry](/p.png)" (m '<img src="/p.png" alt="Tom &amp; Jerry">')))
+    (yes (has "![a b c](/p.png)" (m '<img src="/p.png" alt="a ]b[ c">')))
+  ==
+::  a form is not chrome: a page wrapped in one keeps its text, and its
+::  controls still go
+++  test-form-transparent
+  =/  o=@t  (m '<body><form id="aspnetForm"><h1>T</h1><p>all of the article</p><button>Send</button><select><option>pick me</option></select><textarea>typed</textarea></form></body>')
+  ;:  weld
+    (yes (has "# T" o))
+    (yes (has "all of the article" o))
+    (no (has "Send" o))
+    (no (has "pick me" o))
+    (no (has "typed" o))
+  ==
+::  a dropped tag with no closing tag: one written as empty, or one that
+::  holds markup and not raw text, costs only itself. An unclosed script
+::  or style still takes the rest, which is its source.
+++  test-unclosed-dropped-tag
+  ;:  weld
+    (yes (has "after" (m '<p>before</p><svg width="1"/><p>after</p>')))
+    (yes (has "after" (m '<p>before</p><script src="a.js"/><p>after</p>')))
+    (yes (has "after" (m '<p>before</p><button>go<p>after</p>')))
+    (yes (has "after" (m '<p>before</p><nav><p>after</p>')))
+    (no (has "var" (m '<p>before</p><script>var x = 1; <p>after</p>')))
+    (no (has "color" (m '<p>before</p><style>p { color: red }')))
+    (yes (has "before" (m '<p>before</p><script>var x = 1;')))
+    ::  a closed one still goes with its content
+    (no (has "gone" (m '<p>a</p><svg><text>gone</text></svg><p>b</p>')))
+  ==
+::  text right after a code block is on a line of its own, not on the
+::  closing fence's
+++  test-text-after-pre
+  =/  o=@t  (m '<pre>code</pre>after<p>x</p>')
+  ;:  weld
+    (yes (has "```\0aafter" o))
+    (yes (has "<p>after" (crip (render-md:md o))))
+    (yes (has "> after" (m '<blockquote><pre>code</pre>after</blockquote>')))
+  ==
 --
