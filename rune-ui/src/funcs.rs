@@ -237,6 +237,10 @@ fn ifs(e: &mut Engine, sum: Option<&V>, tests: &[V], step: impl Fn(f64, &V) -> f
     }
     for i in 0..f.rows().min(rows.saturating_sub(f.r1)) {
         for j in 0..f.cols().min(cols.saturating_sub(f.c1)) {
+            // read all it may: the formula is left stale, whatever is handed back
+            if e.leaving() {
+                return err(ILLEGAL);
+            }
             let mut all = true;
             for (g, ok) in &checks {
                 if !ok(&e.value((g.s, g.r1 + i, g.c1 + j))) {
@@ -363,10 +367,11 @@ fn lookup(e: &mut Engine, needle: &V, vec: &[V], exact: bool) -> Result<usize, V
 /// The cells of one column of a range, or of one row, as far as the sheet holds anything.
 fn line(e: &mut Engine, g: Rg, down: bool) -> Vec<V> {
     let (rows, cols) = e.used(g.s);
+    // no further than the formula may read: it is left stale then, whatever is made of the part read
     if down {
-        (0..g.rows().min(rows.saturating_sub(g.r1))).map(|i| e.value((g.s, g.r1 + i, g.c1))).collect()
+        (0..g.rows().min(rows.saturating_sub(g.r1))).map_while(|i| (!e.leaving()).then(|| e.value((g.s, g.r1 + i, g.c1)))).collect()
     } else {
-        (0..g.cols().min(cols.saturating_sub(g.c1))).map(|j| e.value((g.s, g.r1, g.c1 + j))).collect()
+        (0..g.cols().min(cols.saturating_sub(g.c1))).map_while(|j| (!e.leaving()).then(|| e.value((g.s, g.r1, g.c1 + j)))).collect()
     }
 }
 
@@ -670,6 +675,9 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             let mut s = 0.0;
             for i in 0..f.rows().min(rows.saturating_sub(f.r1)) {
                 for j in 0..f.cols().min(cols.saturating_sub(f.c1)) {
+                    if e.leaving() {
+                        return Err(Unsupported);
+                    }
                     let mut p = 1.0;
                     for g in &gs {
                         match e.value((g.s, g.r1 + i, g.c1 + j)) {
@@ -848,6 +856,9 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
                         let (rows, cols) = e.used(g.s);
                         for i in 0..g.rows().min(rows.saturating_sub(g.r1)) {
                             for j in 0..g.cols().min(cols.saturating_sub(g.c1)) {
+                                if e.leaving() {
+                                    return Err(Unsupported);
+                                }
                                 parts.push(e.value((g.s, g.r1 + i, g.c1 + j)));
                             }
                         }

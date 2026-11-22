@@ -88,6 +88,11 @@ const DEEP: usize = 64;
 
 /// The most cells a grid of values may hold: see `Engine::grid`.
 const GRID_MOST: usize = 200_000;
+/// The most cells one formula may read, with whatever it pulls in.
+const WALK_ONE: usize = 5_000_000;
+/// The most cells one change to a sheet may read, in all the formulas it reaches: four formulas' worth. The
+/// work is done where the typing is, so this is what keeps a small hostile page from holding the window.
+const WALK_ALL: usize = 20_000_000;
 
 /// Spans along one column or one row, each with the formula that reads it, kept so that
 /// the spans over one place are found without looking at the rest.
@@ -365,6 +370,11 @@ pub struct Engine<'a> {
     extents: HashMap<usize, (usize, usize)>,
     /// The cells walked for the formula being worked out: a hostile run of them is not walked to its end.
     steps: usize,
+    /// The cells walked in all since the engine was made, by every formula: one change to a sheet is not
+    /// let walk more than `WALK_ALL`, however many formulas it reaches. What is left is left stale.
+    walked: usize,
+    /// The most it may walk so: `WALK_ALL`, but where a test sets less.
+    walk_all: usize,
     /// Those worked out.
     done: Vec<Key>,
     depth: usize,
@@ -382,7 +392,7 @@ pub struct Engine<'a> {
 
 impl<'a> Engine<'a> {
     pub fn new(book: &'a Book, styles: &'a Styles) -> Engine<'a> {
-        let mut e = Engine { book, styles, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, done: Vec::new(), depth: 0, first: None, unsure: HashSet::new(), wide: Vec::new(), tainted: false };
+        let mut e = Engine { book, styles, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, walked: 0, walk_all: WALK_ALL, done: Vec::new(), depth: 0, first: None, unsure: HashSet::new(), wide: Vec::new(), tainted: false };
         for (s, sh) in book.sheets.iter().enumerate() {
             let mut r = 0usize;
             for row in &sh.rows {
@@ -506,8 +516,11 @@ impl<'a> Engine<'a> {
 
     /// The value at a cell, worked out first when it is waiting to be.
     pub fn value(&mut self, at: Key) -> V {
-        // what is being worked out is being left: nothing more is begun
-        if self.first.is_some() {
+        // every cell read is counted, here where every reading comes through
+        self.steps = self.steps.saturating_add(1);
+        self.walked = self.walked.saturating_add(1);
+        // what is being worked out is being left, or has read all it may: nothing more is begun
+        if self.first.is_some() || self.over() {
             return V::Blank;
         }
         match self.pending.get(&at).copied() {
@@ -522,9 +535,22 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// Whether what is being worked out is being left for now, so a long walk may stop.
+    /// Whether what is being worked out is being left, for now or for good, so a long walk may stop.
     pub fn leaving(&self) -> bool {
-        self.first.is_some()
+        self.first.is_some() || self.over()
+    }
+
+    /// Whether the formula being worked out has read more cells than one may, or all the formulas of this change
+    /// more than they may together. It is then left stale, and so is every formula after it.
+    fn over(&self) -> bool {
+        self.steps > WALK_ONE || self.walked > self.walk_all
+    }
+
+    /// Counts work that reads no cell: an operator over a grid of values.
+    fn count(&mut self, n: usize) -> Result<(), Unsupported> {
+        self.steps = self.steps.saturating_add(n);
+        self.walked = self.walked.saturating_add(n);
+        if self.over() { Err(Unsupported) } else { Ok(()) }
     }
 
     /// The day the document counts its dates from, in days since 1970.
@@ -591,8 +617,7 @@ impl<'a> Engine<'a> {
                     }
                     for cc in left.max(g.c1)..=right.min(g.c2) {
                         // a million rows of sixteen thousand cells are not walked: the formula keeps what it had
-                        self.steps += 1;
-                        if self.steps > 5_000_000 || self.first.is_some() {
+                        if self.leaving() {
                             return Err(Unsupported);
                         }
                         let v = self.value((g.s, rr, cc));
@@ -693,6 +718,9 @@ impl<'a> Engine<'a> {
                     let mut v = Vec::with_capacity(g.rows() * g.cols());
                     for r in g.r1..=g.r2 {
                         for c in g.c1..=g.c2 {
+                            if self.leaving() {
+                                return Err(Unsupported);
+                            }
                             v.push(self.value((g.s, r, c)));
                         }
                     }
@@ -730,6 +758,7 @@ impl<'a> Engine<'a> {
                     _ => return Err(Unsupported),
                 };
                 let at = |g: &Grid, i: usize| g.v[if g.v.len() == 1 { 0 } else { i }].clone();
+                self.count(rows * cols)?;
                 Grid { rows, cols, v: (0..rows * cols).map(|i| bin(op, at(&l, i), at(&r, i))).collect() }
             }
             // a function over ranges is one value only when it takes its ranges whole
@@ -805,10 +834,13 @@ impl<'a> Engine<'a> {
         self.busy.insert(at);
         self.depth += 1;
         let outer = std::mem::replace(&mut self.tainted, false);
+        // once the change has read all it may, nothing more is worked out: this formula keeps what it had
         let got = match self.formulas[i].ast.clone() {
-            Some(ast) => self.evaluate(&ast, at),
-            None => Err(Unsupported),
+            Some(ast) if self.walked <= self.walk_all => self.evaluate(&ast, at),
+            _ => Err(Unsupported),
         };
+        // and one that ran out part way came to nothing that can be kept
+        let got = if self.over() { Err(Unsupported) } else { got };
         self.depth -= 1;
         self.busy.remove(&at);
         let read_unsure = std::mem::replace(&mut self.tainted, outer);
@@ -1997,6 +2029,60 @@ mod tests {
         // typed over, the array spreads no more, and the cell that was under it can be typed into
         let over = enter(&tall, 0, 1, 1, "7").unwrap().body;
         assert_eq!(grid(&enter(&over, 0, 2, 1, "99").unwrap().body)[2][1], "99");
+    }
+
+    /// A page of a few kilobytes that says it is full: one row said 1,048,576 times, of one number said 16,384 times, and a second sheet of `n` cells with one formula each.
+    fn full(n: usize, formula: &str) -> String {
+        let cell = format!("<table:table-cell table:formula=\"of:={}\" office:value-type=\"float\" office:value=\"0\" calcext:value-type=\"float\"><text:p>0</text:p></table:table-cell>", formula.replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;"));
+        format!("<?xml version=\"1.0\"?>\n<office:document xmlns:calcext=\"urn:c\">\n <office:body>\n  <office:spreadsheet>\n   <table:table table:name=\"One\"><table:table-row table:number-rows-repeated=\"1048576\"><table:table-cell table:number-columns-repeated=\"16384\" office:value-type=\"float\" office:value=\"1\" calcext:value-type=\"float\"><text:p>1</text:p></table:table-cell></table:table-row></table:table>\n   <table:table table:name=\"Two\"><table:table-row>{}</table:table-row></table:table>\n  </office:spreadsheet>\n </office:body>\n</office:document>\n", cell.repeat(n))
+    }
+
+    #[test]
+    fn one_change_walks_no_more_than_a_set_number_of_cells_however_many_formulas_it_reaches() {
+        // each of these reads far more cells than a formula may walk. The work is counted in cells read, by every
+        // formula together, and what the count does not reach is left stale and keeps what it had
+        for formula in [
+            "SUM([$One.A1:.XFD1048576])",
+            "COUNTIF([$One.A1:.XFD1048576];\">0\")",
+            "SUMIFS([$One.A1:.A1048576];[$One.B1:.B1048576];\">0\";[$One.C1:.C1048576];1)",
+            "SUMPRODUCT([$One.A1:.A200000]*[$One.A1:.A200000]*[$One.A1:.A200000]*[$One.A1:.A200000]*[$One.A1:.A200000]*[$One.A1:.A200000]*[$One.A1:.A200000]*[$One.A1:.A200000])",
+            "SUMPRODUCT([$One.A1:.XFD1048576];[$One.A1:.XFD1048576])",
+            "VLOOKUP(-1;[$One.A1:.B1048576];2;0)",
+            "MATCH(-1;[$One.A1:.A1048576];0)",
+            "TEXTJOIN(\"\";1;[$One.A1:.XFD1048576])",
+            "AVERAGE([$One.A1:.XFD1048576])+COUNT([$One.A1:.XFD1048576])",
+        ] {
+            for (n, most) in [(20, 300_000), (80, 300_000), (320, 300_000), (80, 1), (80, 0)] {
+                let page = sheet::put_cell(&full(n, formula), 0, 0, 0, &Typed::Number(2.0).into(), Care::Typed).unwrap();
+                let book = sheet::book(&page).unwrap();
+                let styles = Styles::read(&page, book.null_date);
+                let mut eng = Engine::new(&book, &styles);
+                eng.walk_all = most;
+                assert_eq!(eng.formulas.len(), n, "{formula}");
+                eng.recalc(&[(0, 0, 0)], None);
+                // every formula is either worked out or said to be stale, and no more is read than the bound, with one cell
+                // more for the reading that passed it and one for each formula left
+                assert_eq!(eng.done.len() + eng.stale.len(), n, "{formula}");
+                assert!(eng.walked <= most + 1 + n, "{n} of {formula} with {most} allowed: {} cells read", eng.walked);
+                // and a formula that was not worked out keeps what it had, and is not written
+                assert!(eng.stale.len() >= n - 1 || most > 1, "{formula}");
+            }
+        }
+        // with the bound as it is set: a formula may read five million cells, and a change twenty
+        let page = sheet::put_cell(&full(20, "SUM([$One.A1:.XFD1048576])"), 0, 0, 0, &Typed::Number(2.0).into(), Care::Typed).unwrap();
+        let book = sheet::book(&page).unwrap();
+        let styles = Styles::read(&page, book.null_date);
+        let mut eng = Engine::new(&book, &styles);
+        let changed = eng.recalc(&[(0, 0, 0)], None);
+        assert!(eng.walked <= WALK_ALL + 21 && eng.walked > WALK_ONE, "{} cells read", eng.walked);
+        assert_eq!((eng.stale.len(), eng.done.len(), changed.len()), (20, 0, 0));
+        // a sheet of many light formulas is worked out whole
+        let light = doc(&[&["1"; 1], &["=A1+1|2"; 200]]);
+        let book = sheet::book(&light).unwrap();
+        let styles = Styles::read(&light, book.null_date);
+        let mut eng = Engine::new(&book, &styles);
+        eng.recalc(&[(0, 0, 0)], None);
+        assert_eq!((eng.done.len(), eng.stale.len()), (200, 0));
     }
 
     #[test]
