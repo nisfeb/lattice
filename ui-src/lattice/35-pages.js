@@ -209,6 +209,8 @@
         return false;
       }
       if (!r.ok) {
+        //  no fresh read is coming: saves stop waiting for one
+        freshPending.delete(name);
         if (painted) return true;
         //  not written yet: a page of this ship the ship has no page for
         if (start && r.status === 404 && my === openSeq && await startable(name) && my === openSeq && tabStart(name))
@@ -218,6 +220,7 @@
       }
       d = await r.json();
     } catch {
+      freshPending.delete(name);
       if (painted) return true;
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
@@ -292,6 +295,8 @@
     //  be older than its text: no claim is made from it. The read that
     //  follows (or the next save's answer) sets the rev saves claim.
     curRev = quiet || !isRev(d.rev) ? null : d.rev;
+    //  the offline queue may claim it all the same (paintRev)
+    if (isRev(d.rev)) paintRev.set(name, d.rev); else paintRev.delete(name);
     if (quiet) shipText.delete(name); else { shipText.set(name, d.body); freshPending.delete(name); }
     refreshTexButton();
     src.value = d.body;
@@ -1034,6 +1039,13 @@
   // the fresh read lands. Autosave waits for it (up to 15 s); the rev to
   // claim only ever comes from a fresh answer.
   const freshPending = new Map();
+  // the rev of the copy last painted for a page, fresh or not, for the
+  // offline queue alone (queueEdit, 08-offline.js). A live save never
+  // claims it. A queued edit does when the editor read no rev: its claim
+  // is not refused, it only tells the ship to keep the other text if the
+  // page has moved, and a rev that is a little old costs a kept copy
+  // where one that is missing costs their edit.
+  const paintRev = new Map();
   // The fresh answer `d` for `name`, painted as `painted`. Its rev is now
   // the one to claim. Text typed on the paint meanwhile is an edit of
   // `painted`: a change made elsewhere since merges into it if it can, or
@@ -1199,11 +1211,15 @@
   //  A page hidden (a phone locked, another app in front) or let go may
   //  never run the debounce: what waits on it is written now, through
   //  autosave and every rule it has.
+  //  A save that waits for its page's fresh read sends nothing, and the
+  //  tab may never run again to send it: the text goes into the offline
+  //  queue instead (autosave(true), stashSave in 08-offline.js). Back in
+  //  front, the editor owns it again and that copy is dropped.
   const flushHidden = (e) => {
-    if (e.type === 'visibilitychange' && !document.hidden) return;
+    if (e.type === 'visibilitychange' && !document.hidden) { unstash(); return; }
     if (!dirty) return;
     clearTimeout(autoTimer);
-    autosave();
+    autosave(true);
   };
   document.addEventListener('visibilitychange', flushHidden);
   window.addEventListener('pagehide', flushHidden);
@@ -1214,7 +1230,8 @@
     clearTimeout(autoTimer);
     autoTimer = setTimeout(autosave, 2000);
   });
-  async function autosave() {
+  //  `hiding`: true from flushHidden alone (a timer passes nothing)
+  async function autosave(hiding) {
     // GRUB MODE IS EXPLICIT-SAVE ONLY. Autosaving a lattice page is fine. It is
     // your own note and the editor has always worked that way. Autosaving
     // another app's source is not. A half-typed edit to calendar.html would go
@@ -1251,7 +1268,12 @@
     // painted from an older copy and not yet read fresh: wait for that read
     // (it may find a change made elsewhere), then save on its rev
     const fp = mode !== 'know' && freshPending.get(current);
-    if (fp && Date.now() - fp.at < 15000) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 500); return; }
+    if (fp && Date.now() - fp.at < 15000) {
+      if (hiding === true && autosaveOn() && !linkOf(current) && !editLocked() && !casHold.has(current))
+        stashSave(current, curKind || pkind.value, src.value, curRev);
+      clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 500);
+      return;
+    }
     if (fp) freshPending.delete(current);
     // a link whose save was refused as stale: no more writes until the
     // user picks one of the bar's ways out, or saves on purpose (Ctrl+S)

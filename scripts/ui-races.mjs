@@ -7,6 +7,10 @@
 //    a parked save that has nothing to send leaves the window able to save
 //    text typed while a stale save is settled is merged, not saved over it
 //    a refresh read answered after a later save does not paint over it
+//    an edit queued offline claims the rev of the copy it was made on,
+//      when the page was opened offline and when it was left and reopened
+//    a queued edit with no rev to claim still gets their text kept
+//    text typed before the fresh read lands is on the device when hidden
 //
 //  No ship: lib/stub-ship.mjs stands in for the routes the editor uses and
 //  serves the built app.js, and holds answers back to force the order.
@@ -158,6 +162,144 @@ cases.lateRead = async () => {
   await typeEnd(p, 'TYPED-2');
   await waitFor(() => body(x, 'n/a').includes('TYPED-2'), 8000, 50);
   check.eq('and the next save keeps it', body(x, 'n/a'), 'alpha\nTYPED-1 TYPED-2');
+  await x.done();
+};
+
+//  the offline queue's page records, as the editor stored them
+const queue = (p) => p.evaluate(() => new Promise((res) => {
+  const r = indexedDB.open('lattice-offline');
+  r.onsuccess = () => {
+    const g = r.result.transaction('saves').objectStore('saves').getAll();
+    g.onsuccess = () => { r.result.close(); res(g.result); };
+  };
+}));
+const queued = async (p, name) => (await queue(p)).find((q) => q.name === name) || null;
+const clickRow = (p, name) => p.evaluate((n) => {
+  [...document.querySelectorAll('#treelist a.pg')]
+    .find((a) => a.getAttribute('href').endsWith('name=' + encodeURIComponent(n))).click();
+}, name);
+//  the ship is back and the window is looked at again: the queue drains
+const comeBack = async (x) => {
+  x.S.down = false;
+  await x.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await waitFor(async () => !(await queue(x.page)).length, 30000, 200);
+  await sleep(500);
+};
+const kept = (x) => [...x.S.pages].filter(([k]) => k.startsWith('conflicts/')).map(([, v]) => v.body).join('|');
+
+//  The ship is away. A page is opened from the tree's copy and typed into,
+//  and another device edits it before the ship is back. The queued edit
+//  must claim the rev of the copy it was made on, so the ship keeps theirs.
+cases.offlineOpen = async () => {
+  const x = await up({ 'n/a': 'alpha\n', 'n/b': 'beta\n' }, '?name=n/a');
+  const p = x.page;
+  x.S.down = true;
+  await clickRow(p, 'n/b');
+  await waitFor(async () => (await ed(p)) === 'beta\n', 5000, 50);
+  await typeEnd(p, 'MINE');
+  const t0 = Date.now();
+  const q = await waitFor(() => queued(p, 'n/b'), 22000, 200);
+  check('the edit is queued', !!q && q.body === 'beta\nMINE', JSON.stringify(q));
+  check('without sitting out the wait for a read that already failed', Date.now() - t0 < 9000, (Date.now() - t0) + ' ms');
+  check.eq('on the rev of the copy that was painted', q && q.baseRev, 1);
+  x.S.put('n/b', 'THEIRS\nbeta\n');
+  await comeBack(x);
+  check.eq('the offline edit landed', body(x, 'n/b'), 'beta\nMINE');
+  check('and their edit is kept beside it', kept(x).includes('THEIRS'), [...x.S.pages.keys()].join(' '));
+  check('which the status says', /conflict/.test(await status(p)), await status(p));
+  await x.done();
+};
+//  A page open at rev 1 is edited offline, left, come back to and edited
+//  again. The second edit replaces the first in the queue and must keep
+//  the rev the first one forked from.
+cases.offlineReopen = async () => {
+  const x = await up({ 'n/a': 'alpha\n', 'n/b': 'beta\n' }, '?name=n/a');
+  const p = x.page;
+  x.S.down = true;
+  await typeEnd(p, 'MINE-1 ');
+  const q1 = await waitFor(() => queued(p, 'n/a'), 10000, 200);
+  check.eq('the first offline edit claims the rev it was read at', q1 && q1.baseRev, 1);
+  await clickRow(p, 'n/b');
+  await waitFor(async () => (await ed(p)) === 'beta\n', 5000, 50);
+  await clickRow(p, 'n/a');
+  await waitFor(async () => (await ed(p)) === 'alpha\nMINE-1 ', 5000, 50);
+  await typeEnd(p, 'MINE-2');
+  const q2 = await waitFor(async () => { const q = await queued(p, 'n/a'); return q && q.body.includes('MINE-2') && q; }, 22000, 200);
+  check.eq('the second keeps that rev', q2 && q2.baseRev, 1);
+  x.S.put('n/a', 'THEIRS\nalpha\n');
+  await comeBack(x);
+  check.eq('the offline edit landed', body(x, 'n/a'), 'alpha\nMINE-1 MINE-2');
+  check('and their edit is kept beside it', kept(x).includes('THEIRS'), [...x.S.pages.keys()].join(' '));
+  //  the control: nobody else wrote, so nothing is flagged
+  x.S.down = true;
+  await typeEnd(p, ' MINE-3');
+  await waitFor(async () => { const q = await queued(p, 'n/a'); return q && q.body.includes('MINE-3'); }, 10000, 200);
+  const n = [...x.S.pages.keys()].length;
+  await comeBack(x);
+  check.eq('an edit nobody raced lands', body(x, 'n/a'), 'alpha\nMINE-1 MINE-2 MINE-3');
+  check.eq('with no conflict page', [...x.S.pages.keys()].length, n);
+  await x.done();
+};
+//  A queued edit of a copy whose rev was never known has no rev to claim.
+//  The ship writes an edit with no claim over whatever it holds, so the
+//  replay must get their text kept another way. A record that claims
+//  nothing on purpose (queued behind a folder job) still just lands.
+cases.offlineBlind = async () => {
+  const x = await up({ 'n/a': 'alpha\n', 'n/b': 'beta\n' }, '?name=n/a');
+  const p = x.page;
+  await p.evaluate(() => new Promise((res) => {
+    const r = indexedDB.open('lattice-offline');
+    r.onsuccess = () => {
+      const s = r.result.transaction('saves', 'readwrite').objectStore('saves');
+      const rec = (name, more) => ({ name, kind: 'md', body: 'MINE ' + name, baseRev: null, bv: 1,
+        queuedAt: Date.now(), id: 'gone-' + name, win: 'gone', seq: 1, ...more });
+      s.put(rec('n/a', { blind: 1 }));
+      s.put(rec('n/b', {})).onsuccess = () => { r.result.close(); res(); };
+    };
+  }));
+  x.S.put('n/a', 'THEIRS-A\n');
+  x.S.put('n/b', 'THEIRS-B\n');
+  await p.reload({ waitUntil: 'domcontentloaded' });
+  await waitFor(async () => !(await queue(p)).length, 30000, 200);
+  await sleep(500);
+  check.eq('the edit with no rev landed', body(x, 'n/a'), 'MINE n/a');
+  check('and the text it replaced is kept', kept(x).includes('THEIRS-A'), [...x.S.pages.keys()].join(' '));
+  check.eq('an edit that claims nothing on purpose landed', body(x, 'n/b'), 'MINE n/b');
+  check('and kept nothing', !kept(x).includes('THEIRS-B'), kept(x));
+  await x.done();
+};
+//  A page is painted from the tree's copy and typed into while its fresh
+//  read is still out, then the app is hidden (a phone's app switch). The
+//  tab may never run again, so the text must be on the device by then.
+cases.hidden = async () => {
+  const x = await up({ 'n/a': 'alpha\n', 'n/b': 'beta\n' }, '?name=n/a');
+  const p = x.page;
+  let go;
+  const gate = new Promise((r) => { go = r; });
+  x.S.hook = async (ev) => { if (ev.path === 'page-source' && ev.q.name === 'n/b') await gate; return null; };
+  await clickRow(p, 'n/b');
+  await waitFor(async () => (await ed(p)) === 'beta\n', 5000, 50);
+  await typeEnd(p, 'QUICK NOTE');
+  const hide = (on) => p.evaluate((on) => {
+    Object.defineProperty(document, 'hidden', { get: () => on, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    if (on) window.dispatchEvent(new Event('pagehide'));
+  }, on);
+  await hide(true);
+  const q = await waitFor(() => queued(p, 'n/b'), 3000, 100);
+  check('hidden with the read still out: the text is in the queue', !!q && q.body === 'beta\nQUICK NOTE', JSON.stringify(q));
+  check.eq('on the rev of the copy that was painted', q && q.baseRev, 1);
+  check('and nothing was sent ahead of the read', !x.S.saves().length, x.S.saves().map((e) => e.path).join(' '));
+  //  the app comes back: the editor still owns the text and saves it itself
+  await hide(false);
+  await typeEnd(p, ' and more');
+  go();
+  await waitFor(() => body(x, 'n/b').includes('and more'), 10000, 100);
+  await waitFor(async () => !(await queue(p)).length, 5000, 100);
+  check.eq('back in front, the editor saves it', body(x, 'n/b'), 'beta\nQUICK NOTE and more');
+  check('the queued copy is gone', !(await queue(p)).length, JSON.stringify(await queue(p)));
+  check('and nothing was made a conflict', !kept(x), [...x.S.pages.keys()].join(' '));
+  check('or written twice', x.S.saves().length === 1, x.S.saves().map((e) => e.path + ' ' + JSON.stringify(e.body)).join(' '));
   await x.done();
 };
 

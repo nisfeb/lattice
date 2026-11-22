@@ -359,15 +359,39 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
 
   const qBase = (q) => (isRev(q.baseRev) && (q.bv || q.baseRev) ? q.baseRev : null);
-  async function enqueueSave(name, kind, body, isNew, rn, rev = curRev, drawn = false) {
+  async function queueEdit(name, kind, body, isNew, rn, rev, drawn, stash) {
     let prev = null;
     try { prev = await offGet(name); } catch {}
-    if (tooBig(body)) { st(TOO_BIG, false); return false; }
-    const queued = await offPut({ name, kind, body, baseRev: jobWait || replaying || !isRev(rev) ? null : rev, bv: 1,
-      isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(), ...qStamp(),
+    const create = !!isNew || !!(prev && prev.isNew);
+    const none = jobWait || replaying;
+    const from = isRev(rev) ? baseFor(name, rev)
+      : prev && !prev.isNew && isRev(qBase(prev)) ? qBase(prev) : baseFor(name, paintRev.get(name));
+    const base = none || !isRev(from) ? null : from;
+    const queued = await offPut({ name, kind, body, baseRev: base, bv: 1,
+      ...(base === null && !none && !create && { blind: 1 }),
+      ...(stash && (!prev || prev.stash) && { stash: 1 }),
+      isNew: create, queuedAt: Date.now(), ...qStamp(),
       drawn: !!drawn || !!(prev && prev.drawn),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
+    return { queued, base };
+  }
+  let stashed = false;
+  const ownStash = (q) => !!q.stash && q.win === winId;
+  async function stashSave(name, kind, body, rev) {
+    if (tooBig(body)) return;
+    stashed = true;
+    const { queued, base } = await queueEdit(name, kind, body, false, null, rev, false, true);
+    if (queued) snapPage(name, { body, kind, rev: base });
+  }
+  async function unstash() {
+    if (!stashed) return;
+    stashed = false;
+    for (const q of await offAll()) if (ownStash(q)) await offDone(q);
+  }
+  async function enqueueSave(name, kind, body, isNew, rn, rev = curRev, drawn = false) {
+    if (tooBig(body)) { st(TOO_BIG, false); return false; }
+    const { queued, base } = await queueEdit(name, kind, body, isNew, rn, rev, drawn, false);
     const job = saveStalled();
     if (!queued) {
       st(NOT_SAVED, false);
@@ -376,7 +400,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
-    snapPage(name, { body, kind, rev: isRev(rev) ? rev : null });
+    snapPage(name, { body, kind, rev: base });
     st(job ? JOB_NOTE : 'saved offline — ' + offCount + ' waiting to sync');
     return job ? 'job' : true;
   }
@@ -668,7 +692,18 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
 
   const BATCH_MAX = 4 * 1024 * 1024;
+  async function blindClaim(q) {
+    let r = null;
+    try { r = await tfetch(api + '/page-source?name=' + encodeURIComponent(q.name), {}, 20000); } catch {}
+    if (shipGone(r)) return false;
+    let d = null;
+    if (r.ok) { try { d = await r.json(); } catch {} }
+    if (d && isRev(d.rev) && !d.link) { q.baseRev = d.rev > 0 ? d.rev - 1 : d.rev + 1; q.bv = 1; }
+    return true;
+  }
+  const landedRev = (q, it) => { if (q && it && q.win === winId) knowRev(q.name, it.rev); };
   async function drainEdits(edits, conflicts) {
+    for (const q of edits) if (q.blind && !(await blindClaim(q))) return false;
     const parts = [];
     let cur = [], bytes = 0;
     for (const q of edits) {
@@ -691,8 +726,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       } else r = { status: 413 };
       if (r && r.ok) {
         try {
-          for (const it of ((await r.json()).items || []))
+          ((await r.json()).items || []).forEach((it) => {
             if (it.conflicted) conflicts.push(it.kept || it.name);
+            landedRev(part.find((q) => q.name === it.name), it);
+          });
         } catch {}
         for (const q of part) await offDone(q);
         continue;
@@ -715,6 +752,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           try {
             const j = await one.json();
             if (j.conflicted) conflicts.push(j.kept || q.name);
+            landedRev(q, j);
           } catch {}
         } else if (!await keepSafe(q, one.status, 'edit', conflicts)) return false;
         await offDone(q);
@@ -744,7 +782,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   async function drainQueue(proven) {
     const ops = (await opAll()).filter((o) => !isStuck(o));
-    const first = (await offAll()).filter((q) => !isStuck(q));
+    const first = (await offAll()).filter((q) => !isStuck(q) && !ownStash(q));
     if (!first.length && !ops.length) return;
     if (proven && degraded) { degraded = false; renderOffline(); }
     const total = first.length + ops.length;
@@ -753,7 +791,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     let knows = [];
     const saves = async () => {
       const wait = new Set((await opAll()).map((o) => o.id).filter(Boolean));
-      return (await offAll()).filter((q) => !isStuck(q) && !(q.via && wait.has(q.via)));
+      return (await offAll()).filter((q) => !isStuck(q) && !ownStash(q) && !(q.via && wait.has(q.via)));
     };
     const landed = await drainOps(ops, first, conflicts)
       && await (async () => {
@@ -6601,6 +6639,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         return false;
       }
       if (!r.ok) {
+        freshPending.delete(name);
         if (painted) return true;
         if (start && r.status === 404 && my === openSeq && await startable(name) && my === openSeq && tabStart(name))
           return true;
@@ -6609,6 +6648,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
       d = await r.json();
     } catch {
+      freshPending.delete(name);
       if (painted) return true;
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
@@ -6650,6 +6690,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
     curRev = quiet || !isRev(d.rev) ? null : d.rev;
+    if (isRev(d.rev)) paintRev.set(name, d.rev); else paintRev.delete(name);
     if (quiet) shipText.delete(name); else { shipText.set(name, d.body); freshPending.delete(name); }
     refreshTexButton();
     src.value = d.body;
@@ -7106,6 +7147,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   };
   const shipText = new Map();
   const freshPending = new Map();
+  const paintRev = new Map();
   function reconcileFresh(name, painted, d) {
     freshPending.delete(name);
     if (!d || typeof d.body !== 'string' || typeof painted !== 'string') return;
@@ -7229,10 +7271,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const AUTO_RETRY = 5000;
   const UNREACHED_NOTE = 'not saved yet: the ship is unreachable. It saves when the ship answers';
   const flushHidden = (e) => {
-    if (e.type === 'visibilitychange' && !document.hidden) return;
+    if (e.type === 'visibilitychange' && !document.hidden) { unstash(); return; }
     if (!dirty) return;
     clearTimeout(autoTimer);
-    autosave();
+    autosave(true);
   };
   document.addEventListener('visibilitychange', flushHidden);
   window.addEventListener('pagehide', flushHidden);
@@ -7241,7 +7283,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     clearTimeout(autoTimer);
     autoTimer = setTimeout(autosave, 2000);
   });
-  async function autosave() {
+  async function autosave(hiding) {
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     writerSync();
     if (curFolder || !dirty || viewingRev !== null) return;
@@ -7253,7 +7295,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       return save(undefined, undefined, 0, true);
     }
     const fp = mode !== 'know' && freshPending.get(current);
-    if (fp && Date.now() - fp.at < 15000) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 500); return; }
+    if (fp && Date.now() - fp.at < 15000) {
+      if (hiding === true && autosaveOn() && !linkOf(current) && !editLocked() && !casHold.has(current))
+        stashSave(current, curKind || pkind.value, src.value, curRev);
+      clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 500);
+      return;
+    }
     if (fp) freshPending.delete(current);
     if (mode !== 'know' && linkCf.has(current) && linkOf(current)) {
       st('not saved: ' + linkOf(current).host + ' changed this page since you opened it', false);
