@@ -23034,7 +23034,7 @@
     =/  sub-ixs=(list road:tarball)
       %+  turn  (gulf (lent dir) (lent pdir))
       |=(n=@ud `road:tarball`[%& %& :(weld sb /page (scag n pdir)) %'dir-index'])
-    =/  pk=(set road:tarball)  (silt [code sub-ixs])
+    =/  pk=(set road:tarball)  (silt ^-((list road:tarball) [code sub-ixs]))
     =/  l=(list [g=@t md=@t])  ~(tap by gs)
     |-  ^-  form:m
     ?~  l  (pure:m ~)
@@ -23460,7 +23460,7 @@
     ?.  ?=([%file *] v)  ~
     (fall (mole |.(;;((list [@ta *]) (sang-noun:tarball sang.v)))) ~)
   =/  next=(list [@ta *])
-    (scag 64 [[rid val] (skip cur |=([k=@ta *] =(k rid)))])
+    (scag 64 ^-((list [@ta *]) [[rid val] (skip cur |=([k=@ta *] =(k rid)))]))
   (put-file r [/ %noun] next)
 ::  +acl-res-get: read one serialized ACL writer outcome from /acl-res.
 ++  acl-res-get

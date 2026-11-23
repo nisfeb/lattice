@@ -927,10 +927,10 @@ cases.shareFolderPage = async () => {
   x.S.v2 = true;
   x.S.groups = [{ name: 'crew', ships: [], peek: [BASE + '/page/a/code'], make: [BASE + '/page/a/code'], poke: [], opaque: 0 }];
   await p.reload({ waitUntil: 'domcontentloaded' });
-  await waitFor(() => p.evaluate(() => !!document.querySelector('#treelist [data-tk="f:a"] .fln')), 15000, 100);
+  await waitFor(() => p.evaluate(() => !!document.querySelector('#treelist [data-tk="f:a"] .fln') && document.getElementById('pname') && document.getElementById('pname').value === 'solo'), 15000, 100);
   await p.evaluate(() => { window.latShell.paneOpen('r', true); window.latShell.paneTab('r', 'page'); });
   await p.click('#treelist [data-tk="f:a"] .fln');
-  await waitFor(async () => (await rowBtn('read')) !== null, 15000, 100);
+  await waitFor(() => p.evaluate(() => !!document.querySelector('#treelist [data-tk="f:a"].cur') && /the folder/i.test((document.getElementById('sharewhat') || {}).textContent || '') && !![...document.querySelectorAll('#grouplist .grow-row button')].find((e) => e.textContent === 'read')), 15000, 100);
   check.eq('a page /code grant does not mark the folder read', await rowBtn('read'), '');
   check.eq('nor folder edit', await rowBtn('edit'), '');
   let savesBefore = x.S.log.filter((e) => e.path === 'share-group-save').length;
