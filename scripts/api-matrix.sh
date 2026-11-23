@@ -74,6 +74,75 @@ sleep 3
 errs="$(G "$B/page-errors?name=$P/broken")"
 if [ -n "$(printf '%s' "$errs" | tr -d '[:space:]')" ]; then ok "page-errors reports the failure"; else bad "page-errors reports the failure" "empty"; fi
 
+echo "==> a new page holds only the grubs it needs"
+# gls <name>: the grubs in a page's dir, sorted, on one line
+GB=$(G "$B/streams" | python3 -c 'import json,sys;print(json.load(sys.stdin)["base"])')
+gls() { G "$URL/grubbery/api/peek$GB/page/$1/" | python3 -c 'import json,sys;print(" ".join(sorted(json.load(sys.stdin).get("files",[]))))'; }
+# haveg <name> <grub>: yes when the page's dir holds the grub
+haveg() { case " $(gls "$1") " in *" $2 "*) echo yes;; *) echo no;; esac; }
+# waitg <name> <grub> [secs]: wait until the page's dir holds the grub
+waitg() { local i; for i in $(seq 1 "${3:-30}"); do [ "$(haveg "$1" "$2")" = yes ] && return 0; sleep 1; done; return 1; }
+# shown <name>: the page's view, as the reader serves it (a hoon page has no
+# page-source render, and a content page's body is in the same view)
+GS=$(G "$URL/~/host")
+shown() { G "$B/x/$GS$GB/page/$1/"; }
+# untilshown <name> <text> [secs]: wait until the render holds the text
+showhas() { local t; t=$(shown "$1"); case "$t" in *"$2"*) echo yes;; *) echo no;; esac; }
+untilshown() { local i; for i in $(seq 1 "${3:-30}"); do [ "$(showhas "$1" "$2")" = yes ] && return 0; sleep 1; done; return 1; }
+PRE='|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]  ^-  result  '
+is "save a content page"   200 "$(sc -X POST "$B/page-save?name=$P/lean&type=md&new=1" --data-binary '# lean body')"
+waitg "$P/lean" show
+is "  it renders"          yes "$(showhas "$P/lean" 'lean body')"
+is "  it has no cmd grub"  no  "$(haveg "$P/lean" cmd)"
+is "  and no deps grub"    no  "$(haveg "$P/lean" deps)"
+is "  and no err grub, as it ran clean" no "$(haveg "$P/lean" err)"
+# a command on it makes the cmd grub and runs
+is "save a hoon page"      200 "$(sc -X POST "$B/page-save?name=$P/cmdp&type=hoon&new=1" --data-binary "$PRE(text ?~(cmd 'zidle' u.cmd))")"
+waitg "$P/cmdp" show
+is "  no cmd grub yet"     no  "$(haveg "$P/cmdp" cmd)"
+untilshown "$P/cmdp" zidle
+is "  it shows its idle text" yes "$(showhas "$P/cmdp" zidle)"
+is "  a command is taken"  200 "$(sc -X POST "$B/page-cmd?name=$P/cmdp" --data-binary 'cmd=zfirst')"
+untilshown "$P/cmdp" zfirst
+is "  and the page ran it" yes "$(showhas "$P/cmdp" zfirst)"
+is "  the cmd grub now exists" yes "$(haveg "$P/cmdp" cmd)"
+is "  a second command is taken" 200 "$(sc -X POST "$B/page-cmd?name=$P/cmdp" --data-binary 'cmd=zsecond')"
+untilshown "$P/cmdp" zsecond
+is "  and run too"         yes "$(showhas "$P/cmdp" zsecond)"
+# deps declared later: a page saved without deps, then saved with them
+is "save a source page"    200 "$(sc -X POST "$B/page-save?name=$P/dsrc&type=hoon&new=1" --data-binary "$PRE(text 'zv1')")"
+untilshown "$P/dsrc" zv1
+is "  and a page with no deps" 200 "$(sc -X POST "$B/page-save?name=$P/dlate&type=hoon&new=1" --data-binary "$PRE(text 'znodeps')")"
+waitg "$P/dlate" show
+is "  has no deps grub"    no  "$(haveg "$P/dlate" deps)"
+is "  saved again with a dep" 200 "$(sc -X POST "$B/page-save?name=$P/dlate&type=hoon" --data-binary "$PRE(needs (text ?~(deps 'zwaiting' ;;(@t +.i.deps))) ~[/page/$P/dsrc/data])")"
+untilshown "$P/dlate" zv1
+is "  it reads the source" yes "$(showhas "$P/dlate" zv1)"
+is "  and the deps grub exists" yes "$(haveg "$P/dlate" deps)"
+is "  the source changes"  200 "$(sc -X POST "$B/page-save?name=$P/dsrc" --data-binary "$PRE(text 'zv2')")"
+untilshown "$P/dlate" zv2
+is "  and the dependent follows" yes "$(showhas "$P/dlate" zv2)"
+# an error shows, and clearing it works. The first run of a clean page
+# writes no err grub (checked above), a failing one writes it, a good
+# save clears it
+is "save a broken page"    200 "$(sc -X POST "$B/page-save?name=$P/errp&type=hoon&new=1" --data-binary '|=(x=@ (undefined-arm x))')"
+waitg "$P/errp" err
+is "  its error shows"     yes "$(G "$B/page-errors?name=$P/errp" | grep -q 'compile failed' && echo yes || echo no)"
+is "  fixed and saved"     200 "$(sc -X POST "$B/page-save?name=$P/errp" --data-binary "$PRE(text 'zfixed')")"
+untilshown "$P/errp" zfixed
+is "  the error is cleared" "" "$(G "$B/page-errors?name=$P/errp" | tr -d '[:space:]')"
+is "  a page that never failed reports none" "" "$(G "$B/page-errors?name=$P/lean" | tr -d '[:space:]')"
+# a copy and a move of a page with and without the lazy grubs
+is "move a lean page"      200 "$(sc -X POST "$B/page-move?from=$P/lean&to=$P/lean2")"
+untilshown "$P/lean2" 'lean body'
+is "  it renders where it landed" yes "$(showhas "$P/lean2" 'lean body')"
+is "move a page that has run a command" 200 "$(sc -X POST "$B/page-move?from=$P/cmdp&to=$P/cmdp2")"
+untilshown "$P/cmdp2" zidle
+is "  it renders where it landed (a move carries no command)" yes "$(showhas "$P/cmdp2" zidle)"
+is "  and takes a command there" 200 "$(sc -X POST "$B/page-cmd?name=$P/cmdp2" --data-binary 'cmd=zthird')"
+untilshown "$P/cmdp2" zthird
+is "  which it runs"       yes "$(showhas "$P/cmdp2" zthird)"
+
 echo "==> knowledge store"
 K="apimx/$$"
 is "know-save"    200 "$(sc -X POST "$B/know-save?key=$K" --data-binary 'api matrix memory')"

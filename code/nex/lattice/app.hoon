@@ -909,6 +909,8 @@
         ::  the /err text this loop last wrote, ~ until it writes one. A run
         ::  writes /err only when its text differs, so a page that keeps
         ::  succeeding stops rewriting '' on every save and every timer tick.
+        ::  A clean run writes none at all unless an error is on show
+        ::  (+write-eval-err), so a page that never failed has no /err.
         ::  Nothing else writes /err.
         =/  err-shown=(unit @t)  ~
         ::  the first run of this fiber, which a save's /code write spawned
@@ -1003,9 +1005,7 @@
         ;<  [err=@t wake=(unit @dr)]  bind:m
           (eval-run pdir p.bild cmd deps run-bud now &(boot ?=(^ pb)))
         =.  boot  |
-        ;<  ~  bind:m
-          ?:  =(`err err-shown)  (pure:m ~)
-          (put-file (rf up pdir %err) [/lattice %page] err)
+        ;<  ~  bind:m  (write-eval-err pdir err-shown err)
         =.  err-shown  `err
         ::  persist the processed seq only when a command actually ran (a dep
         ::  tick leaves seq unchanged). /seen is not kept, so this fires no wave.
@@ -10797,10 +10797,13 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   =/  pdir=path  (weld /page pax)
-  ::  ONE existence probe. An overwrite (code present) already has its dirs,
-  ::  cmd and deps from creation. The old per-save re-probing of each was
-  ::  3+ wasted darts on every autosave. A half-created page (crash between
-  ::  scaffold and code) just re-runs the scaffold. put-file is idempotent.
+  ::  ONE existence probe. An overwrite (code present) already has its dirs
+  ::  from creation. The old per-save re-probing of each was 3+ wasted darts
+  ::  on every autosave. A half-created page (crash between scaffold and
+  ::  code) just re-runs the scaffold. put-file is idempotent. A page has
+  ::  only its code at first: its evaluator makes /data and /show, a first
+  ::  command makes /cmd and a run that declares deps makes /deps. Each
+  ::  reader takes an absent one as empty (+read-eval-cmd, +read-eval-deps).
   ;<  ex=?  bind:m  (peek-exists:fio (rf up pdir %code))
   ::  never a %code grub at a link's path (/lib/lattice-link): its saves go
   ::  to its host. Every route refuses or proxies first, so this is the
@@ -10816,8 +10819,6 @@
     ::  a page made at a name used before reads only its own history
     ;<  ~  bind:m  (note-floor (rf up pdir %code))
     ;<  ~  bind:m  (ensure-dirs up /page pax)
-    ;<  ~  bind:m  (put-file (rf up pdir %cmd) [/lattice %eval-cmd] `eval-cmd:le`[0 '' 0])
-    ;<  ~  bind:m  (put-file (rf up pdir %deps) [/lattice %eval-deps] `(list path)`~)
     ::  a new page in a shared folder takes the folder's setting
     (inherit-new root pax)
   ::  an owner save is the owner's word on this source, so it lifts an edit
@@ -11661,6 +11662,24 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   (put-file (rf up pdir %seen) [/lattice %eval-data] seq)
+::  +write-eval-err: put the loop's /err text, when it changed. `shown` is
+::  what this loop last wrote, ~ before its first write. A run with no error
+::  writes only to clear one: a clean page keeps no /err grub, and a fiber
+::  a save has respawned reads the grub for the text an earlier loop left.
+::
+++  write-eval-err
+  |=  [pdir=path shown=(unit @t) err=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  =(`err shown)  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ?.  =('' err)  (put-file (rf up pdir %err) [/lattice %page] err)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rf up pdir %err) ~)
+  =/  old=@t
+    ?.  ?=([%file *] sn)  ''
+    (fall (mole |.(;;(@t (sang-noun:tarball sang.sn)))) '')
+  ?:  =('' old)  (pure:m ~)
+  (put-file (rf up pdir %err) [/lattice %page] '')
 ++  read-eval-deps
   |=  pdir=path
   =/  m  (fiber:fiber:nexus ,(list path))
