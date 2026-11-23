@@ -316,7 +316,10 @@
     (expect-eq !>("<p>a__b__c</p>") !>((r 'a__b__c')))
     (expect-eq !>("<p>x _a_b</p>") !>((r 'x _a_b')))
     (expect-eq !>("<p>x __a__b</p>") !>((r 'x __a__b')))
-    (expect-eq !>("<p>_a_b_</p>") !>((r '_a_b_')))
+    (expect-eq !>("<p><em>a_b</em></p>") !>((r '_a_b_')))
+    (expect-eq !>("<p><em>max_size</em></p>") !>((r '_max_size_')))
+    (expect-eq !>("<p><strong>a__b</strong></p>") !>((r '__a__b__')))
+    (expect-eq !>("<p><em>a__b</em></p>") !>((r '_a__b_')))
     (expect-eq !>("<p>9_a_</p>") !>((r '9_a_')))
     ::  at a word boundary it is still emphasis
     (expect-eq !>("<p>x <em>a</em> y</p>") !>((r 'x _a_ y')))
@@ -445,5 +448,20 @@
     (yes (has (weld "<code>" gt) (r (crip :(weld "> ```\0a> " q " x\0a> ```")))))
     (yes (has (weld "<code>" gt) (r (crip :(weld "~~~\0a" q "\0a" q "\0a~~~")))))
     (expect-eq !>(32) !>((lent (fand "<blockquote>" (r (crip (weld q " x")))))))
+  ==
+::  +take-list joins many continuation lines in order without quadratic weld
+++  test-list-continuations
+  =/  conts=tape  (zing (reap 200 "\0a  more"))
+  =/  h=tape  (r (crip :(weld "- first" conts "\0a- second")))
+  ;:  weld
+    (yes (has "<ul><li>first more more" h))
+    (yes (has "</li><li>second</li></ul>" h))
+  ==
+::  +take-ref stops at '[' inside an unclosed reference label
+++  test-take-ref-stop-open-bracket
+  =/  refs=refm:md  (my ~[["k" ["/u" ""]]])
+  ;:  weld
+    (expect-eq !>(~) !>((take-ref:md "[a[b]" "lbl" refs)))
+    (expect !>(?=(^ (take-ref:md "[k]rest" "lbl" refs))))
   ==
 --

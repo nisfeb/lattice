@@ -10,6 +10,7 @@
 ::
 /<  lc  /lib/lattice-comment.hoon
 /<  ft  /lib/lattice-forum-types.hoon
+/<  ls  /lib/lattice-share.hoon
 |%
 ::  +$  kind: what an item is about
 ::    %comment  a comment from another ship on one of our pages
@@ -63,8 +64,7 @@
 ++  clip
   |=  t=@t
   ^-  @t
-  ?:  (lte (met 3 t) body-cap)  t
-  (end [3 body-cap] t)
+  (utf8-cut:ls body-cap t)
 ::  +item-id: an item's grub name, by its content
 ++  item-id
   |=  i=item
@@ -111,7 +111,7 @@
   =|  out=(list @ta)
   |-  ^-  (list @ta)
   ?~  all  (flop out)
-  =/  s=@p  (source-of i.i.all)
+  =/  s=@p  `@p`(family:ls (source-of i.i.all))
   =/  n=@ud  (~(gut by per) s 0)
   ?:  |((gte n source-cap) (gte kept item-cap))
     $(all t.all, out [id.i.all out])
@@ -153,28 +153,32 @@
 ::  +$  note-hits: per sender, the stamps of the notes it filed (newest
 ::  first, at most +note-cap), and how many it sent past the cap since
 +$  note-hits  (map @p [at=(list @da) over=@ud])
-++  note-cap     ^-(@ud 30)
-++  note-window  ^-(@dr ~h1)
+++  note-cap       ^-(@ud 30)
+++  note-window    ^-(@dr ~h1)
+++  note-hits-cap  ^-(@ud 1.000)
 ::  +note-gate: may `who` file a note at `now`? ok, the count held back
 ::  (when not ok), and the new state, senders with nothing live dropped
 ++  note-gate
   |=  [hits=note-hits who=@p now=@da]
   ^-  [ok=? over=@ud hits=note-hits]
+  =/  fam=@p  `@p`(family:ls who)
   =/  from=@da  ?:((lth now note-window) *@da (sub now note-window))
   =/  live  |=(at=(list @da) (skim at |=(t=@da (gth t from))))
-  =/  cur=[at=(list @da) over=@ud]  (~(gut by hits) who [~ 0])
+  =/  cur=[at=(list @da) over=@ud]  (~(gut by hits) fam [~ 0])
   =/  lv=(list @da)  (live at.cur)
   =/  kept=note-hits
     %-  ~(gas by *note-hits)
-    %+  murn  ~(tap by (~(del by hits) who))
+    %+  murn  ~(tap by (~(del by hits) fam))
     |=  [s=@p r=[at=(list @da) over=@ud]]
     ^-  (unit [@p [at=(list @da) over=@ud]])
     =/  l=(list @da)  (live at.r)
     ?~(l ~ `[s l over.r])
+  ?:  &(?=(~ lv) (gte ~(wyt by kept) note-hits-cap))
+    [| 0 kept]
   ?:  (lth (lent lv) note-cap)
-    [& 0 (~(put by kept) who [(scag note-cap `(list @da)`[now lv]) 0])]
+    [& 0 (~(put by kept) fam [(scag note-cap `(list @da)`[now lv]) 0])]
   =/  ov=@ud  +(over.cur)
-  [| ov (~(put by kept) who [lv ov])]
+  [| ov (~(put by kept) fam [lv ov])]
 ::  +flood-title: the title of the item that counts a sender's held notes
 ++  flood-title  'more notes held back'
 ::  +flood-item: that item, about the last note `rn` held back from `host`

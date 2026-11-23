@@ -34,7 +34,7 @@
 ++  max-show   2.000
 ++  max-shapes  2.000
 ::  a body this small cannot nest deep enough to cost anything
-++  scan-from  16.384
+++  scan-from  64
 ++  note-html  "<p class=\"geojson-note\">page too large or not previewable</p>"
 ::  +html-pres: how every +gj-html output starts, the map or the note
 ++  html-pres  `(list @t)`~['<div class="geojson">' '<p class="geojson-note">']
@@ -234,6 +234,16 @@
   ^-  (unit json)
   =/  c  (checked body)
   ?:(?=(%& -.c) `p.c ~)
+::  +utf8-cut: cut `t` to at most `n` bytes without splitting a multibyte char
+++  utf8-cut
+  |=  [n=@ud t=@t]
+  ^-  @t
+  ?:  (lte (met 3 t) n)  t
+  =/  k=@ud  n
+  |-
+  ?:  =(0 k)  ''
+  ?.  =(2 (rsh [0 6] (cut 3 [k 1] t)))  (end [3 k] t)
+  $(k (dec k))
 ::  +str: a string member of an object, cut to `n` bytes
 ++  str
   |=  [o=(map @t json) k=@t n=@ud]
@@ -241,7 +251,7 @@
   =/  v  (~(get by o) k)
   ?.  ?=([~ %s *] v)  ~
   ?:  =('' p.u.v)  ~
-  `(end [3 n] p.u.v)
+  `(utf8-cut n p.u.v)
 ::  +props: a feature's properties, ~ when there are none
 ++  props
   |=  f=(map @t json)

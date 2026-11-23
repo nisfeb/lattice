@@ -172,6 +172,7 @@
   ?:  (is-mod who brd)  %.y
   =/  entry  (~(get by lim) [who name])
   ?~  entry  %.y
+  ?:  (lth now last.u.entry)  %.n
   (gte (sub now last.u.entry) cooldown.u.entry)
 ::
 ::  +rate-update: record an action. If a full 4x cooldown has passed
@@ -192,6 +193,8 @@
   =/  entry  (~(get by lim) [who name])
   =/  new-cd=@dr
     ?~  entry  rate-limit-base
+    ?:  (lth now last.u.entry)
+      (min rate-limit-max (mul 2 cooldown.u.entry))
     ?:  (gte (sub now last.u.entry) (mul 4 cooldown.u.entry))
       rate-limit-base
     (min rate-limit-max (mul 2 cooldown.u.entry))

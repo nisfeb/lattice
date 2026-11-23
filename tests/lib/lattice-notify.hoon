@@ -299,4 +299,31 @@
     %+  expect-eq  !>(1)
     !>((unread:ln s ~[['a' (mk %share)] ['b' (mk %reshare)] ['c' (mk %unshare)]]))
   ==
+::  +clip is UTF-8 safe; +note-gate and +overflow key by family; +note-gate caps map size
+++  test-notify-utf8-and-family
+  =/  pad=@t  (crip (reap 279 'a'))
+  =/  cut=@t  (clip:ln (cat 3 pad 'é'))
+  =/  m1=@p  `@p`(add (bex 32) nec)
+  =/  m2=@p  `@p`(add (mul 2 (bex 32)) nec)
+  =/  g1  (note-gate:ln ~ m1 t1)
+  =/  g2  (note-gate:ln hits.g1 m2 t1)
+  =/  full=note-hits:ln
+    %-  ~(gas by *note-hits:ln)
+    (turn (gulf 1 note-hits-cap:ln) |=(n=@ud [`@p`(add 256 n) [~[t1] 0]]))
+  =/  gcap  (note-gate:ln full ~bus t1)
+  ::  overflow counts moons under one planet family
+  =/  many=(list [id=@ta i=item:ln])
+    %+  turn  (gulf 1 (add source-cap:ln 2))
+    |=  n=@ud
+    =/  s=@p  ?:(=(0 (mod n 2)) m1 m2)
+    =/  it=item:ln  (make:ln %comment (add t1 n) s ~zod 'p' 0 '' 'hi')
+    [(crip "id{(a-co:co n)}") it]
+  ;:  weld
+    (expect-eq !>(279) !>((met 3 cut)))
+    (expect-eq !>(pad) !>(cut))
+    (expect-eq !>(1) !>(~(wyt by hits.g2)))
+    (expect-eq !>(|) !>(ok.gcap))
+    (expect-eq !>(note-hits-cap:ln) !>(~(wyt by hits.gcap)))
+    (expect-eq !>(2) !>((lent (overflow:ln many))))
+  ==
 --

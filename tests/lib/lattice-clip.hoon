@@ -346,4 +346,19 @@
     (yes (has "end" (m (cat 3 navs '<p>end</p>'))))
     (yes (has "end" (m (cat 3 btns '<p>end</p>'))))
   ==
+::  a truncated closing tag on a non-raw dropped element does not drop the article,
+::  while a raw tag with a truncated closing tag still drops its content
+++  test-truncated-close-tag
+  ;:  weld
+    (yes (has "article" (m '<nav><p>article</p></nav')))
+    (no (has "secret" (m 'before<script>secret</script')))
+    (yes (has "before" (m 'before<script>secret</script')))
+  ==
+::  +attr matches full attribute names, not suffixes like data-src= or text in quotes
+++  test-attr-boundary
+  ;:  weld
+    (yes (has "https://real" (m '<img data-src="https://lazy" src="https://real" alt="pic">')))
+    (no (has "https://lazy" (m '<img data-src="https://lazy" alt="pic">')))
+    (yes (has "https://real" (m '<img alt="src=https://fake" src="https://real">')))
+  ==
 --

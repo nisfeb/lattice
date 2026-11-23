@@ -99,7 +99,7 @@
     ::  a closing fence is ``` and whatever follows it. Matching the whole
     ::  line meant ```hoon never opened a block, so the CLOSING fence opened
     ::  one instead and swallowed the rest of the document into it.
-    ?.  (has-prefix "```" ln)  $(lines t.lines, prebuf [i.lines prebuf])
+    ?.  (has-prefix "```" ln)  $(lines t.lines, prebuf [(crip ln) prebuf])
     %=  $
       lines   t.lines
       pre     |

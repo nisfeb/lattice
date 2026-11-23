@@ -96,4 +96,11 @@
     ::  the bare address is still what the reader sees
     (yes (has ">urb://~zod/x</a>" (r '=> urb://~zod/x')))
   ==
+::  CRLF inside a preformatted block strips trailing CR
+++  test-pre-crlf-stripped
+  =/  out=tape  (r '```\0d\0aline one\0d\0aline two\0d\0a```')
+  ;:  weld
+    (expect-eq !>("<pre>line one\0aline two</pre>") !>(out))
+    (yes ?=(~ (find "\0d" out)))
+  ==
 --

@@ -226,7 +226,7 @@
   ^-  (unit [url=tape title=tape rest=tape])
   ?~  t  ~
   ?.  =('[' i.t)  ~
-  =/  close  (find-stop ']' t.t link-scan-cap "](")
+  =/  close  (find-stop ']' t.t link-scan-cap "[")
   ?~  close  ~
   =/  key0=tape  (sc u.close t.t)
   =/  rest=tape  (sl +(u.close) t.t)
@@ -246,6 +246,23 @@
   ==
 ++  word-next  |=(t=tape ^-(? &(?=(^ t) (word-char i.t))))
 ++  lead-under  |=(t=tape =|(n=@ud |-(^-(@ud ?~(t n ?:(=('_' i.t) $(t t.t, n +(n)) n))))))
+::  +find-under: index of the first `d` ("_" or "__") in `hay` within `cap`
+::  characters that closes emphasis (not followed by a word character, even
+::  across adjacent underscores). Single "_" also requires index > 0.
+++  find-under
+  |=  [d=tape hay=tape cap=@ud]
+  ^-  (unit @ud)
+  =/  dl=@ud  (lent d)
+  =/  off=@ud  0
+  |-  ^-  (unit @ud)
+  ?:  (gth off cap)  ~
+  =/  cl  (find-cap d hay (sub cap off))
+  ?~  cl  ~
+  =/  pos=@ud  (add off u.cl)
+  =/  rest=tape  (sl (add u.cl dl) hay)
+  ?.  |((word-next (sl (lead-under rest) rest)) &(=(1 dl) =(0 pos)))
+    `pos
+  $(hay (sl +(u.cl) hay), off +(pos))
 ::  +ib: render inline markdown to HTML (with reference map).
 ++  ib
   |=  [t=tape refs=refm]
@@ -347,11 +364,13 @@
   ?:  |((has "**" t) (has "__" t))
     =/  d=tape  (sc 2 t)
     =/  aft=tape  (sl 2 t)
-    =/  cl  (find-cap d aft scan-cap)
-    ?~  cl  (weld (esc ~[c]) (ib-in t.t refs no))
-    ?:  &(=('_' c) (word-next (sl (add u.cl 2) aft)))
-      =/  u=@ud  (lead-under t)
-      (weld (sc u t) (ib-in (sl u t) refs no))
+    =/  cl
+      ?:(=('_' c) (find-under d aft scan-cap) (find-cap d aft scan-cap))
+    ?~  cl
+      ?:  =('_' c)
+        =/  u=@ud  (lead-under t)
+        (weld (sc u t) (ib-in (sl u t) refs no))
+      (weld (esc ~[c]) (ib-in t.t refs no))
     %+  weld  :(weld "<strong>" (ib-in (sc u.cl aft) refs no) "</strong>")
     (ib-in (sl (add u.cl 2) aft) refs no)
   ::  strikethrough ~~text~~
@@ -370,12 +389,10 @@
     (ib-in (sl +(u.cl) t.t) refs no)
   ::  italic _text_ (underscore: only at word boundaries. An opener
   ::  after a word character never gets here: the plain run above took
-  ::  it. A closer with a word character after it closes nothing.)
+  ::  it. A closer with a word character after it is skipped by +find-under.)
   ?:  =('_' c)
-    =/  cl  (find-cap "_" t.t scan-cap)
+    =/  cl  (find-under "_" t.t scan-cap)
     ?~  cl  (weld "_" (ib-in t.t refs no))
-    ?:  =(0 u.cl)  (weld "_" (ib-in t.t refs no))
-    ?:  (word-next (sl +(u.cl) t.t))  (weld "_" (ib-in t.t refs no))
     %+  weld  :(weld "<em>" (ib-in (sc u.cl t.t) refs no) "</em>")
     (ib-in (sl +(u.cl) t.t) refs no)
   ::  literal char
@@ -806,7 +823,7 @@
 ++  take-list
   |=  [lines=(list tape) refs=refm]
   ^-  [tape (list tape)]
-  =|  items=(list [ind=@ud ord=? task=(unit ?) body=tape])
+  =|  items=(list [ind=@ud ord=? task=(unit ?) body=(list tape)])
   =/  blanks=@ud  0
   |^  ^-  [tape (list tape)]
       ?~  lines  [(render items) ~]
@@ -815,24 +832,23 @@
         %=  $
           lines   t.lines
           blanks  0
-          items   [u.lm items]
+          items   [[ind.u.lm ord.u.lm task.u.lm ~[body.u.lm]] items]
         ==
       ?:  ?=(~ (trim i.lines))
         ?:  (gth blanks 0)  [(render items) lines]
         =/  nxt  ?~(t.lines ~ (list-mark i.t.lines))
         ?~  nxt  [(render items) lines]
         $(lines t.lines, blanks +(blanks))
-      ::  an indented continuation line: append to the current item's body
+      ::  an indented continuation line: accumulate in reverse, join once in +render
       ?:  &(?=(^ items) (gth (lead i.lines) ind.i.items))
-        =/  merged=tape  :(weld body.i.items " " (trim i.lines))
-        $(lines t.lines, blanks 0, items [i.items(body merged) t.items])
+        $(lines t.lines, blanks 0, items [i.items(body [(trim i.lines) body.i.items]) t.items])
       [(render items) lines]
   ::  +render: flat-stack nesting via deferred </li>. Output accumulates as a
   ::  LIST of chunks zinged once at the end. The old shape welded every item
   ::  onto one growing tape, re-copying the whole document per item (quadratic
   ::  in list size, reachable from the unauthenticated render).
   ++  render
-    |=  its=(list [ind=@ud ord=? task=(unit ?) body=tape])
+    |=  its=(list [ind=@ud ord=? task=(unit ?) body=(list tape)])
     ^-  tape
     =/  seq  (flop its)
     =/  stack=(list [ind=@ud ord=?])  ~
@@ -848,7 +864,8 @@
     =/  cb=tape
       ?~  task.it  ""
       ?:(u.task.it "<input type=\"checkbox\" checked disabled> " "<input type=\"checkbox\" disabled> ")
-    =.  acc  [:(weld "<li>" cb (ib body.it refs)) acc]
+    =/  bt=tape  (zing (join " " (flop body.it)))
+    =.  acc  [:(weld "<li>" cb (ib bt refs)) acc]
     $(seq t.seq)
   ::  +adjust: the chunks to emit (in order) + the new stack, so the top of
   ::  the stack matches [ind ord].

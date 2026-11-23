@@ -779,4 +779,52 @@
     (expect-eq !>(`(unit @t)`~) !>((superseded ['---\0asuperseded-by: /x\0abody, never closed' ~2026.1.1 ~ ~])))
     (expect-eq !>(`(unit @t)`~) !>((superseded ['x\0a---\0asuperseded-by: /x\0a---' ~2026.1.1 ~ ~])))
   ==
+::  +front-put: clearing last key drops fences; updating deduplicates repeated keys
+++  test-front-put-empty-and-dedup
+  ;:  weld
+    (expect-eq !>('hello') !>((front-put '---\0aauthor: a\0a---\0ahello' 'author' '')))
+    (expect-eq !>('---\0aauthor: c\0a---\0ahello') !>((front-put '---\0aauthor: a\0aauthor: b\0a---\0ahello' 'author' 'c')))
+    (expect-eq !>('---\0aauthor: c\0akeep: yes\0a---\0ahello') !>((front-put '---\0aauthor: a\0akeep: yes\0aauthor: b\0a---\0ahello' 'author' 'c')))
+  ==
+::  +recall-json with k=0 must not leak linked[].via from unshown hits
+++  test-recall-json-k-zero
+  =/  es=(map path know-entry)
+    %-  my
+    :~  [/secret ['---\0asensitive: yes\0a---\0azebra quokka, see [[/pub]]' ~2026.1.1 ~ ~]]
+        [/pub ['public note' ~2026.1.1 ~ ~]]
+    ==
+  =/  hs  (search ~(tap by es) ~ 'zebra quokka' |)
+  =/  out=tape  (trip (en:json:html (recall-json es hs 'zebra quokka' 0)))
+  ;:  weld
+    (expect !>(?=(~ (find "/secret" out))))
+    (expect !>(?=(~ (find "/pub" out))))
+  ==
+::  +key-save-check raises sensitive on new entries written by a tainted key
+++  test-key-save-check-tainted-new
+  =/  r1  (key-save-check ~ & & 'plain body')
+  =/  r2  (key-save-check ~ & | 'plain body')
+  ;:  weld
+    (expect !>(&(?=(%& -.r1) (sens-text p.r1))))
+    (expect-eq !>([%& 'plain body']) !>(r2))
+  ==
+::  +lint-run detects supersession cycles in bad-super
+++  test-lint-supersede-cycles
+  =/  es=(list [path know-entry])
+    :~  [/a ['---\0asuperseded-by: /b\0a---\0aa' ~2026.1.1 ~ ~]]
+        [/b ['---\0asuperseded-by: /a\0a---\0ab' ~2026.1.1 ~ ~]]
+        [/c ['---\0asuperseded-by: /a\0a---\0ac' ~2026.1.1 ~ ~]]
+        [/self ['---\0asuperseded-by: /self\0a---\0as' ~2026.1.1 ~ ~]]
+        [/ok1 ['---\0asuperseded-by: /ok2\0a---\0ao1' ~2026.1.1 ~ ~]]
+        [/ok2 ['live target' ~2026.1.1 ~ ~]]
+    ==
+  =/  bad=(set path)
+    (silt (turn bad-super:(lint-run es ~2026.2.1) |=([k=path *] k)))
+  ;:  weld
+    (expect !>((~(has in bad) /a)))
+    (expect !>((~(has in bad) /b)))
+    (expect !>((~(has in bad) /c)))
+    (expect !>((~(has in bad) /self)))
+    (expect !>(!(~(has in bad) /ok1)))
+    (expect !>(!(~(has in bad) /ok2)))
+  ==
 --

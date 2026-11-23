@@ -220,10 +220,22 @@
 ++  attr
   |=  [att=tape key=tape]
   ^-  tape
+  =/  low=tape  (cass att)
   =/  pat=tape  (weld key "=")
-  =/  o=(unit @ud)  (find pat (cass att))
-  ?~  o  ~
-  =/  v=tape  (slag (add u.o (lent pat)) att)
+  =/  pl=@ud  (lent pat)
+  =/  i=@ud  0
+  =/  in-q=@tD  `@tD`0
+  =/  prev=@tD  ' '
+  |-  ^-  tape
+  ?~  low  ~
+  ?:  !=(`@tD`0 in-q)
+    $(low t.low, i +(i), prev i.low, in-q ?:(=(in-q i.low) `@tD`0 in-q))
+  ?:  |(=('"' i.low) =('\'' i.low))
+    $(low t.low, i +(i), prev i.low, in-q i.low)
+  =/  sep=?  |((lth prev 33) =('/' prev))
+  ?.  &(sep =(pat (scag pl `tape`low)))
+    $(low t.low, i +(i), prev i.low)
+  =/  v=tape  (slag (add i pl) att)
   ?~  v  ~
   =/  vv=tape  `tape`v
   =/  q=@tD  i.v
@@ -238,7 +250,7 @@
   =/  b=tape  vv
   |-  ^-  tape
   ?~  b  ~
-  ?:  |(=(' ' i.b) =('>' i.b))  ~
+  ?:  |((lth i.b 33) =('>' i.b))  ~
   [i.b $(b t.b)]
 ::
 ::  +safe-url: keep `javascript:` and `data:` out of the archive. They cannot
@@ -358,7 +370,9 @@
         $(t rest.g, sp &, miss (~(put in miss) n))
       =/  aft=tape  (slag u.e `tape`rest.g)
       =/  g2=(unit @ud)  (find ">" aft)
-      ?~  g2  (flop acc)
+      ?~  g2
+        ?:  &((raw-tag n) !sc)  (flop acc)
+        $(t rest.g, sp &, miss (~(put in miss) n))
       $(t (slag +(u.g2) aft), sp &)
     ::  inside <pre> only </pre> means anything. Other tags are shown as text
     ?:  &(pre !=("pre" n))

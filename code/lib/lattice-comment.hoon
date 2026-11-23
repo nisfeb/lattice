@@ -122,7 +122,16 @@
     ?.  ?=([~ %s *] id)  ''
     ?.(((sane %ta) p.u.id) '' p.u.id)
   =/  when=@da  (add ~1970.1.1 (div (mul u.ms ~s1) 1.000))
-  `[nid [u.who when (end [3 max-body] p.u.bo)]]
+  `[nid [u.who when (utf8-cut max-body p.u.bo)]]
+++  utf8-cut
+  |=  [n=@ud t=@t]
+  ^-  @t
+  ?:  (lte (met 3 t) n)  t
+  =/  k=@ud  n
+  |-
+  ?:  =(0 k)  ''
+  ?.  =(2 (rsh [0 6] (cut 3 [k 1] t)))  (end [3 k] t)
+  $(k (dec k))
 ::  +thread-names / +threads-cord: [/pub %threads], one page name a line,
 ::  named as /pub/comments names them
 ++  thread-names

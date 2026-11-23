@@ -1196,4 +1196,55 @@
     (expect-eq !>(~) !>((code-page:ls /code)))
     (expect-eq !>(~) !>((code-page:ls /reports/article/data)))
   ==
+::  +folder-roads excludes root page [~ &] and grants dir-index to dual-role subfolders
+++  test-folder-roads-dual-role
+  =/  at=path  /apps/x/page/docs
+  =/  all=(list [p=path page=?])
+    :~  [~ &]
+        [/sub &]
+        [/sub/child &]
+        [/sub/deep/leaf &]
+        [/empty |]
+    ==
+  =/  rd  (folder-roads:ls at all ~ |)
+  =/  ed  (folder-roads:ls at all ~ &)
+  =/  cd  |=(r=path [%& %& (weld at r) %code])
+  =/  ix  |=(r=path [%& %& (weld at r) %'dir-index'])
+  ;:  weld
+    ::  at/code is never granted by a folder share
+    (expect !>(!(~(has in peek.rd) (cd ~))))
+    (expect !>(!(~(has in make.ed) (cd ~))))
+    ::  dual-role subfolders get both code and dir-index roads
+    (expect !>((~(has in peek.rd) (cd /sub))))
+    (expect !>((~(has in peek.rd) (ix /sub))))
+    (expect !>((~(has in peek.rd) (ix /sub/deep))))
+    (expect !>((~(has in peek.rd) (ix /empty))))
+    (expect !>((~(has in peek.rd) (ix ~))))
+    ::  dir-index stays read-only even in edit mode
+    (expect !>(!(~(has in make.ed) (ix /sub))))
+    (expect !>((~(has in make.ed) (cd /sub/child))))
+  ==
+::  +holds-trim keeps a page sharing the same path as a shared folder
+++  test-holds-trim-same-path-page
+  =/  ps=(map path @t)
+    %-  my
+    :~  [/apps/x/page/foo/'dir-index' 'read']
+        [/apps/x/page/foo/code 'read']
+        [/apps/x/page/foo/bar/code 'read']
+    ==
+  =/  tr=(map path @t)  (holds-trim:ls ps)
+  ;:  weld
+    (expect-eq !>(`'read') !>((~(get by tr) /apps/x/page/foo/'dir-index')))
+    (expect-eq !>(`'read') !>((~(get by tr) /apps/x/page/foo/code)))
+    (expect-eq !>(~) !>((~(get by tr) /apps/x/page/foo/bar/code)))
+  ==
+::  +ask-note never splits a multibyte UTF-8 character
+++  test-ask-note-utf8
+  =/  pad=@t  (crip (reap 279 'a'))
+  =/  note=@t  (cat 3 pad 'é')
+  =/  cut=@t  (ask-note:ls note)
+  ;:  weld
+    (expect-eq !>(279) !>((met 3 cut)))
+    (expect-eq !>(pad) !>(cut))
+  ==
 --

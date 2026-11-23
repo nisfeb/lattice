@@ -248,7 +248,7 @@
 ::  excluded from the term index. Deliberately small + fixed so this lib stays
 ::  pure and unit-testable. Content words (man/new/old/…) are NOT here.
 ++  stop-words
-  ^-  (set @t)
+  ^~  ^-  (set @t)
   %-  ~(gas in *(set @t))
   ^-  (list @t)
   :~  'the'  'and'  'for'  'are'  'but'  'not'  'you'  'all'  'any'

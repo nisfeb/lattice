@@ -407,4 +407,32 @@
         (to-html body:(render-submit:rn c b))
     ==
   (expect-eq !>(|) !>((lien pages |=(t=tape (has t "<script")))))
+::  +flatten-comments terminates on cycles and caps depth at 64
+++  test-flatten-comments-cycle-and-depth
+  =/  cyc=(map comment-id:ft comment:ft)
+    %-  my
+    :~  [1 [1 ~ ~nec 'root' now ~ ~]]
+        [2 [1 `1 ~nec 'forged-cycle' (add now ~s1) ~ ~]]
+    ==
+  =/  deep=(map comment-id:ft comment:ft)
+    =|  [i=@ud acc=(map comment-id:ft comment:ft)]
+    |-
+    ?:  =(i 75)  acc
+    =/  p=(unit comment-id:ft)  ?:(=(0 i) ~ `(dec i))
+    $(i +(i), acc (~(put by acc) i [i p ~nec 'd' (add now i) ~ ~]))
+  ;:  weld
+    (expect-eq !>(1) !>((lent (flatten-comments:rn cyc))))
+    (expect-eq !>(64) !>((lent (flatten-comments:rn deep))))
+  ==
+::  +extract-url stops on CR, +first-url finds http/https linearly, +parse-page handles 1000+
+++  test-url-and-parse-page
+  =/  ex  (extract-url:rn "https://example.com\0d\0arest")
+  ;:  weld
+    (expect-eq !>("https://example.com") !>(url.ex))
+    (expect-eq !>(`4) !>((first-url:rn "see http://a and https://b")))
+    (expect-eq !>(`4) !>((first-url:rn "see https://a and http://b")))
+    (expect-eq !>(1.000) !>((parse-page:rn (my ~[['page' '1000']]))))
+    (expect-eq !>(1.000) !>((parse-page:rn (my ~[['page' '1.000']]))))
+    (expect-eq !>(1) !>((parse-page:rn (my ~[['page' '0']]))))
+  ==
 --

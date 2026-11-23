@@ -110,4 +110,19 @@
 ++  test-load-bad-tags
   =/  r  (load:fb ~[[/pub/card [%1 info]] [/content/tags 'junk']])
   (expect-eq !>(`(each board:ft @t)`|+'unreadable: /content/tags') !>(r))
+::  +assemble forces comment id to match map key cid (prevents forged cycles)
+++  test-assemble-forces-cid
+  =/  th=thread:fb
+    :-  2
+    %-  my
+    :~  [0 [1 ~ ~nec 'zero' ~2026.1.1]]
+        [1 [0 `0 ~nec 'one' ~2026.1.2]]
+    ==
+  =/  r  (load:fb ~[[/pub/card [%1 info]] [/content/threads/b0 [%1 (my ~[[1 th]])]]])
+  ?>  ?=(%& -.r)
+  =/  cs  (~(got by comments.p.r) 1)
+  ;:  weld
+    (expect-eq !>(0) !>(id:(~(got by cs) 0)))
+    (expect-eq !>(1) !>(id:(~(got by cs) 1)))
+  ==
 --

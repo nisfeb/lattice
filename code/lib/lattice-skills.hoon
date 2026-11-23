@@ -87,13 +87,14 @@
   ==
 ::  +ext-ok: the text kinds a skill may carry. Matched lower-cased, so
 ::  NOTES.MD passes and notes.md.js does not.
+++  exts-ok  ^~((silt `(list tape)`~["md" "txt" "json" "yaml" "yml"]))
 ++  ext-ok
   |=  leaf=tape
   ^-  ?
   =/  d=(unit @ud)  (find "." (flop leaf))
   ?~  d  |
   =/  ext=tape  (cass (flop (scag u.d (flop leaf))))
-  (~(has in (silt `(list tape)`~["md" "txt" "json" "yaml" "yml"])) ext)
+  (~(has in exts-ok) ext)
 ++  split
   |=  [t=tape c=@t]
   ^-  (list tape)
@@ -225,7 +226,7 @@
 ::  while a key rewrites the steps they cover would hand the key the
 ::  grants.
 ++  agent-keys
-  ^-  (set @t)
+  ^~  ^-  (set @t)
   %-  silt
   ^-  (list @t)
   :~  'name'  'description'  'when_to_use'  'argument-hint'  'arguments'
@@ -338,8 +339,8 @@
   ?~  b  ~
   `[403 u.b]
 ::  +shell-lines: the lines Claude Code runs as shell when it loads a
-::  skill: a !` at the start of a line or after a space or tab, and a
-::  fence of three or more ` or ~ whose info string starts with !.
+::  skill: any !` anywhere on a line, or a fence of three or more ` or ~
+::  (optionally inside a > blockquote) whose info string starts with !.
 ++  shell-lines
   |=  body=@t
   ^-  (list @t)
@@ -348,15 +349,15 @@
   ^-  ?
   =/  t=tape  (trip l)
   ?:  (shell-fence t)  &
-  =/  prev=@t  ' '
-  |-  ^-  ?
-  ?~  t  |
-  ?:  &(=('!' i.t) ?=(^ t.t) =('`' i.t.t) |(=(' ' prev) =('\09' prev)))  &
-  $(prev i.t, t t.t)
+  ?=(^ (find "!`" t))
 ++  shell-fence
   |=  t=tape
   ^-  ?
-  =.  t  (drop-ws t)
+  =.  t
+    |-  ^-  tape
+    =.  t  (drop-ws t)
+    ?:  &(?=(^ t) =('>' i.t))  $(t t.t)
+    t
   ?~  t  |
   ?.  |(=('`' i.t) =('~' i.t))  |
   =/  c=@t  i.t
@@ -421,7 +422,7 @@
 ++  sensitive
   |=  s=skill
   ^-  ?
-  (yes-word:lk (meta s 'sensitive'))
+  (sens-text:lk body.s)
 ++  is-core  |=(s=skill ^-(? (~(has in tags.s) 'core')))
 ::  +key-check: why an agent key's save may not land on the skill as it
 ::  is now, or ~. cleared: the key reads sensitive skills. tainted: it
@@ -430,12 +431,17 @@
 ++  key-check
   |=  [old=(unit skill) cleared=? tainted=? main=(unit @t)]
   ^-  (unit tape)
-  ?~  old  ~
+  ?~  old
+    ?~  main  ~
+    ?:  &(tainted !(sens-text:lk u.main))
+      `"a tainted key may only create a sensitive skill"
+    ~
+  ?:  (owner-perms u.old)  `"an agent key may not edit a skill with owner permissions"
   ?:  (is-core u.old)  `"an agent key may not edit a core skill"
   =/  sen=?  (sensitive u.old)
   ?:  &(sen !cleared)  `"the skill is not available to this agent key"
   ?:  &(!sen tainted)  `"a tainted key may not edit an ordinary skill"
-  ?:  &(sen ?=(^ main) !(sensitive u.old(body u.main)))
+  ?:  &(sen ?=(^ main) !(sens-text:lk u.main))
     `"an agent key may not lower the sensitive mark"
   ~
 ++  super

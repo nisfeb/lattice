@@ -96,4 +96,14 @@
     (expect-eq !>(s) !>((thread-names:lc (threads-cord:lc s))))
     (expect-eq !>(`(set @t)`~) !>((thread-names:lc '')))
   ==
+::  +thread-rows cuts long comment bodies at UTF-8 boundaries
+++  test-comment-utf8-cut
+  =/  pad=@t  (crip (reap (dec max-body:lc) 'a'))
+  =/  big=@t  (cat 3 pad 'é')
+  =/  j=@t  (en:json:html (pairs:enjs:format ~[['v' (numb:enjs:format 1)] ['comments' a+~[(pairs:enjs:format ~[['id' s+'c1'] ['author' s+'~nec'] ['when' (numb:enjs:format 1.000)] ['body' s+big]])]]]))
+  =/  rows  (thread-rows:lc j)
+  ;:  weld
+    (expect-eq !>(1) !>((lent rows)))
+    (expect-eq !>(pad) !>(body.c:(snag 0 rows)))
+  ==
 --

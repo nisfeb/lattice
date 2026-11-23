@@ -404,4 +404,14 @@
     ::  a polygon of one ring is drawn as before
     (yes !(has "evenodd" (gj-html:gj (fc ~[poly]))))
   ==
+::  small deeply-nested JSON (>64 bytes) is caught by depth-ok; +str cuts UTF-8 safely
+++  test-small-deep-nesting-and-utf8-str
+  =/  deep=@t  (crip (weld (reap 80 '[') (reap 80 ']')))
+  =/  pad=@t  (crip (reap 11 'a'))
+  =/  o=(map @t json)  (my ~[['k' s+(cat 3 pad 'é')]])
+  ;:  weld
+    (expect-eq !>(|) !>((depth-ok:gj deep)))
+    (expect-eq !>(`'that map nests deeper than GeoJSON does') !>((gj-check:gj deep)))
+    (expect-eq !>(`pad) !>((str:gj o 'k' 12)))
+  ==
 --

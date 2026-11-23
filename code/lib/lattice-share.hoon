@@ -807,6 +807,22 @@
 ::  may be written too. The indexes are read only. Never a dir road: one
 ::  would reach the sensitive pages and every page's owner-only grubs,
 ::  and a weir has no deny to take them back out.
+::  +folder-subs: every subfolder path under a folder in `all` (+collect-tree):
+::  every explicit non-page folder [p |] and every non-empty proper ancestor
+::  prefix of any entry in `all`, so a dual-role subfolder (a page with pages
+::  under it, emitted as [rel &]) still gets its dir-index road.
+++  folder-subs
+  |=  all=(list [p=path page=?])
+  ^-  (set path)
+  %+  roll  all
+  |=  [[p=path page=?] acc=(set path)]
+  =.  acc  ?:(&(?=(^ p) !page) (~(put in acc) p) acc)
+  =/  n=@ud  (lent p)
+  ?:  (lte n 1)  acc
+  =/  i=@ud  1
+  |-  ^-  (set path)
+  ?:  =(i n)  acc
+  $(i +(i), acc (~(put in acc) (scag i p)))
 ++  folder-roads
   |=  [at=path all=(list [p=path page=?]) sens=(set path) ed=?]
   ^-  [peek=(set *) make=(set *)]
@@ -815,16 +831,14 @@
     %+  murn  all
     |=  [p=path page=?]
     ^-  (unit *)
-    ?.  &(page !(~(has in sens) p))  ~
+    ?.  &(?=(^ p) page !(~(has in sens) p))  ~
     `[%& %& (weld at p) %code]
   =/  idx=(set *)
     %-  silt
     ^-  (list *)
     :-  [%& %& at %'dir-index']
-    %+  murn  all
-    |=  [p=path page=?]
-    ^-  (unit *)
-    ?:(page ~ `[%& %& (weld at p) %'dir-index'])
+    %+  turn  ~(tap in (folder-subs all))
+    |=(p=path [%& %& (weld at p) %'dir-index'])
   [(~(uni in codes) idx) ?:(ed codes ~)]
 ::  +folder-out: is a folder shared with a group unshared by a save of
 ::  that group's paths? When the save took out the last page road under
@@ -1182,7 +1196,7 @@
   %-  ~(gas by *(map path @t))
   %+  skip  ~(tap by ps)
   |=  [p=path md=@t]
-  =/  own=path  ?:((dir-key p) (snip p) p)
+  =/  own=path  ?~(p ~ (snip `path`p))
   %+  lien  `(list [d=path md=@t])`dirs
   |=  [d=path dm=@t]
   ?&  (gth (lent own) (lent d))
@@ -1252,7 +1266,7 @@
   |=  t=@t
   ^-  @t
   ?:  (lte (met 3 t) ask-note-cap)  t
-  (end [3 ask-note-cap] t)
+  (utf8-cut ask-note-cap t)
 ::  +ask-live: the denies still cooling at `now`
 ++  ask-live
   |=  [nays=(list ask-nay) now=@da]

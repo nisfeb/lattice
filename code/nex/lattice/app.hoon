@@ -971,7 +971,7 @@
         ::  as fast as the loop allows). gen accumulates while rapid and resets
         ::  on a settled gap. (Page-to-page POKE cycles are too slow per hop for
         ::  this window. Those are bounded by the poke budget instead.)
-        =/  rapid=?  &(!=(`@da`0 last-now) (lth (sub now last-now) rerun-gap))
+        =/  rapid=?  &(!=(`@da`0 last-now) (gte now last-now) (lth (sub now last-now) rerun-gap))
         =.  gen  ?:(rapid +(gen) 0)
         =.  last-now  now
         ?:  (gth gen recompute-cap)
@@ -1852,7 +1852,11 @@
     ;<  sg=(map @t @t)  bind:m  (read-share-grants i.fs)
     ;<  nw=weir:nexus  bind:m  (ug-read-weir gdir)
     =/  ix=road:tarball  [%& %& :(weld sb /page i.fs) %'dir-index']
-    ?:  &(=(`md (~(get by sg) u.gname)) (~(has in peek.nw) ix))  $(fs t.fs)
+    =/  was=(unit @t)  (~(get by sg) u.gname)
+    ?:  &(=(`md was) (~(has in peek.nw) ix))  $(fs t.fs)
+    ?:  &(=(`'edit' was) =('read' md) (~(has in peek.nw) ix))
+      ;<  ~  bind:m  (poke-eval [%folder-grant i.fs u.gname md])
+      $(fs t.fs)
     ;<  *  bind:m  (share-folder-grant-in u.gname ~ md i.fs |)
     $(fs t.fs)
   ::  a folder granted here lists its pages to the group (+dir-index-acts)
@@ -3004,7 +3008,7 @@
       [%'GET' %know-search]
     =/  q=@t  (~(gut by args) 'q' '')
     ?:  =('' q)  (send-err eyre-id 400 'missing q')
-    =/  k=@ud  (fall (rush (~(gut by args) 'k' '10') dem) 10)
+    =/  k=@ud  (max 1 (fall (rush (~(gut by args) 'k' '10') dem) 10))
     ;<  all=(map path know-entry:lk)  bind:m  read-know-map
     =/  old=?  =('1' (~(gut by args) 'superseded' '0'))
     ::  the cache is kept over every entry; the ranking only over what
@@ -3021,14 +3025,14 @@
         (max k 3)
       ==
     ;<  ~  bind:m
-      (taint-if key (lien (scag k hs) |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
+      (taint-if key (lien hs |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
     (send-json eyre-id (hits-json:lk es hs q k))
   ::  know-recall: what to know before a task (+recall-json:lk, the answer
   ::  the lattice-recall tool gives). task= the description, k= how many (8).
       [%'GET' %know-recall]
     =/  task=@t  (~(gut by args) 'task' '')
     ?:  =('' task)  (send-err eyre-id 400 'missing task')
-    =/  k=@ud  (fall (rush (~(gut by args) 'k' '8') dem) 8)
+    =/  k=@ud  (max 1 (fall (rush (~(gut by args) 'k' '8') dem) 8))
     ;<  all=(map path know-entry:lk)  bind:m  read-know-map
     ;<  tc=term-cache:lk  bind:m  (current-terms all)
     =/  es=(map path know-entry:lk)
@@ -3040,7 +3044,7 @@
         (max k 3)
       ==
     ;<  ~  bind:m
-      (taint-if key (lien (scag k hs) |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
+      (taint-if key (lien hs |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
     (send-json eyre-id (recall-json:lk es hs task k))
   ::  know-index: what an agent loads at session start (+index-text:lk, as
   ::  the lattice-index tool), as plain text for a hook to print. brief=1
@@ -3085,9 +3089,13 @@
       [%'POST' %know-verify]
     =/  ko=(unit path)  (know-key (~(gut by args) 'key' ''))
     ?~  ko  (send-err eyre-id 400 'bad key')
+    ;<  g=(unit [code=@ud msg=@t])  bind:m  (key-guard key u.ko & rnow)
+    ?^  g  (send-err eyre-id code.u.g msg.u.g)
     ;<  e=(unit know-entry:lk)  bind:m  (know-one u.ko)
     ?~  e  (send-err eyre-id 404 'not found')
     ?.  (may-see key u.e)  (send-err eyre-id 404 'not found')
+    ?:  &(?=(^ key) (is-core:lk u.e))
+      (send-err eyre-id 403 'an agent key cannot verify a core entry: only the owner can')
     ;<  now=@da  bind:m  ?~(key bowl-now (pure:(fiber:fiber:nexus ,@da) rnow))
     ::  +front-set:lk changes the one field's line and nothing else, and
     ::  keeps the sensitive mark. Rebuilding the block from its parsed
@@ -3096,7 +3104,11 @@
     =/  bod=@t  (front-set:lk body.u.e 'verified' (iso-day:lk now))
     =/  by=@t  ?^(key by.u.key (~(gut by args) 'author' ''))
     =?  bod  !=('' by)  (front-set:lk bod 'verified-by' by)
-    ;<  ~  bind:m  (poke-know [%save (spat u.ko) bod])
+    ;<  ~  bind:m  (poke-know ?~(key [%save (spat u.ko) bod] [%key-save (spat u.ko) bod id.u.key]))
+    ?~  key  (send-ok eyre-id)
+    ;<  ~  bind:m  writer-sync
+    ;<  bad=(unit [code=@ud msg=@t])  bind:m  (key-landed u.key u.ko bod)
+    ?^  bad  (send-err eyre-id code.u.bad msg.u.bad)
     (send-ok eyre-id)
   ::  know-supersede: old= is replaced by new=, which must exist. Search then
   ::  leaves old out and reading it points at new; history keeps both. An
@@ -3119,8 +3131,15 @@
     ;<  n=(unit know-entry:lk)  bind:m  (know-one (fall nk u.ok))
     ?:  &(?=(^ nk) ?=(~ n))  (send-err eyre-id 404 'no such new entry')
     ?:  &(?=(^ nk) ?=(^ n) !(may-see key u.n))  (send-err eyre-id 404 'no such new entry')
+    ;<  ~  bind:m  (taint-if key &(?=(^ nk) ?=(^ n) (sensitive:lk u.n)))
+    ?:  &(?=(^ key) ?=(^ nk) ?=(^ n) !(sensitive:lk u.e) (sensitive:lk u.n))
+      (send-err eyre-id 403 'an agent key cannot supersede an ordinary entry with a sensitive one')
     =/  bod=@t  (front-set:lk body.u.e 'superseded-by' ?~(nk '' (spat u.nk)))
     ;<  ~  bind:m  (poke-know ?~(key [%save (spat u.ok) bod] [%key-save (spat u.ok) bod id.u.key]))
+    ?~  key  (send-ok eyre-id)
+    ;<  ~  bind:m  writer-sync
+    ;<  bad=(unit [code=@ud msg=@t])  bind:m  (key-landed u.key u.ok bod)
+    ?^  bad  (send-err eyre-id code.u.bad msg.u.bad)
     (send-ok eyre-id)
   ::
       [%'GET' %know-read]
@@ -3311,16 +3330,16 @@
     ::  sorted by path like the old walk. murn preserves input order
     =/  srt=(list [pax=path when=@da code=@t])
       (sort pages |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
-    ::  build the links. An uncleared key must not even learn a sensitive
-    ::  linker's path exists, so drop sensitive linkers for it (like the tree
-    ::  and search sensitive filters). A cleared key or the owner sees all.
-    =/  cleared=?  |(?=(~ key) sensitive.scope.u.key)
-    ;<  links=(list json)  bind:m
-      =/  n  (fiber:fiber:nexus ,(list json))
+    ::  build the links. An uncleared key must not learn a sensitive linker
+    ::  exists; a cleared key sees sensitive linkers and is tainted if any
+    ::  sensitive linker is returned.
+    ;<  [links=(list json) saw-sens=?]  bind:m
+      =/  n  (fiber:fiber:nexus ,[(list json) ?])
       =/  todo=(list [pax=path when=@da code=@t])  srt
       =|  acc=(list json)
+      =/  saw=?  |
       |-  ^-  form:n
-      ?~  todo  (pure:n (flop acc))
+      ?~  todo  (pure:n [(flop acc) saw])
       =/  pax=path  pax.i.todo
       ::  keyed: only include linker pages the key can read
       ?:  &(?=(^ key) !(may-path:ky u.key %local pax %read))
@@ -3330,11 +3349,12 @@
       ?.  (backlink-hit:gfm (trip u.name) (trip bod))
         $(todo t.todo)
       =/  entry=json  [%s (crip (pax-str pax))]
-      ?:  cleared
+      ?~  key
         $(todo t.todo, acc [entry acc])
-      ;<  ps=?  bind:n  (page-sensitive pax)
-      ?:  ps  $(todo t.todo)
-      $(todo t.todo, acc [entry acc])
+      ;<  lps=?  bind:n  (page-sensitive pax)
+      ?:  &(lps !sensitive.scope.u.key)  $(todo t.todo)
+      $(todo t.todo, acc [entry acc], saw |(saw lps))
+    ;<  ~  bind:m  (taint-if key &(saw-sens ?=(^ key) sensitive.scope.u.key))
     (send-json eyre-id (pairs:enjs:format ~[['links' a+links]]))
   ::
   ::  page-errors: a page's latest evaluator error as plain text ('' = clean).
@@ -3383,16 +3403,15 @@
       =/  rp=(unit path)  (mole |.((stab p.u.rj)))
       ?:  |(?=(~ hp) ?=(~ rp))  |
       (may-path:ky u.key [%ship u.hp] u.rp %read)
-    ::  a cleared key sees sensitive pages, so the per-node grub walk below
-    ::  would never drop a node: skip it. Owner (key=~) already returned above.
-    ?:  sensitive.scope.u.key
-      (send-json eyre-id (pairs:enjs:format ~[['nodes' a+scope-ok]]))
-    ::  sensitive filter: remove nodes an uncleared key cannot see.
-    ::  page-sensitive reads grubs; use a recursive bind:m loop.
+    ::  sensitive filter: uncleared keys never see sensitive nodes; cleared
+    ::  keys see them only when asking sensitive=1, which taints the key.
+    =/  want-sens=?  &(sensitive.scope.u.key =('1' (~(gut by args) 'sensitive' '0')))
     =/  todo=(list json)  scope-ok
     =|  acc=(list json)
+    =/  saw=?  |
     |-  ^-  form:m
     ?~  todo
+      ;<  ~  bind:m  (taint-if key &(saw want-sens))
       =/  filtered=(list json)  (flop acc)
       %+  send-json  eyre-id
       %-  pairs:enjs:format
@@ -3408,9 +3427,9 @@
     ?:  ?=(%| -.np)
       $(todo t.todo, acc [node acc])
     ;<  ps=?  bind:m  (page-sensitive p.np)
-    ?:  &(ps !sensitive.scope.u.key)
+    ?:  &(ps !want-sens)
       $(todo t.todo)
-    $(todo t.todo, acc [node acc])
+    $(todo t.todo, acc [node acc], saw |(saw ps))
   ::
   ::  page-dump: page-tree PLUS every page's body inline, in ONE deep peek. Warms
   ::  a filesystem client's whole read-cache so rg/grep run from RAM. Heavier than
@@ -4100,6 +4119,7 @@
         ;<  ok=?  bind:m  (taint-dest-at (pax-of u.name))
         ?.  ok  (send-err eyre-id 403 tainted-shared-msg)
         (handle-page-save eyre-id req args (key-wid u.key))
+      ;<  ~  bind:m  writer-sync
       ;<  exists=?  bind:m  (peek-exists:fio (rv up (weld /page (pax-of u.name))))
       ?:  exists  (send-err eyre-id 403 tainted-msg)
       ;<  ~  bind:m  (poke-eval [%page-sensitive (pax-of u.name) &])
@@ -4113,7 +4133,7 @@
       [%'GET' %page-search]
     =/  q=@t  (~(gut by args) 'q' '')
     ?:  =('' q)  (send-err eyre-id 400 'missing q')
-    =/  k=@ud  (fall (rush (~(gut by args) 'k' '10') dem) 10)
+    =/  k=@ud  (max 1 (fall (rush (~(gut by args) 'k' '10') dem) 10))
     ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
     ;<  all=(list [rel=path body=@t shr=share-mode:le])  bind:m
       ?.  ?=([%ball *] sn)  (pure:(fiber:fiber:nexus ,(list [rel=path body=@t shr=share-mode:le])) ~)
@@ -4153,7 +4173,7 @@
       =/  n  (fiber:fiber:nexus ,?)
       ?~  key  (pure:n |)
       ?.  sensitive.scope.u.key  (pure:n |)
-      =/  todo=(list hit:lk)  (scag k hs)
+      =/  todo=(list hit:lk)  hs
       |-  ^-  form:n
       ?~  todo  (pure:n |)
       ;<  ps=?  bind:n  (page-sensitive key.i.todo)
@@ -4680,6 +4700,7 @@
     ?.  ex  (send-err eyre-id 404 'no such page or folder')
     =/  on=?  =('1' (~(gut by args) 'on' '0'))
     ;<  ~  bind:m  (poke-eval [%page-sensitive (pax-of u.name) on])
+    ;<  ~  bind:m  writer-drain
     ::  marking takes back what folders and groups granted, but a page's
     ::  own share stays (the owner chose it): `shared` says it is still
     ::  published or shared with a ship by hand, for the panel to warn
@@ -5201,11 +5222,14 @@
       (send-err eyre-id 404 'no such revision')
     ;<  sn=view:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
-    =/  e=know-entry:lk  !<(know-entry:lk (need-vase:tarball sang.sn))
+    ?:  (is-boom:tarball sang.sn)  (send-err eyre-id 404 'not found')
+    =/  e=(unit know-entry:lk)
+      (mole |.(!<(know-entry:lk (need-vase:tarball sang.sn))))
+    ?~  e  (send-err eyre-id 404 'not found')
     ::  a revision can be sensitive when the entry is no longer
-    ?.  (may-see key e)  (send-err eyre-id 404 'not found')
-    ;<  ~  bind:m  (taint-if key (sensitive:lk e))
-    (send-json eyre-id (know-entry-json u.ko e))
+    ?.  (may-see key u.e)  (send-err eyre-id 404 'not found')
+    ;<  ~  bind:m  (taint-if key (sensitive:lk u.e))
+    (send-json eyre-id (know-entry-json u.ko u.e))
   ::  restore a prior revision: re-save it live via %import (preserves tags/vector),
   ::  stamped updated=now so it sorts fresh in know-list (matches pub-restore). Works
   ::  for a trashed key too. %import revives it live. Non-destructive. The current
@@ -5229,9 +5253,12 @@
       (send-err eyre-id 404 'no such revision')
     ;<  sn=view:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
-    =/  e=know-entry:lk  !<(know-entry:lk (need-vase:tarball sang.sn))
+    ?:  (is-boom:tarball sang.sn)  (send-err eyre-id 404 'not found')
+    =/  e=(unit know-entry:lk)
+      (mole |.(!<(know-entry:lk (need-vase:tarball sang.sn))))
+    ?~  e  (send-err eyre-id 404 'not found')
     ;<  now=@da  bind:m  bowl-now
-    ;<  ~  bind:m  (poke-know [%import (spat u.ko) e(updated now)])
+    ;<  ~  bind:m  (poke-know [%import (spat u.ko) u.e(updated now)])
     (send-ok eyre-id)
   ::  prune a live key's history to the newest `keep` revisions (default 10, floor
   ::  1). DESTRUCTIVE + IRREVERSIBLE: %lose hard-drops the picked revisions and
@@ -5674,7 +5701,7 @@
       ?.  (save-near key args bod old)  (pure:n ~)
       ;<  es=(map path know-entry:lk)  bind:n  read-know-map
       ;<  tc=term-cache:lk  bind:n  (current-terms es)
-      (pure:n (near:lk ~(tap by (listed key es tc)) tc rest:(front:lk bod)))
+      (pure:n (near:lk ~(tap by (listed key es tc)) tc (prose-of:lk bod old)))
     ;<  bnow=@da  bind:m  bowl-now
     =/  pl  (save-plan key rnow bnow u.ko bod args old near)
     ?:  ?=(%| -.pl)  (send-err eyre-id code.p.pl msg.p.pl)
@@ -5737,9 +5764,12 @@
     =/  ko=(unit path)  (know-key u.k)
     ?~  ko  (send-err eyre-id 400 'invalid key')
     ::  the writer refuses a delete that would land on a deleted memory
-    ::  still in the trash under the key (+apply %del), so say why here
+    ::  still in the trash under the key (+apply %del), so say why here.
+    ::  Check both the trash index row and the trash grub, matching %del,
+    ::  so an orphan row in /know/trash cannot permanently block deletes.
     ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
-    ?:  (~(has by tx) u.ko)
+    ;<  held=?  bind:m  (peek-exists:fio (entry-road up /know/trash-vault u.ko))
+    ?:  &(held (~(has by tx) u.ko))
       (send-err eyre-id 409 'a deleted memory with this key is in the trash: restore it, or move this one to another key first')
     ;<  ~  bind:m  (poke-know [%del (spat u.ko)])
     ::  a poke is acked before the writer reads it and a refusal has no
@@ -5973,14 +6003,32 @@
     ?:  ?=(%| -.g)  (send-err eyre-id code.p.g ?:(=(404 code.p.g) 'no such old skill' msg.p.g))
     ?:  &(?=(^ key) (is-core:lsk p.g))
       (send-err eyre-id 403 'an agent key cannot supersede a core skill: only the owner can')
+    ?:  &(?=(^ key) (owner-perms:lsk p.g))
+      (send-err eyre-id 403 'this skill carries permissions the owner set: only the owner can supersede it')
     ;<  n=(unit skill:lsk)  bind:m
       ?:  =('' nn)  (pure:(fiber:fiber:nexus ,(unit skill:lsk)) ~)
       (skill-get key nn)
     ?:  &(!=('' nn) ?=(~ n))  (send-err eyre-id 404 'no such new skill')
+    ?:  &(?=(^ key) ?=(^ n) !(sensitive:lsk p.g) (sensitive:lsk u.n))
+      (send-err eyre-id 403 'an agent key cannot supersede an ordinary skill with a sensitive one')
     ;<  bnow=@da  bind:m  bowl-now
     =/  now=@da  ?~(key bnow rnow)
-    ;<  ~  bind:m  (skill-pokes ~[[%save on main-file:lsk (supersede:lsk body.p.g nn) now]])
-    (send-ok eyre-id)
+    =/  bod=@t  (supersede:lsk body.p.g nn)
+    ;<  ~  bind:m
+      %-  skill-pokes
+      ^-  (list skill-action:lsk)
+      :~  ?~  key  [%save on main-file:lsk bod now]
+          [%ksave on main-file:lsk bod now id.u.key]
+      ==
+    ?~  key  (send-ok eyre-id)
+    ;<  ~  bind:m  writer-sync
+    ;<  got=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/vault on))
+    ?:  &(?=(^ got) =(`bod (file-of:lsk u.got main-file:lsk)))
+      (send-ok eyre-id)
+    ;<  tnow=@da  bind:m  get-time:io
+    =/  why=(unit tape)  (key-check:lsk got sensitive.scope.u.key (tainted:ky u.key tnow) `bod)
+    ?^  why  (send-err eyre-id 403 (crip u.why))
+    (send-err eyre-id 409 'the skill changed before this save landed: read it again')
   ::
       [%'POST' %skill-tag]
     =/  nm=@t  (~(gut by args) 'name' '')
@@ -7578,7 +7626,8 @@
   ?.  got  (pure:m ~)
   ;<  now=@da  bind:m  get-time:io
   ?:  &(?=(^ taint.u.key) (lth now (add u.taint.u.key ~m10)))  (pure:m ~)
-  (poke-keys [%taint id.u.key now])
+  ;<  ~  bind:m  (poke-keys [%taint id.u.key now])
+  writer-sync
 ++  tainted-msg
   ^-  @t
   'this key read sensitive content in the last 12 hours, so until then its own writes go only to sensitive destinations'
@@ -7602,7 +7651,7 @@
   ?&  ?=(~ old)
       !(save-plain key args)
       !=('1' (~(gut by args) 'force_new' ''))
-      !=('' rest:(front:lk bod))
+      !=('' (prose-of:lk bod old))
   ==
 ::  +save-plan: one memory save checked and stamped, or its refusal. Both
 ::  /know-save and /know-save-batch decide here, so a batch gets exactly a
@@ -7699,7 +7748,7 @@
   =/  old=(unit know-entry:lk)  (~(get by es) u.ko)
   =/  near=(list [o=@ud k=path])
     ?.  (save-near key a.i.items b.i.items old)  ~
-    (near:lk pool tc rest:(front:lk b.i.items))
+    (near:lk pool tc (prose-of:lk b.i.items old))
   =/  pl  (save-plan key rnow bnow u.ko b.i.items a.i.items old near)
   ?:  ?=(%| -.pl)  $(items t.items, outs [(batch-err k.i.items p.pl) outs])
   ::  later items see this one: as the entry under its key, and as a
@@ -8540,6 +8589,7 @@
   =/  ratek=?
     ?:  mod  %.y
     ?~  entry  %.y
+    ?:  (lth now last.u.entry)  %.n
     (gte (sub now last.u.entry) cooldown.u.entry)
   ?.  ratek
     ?~  obrd  (pure:m ~)
@@ -8750,6 +8800,7 @@
   |=  [id=post-id:ft p=post:ft]
   ^-  (unit post-id:ft)
   ?:  (~(has in pinned.brd) id)  ~
+  ?:  (lth now created.p)  ~
   ?.  (gte (sub now created.p) after.u.prune.brd)  ~
   ?.  (lth n:(hot-score:fr now p) min-score.u.prune.brd)  ~
   `id
@@ -8901,7 +8952,11 @@
     (~(gas in *(set road:tarball)) ~[[%& %| (snoc bpath %pub)] [%& %| (snoc bpath %content)]])
   ;<  ok=?  bind:m  (ug-merge gname (~(gas in *(set @p)) ~[u.shp]) roads ~)
   ?.  ok  (ug-refused eyre-id)
-  ;<  ~  bind:m  (write-forum-members nom (~(put in cur) u.shp))
+  ;<  bans2=banned:ls  bind:m  read-banned
+  ?:  (is-banned:ls bans2 u.shp)
+    (send-err eyre-id 403 'that ship is banned, unban it first')
+  ;<  cur2=(set @p)  bind:m  (read-forum-members nom)
+  ;<  ~  bind:m  (write-forum-members nom (~(put in cur2) u.shp))
   ;<  base=(unit path)  bind:m  (peer-base-cached u.shp)
   ;<  told=?  bind:m
     %^  remote-load-poke-wait  u.shp
@@ -8988,9 +9043,16 @@
   =/  rn=(unit reply-note:ln)  (mole |.(;;(reply-note:ln payload)))
   ?^  rn
     ?:  (is-comet:fr host)  (pure:m ~)
+    ?.  ?&  !=(%$ board.u.rn)
+            (lte (met 3 board.u.rn) board-cap:ln)
+            ((sane %tas) board.u.rn)
+            (lte (met 3 post.u.rn) 8)
+        ==
+      (pure:m ~)
     ?:  ok.gate
       %+  notify-add  now
       (make:ln %remote now who.u.rn host board.u.rn post.u.rn title.u.rn body.u.rn)
+    ?:  =(0 over.gate)  (pure:m ~)
     ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
     =/  old=(list @ta)  (flood-ids:ln items host)
     ;<  ~  bind:m
@@ -9986,8 +10048,8 @@
   ^-  form:m
   ;<  sens=?  bind:m  (page-sensitive pax)
   ;<  mode=share-mode:le  bind:m  (read-share (weld /page pax))
-  ;<  own=(map @t @t)  bind:m  (read-own-grants pax)
-  (pure:m (taint-dest:ls sens !?=(%private mode) !=(~ own)))
+  ;<  shr=?  bind:m  (granted-via pax |)
+  (pure:m (taint-dest:ls sens !?=(%private mode) shr))
 ++  tainted-shared-msg
   ^-  @t
   'this key read sensitive content in the last 12 hours, and that page is published or shared with a ship, so it cannot write there until then'
@@ -13184,7 +13246,7 @@
   ?:  (~(has by fils) %code)  ~
   ?.  (~(has by fils) %'page-gone')  ~
   =/  n=@ud  (lent (skim (collect-tree bl ~) |=([p=path page=?] page)))
-  ?:  &(=(0 n) !lex)  ~
+  ?:  &(=(0 n) !lex ?=(~ dir.bl))  ~
   `n
 ::  +arg-flag: a yes-or-no query flag. Absent, 0 or false is no, 1 or
 ::  true is yes, and ~ is any other value: guessing what it meant could
@@ -18881,6 +18943,9 @@
   ^-  form:m
   ?:  &(?=(^ key) !(key-sees-dir u.key dir))
     (send-err eyre-id 403 'outside this key\'s page scope')
+  ;<  dps=?  bind:m  (page-sensitive dir)
+  ?:  &(dps ?=(^ key) !sensitive.scope.u.key)
+    (send-err eyre-id 404 'not found')
   ;<  up=@ud  bind:m  nexus-up
   ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page dir)) ~)
   ?.  ?=([%ball *] dv)  (send-err eyre-id 404 'not found')
@@ -18889,8 +18954,10 @@
       (skim (collect-tree ball.dv ~) |=([p=path *] =(1 (lent p))))
     |=([a=[pax=path page=?] b=[pax=path page=?]] (aor (spat pax.a) (spat pax.b)))
   =|  out=(list json)
+  =/  saw=?  dps
   |-  ^-  form:m
   ?~  kids
+    ;<  ~  bind:m  (taint-if key &(saw ?=(^ key) sensitive.scope.u.key))
     %+  send-json  eyre-id
     %-  pairs:enjs:format
     %+  weld  hed
@@ -18909,11 +18976,13 @@
     ==
   ?.  page.i.kids
     ?:  &(?=(^ key) !(key-sees-dir u.key full))  $(kids t.kids)
-    $(kids t.kids, out [(row |) out])
+    ;<  fps=?  bind:m  (page-sensitive full)
+    ?:  &(fps ?=(^ key) !sensitive.scope.u.key)  $(kids t.kids)
+    $(kids t.kids, out [(row |) out], saw |(saw fps))
   ?:  &(?=(^ key) !(may-path:ky u.key %local full %read))  $(kids t.kids)
   ;<  ps=?  bind:m  (page-sensitive full)
   ?:  &(ps ?=(^ key) !sensitive.scope.u.key)  $(kids t.kids)
-  $(kids t.kids, out [(row &) out])
+  $(kids t.kids, out [(row &) out], saw |(saw ps))
 ::  +key-own-read: may a key read our own page at `rel` through a web
 ::  route? The web scope reaches other ships only. Our pages take the
 ::  pages scope, by its paths and sensitive clearance (page-source's
@@ -22625,7 +22694,7 @@
   =/  idx=(set road:tarball)
     %-  silt
     :-  [%& %& (at ~) %'dir-index']
-    (murn all |=([p=path page=?] ?:(page ~ `[%& %& (at p) %'dir-index'])))
+    (turn ~(tap in (folder-subs:ls all)) |=(p=path `road:tarball`[%& %& (at p) %'dir-index']))
   ::  what the ship holds by hand on each page under the folder is noted
   ::  as the page's own grant (+own-infer:ls), so unsharing the folder
   ::  later leaves it at its own mode
@@ -22706,7 +22775,7 @@
   =/  m  (fiber:fiber:nexus ,(list [p=path md=@t]))
   ^-  form:m
   =/  ps=(list path)
-    (murn (collect-tree bl ~) |=([p=path page=?] ?:(page `p ~)))
+    (murn (collect-tree bl ~) |=([p=path page=?] ?:(&(?=(^ p) page) `p ~)))
   =|  out=(list [p=path md=@t])
   =|  sg=(map path (map @t @t))
   |-  ^-  form:m
@@ -22909,7 +22978,8 @@
     ;<  fv=view:nexus  bind:m  (peek:fio (rv up (weld /page frel)) ~)
     ?.  ?=([%ball *] fv)  $(over t.over)
     ;<  fs=(set path)  bind:m  (tree-sens frel ball.fv)
-    =/  all=(list [p=path page=?])  (collect-tree ball.fv ~)
+    =/  all=(list [p=path page=?])
+      (skip (collect-tree ball.fv ~) |=([p=path page=?] ?=(~ p)))
     =/  at  |=(r=path :(weld pre frel r))
     =/  codes=(set road:tarball)
       %-  silt
@@ -22918,7 +22988,7 @@
     =/  idx=(set road:tarball)
       %-  silt
       :-  [%& %& (at ~) %'dir-index']
-      (murn all |=([p=path page=?] ?:(page ~ `[%& %& (at p) %'dir-index'])))
+      (turn ~(tap in (folder-subs:ls all)) |=(p=path `road:tarball`[%& %& (at p) %'dir-index']))
     ;<  *  bind:m  (ug-merge gname ~ (~(uni in codes) idx) ?.(ed.i.over ~ codes))
     ;<  ~  bind:m  (folder-grant-do frel gname ?:(ed.i.over 'edit' 'read'))
     ;<  ~  bind:m  (write-dir-index root frel)
@@ -22966,7 +23036,8 @@
   ?.  ?=([%ball *] dv)  (pure:m ~)
   ;<  sens=(set path)  bind:m  (tree-sens pax ball.dv)
   =/  rels=(list path)
-    (murn (collect-tree ball.dv ~) |=([p=path page=?] ?:(&(page !(~(has in sens) p)) `p ~)))
+    %+  murn  (collect-tree ball.dv ~)
+    |=([p=path page=?] ?:(&(?=(^ p) page !(~(has in sens) p)) `p ~))
   |-  ^-  form:m
   ?~  rels  (pure:m ~)
   ;<  ~  bind:m  (add-grant-via (weld pax i.rels) pax)
@@ -23021,7 +23092,8 @@
   ;<  up=@ud  bind:m  nexus-up
   ;<  sb=path  bind:m  self-base
   =/  code=road:tarball  [%& %& :(weld sb /page rel) %code]
-  =/  dir=path  (snip `path`rel)
+  =/  pdir=path  (snip `path`rel)
+  =/  dir=path  pdir
   =|  top=(map @t [d=path md=@t])
   |-  ^-  form:m
   ;<  gs=(map @t @t)  bind:m  (read-share-grants dir)
@@ -23030,11 +23102,16 @@
   ;<  ~  bind:m
     ?:  =(~ gs)  (pure:m ~)
     ;<  ~  bind:m  (add-grant-via rel dir)
+    ::  grant dir-index roads on any intermediate subfolders between dir and pdir
+    =/  sub-ixs=(list road:tarball)
+      %+  turn  (gulf (lent dir) (lent pdir))
+      |=(n=@ud `road:tarball`[%& %& :(weld sb /page (scag n pdir)) %'dir-index'])
+    =/  pk=(set road:tarball)  (silt [code sub-ixs])
     =/  l=(list [g=@t md=@t])  ~(tap by gs)
     |-  ^-  form:m
     ?~  l  (pure:m ~)
     ;<  *  bind:m
-      %:  ug-merge  g.i.l  ~  (silt ~[code])
+      %:  ug-merge  g.i.l  ~  pk
         ?.(=('edit' md.i.l) ~ (silt ~[code]))
       ==
     $(l t.l)
@@ -23043,14 +23120,14 @@
   ::  (+index-ups:ls), where a whole +write-dir-index of each folder above
   ::  wrote every folder under it again, a save's worth of ship time per
   ::  folder in a big shared tree
-  =/  dir=path  (snip `path`rel)
-  =/  ups=(list path)  (turn (gulf 0 (lent dir)) |=(n=@ud (scag n dir)))
+  =/  ups=(list path)  (turn (gulf 0 (lent pdir)) |=(n=@ud (scag n pdir)))
   =|  ixs=(set path)
+  =.  ixs  (~(gas in ixs) (turn ~(val by top) |=([d=path md=@t] d)))
   |-  ^-  form:m
   ?^  ups
     ;<  ix=?  bind:m  (peek-exists:fio (rf up (weld /page i.ups) %'dir-index'))
     $(ups t.ups, ixs ?.(ix ixs (~(put in ixs) i.ups)))
-  =/  todo=(list path)  (index-ups:ls dir ixs)
+  =/  todo=(list path)  (index-ups:ls pdir ixs)
   |-  ^-  form:m
   ?^  todo
     ;<  ~  bind:m  (write-dir-index-in root i.todo |)
@@ -23122,7 +23199,8 @@
   ;<  sb=path  bind:m  self-base
   ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page pax)) ~)
   ?.  ?=([%ball *] dv)  (pure:m ~)
-  =/  all=(list [p=path page=?])  (collect-tree ball.dv ~)
+  =/  all=(list [p=path page=?])
+    (skip (collect-tree ball.dv ~) |=([p=path page=?] ?=(~ p)))
   =/  vias
     |=  p=path
     ^-  (list path)
@@ -23134,7 +23212,7 @@
     |=  [p=path page=?]
     ?.  page  ~
     `[(weld pax p) (vias p) (fils-own (ball-fils ball.dv p))]
-  =/  subs=(list path)  (murn all |=([p=path page=?] ?:(page ~ `p)))
+  =/  subs=(list path)  ~(tap in (folder-subs:ls all))
   =/  dirs=(list path)  [pax (turn subs |=(p=path (weld pax p)))]
   ::  the share-grants of the folder, the folders under it, and those
   ::  above it (any of them may share with g too)
@@ -23607,7 +23685,15 @@
     =/  road=road:tarball  (entry-road up vbase key)
     =/  troad=road:tarball  (entry-road up tvbase key)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry troad)
-    ?~  old  (refuse "a restore: it is not in the trash: {(spud key)}")
+    ?~  old
+      ::  prune a stale trash index row when troad is absent
+      ;<  held=?  bind:m  (peek-exists:fio troad)
+      ;<  ~  bind:m
+        ?:  held  (pure:m ~)
+        ;<  trash=know-index:lk  bind:m  (read-index tx)
+        ?.  (~(has by trash) key)  (pure:m ~)
+        (put-file tx [/lattice %know-index] (~(del by trash) key))
+      (refuse "a restore: it is not in the trash: {(spud key)}")
     ::  refuse to resurrect over a LIVE entry. The save/move/import writers already
     ::  cull the trash grub when a key goes live again, so this can't normally fire.
     ::  It's the last guard against a stale tomb clobbering live data.

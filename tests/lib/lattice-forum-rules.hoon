@@ -181,4 +181,14 @@
     (expect-eq !>(&) !>((can-tag:fr ~zod ~nec brd)))   ::  the host
     (expect-eq !>(|) !>((can-tag:fr ~bus ~nec brd)))   ::  anyone else
   ==
+::  +rate-ok and +rate-update do not crash when clock steps backward (now < last)
+++  test-rate-clock-backwards
+  =/  t1=@da  ~2026.1.1..00.01.00
+  =/  t0=@da  ~2026.1.1..00.00.30
+  =/  lim=limits:fr  (rate-update:fr ~nec %main t1 ~)
+  =/  lim2=limits:fr  (rate-update:fr ~nec %main t0 lim)
+  ;:  weld
+    (expect-eq !>(|) !>((rate-ok:fr ~nec %main brd t0 lim)))
+    (expect-eq !>(~s20) !>(cooldown:(~(got by lim2) [~nec %main])))
+  ==
 --

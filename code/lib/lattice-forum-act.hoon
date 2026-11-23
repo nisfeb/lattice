@@ -13,6 +13,7 @@
 /<  *   /lib/lattice-forum-types.hoon
 /<  fb  /lib/lattice-forum-board.hoon
 /<  fr  /lib/lattice-forum-rules.hoon
+/<  ls  /lib/lattice-share.hoon
 |%
 ::  +act: [board after, grubs to put] or a reason
 ::
@@ -190,11 +191,14 @@
 ++  vote
   |=  [brd=board target=vote-target who=@p dir=?(%up %down %remove)]
   ^-  board
+  =/  voter=@p  `@p`(family:ls who)
   =/  cast
     |=  [up=(set @p) dn=(set @p)]
     ^-  [(set @p) (set @p)]
-    :-  ?:(=(%up dir) (~(put in up) who) (~(del in up) who))
-    ?:(=(%down dir) (~(put in dn) who) (~(del in dn) who))
+    =/  up=(set @p)  (~(del in (~(del in up) who)) voter)
+    =/  dn=(set @p)  (~(del in (~(del in dn) who)) voter)
+    :-  ?:(=(%up dir) (~(put in up) voter) up)
+    ?:(=(%down dir) (~(put in dn) voter) dn)
   ?-    -.target
       %post
     ?~  p=(~(get by posts.brd) id.target)  brd

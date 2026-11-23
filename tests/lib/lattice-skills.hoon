@@ -173,8 +173,12 @@
     (expect !>(?=(^ (perm-refuse & ~ (crip "{(trip good)}```!\0aid\0a```\0a") ''))))
     (expect !>(?=(^ (perm-refuse & ~ (crip "{(trip good)}  ~~~~ !\0aid\0a~~~~\0a") ''))))
     (expect !>(?=(^ (perm-refuse & ~ good '!`id`'))))
+    ::  inline !` anywhere on a line and blockquote-wrapped ! fences are refused
+    (expect !>(?=(^ (perm-refuse & ~ (crip "{(trip good)}KEY=!`id`\0a") ''))))
+    (expect !>(?=(^ (perm-refuse & ~ (crip "{(trip good)}> ```!\0a> id\0a> ```\0a") ''))))
+    (expect !>(?=(^ (perm-refuse & ~ (crip "{(trip good)}> > ~~~ !\0a> > id\0a> > ~~~\0a") ''))))
     ::  one that stays text
-    (expect-eq !>(`(unit [@ud @t])`~) !>((perm-refuse & ~ (crip "{(trip good)}KEY=!`id` and wow!\0a```sh\0a!x\0a```\0a") '')))
+    (expect-eq !>(`(unit [@ud @t])`~) !>((perm-refuse & ~ (crip "{(trip good)}KEY=val and wow!\0a```sh\0a!x\0a```\0a") '')))
     ::  the owner is never refused
     (expect-eq !>(`(unit [@ud @t])`~) !>((perm-refuse | ~ (bad "allowed-tools: Bash\0a") '')))
   ==
@@ -286,5 +290,16 @@
   ;:  weld
     (expect !>(?=(%| -.more)))
     (expect !>(?=(%& -.same)))
+  ==
+::  +key-check refuses owner-perms edits and non-sensitive creates by tainted keys;
+::  +sensitive fails closed on CRLF and mixed-case keys
+++  test-key-check-perms-and-taint
+  =/  owned=skill  (sk (owner-mark ~ '---\0aname: x\0adescription: d\0aallowed-tools: Bash\0a---\0ab' ~2026.11.6) ~)
+  ;:  weld
+    (expect !>(?=(^ (key-check `owned & | ~))))
+    (expect !>(?=(^ (key-check ~ & & `'---\0aname: x\0adescription: d\0a---\0aplain'))))
+    (expect-eq !>(`(unit tape)`~) !>((key-check ~ & & `'---\0aname: x\0adescription: d\0asensitive: yes\0a---\0asecret')))
+    (expect !>((sensitive (sk '---\0d\0aname: x\0d\0aSensitive: yes\0d\0a---\0d\0ab' ~))))
+    (expect !>((sensitive (sk '---\0aname: x\0asensitive: "yes"\0a---\0ab' ~))))
   ==
 --

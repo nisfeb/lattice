@@ -133,7 +133,7 @@
     ^-  post
     =/  t=tally  (~(gut by votes.acc) [%post id] *tally)
     =/  n=@ud  ?~(th=(~(get by threads.acc) id) 0 ~(wyt by comments.u.th))
-    [id.c author.c title.c url.c body.c created.c up.t down.t n]
+    [id author.c title.c url.c body.c created.c up.t down.t n]
   =/  comments=(map post-id (map comment-id comment))
     %-  ~(urn by threads.acc)
     |=  [pid=post-id th=thread]
@@ -141,7 +141,7 @@
     |=  [cid=comment-id c=comment-core]
     ^-  comment
     =/  t=tally  (~(gut by votes.acc) [%comment pid cid] *tally)
-    [id.c parent.c author.c body.c created.c up.t down.t]
+    [cid parent.c author.c body.c created.c up.t down.t]
   =|  brd=board
   %=  brd
     info              (need card.acc)

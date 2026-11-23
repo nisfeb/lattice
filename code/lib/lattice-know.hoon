@@ -391,8 +391,11 @@
     =/  done=?  |
     |-  ^-  (list tape)
     ?~  old  ~
-    ?:  &(!done (is i.old))  [line $(old t.old, done &)]
+    ?:  (is i.old)
+      ?:  done  $(old t.old)
+      [line $(old t.old, done &)]
     [i.old $(old t.old)]
+  ?~  head  (crip rest.u.s)
   (crip :(weld open.u.s `tape`(zing head) close.u.s rest.u.s))
 ::  +front-set: +front-put that never lowers the sensitive mark. The
 ::  routes that stamp an entry (verify, supersede, keep) write through
@@ -810,7 +813,7 @@
   =/  hops=(list [to=path via=path])
     %+  scag  5
     =|  [out=(list [to=path via=path]) seen=(set path)]
-    =/  top=(list hit)  (scag 3 hs)
+    =/  top=(list hit)  (scag (min 3 k) hs)
     |-  ^-  (list [to=path via=path])
     ?~  top  (flop out)
     =/  ls=(list path)
@@ -1025,7 +1028,7 @@
 ++  key-save-check
   |=  [old=(unit know-entry) cleared=? tainted=? body=@t]
   ^-  (each @t tape)
-  ?~  old  [%& body]
+  ?~  old  [%& ?:(tainted (raise-sens body) body)]
   ?:  (is-core u.old)  [%| "an agent key may not edit a core entry"]
   =/  sen=?  (sensitive u.old)
   ?:  &(sen !cleared)  [%| "the entry is not available to this agent key"]
@@ -1152,6 +1155,7 @@
     (turn es |=([k=path e=know-entry] (turn (links body.e) |=(t=path [k t]))))
   =/  ends=(list path)  (zing (turn outs |=([f=path t=path] ~[f t])))
   =/  linked=(set path)  (silt ends)
+  =/  by-key=(map path know-entry)  (malt all)
   :*  dups
       (skip outs |=([* t=path] (~(has in keys) t)))
     ::
@@ -1161,7 +1165,18 @@
       =/  s=(unit @t)  (superseded e)
       ?~  s  ~
       =/  t=(unit path)  (key-of u.s)
-      ?:(&(?=(^ t) (~(has in keys) u.t)) ~ `[k u.s])
+      ?:  |(?=(~ t) !(~(has by by-key) u.t))  `[k u.s]
+      =/  cur=path  u.t
+      =/  seen=(set path)  (silt ~[k])
+      |-  ^-  (unit [key=path to=@t])
+      ?:  (~(has in seen) cur)  `[k u.s]
+      =/  ne=(unit know-entry)  (~(get by by-key) cur)
+      ?~  ne  ~
+      =/  ns=(unit @t)  (superseded u.ne)
+      ?~  ns  ~
+      =/  nt=(unit path)  (key-of u.ns)
+      ?~  nt  ~
+      $(cur u.nt, seen (~(put in seen) cur))
     ::
       (murn es |=([k=path e=know-entry] ?.(=(~ tags.e) ~ `k)))
     ::
