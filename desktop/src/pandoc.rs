@@ -112,7 +112,9 @@ fn probe() -> PandocStatus {
 /// whole UI for the length of each pandoc run.
 #[tauri::command]
 pub async fn convert_tex(src: String) -> Result<String, String> {
-    convert(&src)
+    tauri::async_runtime::spawn_blocking(move || convert(&src))
+        .await
+        .map_err(|e| format!("pandoc task failed: {e}"))?
 }
 
 /// The pandoc the last conversion ran. The live preview converts on every
@@ -145,9 +147,70 @@ impl Drop for ConvertSlot {
     }
 }
 
+/// Output caps so a LaTeX macro expansion cannot OOM the desktop process.
+const MAX_OUT: u64 = 16 << 20;
+const MAX_ERR: u64 = 64 << 10;
+
+/// Drive a spawned child with bounded stdout/stderr reader threads started
+/// BEFORE writing stdin on its own thread, so inputs larger than the OS pipe
+/// buffer (64 KiB) cannot deadlock and unbounded output cannot OOM.
+fn run_child(
+    mut child: std::process::Child,
+    input: Vec<u8>,
+    timeout: Duration,
+    max_out: u64,
+    max_err: u64,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>, std::io::Result<()>), String> {
+    use std::io::{Read, Write};
+
+    let cout = child.stdout.take().ok_or("could not read from pandoc")?;
+    let cerr = child.stderr.take().ok_or("could not read from pandoc")?;
+    let mut stdin = child.stdin.take().ok_or("could not write to pandoc")?;
+
+    let out_h = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = cout.take(max_out.saturating_add(1)).read_to_end(&mut v);
+        v
+    });
+    let err_h = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = cerr.take(max_err).read_to_end(&mut v);
+        v
+    });
+    let in_h = std::thread::spawn(move || {
+        let res = stdin.write_all(&input);
+        drop(stdin);
+        res
+    });
+
+    // bound the conversion: a hostile ship page can feed input that never
+    // terminates, so kill pandoc past a deadline rather than park a worker and
+    // a process forever.
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait().map_err(|e| format!("pandoc failed: {e}"))? {
+            Some(s) => break s,
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = in_h.join();
+                    let _ = out_h.join();
+                    let _ = err_h.join();
+                    return Err("pandoc timed out after 10s".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    };
+    let write_res = in_h.join().unwrap_or(Ok(()));
+    let stdout = out_h.join().unwrap_or_default();
+    let stderr = err_h.join().unwrap_or_default();
+    Ok((status, stdout, stderr, write_res))
+}
+
 /// The conversion's actual work, sync so the tests need no runtime.
 fn convert(src: &str) -> Result<String, String> {
-    use std::io::{Read, Write};
     use std::process::Stdio;
 
     // cap concurrent conversions before doing any work; freed on return
@@ -173,48 +236,15 @@ fn convert(src: &str) -> Result<String, String> {
         .stderr(Stdio::piped())
         .spawn();
     *FOUND.lock().unwrap() = spawned.is_ok().then(|| exe.clone());
-    let mut child = spawned.map_err(|e| format!("could not run pandoc: {e}"))?;
+    let child = spawned.map_err(|e| format!("could not run pandoc: {e}"))?;
 
-    // write the source and close stdin so pandoc sees EOF, then read its
-    // output on threads so a full pipe cannot deadlock the wait below.
-    {
-        let mut stdin = child.stdin.take().ok_or("could not write to pandoc")?;
-        stdin
-            .write_all(src.as_bytes())
-            .map_err(|e| format!("could not write to pandoc: {e}"))?;
-    }
-    let mut cout = child.stdout.take().ok_or("could not read from pandoc")?;
-    let mut cerr = child.stderr.take().ok_or("could not read from pandoc")?;
-    let out_h = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = cout.read_to_end(&mut v);
-        v
-    });
-    let err_h = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = cerr.read_to_end(&mut v);
-        v
-    });
-
-    // bound the conversion: a hostile ship page can feed input that never
-    // terminates, so kill pandoc past a deadline rather than park a worker and
-    // a process forever.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let status = loop {
-        match child.try_wait().map_err(|e| format!("pandoc failed: {e}"))? {
-            Some(s) => break s,
-            None => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("pandoc timed out after 10s".to_string());
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    };
-    let stdout = out_h.join().unwrap_or_default();
-    let stderr = err_h.join().unwrap_or_default();
+    let (status, stdout, stderr, write_res) = run_child(
+        child,
+        src.as_bytes().to_vec(),
+        Duration::from_secs(10),
+        MAX_OUT,
+        MAX_ERR,
+    )?;
 
     if !status.success() {
         //  pandoc's own message names the line and the construct it choked
@@ -229,6 +259,12 @@ fn convert(src: &str) -> Result<String, String> {
         } else {
             msg.chars().take(400).collect()
         });
+    }
+    if let Err(e) = write_res {
+        return Err(format!("could not write to pandoc: {e}"));
+    }
+    if stdout.len() as u64 > MAX_OUT {
+        return Err("pandoc output exceeded size limit".to_string());
     }
     Ok(String::from_utf8_lossy(&stdout).to_string())
 }
@@ -314,5 +350,37 @@ mod tests {
         if let Err(e) = r {
             assert!(!e.is_empty(), "an error must carry a message");
         }
+    }
+
+    #[test]
+    fn large_pipe_io_does_not_deadlock_and_output_is_bounded() {
+        use std::process::Stdio;
+        // 256 KiB exceeds the 64 KiB Linux pipe buffer: writing stdin synchronously
+        // before spawning stdout readers would deadlock `cat`.
+        let payload = vec![b'a'; 256 * 1024];
+        let child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn cat");
+        let (status, stdout, _stderr, write_res) =
+            run_child(child, payload.clone(), Duration::from_secs(5), 512 * 1024, 1024)
+                .expect("large pipe IO must complete without deadlock");
+        assert!(status.success());
+        assert!(write_res.is_ok());
+        assert_eq!(stdout.len(), payload.len());
+
+        // When output exceeds max_out, run_child caps it at max_out + 1 bytes.
+        let child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn cat");
+        let (_status, capped, _stderr, _write_res) =
+            run_child(child, vec![b'b'; 8192], Duration::from_secs(5), 1024, 1024)
+                .expect("bounded read finishes");
+        assert_eq!(capped.len(), 1025, "stdout must be capped at max_out + 1");
     }
 }

@@ -662,13 +662,13 @@ fn nav_decision(
         return if ours { Nav::Allow } else { Nav::Block };
     }
     let bridge = bridge();
-    if u.host_str() == Some("127.0.0.1") && u.port() == bridge {
+    if u.scheme() == "http" && u.host_str() == Some("127.0.0.1") && bridge.is_some() && u.port() == bridge {
         return Nav::Allow;
     }
     // the shipless reader's own origin; its Connect a node is the manager
-    if u.host_str() == Some("127.0.0.1") {
+    if u.scheme() == "http" && u.host_str() == Some("127.0.0.1") {
         if let Some(r) = reader(false).and_then(|b| b.parse::<tauri::Url>().ok()) {
-            if u.port() == r.port() {
+            if r.port().is_some() && u.port() == r.port() {
                 return if u.path() == "/connect" { Nav::Manager } else { Nav::Allow };
             }
         }
@@ -698,7 +698,20 @@ fn nav_decision(
     // bridge. Hitting the ship directly would arrive cookieless
     if tauri::Url::parse(&ship_url()).is_ok_and(|ship| ship.origin() == u.origin()) {
         let Some(local) = &local else { return Nav::Block };
-        let pq = &u.as_str()[u.origin().ascii_serialization().len()..];
+        let mut pq = String::new();
+        let path = u.path();
+        if !path.starts_with('/') {
+            pq.push('/');
+        }
+        pq.push_str(path);
+        if let Some(q) = u.query() {
+            pq.push('?');
+            pq.push_str(q);
+        }
+        if let Some(f) = u.fragment() {
+            pq.push('#');
+            pq.push_str(f);
+        }
         return match format!("{local}{pq}").parse::<tauri::Url>() {
             Ok(t) => Nav::Rewrite(t),
             Err(_) => Nav::Block,
@@ -1197,6 +1210,11 @@ pub async fn set_backup_schedules(
         for s in next.iter_mut() {
             if let Some(old) = cfg.backups.iter().find(|o| o.id == s.id) {
                 s.last_run = old.last_run;
+                if s.ship.is_empty() {
+                    s.ship = old.ship.clone();
+                }
+            } else if s.ship.is_empty() && !cfg.ship.is_empty() {
+                s.ship = cfg.ship.clone();
             }
         }
         cfg.backups = next;
@@ -1218,14 +1236,18 @@ fn schedule_changes(
     for n in new {
         match old.iter().find(|o| o.id == n.id) {
             None => out.push(format!("add {}", what(n))),
-            Some(o) if o.enabled && !n.enabled => out.push(format!("pause {}", n.label)),
-            Some(o) if !o.enabled && n.enabled => out.push(format!("resume {}", n.label)),
-            Some(o) if (o.label.as_str(), o.every_hours, o.keep, o.dir.as_str())
-                != (n.label.as_str(), n.every_hours, n.keep, n.dir.as_str()) =>
-            {
-                out.push(format!("change {} to {}", o.label, what(n)))
+            Some(o) => {
+                if o.enabled && !n.enabled {
+                    out.push(format!("pause {}", o.label));
+                } else if !o.enabled && n.enabled {
+                    out.push(format!("resume {}", o.label));
+                }
+                if (o.label.as_str(), o.every_hours, o.keep, o.dir.as_str())
+                    != (n.label.as_str(), n.every_hours, n.keep, n.dir.as_str())
+                {
+                    out.push(format!("change {} to {}", o.label, what(n)));
+                }
             }
-            _ => {}
         }
     }
     for o in old {
@@ -1344,6 +1366,23 @@ pub async fn backup_write(
 /// manager page out from under a half-filled mount or schedule form costs
 /// the user's input, backup.rs promises a due schedule waits, and waiting is
 /// cheap because a later tick retries once the app page is back.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn backup_dest_url(local: &str, id: &str) -> String {
+    let to = format!("/apps/lattice/app?backup={}", percent_encode(id));
+    crate::proxy::bootstrap_url(local, &to)
+}
+
 pub fn request_backup(app: &AppHandle, id: &str, takeover: bool) -> bool {
     let Some(w) = app.get_webview_window("workspace") else { return false };
     // the id is ours, not user text, but it still goes through a quoted JSON
@@ -1366,10 +1405,13 @@ pub fn request_backup(app: &AppHandle, id: &str, takeover: bool) -> bool {
             .is_ok();
     }
     let cfg = config::load(app);
-    let dest = serde_json::to_string(&format!(
-        "{}/apps/lattice/app?backup={}", cfg.url.trim_end_matches('/'), id
-    ))
-    .unwrap_or_else(|_| "\"\"".into());
+    if cfg.url.is_empty() {
+        return false;
+    }
+    let Ok(local) = crate::proxy::ensure(app.state::<crate::proxy::Bridge>().inner(), &cfg.url) else {
+        return false;
+    };
+    let dest = serde_json::to_string(&backup_dest_url(&local, id)).unwrap_or_else(|_| "\"\"".into());
     w.eval(format!(
         "(function(){{if(window.__latticeBackup){{window.__latticeBackup({arg});}}\
          else{{location.href={dest};}}}})()"
@@ -1486,6 +1528,23 @@ mod nav_tests {
         assert_eq!(decide("https://example.com/", Some(26500), SHIP), Nav::External);
         assert_eq!(decide("tauri://localhost/manager.html", None, ""), Nav::Allow);
         assert_eq!(decide("about:srcdoc", None, ""), Nav::Allow);
+    }
+
+    #[test]
+    fn loopback_requires_http_and_active_port() {
+        // When bridge is None, http://127.0.0.1/ (port None) must NOT match bridge == None
+        assert_eq!(decide("http://127.0.0.1/evil", None, ""), Nav::External);
+        // Non-http schemes on 127.0.0.1 must not match bridge or reader ports
+        assert_eq!(decide("https://127.0.0.1:26500/app", Some(26500), SHIP), Nav::External);
+        assert_eq!(decide("https://127.0.0.1:26520/connect", None, ""), Nav::External);
+    }
+
+    #[test]
+    fn ship_rewrite_handles_userinfo_default_port_query_and_fragment() {
+        assert_eq!(
+            rewrite(decide("https://user@sampel-palnet.arvo.network:443/apps/lattice/app?x=1#top", Some(26500), SHIP)),
+            "http://127.0.0.1:26500/apps/lattice/app?x=1#top"
+        );
     }
 
     #[test]
@@ -1878,6 +1937,7 @@ mod backup_race_tests {
                 dir: "/tmp/backups".into(),
                 last_run: 0,
                 enabled: true,
+                ship: String::new(),
             }],
         };
         config::save_at(&p, &start).unwrap();
@@ -1933,6 +1993,7 @@ mod schedule_change_tests {
             dir: dir.into(),
             last_run: 0,
             enabled,
+            ship: String::new(),
         }
     }
 
@@ -1955,5 +2016,25 @@ mod schedule_change_tests {
         assert_eq!(c[1], "pause weekly");
         assert!(c[2].starts_with("add new") && c[2].contains("/n"));
         assert_eq!(c[3], "remove old (its archives stay)");
+    }
+
+    #[test]
+    fn pause_or_resume_cannot_hide_directory_or_retention_mutations() {
+        let old = vec![s("a", "daily", "/b", true), s("b", "weekly", "/b", false)];
+        let mut paused_and_moved = s("a", "daily", "/evil", false);
+        paused_and_moved.keep = 1;
+        let resumed_and_moved = s("b", "weekly", "/evil2", true);
+        let c = schedule_changes(&old, &[paused_and_moved, resumed_and_moved]);
+        assert!(c.iter().any(|l| l == "pause daily"), "{c:?}");
+        assert!(c.iter().any(|l| l.starts_with("change daily") && l.contains("/evil") && l.contains("keeping 1")), "{c:?}");
+        assert!(c.iter().any(|l| l == "resume weekly"), "{c:?}");
+        assert!(c.iter().any(|l| l.starts_with("change weekly") && l.contains("/evil2")), "{c:?}");
+    }
+
+    #[test]
+    fn backup_dest_url_percent_encodes_id_through_bootstrap() {
+        let u = super::backup_dest_url("http://127.0.0.1:26500", "a&b=c/d e");
+        assert!(u.starts_with("http://127.0.0.1:26500/.lattice-bridge/start?k="), "{u}");
+        assert!(u.ends_with("&to=/apps/lattice/app?backup=a%26b%3Dc%2Fd%20e"), "{u}");
     }
 }

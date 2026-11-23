@@ -67,10 +67,24 @@ pub fn cookie_for(url: &str) -> Option<String> {
     crate::proxy::session_cookie(cookie_path_for(url)?.to_str()?)
 }
 
-/// urbauth-~zod=0v... gives ~zod.
+/// urbauth-~zod=0v... gives ~zod. Requires a non-empty cookie value and
+/// a valid Urbit @p ship name.
 pub fn ship_of(cookie: &str) -> Option<String> {
-    let name = cookie.split('=').next()?.strip_prefix("urbauth-")?;
-    (!name.is_empty()).then(|| name.to_string())
+    let (k, v) = cookie.split_once('=')?;
+    if v.trim().is_empty() {
+        return None;
+    }
+    let name = k.trim().strip_prefix("urbauth-")?;
+    crate::urb::is_patp(name).then(|| name.to_string())
+}
+
+/// Find the first valid non-empty urbauth-<@p>=<value> cookie across all
+/// Set-Cookie headers.
+fn urbauth_from_headers<'a>(headers: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    headers.into_iter().find_map(|sc| {
+        let ck = sc.split(';').next().unwrap_or("").trim();
+        ship_of(ck).map(|_| ck.to_string())
+    })
 }
 
 /// Write `cookie` as the session for `url`. Temp file and rename, so a
@@ -95,7 +109,9 @@ pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<(), 
         .create(dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?;
     let name = path.file_name().ok_or("no file name")?.to_string_lossy();
-    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    static TMP_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".{name}.{}-{seq}.tmp", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     let res = std::fs::OpenOptions::new()
         .write(true)
@@ -143,12 +159,11 @@ pub fn login(base: &str, code: &str) -> Result<String, String> {
         Err(ureq::Error::Status(_, _)) => return Err("login failed: wrong +code?".into()),
         Err(e) => return Err(format!("login error: {e}")),
     };
-    let sc = resp.header("set-cookie").ok_or("login: no Set-Cookie")?;
-    let ck = sc.split(';').next().unwrap_or("").trim().to_string();
-    if ship_of(&ck).is_none() {
-        return Err("login: no urbauth cookie".into());
+    let headers = resp.all("set-cookie");
+    if headers.is_empty() {
+        return Err("login: no Set-Cookie".into());
     }
-    Ok(ck)
+    urbauth_from_headers(headers).ok_or_else(|| "login: no urbauth cookie".into())
 }
 
 /// One time, on launch: builds before per-target cookies kept the session
@@ -270,6 +285,51 @@ mod tests {
         assert_eq!(ship_of("urbauth-~zod=0v1.abc").as_deref(), Some("~zod"));
         assert_eq!(ship_of("session=1"), None);
         assert_eq!(ship_of("urbauth-=1"), None);
+        assert_eq!(ship_of("urbauth-~zod="), None, "empty value must be refused");
+        assert_eq!(ship_of("urbauth-~zod"), None, "missing '=' must be refused");
+        assert_eq!(ship_of("urbauth-notaship=0v1"), None, "non-@p must be refused");
+        assert_eq!(ship_of("urbauth-~../evil=0v1"), None, "path chars must be refused");
+    }
+
+    #[test]
+    fn login_scans_all_set_cookie_headers_for_valid_urbauth() {
+        let headers = [
+            "cf_clearance=abc; Path=/; HttpOnly",
+            "urbauth-~zod=; Max-Age=0; Path=/",
+            "urbauth-bad=123; Path=/",
+            "urbauth-~sampel-palnet=0v1.xyz; Path=/; HttpOnly",
+        ];
+        assert_eq!(
+            urbauth_from_headers(headers).as_deref(),
+            Some("urbauth-~sampel-palnet=0v1.xyz")
+        );
+        assert_eq!(urbauth_from_headers(["session=1", "urbauth-~zod=; Max-Age=0"]), None);
+    }
+
+    #[test]
+    fn concurrent_write_private_calls_do_not_collide() {
+        let dir = std::env::temp_dir().join(format!("lattice-session-conc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("shared");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let p = path.clone();
+                let b = barrier.clone();
+                std::thread::spawn(move || {
+                    b.wait();
+                    for j in 0..20 {
+                        write_private(&p, format!("t{i}-{j}").as_bytes()).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert!(path.exists());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no leftover tmp files");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
