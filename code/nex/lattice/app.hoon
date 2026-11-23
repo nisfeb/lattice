@@ -13114,7 +13114,7 @@
     ;:  weld  (slag 1 (spud pax))
       " is a folder: its page was deleted on its own, and the "
       (a-co:co u.kept)  ?:(=(1 u.kept) " page" " pages")
-      " under it stay. tree=1 deletes them too"
+      " under it stay. To delete the folder and all of them, send tree=1 with the delete"
     ==
   ;<  ~  bind:m  (poke-eval ?:(tree [%del pax] [%del-page pax]))
   ::  a name still there is a page that left what was under it: the

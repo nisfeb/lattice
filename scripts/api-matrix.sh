@@ -803,7 +803,7 @@ is "an empty tree= is refused"              400 "$(sc -X POST "$B/page-del?name=
 has "  and nothing went"                    'body zb' "$(G "$B/page-source?name=$E/zb")"
 is "a page with pages under it, alone"      200 "$(sc -X POST "$B/page-del?name=$E/tw")"
 is "  the same delete again is refused"     409 "$(sc -X POST "$B/page-del?name=$E/tw")"
-has "  and says how to take what is under it" 'tree=1' "$(G -X POST "$B/page-del?name=$E/tw")"
+has "  and says how to take what is under it" 'send tree=1 with the delete' "$(G -X POST "$B/page-del?name=$E/tw")"
 has "  the page under it stays"             'body tw/k' "$(G "$B/page-source?name=$E/tw/k")"
 has "  and the one two down"                'body tw/sub/deep' "$(G "$B/page-source?name=$E/tw/sub/deep")"
 is "  tree=1 takes them"                    200 "$(sc -X POST "$B/page-del?name=$E/tw&tree=1")"
