@@ -192,13 +192,10 @@
   }
   function goHeading(line, idx) {
     if ($('ws').classList.contains('vp')) {
-      let doc = null;
-      try { doc = prev.contentDocument; } catch {}
-      const el = doc && doc.querySelectorAll('h1, h2, h3, h4, h5, h6')[idx];
-      if (el) el.scrollIntoView({ block: 'start' });
+      if (prev && prev.contentWindow) prev.contentWindow.postMessage({ latHeading: idx }, '*');
       return;
     }
-    if (wr) return wr.heading(idx);
+    if (wr) { if (wr.heading) wr.heading(idx); return; }
     const lines = src.value.split('\n');
     let off = 0;
     for (let i = 0; i < line - 1 && i < lines.length; i++) off += lines[i].length + 1;

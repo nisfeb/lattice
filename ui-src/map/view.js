@@ -906,6 +906,15 @@ export function mount(host, opts = {}) {
     if (a.value === a._v0) return true;
     return a.onchange() !== false;
   };
+  //  the outline's nth entry is the nth named feature (core.js outline)
+  ctl.heading = (idx) => {
+    let seen = 0;
+    for (let i = 0; i < doc.features.length; i++) {
+      if (!props(doc.features[i]).name) continue;
+      if (seen === idx) { select(i, true); return; }
+      seen++;
+    }
+  };
   ctl.destroy = () => {
     dead = true;
     off.abort();

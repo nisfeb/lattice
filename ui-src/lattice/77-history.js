@@ -127,11 +127,14 @@
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
     if (!(await guardDirty())) return;
+    const want = current, wasMode = mode, my = openNext();
+    if (!want) return;
     let d = null;
     try {
-      const r = await busyFetch(mode === 'know'
-        ? api + '/know-read-at?key=' + encodeURIComponent(current) + '&rev=' + rev
-        : api + '/page-source-at?name=' + encodeURIComponent(current) + '&rev=' + rev);
+      const r = await busyFetch(wasMode === 'know'
+        ? api + '/know-read-at?key=' + encodeURIComponent(want) + '&rev=' + rev
+        : api + '/page-source-at?name=' + encodeURIComponent(want) + '&rev=' + rev);
+      if (my !== openSeq || current !== want || mode !== wasMode) return;
       if (!r.ok) {
         st('revision load failed' + await errText(r), false);
         // prune-hist coalesces revisions inside its window on every save, so
@@ -141,10 +144,14 @@
         return;
       }
       d = await r.json();
-    } catch { st('revision load failed (network)', false); return; }
+    } catch {
+      if (my === openSeq && current === want && mode === wasMode) st('revision load failed (network)', false);
+      return;
+    }
+    if (my !== openSeq || current !== want || mode !== wasMode) return;
     viewingRev = rev;
     // restore under the REVISION's own kind. Memories carry no kind at all
-    revKind = mode === 'know' ? null : (d.kind === 'index' ? 'md' : d.kind);
+    revKind = wasMode === 'know' ? null : (d.kind === 'index' ? 'md' : d.kind);
     dirty = false;
     src.value = d.body;
     src.readOnly = true;
@@ -153,7 +160,7 @@
     for (const a of histList.children)
       a.className = +a.dataset.rev === rev ? 'on' : '';
     st('viewing ' + (lbl || 'an earlier version') + ' \u00b7 read-only');
-    if (mode !== 'know' && CONTENT()) refreshPreview();
+    if (wasMode !== 'know' && CONTENT()) refreshPreview();
   }
   $('hback').onclick = () => {
     exitRev();

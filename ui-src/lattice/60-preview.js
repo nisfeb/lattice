@@ -202,7 +202,7 @@
   const previewFit = () => {
     if (prev) { scrollHold(); prev.style.minHeight = ''; }
     return outsideGuard() + previewScrollbars()
-      + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)})})()</script>';
+      + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)});addEventListener("message",function(e){if(e.source!==parent)return;var m=e.data;if(!m||typeof m.latHeading!=="number")return;var h=document.querySelectorAll("h1,h2,h3,h4,h5,h6")[m.latHeading];if(!h)return;h.scrollIntoView({block:"start"});parent.postMessage({latHeadingY:Math.max(0,h.getBoundingClientRect().top+scrollY)},"*")})})()</script>';
   };
   // `ours`: the document is lattice's own render (the ship's reader css), so
   // it takes the theme's colours too. A user's html page keeps its own.
@@ -259,7 +259,7 @@
     mdBlocked = false;
     mdOutside = outsideOn(current);
     mdGhosts = ghostTest();
-    try { return localHtml(kindNow(), src.value, tasks); } finally { mdGhosts = null; }
+    try { return localHtml(kindNow(), src.value, tasks); } finally { mdGhosts = null; mdOutside = false; }
   };
   // ── links to pages not written yet ──────────────────────────────────────
   // A wikilink is dimmed when it names a page this ship could have and has
@@ -355,6 +355,7 @@
     const m = e.data;
     if (m && m.latOutside) outShow(true);
     if (m && Number.isInteger(m.latTask) && m.latTask >= 0) taskFlip(m.latTask, !!m.on, m.h);
+    if (m && typeof m.latHeadingY === 'number' && prev.parentNode) prev.parentNode.scrollTop = m.latHeadingY;
   });
   // the bare document a content kind's local render goes into. `fit` is
   // the height reporter, which only the live preview has.

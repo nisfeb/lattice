@@ -17,8 +17,11 @@
   const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'fods', 'geojson', 'scad', 'js', 'css', 'hoon'];
   // what pdf.js lays out: `html` is a fragment, or a whole document when
   // `doc` is set (an html page, a Writer document)
-  async function pdfBody(kind, body) {
-    if (kind === 'md') return { html: mdToHtml(body) };
+  async function pdfBody(kind, body, name) {
+    if (kind === 'md') {
+      mdOutside = outsideOn(name);
+      try { return { html: mdToHtml(body) }; } finally { mdOutside = false; }
+    }
     if (kind === 'gmi') return { html: gmiToHtml(body) };
     if (kind === 'text') return { html: '<pre class="text">' + mdEsc(body) + '</pre>' };
     if (kind === 'html') return { html: body, doc: true };
@@ -48,9 +51,9 @@
     if (!PDF_KINDS.includes(kind)) { st('no PDF for a ' + kind + ' page', false); return; }
     stWork('preparing PDF…');
     try {
-      const r = await pdfBody(kind, body);
+      const r = await pdfBody(kind, body, name);
       const P = await pdfReady();
-      const out = await P.save(Object.assign(r, { title: String(name).split('/').pop() || 'page' }));
+      const out = await P.save(Object.assign(r, { title: String(name).split('/').pop() || 'page', outside: outsideOn(name) }));
       st(out.path ? 'saved ' + out.path : out.cancelled ? 'PDF not saved' : 'PDF ready to print');
     } catch (e) {
       st('PDF: ' + String(e && e.message ? e.message : e).slice(0, 160), false);

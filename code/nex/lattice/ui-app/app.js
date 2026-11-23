@@ -4,13 +4,13 @@
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
 const WRITER_H = '0v1.oeihn.h47ui.s0kd2.qk8a7.9s5i7';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
-const SHEET_H = '0v2.tvqvm.q4h9c.2dhgi.th80c.07jfr';
+const SHEET_H = '0vn4nb7.a78dr.co17h.6mnuh.sls6l';
 // and map.js's, the map view (26-writer.js)
-const MAP_H = '0v1.ovhm4.m8gme.njo4b.e5g5o.i11kg';
+const MAP_H = '0v2.qvi4q.9l1pi.jq76v.0pi55.tqmdd';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)
 const SCAD_H = '0v4.50udo.0qbj6.9njfd.j9can.rl7ma';
 // and pdf.js's (78-pdf.js)
-const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
+const PDF_H = '0vsfmrl.oc0ab.tuss5.vl8kv.smcmm';
 // and skills.js's (95s-skills.js)
 const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
@@ -1517,14 +1517,15 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return !dirty;
   }
   async function flushNoAsk() {
-    if (!dirty) return true;
+    const synced = writerSync();
+    if (!dirty) return synced;
     if (grubPath) return false;
     await waitSave();
-    if (!dirty) return true;
+    if (!dirty) return synced;
     if (!saving && autosaveOn()) {
       if (mode === 'know') await saveKnow(); else await save();
     }
-    return !dirty;
+    return synced && !dirty;
   }
   async function waitSave() {
     const t0 = Date.now();
@@ -7197,10 +7198,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const shipText = new Map();
   const freshPending = new Map();
   const paintRev = new Map();
-  function reconcileFresh(name, painted, d) {
+  async function reconcileFresh(name, painted, d) {
     freshPending.delete(name);
+    if (await offGet(name)) return;
     if (!d || typeof d.body !== 'string' || typeof painted !== 'string') return;
     if (current !== name || mode === 'know' || grubPath) return;
+    if (wrLive() && wr.editing && wr.editing()) return;
     curRev = isRev(d.rev) ? d.rev : null;
     shipText.set(name, d.body);
     if (d.body === (painted || '\n')) return;   // an empty paint is the ship's one newline
@@ -7598,6 +7601,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     lockBar.hidden = !ro;
     if (ro) src.readOnly = true;
     else if (lockName && current === lockName && viewingRev === null) src.readOnly = linkRO(current);
+    writerFollow();
   }
   function letGo() {
     if (lockWait) { lockWait.abort(); lockWait = null; }
@@ -7641,9 +7645,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const m = e.data || {};
     if (!m.give || !lockHeld || m.give !== lockName) return;
     const name = lockName;
-    await flushNoAsk();
+    if (!(await flushNoAsk())) {
+      if (dirty) st('could not hand over ' + name + ': save your changes first', false);
+      return;
+    }
     await savesSettled();
-    if (lockName !== name || !lockHeld) return;
+    if (lockName !== name || !lockHeld || dirty) return;
     letGo();
     lockName = null;
     editLock(name);
@@ -8086,6 +8093,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     } catch {}
   };
   const remoteUrl = (u) => /^(https?:)?[\/\\]{2}/i.test(mdUnesc(u).trim());
+  const sameOrigin = (u) => {
+    if (!remoteUrl(u)) return true;
+    const o = typeof location !== 'undefined' && location && location.origin;
+    if (!o || o === 'null') return false;
+    try { return new URL(mdUnesc(u).trim(), o).origin === o; } catch { return false; }
+  };
   const routeUrl = (u) => {
     const s = mdUnesc(u), q = s.indexOf('?');
     return q >= 0 && s.slice(q + 1) !== 'data';
@@ -8118,7 +8131,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         return tag('<span class="ximg">[image from another site' + (alt ? ': ' + alt : '') + ']</span>');
       }
       const h = mdHref(u);
-      if (h && !remoteUrl(u) && routeUrl(u)) return tag('<a href="' + h + '">') + (alt || h) + '</a>';
+      if (h && sameOrigin(u) && routeUrl(u)) return tag('<a href="' + h + '">') + (alt || h) + '</a>';
       return h ? tag('<img alt="' + alt + '" src="' + h + '">') : m;
     });
     s = s.replace(LINK_RE, (m, txt, u) => {
@@ -8412,7 +8425,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const previewFit = () => {
     if (prev) { scrollHold(); prev.style.minHeight = ''; }
     return outsideGuard() + previewScrollbars()
-      + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)})})()</script>';
+      + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)});addEventListener("message",function(e){if(e.source!==parent)return;var m=e.data;if(!m||typeof m.latHeading!=="number")return;var h=document.querySelectorAll("h1,h2,h3,h4,h5,h6")[m.latHeading];if(!h)return;h.scrollIntoView({block:"start"});parent.postMessage({latHeadingY:Math.max(0,h.getBoundingClientRect().top+scrollY)},"*")})})()</script>';
   };
   const withPreviewScrollbars = (html, ours) => {
     const head = /<head\b[^>]*>/i.exec(html);
@@ -8441,7 +8454,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     mdBlocked = false;
     mdOutside = outsideOn(current);
     mdGhosts = ghostTest();
-    try { return localHtml(kindNow(), src.value, tasks); } finally { mdGhosts = null; }
+    try { return localHtml(kindNow(), src.value, tasks); } finally { mdGhosts = null; mdOutside = false; }
   };
   let gtKey = [], gtFn = null;
   const ghostTest = () => {
@@ -8516,6 +8529,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const m = e.data;
     if (m && m.latOutside) outShow(true);
     if (m && Number.isInteger(m.latTask) && m.latTask >= 0) taskFlip(m.latTask, !!m.on, m.h);
+    if (m && typeof m.latHeadingY === 'number' && prev.parentNode) prev.parentNode.scrollTop = m.latHeadingY;
   });
   const localShell = (fit) => '<!doctype html><meta charset="utf-8"><base target="_top">'
         + '<style>:root{color-scheme:light dark}'
@@ -9183,7 +9197,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       const sole = !curFolder && (g.peek.includes(path + '/dir-index')
         || nodes.some((x) => !x.page && x.path === target));
       const grant = sole ? path + '/code' : path;
-      const names = (x) => x === grant || x === path + '/code';
+      const names = curFolder ? (x) => x === path : (x) => x === grant || x === path + '/code';
       const canRead = g.peek.some(names);
       const canEdit = g.make.some(names);
       mk('read', canRead, () => {
@@ -9695,6 +9709,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       const part = list.slice(i, i + CHUNK);
       let r = null;
       const payload = [];
+      let readFails = 0;
       try {
         for (const it of part) {
           let c;
@@ -9702,22 +9717,24 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           else if (it.csv) c = (await writerReady('fods')).importCsv(await it.file.text());
           else c = { text: await it.file.text() };
           if (c.error || c.note) upErr.textContent += it.name + ': ' + (c.error || c.note) + '\n';
-          if (c.error) { fails++; continue; }
+          if (c.error) { fails++; readFails++; continue; }
           payload.push({ name: it.name, type: it.kind, body: c.text || '\n' });
           upProg(done + payload.length, list.length, it.name, 'reading');
         }
+        if (!payload.length) { done += part.length; continue; }
         r = await mutate(api + '/page-save-batch',
           { method: 'POST', body: JSON.stringify(payload) });
       } catch {}
       if (!r || !r.ok) {
-        fails += part.length;
+        const lost = payload.length || (part.length - readFails);
+        fails += lost;
         let msg = r ? r.status : 'network';
         if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
-        const names = part.map((it) => it.name);
+        const names = (payload.length ? payload : part).map((it) => it.name);
         const held = names.length > 6
           ? names.slice(0, 6).join(', ') + ', and ' + (names.length - 6) + ' more'
           : names.join(', ');
-        upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n  ${held}\n`;
+        upErr.textContent += `failed: ${lost} file(s) — ${msg}\n  ${held}\n`;
       } else {
         for (const it of payload) {
           pageCache.delete(it.name);
@@ -9797,6 +9814,17 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   const TEX_DROP = 'script,style,iframe,frame,object,embed,video,audio,source,track,form,base,meta,link,svg';
   const TEX_SRC = ['src', 'srcset', 'poster', 'action', 'formaction', 'data', 'background'];
+  const texBadStyle = (val) => {
+    const s = String(val || '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\\([0-9a-f]{1,6})\s?/gi, (_, h) => {
+      const c = parseInt(h, 16);
+      return c > 0 && c <= 0x10ffff ? String.fromCodePoint(c) : '';
+    }).replace(/\\(.)/g, '$1');
+    return /@import|(?:url|image-set|expression)\s*\(/i.test(s);
+  };
+  const texBadQuery = (v) => {
+    const h = v.split('#')[0], q = h.indexOf('?');
+    return q >= 0 && h.slice(q + 1) !== 'data';
+  };
   function cleanTexHtml(html) {
     const t = document.createElement('template');
     t.innerHTML = html;
@@ -9807,8 +9835,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         const v = a.value.replace(/[\u0000-\u0020]/g, '').replace(/\\/g, '/');
         const abs = /^[a-z][a-z0-9+.-]*:|^\/\//i.test(v);
         const bad = n.startsWith('on')
+          || n === 'ping'
+          || n === 'srcset'
+          || (n === 'style' && texBadStyle(a.value))
           || ((n === 'href' || n === 'xlink:href') && abs && !/^(https?|mailto):/i.test(v))
-          || (TEX_SRC.includes(n) && abs);
+          || (TEX_SRC.includes(n) && (abs || texBadQuery(v)));
         if (bad) e.removeAttribute(a.name);
       }
     }
@@ -11034,13 +11065,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   function goHeading(line, idx) {
     if ($('ws').classList.contains('vp')) {
-      let doc = null;
-      try { doc = prev.contentDocument; } catch {}
-      const el = doc && doc.querySelectorAll('h1, h2, h3, h4, h5, h6')[idx];
-      if (el) el.scrollIntoView({ block: 'start' });
+      if (prev && prev.contentWindow) prev.contentWindow.postMessage({ latHeading: idx }, '*');
       return;
     }
-    if (wr) return wr.heading(idx);
+    if (wr) { if (wr.heading) wr.heading(idx); return; }
     const lines = src.value.split('\n');
     let off = 0;
     for (let i = 0; i < line - 1 && i < lines.length; i++) off += lines[i].length + 1;
@@ -11196,20 +11224,27 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   async function openRev(rev, lbl) {
     if (!(await guardDirty())) return;
+    const want = current, wasMode = mode, my = openNext();
+    if (!want) return;
     let d = null;
     try {
-      const r = await busyFetch(mode === 'know'
-        ? api + '/know-read-at?key=' + encodeURIComponent(current) + '&rev=' + rev
-        : api + '/page-source-at?name=' + encodeURIComponent(current) + '&rev=' + rev);
+      const r = await busyFetch(wasMode === 'know'
+        ? api + '/know-read-at?key=' + encodeURIComponent(want) + '&rev=' + rev
+        : api + '/page-source-at?name=' + encodeURIComponent(want) + '&rev=' + rev);
+      if (my !== openSeq || current !== want || mode !== wasMode) return;
       if (!r.ok) {
         st('revision load failed' + await errText(r), false);
         if (r.status === 404) loadHistory();
         return;
       }
       d = await r.json();
-    } catch { st('revision load failed (network)', false); return; }
+    } catch {
+      if (my === openSeq && current === want && mode === wasMode) st('revision load failed (network)', false);
+      return;
+    }
+    if (my !== openSeq || current !== want || mode !== wasMode) return;
     viewingRev = rev;
-    revKind = mode === 'know' ? null : (d.kind === 'index' ? 'md' : d.kind);
+    revKind = wasMode === 'know' ? null : (d.kind === 'index' ? 'md' : d.kind);
     dirty = false;
     src.value = d.body;
     src.readOnly = true;
@@ -11218,7 +11253,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     for (const a of histList.children)
       a.className = +a.dataset.rev === rev ? 'on' : '';
     st('viewing ' + (lbl || 'an earlier version') + ' \u00b7 read-only');
-    if (mode !== 'know' && CONTENT()) refreshPreview();
+    if (wasMode !== 'know' && CONTENT()) refreshPreview();
   }
   $('hback').onclick = () => {
     exitRev();
@@ -11354,8 +11389,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       document.head.append(s);
     })));
   const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'fods', 'geojson', 'scad', 'js', 'css', 'hoon'];
-  async function pdfBody(kind, body) {
-    if (kind === 'md') return { html: mdToHtml(body) };
+  async function pdfBody(kind, body, name) {
+    if (kind === 'md') {
+      mdOutside = outsideOn(name);
+      try { return { html: mdToHtml(body) }; } finally { mdOutside = false; }
+    }
     if (kind === 'gmi') return { html: gmiToHtml(body) };
     if (kind === 'text') return { html: '<pre class="text">' + mdEsc(body) + '</pre>' };
     if (kind === 'html') return { html: body, doc: true };
@@ -11382,9 +11420,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!PDF_KINDS.includes(kind)) { st('no PDF for a ' + kind + ' page', false); return; }
     stWork('preparing PDF…');
     try {
-      const r = await pdfBody(kind, body);
+      const r = await pdfBody(kind, body, name);
       const P = await pdfReady();
-      const out = await P.save(Object.assign(r, { title: String(name).split('/').pop() || 'page' }));
+      const out = await P.save(Object.assign(r, { title: String(name).split('/').pop() || 'page', outside: outsideOn(name) }));
       st(out.path ? 'saved ' + out.path : out.cancelled ? 'PDF not saved' : 'PDF ready to print');
     } catch (e) {
       st('PDF: ' + String(e && e.message ? e.message : e).slice(0, 160), false);
@@ -11465,12 +11503,32 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return (from ? '…' : '') + body.slice(from, to).replace(/\s+/g, ' ') + (to < body.length ? '…' : '');
   };
 
+  const geoFallback = (b) => {
+    try {
+      const d = JSON.parse(b);
+      if (!d || typeof d !== 'object') return '';
+      const out = [];
+      if (d.lattice && typeof d.lattice.title === 'string') out.push(d.lattice.title);
+      for (const f of Array.isArray(d.features) ? d.features : []) {
+        const pr = f && f.properties;
+        if (!pr || typeof pr !== 'object') continue;
+        for (const key of ['name', 'kind', 'note']) if (typeof pr[key] === 'string' && pr[key]) out.push(pr[key]);
+      }
+      return out.join('\n');
+    } catch { return ''; }
+  };
   const qTx = new Map();
   const searchText = (k, b, p) => {
     if (!isRich(k)) return b;
+    const lib = richLib(k), has = !!lib;
     let m = qTx.get(p);
-    if (!m || m[0] !== b) qTx.set(p, m = [b, richLib(k) ? richLib(k).extract.text(b) : (b.split('<office:body>')[1] || '')
-      .replace(/<\/text:[ph]>|<text:(s|tab|line-break)\b[^>]*>/g, ' ').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&')]);
+    if (!m || m[0] !== b || m[2] !== has || m[3] !== k) {
+      const tx = lib ? lib.extract.text(b)
+        : k === 'geojson' ? geoFallback(b)
+        : (b.split('<office:body>')[1] || '')
+          .replace(/<\/text:[ph]>|<text:(s|tab|line-break)\b[^>]*>/g, ' ').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&');
+      qTx.set(p, m = [b, tx, has, k]);
+    }
     return m[1];
   };
   const qHit = (key, body, q, scope, know) => {
@@ -11816,6 +11874,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 // ── src/90-sync.js ────────────────────────────────────────────────────────
   async function refreshOpen() {
     if (!current || curFolder || dirty || document.hidden || viewingRev !== null) return;
+    if (wrLive() && wr.editing && wr.editing()) return;
     const wasCurrent = current, wasMode = mode;
     const shown = src.value;
     if (await offGet(mode === 'know' ? 'know:' + current : current)) return;
@@ -11831,7 +11890,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       else d = await r.json();
     } catch { return; }
     if (dirty || current !== wasCurrent || mode !== wasMode) return;
-    if (curFolder || viewingRev !== null) return;
+    if (curFolder || viewingRev !== null || (wrLive() && wr.editing && wr.editing())) return;
     if (src.value !== shown) return;
     if (mode !== 'know' && d && isRev(d.rev) && d.rev < baseFor(wasCurrent, curRev)) return;
     if (notFound) {

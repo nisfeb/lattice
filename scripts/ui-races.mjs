@@ -922,6 +922,26 @@ cases.shareFolderPage = async () => {
   await click('read');
   await waitFor(() => x.S.log.filter((e) => e.path === 'share-group-save').length >= 3, 5000, 100);
   check('a page with no folder is granted by its own path', lastSave().peek.includes(BASE + '/page/solo') && !lastSave().peek.some((l) => /solo\/code/.test(l)), JSON.stringify(lastSave().peek));
+  //  a folder share toggle only matches its own path, never a page-only /code
+  //  grant at the same path
+  x.S.v2 = true;
+  x.S.groups = [{ name: 'crew', ships: [], peek: [BASE + '/page/a/code'], make: [BASE + '/page/a/code'], poke: [], opaque: 0 }];
+  await p.reload({ waitUntil: 'domcontentloaded' });
+  await waitFor(() => p.evaluate(() => !!document.querySelector('#treelist [data-tk="f:a"] .fln')), 15000, 100);
+  await p.evaluate(() => { window.latShell.paneOpen('r', true); window.latShell.paneTab('r', 'page'); });
+  await p.click('#treelist [data-tk="f:a"] .fln');
+  await waitFor(async () => (await rowBtn('read')) !== null, 15000, 100);
+  check.eq('a page /code grant does not mark the folder read', await rowBtn('read'), '');
+  check.eq('nor folder edit', await rowBtn('edit'), '');
+  let savesBefore = x.S.log.filter((e) => e.path === 'share-group-save').length;
+  await click('read');
+  await waitFor(() => x.S.log.filter((e) => e.path === 'share-group-save').length > savesBefore, 5000, 100);
+  check.eq('folder read on adds the folder path and keeps the page /code grant', JSON.stringify(lastSave().peek), JSON.stringify([BASE + '/page/a/code', BASE + '/page/a']));
+  await waitFor(async () => (await rowBtn('read')) === 'on', 5000, 100);
+  savesBefore = x.S.log.filter((e) => e.path === 'share-group-save').length;
+  await click('read');
+  await waitFor(() => x.S.log.filter((e) => e.path === 'share-group-save').length > savesBefore, 5000, 100);
+  check.eq('folder read off removes only the folder path and keeps the page /code grant', JSON.stringify(lastSave().peek) + JSON.stringify(lastSave().make), JSON.stringify([BASE + '/page/a/code']) + JSON.stringify([BASE + '/page/a/code']));
   //  the access pane does not list the index line, and sends it back
   await p.evaluate(() => window.latTabs.openIn('acl', '', {})).catch(() => {});
   await p.evaluate(() => document.getElementById('aclopen') && document.getElementById('aclopen').click());
@@ -1066,6 +1086,342 @@ cases.vimAstral = async () => {
   //  { from a text that starts with an empty line ends
   await run('\nab', 1, ['{'], '\nab', 0);
   await run('a\n\nab', 3, ['{'], 'a\n\nab', 2);
+  await x.done();
+};
+
+//  Outside-content permission on one page never leaks globally, same-origin
+//  absolute and protocol-relative image queries are blocked as routes, and
+//  PDF export strips active elements, CSS urls, and unauthorized fetches.
+cases.outsideAndPdf = async () => {
+  const x = await up({ 'n/a': 'placeholder\n', 'n/b': '![ext](https://other.example/b.png)\n' }, '?name=n/a');
+  const origin = new URL(x.url).origin;
+  const host = new URL(x.url).host;
+  const mdA = `![ext](https://other.example/a.png)\n![abs](${origin}/apps/lattice/clip?url=https://evil.example/1)\n![rel](//${host}/apps/lattice/clip?url=https://evil.example/2)\n`;
+  const htmlDoc = '<!doctype html><html><head><style>@import url(https://evil.example/i.css); h1 { color: #246; background: url(/apps/lattice/clip?url=4); }</style></head>'
+    + '<body><h1>Title</h1><p style="background:url(https://evil.example/bg);color:#123">Hello PDF</p>'
+    + '<img src="/apps/lattice/clip?url=https://evil.example/csrf" alt="csrf">'
+    + '<img src="/apps/lattice/f/ok.svg?data" alt="okdata">'
+    + '<img src="https://evil.example/track.png" alt="track">'
+    + '<link rel="stylesheet" href="https://evil.example/ext.css">'
+    + '<link rel="stylesheet" href="/apps/lattice/clip?url=https://evil.example/css">'
+    + '<iframe src="/apps/lattice/clip?url=3"></iframe><object data="x"></object><embed src="x"><svg><script>1</script></svg>'
+    + '</body></html>';
+  x.S.put('n/a', mdA, 'md');
+  x.S.put('n/h', htmlDoc, 'html');
+  x.S.hook = async (ev) => {
+    if (ev.path === 'f/ok.svg') return { code: 200, body: '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>' };
+    return null;
+  };
+  const p = x.page;
+  await p.evaluate(() => { localStorage.latOutside = JSON.stringify(['n/a']); });
+  await p.goto(x.url + '?name=n/a', { waitUntil: 'domcontentloaded' });
+  await waitFor(async () => (await ed(p)).includes('other.example/a.png'), 10000, 100);
+  await ctrlKey(p, 'e');
+  await waitFor(() => p.evaluate(() => {
+    const f = document.getElementById('prev');
+    return f && f.getAttribute('srcdoc') && f.getAttribute('srcdoc').includes('other.example/a.png');
+  }), 10000, 100);
+  const prevDoc = await p.evaluate(() => document.getElementById('prev').getAttribute('srcdoc') || '');
+  check('same-origin absolute clip image becomes a link, not an img', !/<img[^>]*clip\?url/.test(prevDoc) && prevDoc.includes(`href="${origin}/apps/lattice/clip?url=https://evil.example/1"`), prevDoc.slice(-300));
+  check('same-origin protocol-relative clip image becomes a link, not an img', prevDoc.includes(`href="//${host}/apps/lattice/clip?url=https://evil.example/2"`), prevDoc.slice(-300));
+  check('no clip request fired from the preview', !x.S.log.some((e) => e.path === 'clip'), x.S.log.map((e) => e.path).join(' '));
+  //  export n/b (outside not allowed): mdOutside from n/a must not have leaked
+  await p.evaluate(() => window.latTabs.openIn('page', 'n/b', {}));
+  await waitFor(async () => (await ed(p)).includes('other.example/b.png'), 10000, 100);
+  await p.evaluate(() => { const f = document.querySelector('iframe[data-lat-pdf]'); if (f) f.remove(); });
+  await p.click('#tmenu');
+  await p.waitForSelector('.tmenu [data-mi="pdf"]', { visible: true, timeout: 5000 });
+  await p.click('.tmenu [data-mi="pdf"]');
+  await waitFor(() => p.evaluate(() => {
+    const f = document.querySelector('iframe[data-lat-pdf]');
+    return f && f.getAttribute('srcdoc') && /PDF ready to print/.test(document.getElementById('status').textContent);
+  }), 15000, 100);
+  const bPdf = await p.evaluate(() => document.querySelector('iframe[data-lat-pdf]').getAttribute('srcdoc') || '');
+  check('mdOutside did not leak from n/a into n/b PDF export', !bPdf.includes('<img') && bPdf.includes('image from another site: ext'), bPdf.slice(-260));
+  //  export hostile html page n/h (in Edit mode so the preview frame does not load it)
+  await p.evaluate(() => {
+    const f = document.querySelector('iframe[data-lat-pdf]');
+    if (f) f.remove();
+    const b = document.querySelector('[data-go="edit"]');
+    if (b) b.click();
+  });
+  await waitFor(() => p.evaluate(() => document.getElementById('ws').classList.contains('ve')), 5000, 50);
+  await p.evaluate(() => window.latTabs.openIn('page', 'n/h', {}));
+  await waitFor(async () => (await ed(p)).includes('Hello PDF'), 10000, 100);
+  await sleep(300);
+  const pdfLogAt = x.S.log.length;
+  await p.click('#tmenu');
+  await p.waitForSelector('.tmenu [data-mi="pdf"]', { visible: true, timeout: 5000 });
+  await p.click('.tmenu [data-mi="pdf"]');
+  await waitFor(() => p.evaluate(() => {
+    const f = document.querySelector('iframe[data-lat-pdf]');
+    return f && f.getAttribute('srcdoc') && /PDF ready to print/.test(document.getElementById('status').textContent);
+  }), 15000, 100);
+  const hPdf = await p.evaluate(() => document.querySelector('iframe[data-lat-pdf]').getAttribute('srcdoc') || '');
+  check('pdf export never fetched same-origin query route /clip', !x.S.log.slice(pdfLogAt).some((e) => e.path === 'clip'), x.S.log.slice(pdfLogAt).map((e) => e.path).join(' '));
+  check('pdf export injects the restrictive CSP meta tag', hPdf.includes("default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:;"), hPdf.slice(0, 300));
+  check('pdf export strips iframe, object, embed, svg, and link', !/<(?:iframe|object|embed|svg|link)\b/i.test(hPdf), hPdf.slice(0, 400));
+  check('pdf export strips cross-origin urls, @import, and CSS url()', !/evil\.example|@import|url\(/i.test(hPdf), hPdf);
+  check('pdf export still inlines bare ?data same-origin images', /<img[^>]+src="data:/i.test(hPdf), hPdf);
+  check('pdf export keeps safe print styling and text', hPdf.includes('Hello PDF') && hPdf.includes('#246') && hPdf.includes('#123'), hPdf);
+  const styles = await p.evaluate(() => {
+    const f = document.querySelector('iframe[data-lat-pdf]');
+    const d = f && f.contentDocument;
+    if (!d) return null;
+    return {
+      h1: getComputedStyle(d.querySelector('h1')).color,
+      p: getComputedStyle(d.querySelector('p')).color,
+    };
+  });
+  check('print frame applies inline styles cleanly under the restrictive CSP',
+    !!styles && styles.h1 === 'rgb(34, 68, 102)' && styles.p === 'rgb(17, 34, 51)', JSON.stringify(styles));
+  await x.done();
+};
+
+//  Boot-time bodyRead (reconcileFresh) must not overwrite an IndexedDB queued
+//  edit during the 4s window before queue replay runs.
+cases.bootReconcileQueue = async () => {
+  const x = await up({ 'n/a': 'SERVER-OLD\n' }, '?name=n/a');
+  const p = x.page;
+  await p.evaluate(() => new Promise((res) => {
+    localStorage.appPage = JSON.stringify({ name: 'n/a', body: 'QUEUED-EDIT\n', kind: 'md', rev: 1 });
+    const r = indexedDB.open('lattice-offline');
+    r.onsuccess = () => {
+      const s = r.result.transaction('saves', 'readwrite').objectStore('saves');
+      s.put({ name: 'n/a', kind: 'md', body: 'QUEUED-EDIT\n', baseRev: 1, bv: 1, isNew: false,
+        queuedAt: Date.now(), id: 'boot-q-1', win: 'other', seq: 1 }).onsuccess = () => { r.result.close(); res(); };
+    };
+  }));
+  const logAt = x.S.log.length;
+  await p.reload({ waitUntil: 'domcontentloaded' });
+  await waitFor(() => x.S.log.slice(logAt).some((e) => e.path === 'page-source' && !e.q.render && e.res), 10000, 50);
+  await sleep(800);
+  check.eq('boot reconcileFresh does not overwrite the queued edit', await ed(p), 'QUEUED-EDIT\n');
+  await waitFor(async () => !(await queue(p)).length, 20000, 200);
+  check.eq('queue replay lands the queued edit on the ship', body(x, 'n/a'), 'QUEUED-EDIT\n');
+  await x.done();
+};
+
+//  Switching tabs away from a spreadsheet with an uncommitted cell edit syncs
+//  and saves it through flushNoAsk in parkDoc.
+cases.parkUnwritten = async () => {
+  const FODS = readFileSync(new URL('../tests/sheet/corpus/01-values.fods', import.meta.url), 'utf8');
+  const x = await up({ 's/s': [FODS, 'fods'], 'n/b': 'beta\n' }, '?name=s/s');
+  const p = x.page;
+  await p.evaluate(() => window.latTabs.openIn('page', 'n/b', { newTab: true }));
+  await waitFor(async () => (await ed(p)) === 'beta\n', 8000, 100);
+  await p.evaluate(() => {
+    const s = window.latTabs.list().find((t) => t.key === 's/s');
+    return window.latTabs.switchTab(s.id);
+  });
+  const C = 'lat-sheet:not([hidden]) .ls-c[data-r="6"][data-c="1"]';
+  await waitFor(() => p.$(C), 20000, 100);
+  await sleep(300);
+  await p.click(C);
+  await sleep(200);
+  await p.keyboard.type('PARKED99');
+  await sleep(200);
+  await p.evaluate(() => {
+    const b = window.latTabs.list().find((t) => t.key === 'n/b');
+    return window.latTabs.switchTab(b.id);
+  });
+  await waitFor(() => (body(x, 's/s') || '').includes('PARKED99'), 10000, 100);
+  check('switching tabs syncs and saves the uncommitted cell edit', (body(x, 's/s') || '').includes('PARKED99'), 'saves ' + x.S.saves().length);
+  check.eq('the target tab stays intact', body(x, 'n/b'), 'beta\n');
+  await x.done();
+};
+
+//  A stale revision read landing after the user opened another page must not
+//  overwrite the newly opened page.
+cases.staleRev = async () => {
+  const x = await up({ 'n/a': 'REV1-BODY\n', 'n/b': 'PAGE-B\n' }, '?name=n/a');
+  x.S.put('n/a', 'REV2-BODY\n');
+  let go, held = false;
+  const gate = new Promise((r) => { go = r; });
+  x.S.hook = async (ev, S) => {
+    if (ev.path === 'page-history' && ev.q.name === 'n/a') {
+      return { code: 200, body: { revisions: [{ rev: 2, updated: '' }, { rev: 1, updated: '' }] } };
+    }
+    if (ev.path === 'page-source-at' && ev.q.name === 'n/a' && ev.q.rev === '1') {
+      held = true;
+      await gate;
+      const at = (S.hist.get('n/a') || []).find((r) => r.rev === 1);
+      return { code: 200, body: { body: at.body, kind: 'md', rev: 1 } };
+    }
+    return null;
+  };
+  const p = x.page;
+  await p.evaluate(() => { window.latShell.paneOpen('r', true); window.latShell.paneTab('r', 'hist'); });
+  await waitFor(() => p.evaluate(() => !!document.querySelector('#histlist a[data-rev="1"]')), 10000, 100);
+  await p.click('#histlist a[data-rev="1"]');
+  await waitFor(() => held, 10000, 50);
+  await p.evaluate(() => window.latTabs.openIn('page', 'n/b', {}));
+  await waitFor(async () => (await ed(p)) === 'PAGE-B\n', 8000, 100);
+  go();
+  await sleep(600);
+  check.eq('stale revision response does not overwrite the new page', await ed(p), 'PAGE-B\n');
+  check('editor is not left read-only or in revision mode', await p.evaluate(() => !document.getElementById('src').readOnly && document.getElementById('histview').hidden));
+  await x.done();
+};
+
+//  Losing the edit lock switches rich views to read-only, and a holder with
+//  unsaved edits that cannot flush refuses lock handover.
+cases.lockRichAndUnsaved = async () => {
+  const FODS = readFileSync(new URL('../tests/sheet/corpus/01-values.fods', import.meta.url), 'utf8');
+  let x = await up({ 's/s': [FODS, 'fods'] }, '?name=s/s');
+  await waitFor(() => x.page.$('lat-sheet:not([hidden]) .ls-fx input'), 20000, 100);
+  const w2 = await up(null, '?name=s/s', x);
+  await waitFor(() => w2.page.$('lat-sheet:not([hidden]) .ls-fx input'), 20000, 100);
+  await waitFor(() => w2.page.evaluate(() => !document.getElementById('lockbar').hidden), 10000, 100);
+  await sleep(200);
+  const ro = await w2.page.evaluate(() => {
+    const fx = document.querySelector('lat-sheet:not([hidden]) .ls-fx input');
+    const bold = document.querySelector('lat-sheet:not([hidden]) .ls-bar button[data-look="bold"]');
+    return !!fx && fx.readOnly && !!bold && bold.disabled;
+  });
+  check('losing the edit lock switches the sheet view to read-only', ro);
+  await w2.page.close();
+  await x.done();
+
+  //  autosave off with unsaved edits: holder refuses handover
+  x = await up({ 'n/a': 'alpha\n' }, '?name=n/a');
+  await x.page.evaluate(() => { localStorage.latAutosave = '0'; });
+  await typeEnd(x.page, 'UNSAVED-KEEP');
+  const b2 = await up(null, '?name=n/a', x);
+  await waitFor(() => b2.page.evaluate(() => !document.getElementById('lockbar').hidden), 10000, 100);
+  await b2.page.click('#locktake');
+  await sleep(1200);
+  check('holder keeps its lock and unsaved text when flushNoAsk returns false',
+    await x.page.evaluate(() => document.getElementById('lockbar').hidden && !document.getElementById('src').readOnly)
+    && (await ed(x.page)).includes('UNSAVED-KEEP'));
+  check('requester stays read-only when handover is refused',
+    await b2.page.evaluate(() => !document.getElementById('lockbar').hidden && document.getElementById('src').readOnly));
+  await b2.page.close();
+  await x.done();
+};
+
+//  A background refresh must not tear down and remount Sheet mid-keystroke
+//  while a cell editor is open.
+cases.sheetLiveEditRefresh = async () => {
+  const FODS = readFileSync(new URL('../tests/sheet/corpus/01-values.fods', import.meta.url), 'utf8');
+  const x = await up({ 's/s': [FODS, 'fods'] }, '?name=s/s');
+  const p = x.page;
+  const C = 'lat-sheet:not([hidden]) .ls-c[data-r="6"][data-c="1"]';
+  await waitFor(() => p.$(C), 20000, 100);
+  await sleep(300);
+  await p.click(C);
+  await sleep(200);
+  await p.keyboard.type('TYPING77');
+  await sleep(200);
+  x.S.put('s/s', body(x, 's/s').replace('<text:p>false</text:p>', '<text:p>falseREMOTE</text:p>'), 'fods');
+  const before = x.S.log.length;
+  await p.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await sleep(1200);
+  const alive = await p.evaluate(() => {
+    const e = document.querySelector('lat-sheet:not([hidden]) .ls-ed');
+    return !!e && !e.classList.contains('ls-idle') && e.value === 'TYPING77';
+  });
+  check('background refresh leaves the live sheet cell editor intact', alive, 'reqs ' + (x.S.log.length - before));
+  await p.keyboard.press('Enter');
+  await waitFor(() => (body(x, 's/s') || '').includes('TYPING77'), 10000, 100);
+  check('pressing Enter commits and saves the cell edit', (body(x, 's/s') || '').includes('TYPING77'));
+  await x.done();
+};
+
+//  Map search works before map.js loads, Read-mode outline scrolls the
+//  sandboxed preview frame, and Map outline selects the right named feature.
+cases.outlineAndMapSearch = async () => {
+  const MAP = '{"type":"FeatureCollection","lattice":{},"features":[\n'
+    + '{"type":"Feature","geometry":{"type":"Point","coordinates":[-71.1,42.1]},"properties":{}},\n'
+    + '{"type":"Feature","geometry":{"type":"Point","coordinates":[-71.2,42.2]},"properties":{"name":"Alpha"}},\n'
+    + '{"type":"Feature","geometry":{"type":"Point","coordinates":[-71.3,42.3]},"properties":{"name":"BeaconHill","note":"signal tower"}}\n]}\n';
+  const LONG = '# Top\n\n' + Array.from({ length: 80 }, (_, i) => 'Paragraph line ' + i + ' filler text.').join('\n\n') + '\n\n# Bottom\n\nEnd text.\n';
+  const x = await up({ 'n/a': 'alpha\n', 'm/map': [MAP, 'geojson'], 'n/long': LONG }, '?name=n/a');
+  const p = x.page;
+  //  search finds map features before map.js loads
+  check('map.js is not loaded on a markdown page', await p.evaluate(() => !window.LatMap));
+  await p.evaluate(() => { window.latShell.paneOpen('l', true); window.latShell.paneTab('l', 'search'); });
+  await p.focus('#qinput');
+  await p.keyboard.type('BeaconHill');
+  await waitFor(() => p.evaluate(() => (document.getElementById('qlist').textContent || '').includes('m/map')), 8000, 100);
+  check('search finds map pages before map.js loads', await p.evaluate(() => (document.getElementById('qlist').textContent || '').includes('m/map')));
+  //  Read-mode outline scrolls the preview pane
+  await p.evaluate(() => window.latTabs.openIn('page', 'n/long', {}));
+  await waitFor(async () => (await ed(p)).includes('# Bottom'), 8000, 100);
+  await ctrlKey(p, 'e');
+  await waitFor(() => p.evaluate(() => document.getElementById('ws').classList.contains('vp') && (document.querySelector('#docarea .prevwrap').scrollHeight > 900)), 10000, 100);
+  await p.evaluate(() => { window.latShell.paneOpen('r', true); window.latShell.paneTab('r', 'outline'); });
+  await waitFor(() => p.evaluate(() => [...document.querySelectorAll('#ollist a')].some((a) => a.textContent === 'Bottom')), 8000, 100);
+  await p.evaluate(() => [...document.querySelectorAll('#ollist a')].find((a) => a.textContent === 'Bottom').click());
+  await waitFor(() => p.evaluate(() => document.querySelector('#docarea .prevwrap').scrollTop > 100), 5000, 50);
+  check('Read-mode outline click scrolls the preview wrap', await p.evaluate(() => document.querySelector('#docarea .prevwrap').scrollTop > 100));
+  //  Map outline selects the right named feature (skipping unnamed feature 0)
+  await ctrlKey(p, 'e');
+  await p.evaluate(() => window.latTabs.openIn('page', 'm/map', {}));
+  await waitFor(() => p.$('lat-map:not([hidden]) .lm-list [role=listitem]'), 20000, 100);
+  await p.evaluate(() => { window.latShell.paneOpen('r', true); window.latShell.paneTab('r', 'outline'); });
+  await waitFor(() => p.evaluate(() => [...document.querySelectorAll('#ollist a')].some((a) => a.textContent === 'BeaconHill')), 8000, 100);
+  await p.evaluate(() => [...document.querySelectorAll('#ollist a')].find((a) => a.textContent === 'BeaconHill').click());
+  await waitFor(() => p.evaluate(() => {
+    const i = document.querySelector('lat-map:not([hidden]) .lm-detail [data-k="name"]');
+    return i && i.value === 'BeaconHill';
+  }), 5000, 50);
+  check('map outline selects the matching named feature without throwing', await p.evaluate(() => {
+    const i = document.querySelector('lat-map:not([hidden]) .lm-detail [data-k="name"]');
+    return !!i && i.value === 'BeaconHill';
+  }));
+  await x.done();
+};
+
+//  cleanTexHtml strips ping, CSS url() styles, and relative query URLs, and
+//  uploadItems skips empty batches and reports accurate failure counts.
+cases.texCleanAndUpload = async () => {
+  const x = await up({ 't/doc': ['\\documentclass{article}\n\\begin{document}x\\end{document}\n', 'tex'] }, '?name=t/doc');
+  const p = x.page;
+  await p.evaluate(() => {
+    window.__TAURI__ = {
+      core: {
+        invoke: async (cmd) => {
+          if (cmd === 'pandoc_probe') return { available: true, version: 'pandoc stub' };
+          if (cmd === 'convert_tex') return '<p style="text-align:center">ok</p>'
+            + '<p style="background:url(/apps/lattice/clip?url=1)">badstyle</p>'
+            + '<a href="https://ok.example" ping="https://evil.example/p">link</a>'
+            + '<img src="/apps/lattice/clip?url=2" alt="bad">'
+            + '<img src="/apps/lattice/f/pic.png?data" alt="raw">'
+            + '<img src="fig.png" alt="rel">';
+          return null;
+        },
+      },
+    };
+  });
+  await ctrlKey(p, 'e');
+  await waitFor(() => p.evaluate(() => (document.getElementById('prev').getAttribute('srcdoc') || '').includes('badstyle')), 10000, 100);
+  const doc = await p.evaluate(() => document.getElementById('prev').getAttribute('srcdoc') || '');
+  check('cleanTexHtml strips ping attribute', !doc.includes('ping='), doc);
+  check('cleanTexHtml strips url() inline style', !doc.includes('url(/apps/lattice/clip'), doc);
+  check('cleanTexHtml keeps safe inline style', doc.includes('text-align:center'), doc);
+  check('cleanTexHtml blocks relative query URLs on img src', !doc.includes('/apps/lattice/clip?url=2'), doc);
+  check('cleanTexHtml keeps bare ?data and plain relative img src', doc.includes('/apps/lattice/f/pic.png?data') && doc.includes('src="fig.png"'), doc);
+
+  //  uploadItems: all files fail conversion -> zero /page-save-batch POSTs
+  const feedFiles = (files) => p.evaluate((fs) => {
+    const dt = new DataTransfer();
+    for (const [name, content] of fs) dt.items.add(new File([content], name));
+    const inp = document.getElementById('fpick');
+    inp.files = dt.files;
+    inp.dispatchEvent(new Event('change'));
+  }, files);
+  const batchBefore = x.S.log.filter((e) => e.path === 'page-save-batch').length;
+  await feedFiles([['broken.ods', 'not a zip file']]);
+  await waitFor(() => p.evaluate(() => /done with 1 failures/.test(document.getElementById('upmsg').textContent)), 15000, 100);
+  check.eq('all-failed upload chunk sends no empty batch POST', x.S.log.filter((e) => e.path === 'page-save-batch').length - batchBefore, 0);
+
+  //  uploadItems: 1 broken .ods + 1 valid .md, batch POST fails -> 2 failures (not 3)
+  x.S.hook = async (ev) => (ev.path === 'page-save-batch' ? { code: 500, body: { error: 'boom' } } : null);
+  await feedFiles([['broken2.ods', 'not a zip'], ['good.md', '# hi\n']]);
+  await waitFor(() => p.evaluate(() => /done with \d+ failures/.test(document.getElementById('upmsg').textContent)), 15000, 100);
+  check.eq('failed batch after a conversion error counts payload.length, not part.length',
+    await p.evaluate(() => document.getElementById('upmsg').textContent), 'done with 2 failures');
   await x.done();
 };
 

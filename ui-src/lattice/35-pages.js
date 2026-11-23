@@ -1073,10 +1073,13 @@
   // the one to claim. Text typed on the paint meanwhile is an edit of
   // `painted`: a change made elsewhere since merges into it if it can, or
   // else the typed text is kept as a conflicts/ page, held in the editor.
-  function reconcileFresh(name, painted, d) {
+  async function reconcileFresh(name, painted, d) {
     freshPending.delete(name);
+    // a queued or stashed edit in IndexedDB outranks a boot read from the ship
+    if (await offGet(name)) return;
     if (!d || typeof d.body !== 'string' || typeof painted !== 'string') return;
     if (current !== name || mode === 'know' || grubPath) return;
+    if (wrLive() && wr.editing && wr.editing()) return;
     curRev = isRev(d.rev) ? d.rev : null;
     shipText.set(name, d.body);
     if (d.body === (painted || '\n')) return;   // an empty paint is the ship's one newline

@@ -857,6 +857,7 @@ export function mount(host, opts = {}) {
     if (editing && !closeEd(true, 0, 0, true)) return false;
     return flush();
   };
+  ctl.editing = () => !!editing;
   ctl.setEditable = (on) => { wanted = !!on; if (!wanted && editing) closeEd(false); drawTabs(); bars(); };
   ctl.focus = () => focusGrid();
   ctl.select = (s, r, c) => { if (s !== cur) show(s); select(r, c); };

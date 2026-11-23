@@ -87,7 +87,8 @@
   // answers false at once, and so does everything with autosave off, after
   // waiting out a save already in flight (an explicit one, still landing).
   async function flushNoAsk() {
-    if (!dirty) return true;
+    const synced = writerSync();
+    if (!dirty) return synced;
     if (grubPath) return false;
     // save() coalesces concurrent calls by design. A save already in flight
     // just arms savePending and returns on the spot, so calling save() here
@@ -107,13 +108,13 @@
     //  about to succeed. Capped past tfetch's 30s, since a grub save holds
     //  `saving` with no timeout of its own.
     await waitSave();
-    if (!dirty) return true;
+    if (!dirty) return synced;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
     if (!saving && autosaveOn()) {
       if (mode === 'know') await saveKnow(); else await save();
     }
-    return !dirty;
+    return synced && !dirty;
   }
   async function waitSave() {
     const t0 = Date.now();

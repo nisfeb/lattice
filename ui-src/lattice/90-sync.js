@@ -5,6 +5,7 @@
   // content swap until the page is saved or reopened.
   async function refreshOpen() {
     if (!current || curFolder || dirty || document.hidden || viewingRev !== null) return;
+    if (wrLive() && wr.editing && wr.editing()) return;
     // remember WHAT we are fetching. By the time it lands the user may have opened
     // another page, switched mode, selected a folder, or entered history view.
     // Applying a stale body then would show the wrong content or, across modes,
@@ -28,7 +29,7 @@
       else d = await r.json();
     } catch { return; }
     if (dirty || current !== wasCurrent || mode !== wasMode) return;
-    if (curFolder || viewingRev !== null) return;
+    if (curFolder || viewingRev !== null || (wrLive() && wr.editing && wr.editing())) return;
     //  An answer from before a save of ours must not be painted: it holds
     //  the text from before the edit, the editor would show that as clean,
     //  and the next keystroke would save it over the edit. Answers do come

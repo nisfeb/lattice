@@ -22,6 +22,7 @@ import { makeCheck, read, cut } from './lib/check.mjs';
 // with it. Nothing is marked until a test sets a tree and the preview's
 // test, which is how the PDF and the Skills pane render: unset.
 const MD = `let nodes = [], grubPath = null, current = null, treeGen = 0;
+let location = { origin: 'https://ship.example' };
 let knowKeys = [{ key: '/a-memory' }];
 const linkOf = () => null;
 ${cut('ui-src/lattice/10-shell.js', /const validName = [\s\S]*?\);\n/, 'validName')}
@@ -280,7 +281,18 @@ has('a raw view still draws', '![x](/apps/lattice/x/~zod/p/pic.png?data)', '<img
 has('and so does a plain path', '![x](/pic.png)', '<img alt="x" src="/pic.png">');
 setOutside(true);
 hasnt('outside content allowed does not lift it', CLIP, '<img');
+hasnt('an absolute same-origin image with a query is no image either',
+  '![x](https://ship.example/apps/lattice/clip?url=https://evil.example/t)', '<img');
+has('it becomes a link instead',
+  '![x](https://ship.example/apps/lattice/clip?url=https://evil.example/t)',
+  '<a href="https://ship.example/apps/lattice/clip?url=https://evil.example/t">x</a>');
+hasnt('a protocol-relative same-origin image with a query is no image either',
+  '![x](//ship.example/apps/lattice/clip?url=https://evil.example/t)', '<img');
+has('a same-origin absolute raw ?data view still draws',
+  '![x](https://ship.example/apps/lattice/f/pic.png?data)',
+  '<img alt="x" src="https://ship.example/apps/lattice/f/pic.png?data">');
 has('a remote image keeps its query', '![a](https://x.example/i.png?w=2)', '<img alt="a" src="https://x.example/i.png?w=2">');
+has('a protocol-relative remote image keeps its query', '![a](//x.example/i.png?w=2)', '<img alt="a" src="//x.example/i.png?w=2">');
 setOutside(false);
 check.eq('two spaces before a line end are a break', mdToHtml('a  \nb'), '<p>a<br>\nb</p>');
 check.eq('more than two as well', mdToHtml('a    \nb'), '<p>a<br>\nb</p>');

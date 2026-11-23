@@ -65,6 +65,7 @@
       const part = list.slice(i, i + CHUNK);
       let r = null;
       const payload = [];
+      let readFails = 0;
       try {
         for (const it of part) {
           // an .odt goes through writer.js, an .ods or a .csv through sheet.js
@@ -73,28 +74,28 @@
           else if (it.csv) c = (await writerReady('fods')).importCsv(await it.file.text());
           else c = { text: await it.file.text() };
           if (c.error || c.note) upErr.textContent += it.name + ': ' + (c.error || c.note) + '\n';
-          if (c.error) { fails++; continue; }
+          if (c.error) { fails++; readFails++; continue; }
           payload.push({ name: it.name, type: it.kind, body: c.text || '\n' });
           // the read is awaited one file at a time, so the bar can move with
           // it instead of sitting at 0% for the whole chunk and then jumping
           upProg(done + payload.length, list.length, it.name, 'reading');
         }
+        if (!payload.length) { done += part.length; continue; }
         r = await mutate(api + '/page-save-batch',
           { method: 'POST', body: JSON.stringify(payload) });
       } catch {}
       if (!r || !r.ok) {
-        // the batch is all-or-nothing, so report the whole chunk rather than
-        // implying some of it landed, and name what it held: a count alone
-        // leaves the user diffing the tree by hand to find which files never
-        // made it
-        fails += part.length;
+        // the batch is all-or-nothing, so report the files in the failed batch
+        // rather than double-counting read failures
+        const lost = payload.length || (part.length - readFails);
+        fails += lost;
         let msg = r ? r.status : 'network';
         if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
-        const names = part.map((it) => it.name);
+        const names = (payload.length ? payload : part).map((it) => it.name);
         const held = names.length > 6
           ? names.slice(0, 6).join(', ') + ', and ' + (names.length - 6) + ' more'
           : names.join(', ');
-        upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n  ${held}\n`;
+        upErr.textContent += `failed: ${lost} file(s) — ${msg}\n  ${held}\n`;
       } else {
         // an upload can OVERWRITE an existing page, and the batch's targets
         // live in the POST body where mutate() can't see them — so every

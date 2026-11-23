@@ -64,6 +64,15 @@
   };
   //  Either slash may be written as a backslash: the browser reads both.
   const remoteUrl = (u) => /^(https?:)?[\/\\]{2}/i.test(mdUnesc(u).trim());
+  //  A URL whose resolved origin is this host (relative, //this-host, or
+  //  https://this-host). Route checks apply to all of them, even when
+  //  outside content is allowed.
+  const sameOrigin = (u) => {
+    if (!remoteUrl(u)) return true;
+    const o = typeof location !== 'undefined' && location && location.origin;
+    if (!o || o === 'null') return false;
+    try { return new URL(mdUnesc(u).trim(), o).origin === o; } catch { return false; }
+  };
   //  An image on this host whose address carries a query is a request to
   //  a route, and the browser loads an <img> as the page is drawn, with
   //  the reader's session: /apps/lattice/clip?url=.. made the ship fetch
@@ -138,7 +147,7 @@
         return tag('<span class="ximg">[image from another site' + (alt ? ': ' + alt : '') + ']</span>');
       }
       const h = mdHref(u);
-      if (h && !remoteUrl(u) && routeUrl(u)) return tag('<a href="' + h + '">') + (alt || h) + '</a>';
+      if (h && sameOrigin(u) && routeUrl(u)) return tag('<a href="' + h + '">') + (alt || h) + '</a>';
       return h ? tag('<img alt="' + alt + '" src="' + h + '">') : m;
     });
     s = s.replace(LINK_RE, (m, txt, u) => {

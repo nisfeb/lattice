@@ -435,7 +435,9 @@
       const sole = !curFolder && (g.peek.includes(path + '/dir-index')
         || nodes.some((x) => !x.page && x.path === target));
       const grant = sole ? path + '/code' : path;
-      const names = (x) => x === grant || x === path + '/code';
+      // a folder grant is only its plain path, never a page-only /code grant
+      // at the same path
+      const names = curFolder ? (x) => x === path : (x) => x === grant || x === path + '/code';
       const canRead = g.peek.some(names);
       const canEdit = g.make.some(names);
       mk('read', canRead, () => {
