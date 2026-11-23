@@ -106,6 +106,35 @@ has "conflict match not flagged" '"conflicted":false' "$R2"
 has "conflict match body landed" 'fresh body'         "$(G "$B/know-read?key=$KC")"
 is  "cleanup conflict key"       200 "$(sc -X POST "$B/know-delete?key=$KC")"
 
+echo "==> delete past a stray trash copy, and a delete that cannot"
+# A trash grub with no row in the trash index (a culled one an upgrade
+# brought back) is no deleted memory the owner is offered. A delete runs
+# over it, and a delete refused for a real trashed copy answers an error.
+KB=$(G "$B/streams" | python3 -c 'import json,sys;print(json.load(sys.stdin)["base"])')
+kex() { curl -s -o /dev/null -w '%{http_code}' -H "$CK" -X POST "$URL/grubbery/ball$KB$1" --data-urlencode "action=$2" "${@:3}"; }
+KO="$K-orphan"
+is "orphan: seed"     200 "$(sc -X POST "$B/know-save?key=$KO" --data-binary 'orphan seed')"
+kex /know/trash-vault/apimx create-folder --data-urlencode "foldername=$$-orphan" >/dev/null
+kex "/know/vault/apimx/$$-orphan" copy-grub --data-urlencode filename=entry --data-urlencode "dest=$KB/know/trash-vault/apimx/$$-orphan/entry" >/dev/null
+hasnt "orphan: not in the trash list" "$KO" "$(G "$B/know-trash")"
+is "orphan: delete answers ok"   200 "$(sc -X POST "$B/know-delete?key=$KO")"
+is "orphan: and deleted"         404 "$(sc "$B/know-read?key=$KO")"
+has "orphan: now in the trash"   "$KO" "$(G "$B/know-trash")"
+is "orphan: restores"            200 "$(sc -X POST "$B/know-restore?key=$KO")"
+has "orphan: restored body"      'orphan seed' "$(G "$B/know-read?key=$KO")"
+is "orphan: cleanup"             200 "$(sc -X POST "$B/know-delete?key=$KO")"
+KT="$K-held"
+is "held: seed"            200 "$(sc -X POST "$B/know-save?key=$KT" --data-binary 'first')"
+is "held: delete"          200 "$(sc -X POST "$B/know-delete?key=$KT")"
+is "held: save again"      200 "$(sc -X POST "$B/know-save?key=$KT" --data-binary 'second')"
+is "held: delete refused"  409 "$(sc -X POST "$B/know-delete?key=$KT")"
+has "held: new one stays"  'second' "$(G "$B/know-read?key=$KT")"
+has "held: trash copy kept" "$KT" "$(G "$B/know-trash")"
+is "held: move aside"      200 "$(sc -X POST "$B/know-move?from=$KT&to=$KT-aside")"
+is "held: restore"         200 "$(sc -X POST "$B/know-restore?key=$KT")"
+has "held: restored body"  'first' "$(G "$B/know-read?key=$KT")"
+for x in "$KT" "$KT-aside"; do sc -o /dev/null -X POST "$B/know-delete?key=$x" >/dev/null; done
+
 echo "==> batch save"
 # two new notes, a bad key, and a third that repeats the first: one writer
 # poke, checked like single saves, including against earlier items

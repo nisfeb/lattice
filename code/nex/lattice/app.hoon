@@ -5742,6 +5742,12 @@
     ?:  (~(has by tx) u.ko)
       (send-err eyre-id 409 'a deleted memory with this key is in the trash: restore it, or move this one to another key first')
     ;<  ~  bind:m  (poke-know [%del (spat u.ko)])
+    ::  a poke is acked before the writer reads it and a refusal has no
+    ::  way back, so wait for the writer and answer for what it left
+    ;<  ~  bind:m  writer-sync
+    ;<  left=(unit know-entry:lk)  bind:m  (know-one u.ko)
+    ?^  left
+      (send-err eyre-id 409 'the memory was not deleted: a deleted memory with this key is in the trash, or the writer refused it')
     (send-ok eyre-id)
   ::
       [%'POST' %know-restore]
@@ -23520,15 +23526,22 @@
     ::  a memory saved at the key of one in the trash is a new one (%save),
     ::  and the trash holds one memory a key: deleting the new one would
     ::  write over the deleted one, the copy its owner may still restore
+    ::  Only a copy the trash index lists is one the owner can find and
+    ::  restore. A trash grub with no row (a culled one a ship upgrade
+    ::  brought back, or the copy of a delete that died before its row) is
+    ::  no deleted note to protect: it is written over, and its older
+    ::  revisions stay in the grub's history. Refusing there left the key
+    ::  undeletable for good, and the route answered ok.
     ;<  held=?  bind:m  (peek-exists:fio troad)
-    ?:  held  (refuse "a delete: a deleted note is in the trash at {(spud key)}")
+    ;<  trash=know-index:lk  bind:m  (read-index tx)
+    ?:  &(held (~(has by trash) key))
+      (refuse "a delete: a deleted note is in the trash at {(spud key)}")
     ::  MOVE to the trash vault: write the trash copy first (duplicate-on-crash,
     ::  never lose), then cull the live grub, then swing the index rows.
     ;<  ~  bind:m  (ensure-dirs up tvbase key)
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] u.old)
     ;<  ~  bind:m  (gain:fio troad %.y)
     ;<  ~  bind:m  (cull:fio road)
-    ;<  trash=know-index:lk  bind:m  (read-index tx)
     (put-file tx [/lattice %know-index] (~(put by trash) key (to-index-entry:lk u.old)))
   ::
       %tag    (retag root key.act tag.act %.y)
