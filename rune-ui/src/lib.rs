@@ -988,6 +988,8 @@ struct App {
     bk_tried: HashMap<String, u64>,
     page_req: Latest<Result<Page, String>>,
     save_req: Latest<Result<Page, String>>,
+    /// The read of a moved page's revision, when the tree has not said it in time (`poll`).
+    rev_req: Latest<Result<Page, String>>,
 }
 
 const SAMPLE: &[(&str, &str)] = &[
@@ -1439,6 +1441,7 @@ fn init() -> App {
         bk_tried: HashMap::new(),
         page_req: Latest::default(),
         save_req: Latest::default(),
+        rev_req: Latest::default(),
         conn,
     }
 }
@@ -1802,6 +1805,7 @@ fn reset(s: &mut App, signed: bool) {
     fresh.page_req = std::mem::take(&mut s.page_req);
     s.save_req.cancel();
     fresh.save_req = std::mem::take(&mut s.save_req);
+    s.rev_req.cancel();
     s.login_req.cancel();
     fresh.login_req = std::mem::take(&mut s.login_req);
     s.op_req.cancel();
@@ -2602,6 +2606,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.tree_req.set_waker(waker.clone());
     s.page_req.set_waker(waker.clone());
     s.save_req.set_waker(waker.clone());
+    s.rev_req.set_waker(waker.clone());
     s.drain_req.set_waker(waker.clone());
     s.login_req.set_waker(waker.clone());
     s.hist_req.set_waker(waker.clone());
@@ -5422,6 +5427,7 @@ fn cancel_edit(s: &mut App) {
     s.editing = false;
     s.auto_held = false;
     (s.moved_wait, s.moved_save, s.moved_changed) = (None, false, false);
+    s.rev_req.cancel();
     // that the page changed elsewhere was said of this edit: the next one starts from the page as it then is
     (s.stale, s.moved_changed) = (false, false);
     if s.capture {
@@ -5587,7 +5593,8 @@ fn write(s: &mut App) {
     }
     // the ship is known not to answer: the save is not tried, as the web client does not try it.
     // And a page with a save still waiting, or on its way, goes behind it: sent straight, the older one could land after it
-    if own && (s.offline.is_some() || s.queue.contains_key(&waits_as) || s.drain_req.is_pending()) {
+    // And a page at or under a path a waiting delete or move changes (a move the ship refused for now, with the ship answering): sent straight it would make the page at the new name, and the move would then be refused as a destination that exists
+    if own && (s.offline.is_some() || s.queue.contains_key(&waits_as) || s.drain_req.is_pending() || api::held_by(&s.ops, &waits_as)) {
         queue_save(s, p, claimed, memory);
         if s.offline.is_none() {
             drain(s);
@@ -6014,23 +6021,60 @@ const SYNC_LIVE: f64 = 300.0;
 /// How often it is read once the ship has turned the session away.
 const SYNC_LAPSED: f64 = 900.0;
 
-fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
-    let mut changed = false;
-    changed |= sync_scrub(s, clock, tx);
-    // a page moved while edited waits for the tree to say its revision. A ship that does not say within twenty seconds is not waited on for ever: its saves then claim no revision (`claim`), which the ship takes as no check. A revision of 0 would be a claim, refused or kept aside as a change made elsewhere
-    if s.moved_wait.is_some() {
-        if s.moved_at == 0.0 {
+/// What the ship answered when asked for the page that was moved while it was edited, to know its revision.
+/// The read is taken as the tree's would be (`sync_here`): the revision is the page's when its text is the
+/// text this edit began from, and the page is said to have changed when it is not. A read that failed leaves
+/// the edit waiting, to be asked again.
+fn moved_read(s: &mut App, read: Result<Page, String>, clock: f64, tx: &mut Tx) {
+    let Some(name) = s.moved_wait.clone() else { return };
+    if s.open.as_ref().is_none_or(|p| p.name != name) || !s.editing {
+        return;
+    }
+    match read {
+        Err(e) => {
+            // asked again in twenty seconds
             s.moved_at = clock;
             tx.wake_after(std::time::Duration::from_secs(21));
-        } else if clock > s.moved_at + 20.0 {
-            if let Some(p) = &mut s.open {
-                p.rev = 0;
+            s.note = format!("the page was moved, and its revision could not be read ({e}): the edit waits and is not lost");
+        }
+        Ok(page) => {
+            s.moved_wait = None;
+            s.unclaimed = None;
+            if let Some(p) = s.open.as_mut() {
+                if page.body == p.body {
+                    p.rev = page.rev;
+                } else {
+                    // someone wrote the moved page: one behind theirs, so theirs can be merged in
+                    (p.rev, s.moved_changed) = (page.rev.saturating_sub(1), page.rev == 0);
+                }
             }
-            s.unclaimed = s.moved_wait.take();
-            if std::mem::take(&mut s.moved_save) && s.editing {
+            s.cache.insert(page.name.clone(), page);
+            s.stale = s.moved_changed || s.open.as_ref().is_some_and(|p| s.cache.get(&p.name).is_some_and(|c| c.rev > p.rev));
+            if std::mem::take(&mut s.moved_save) && !s.stale {
                 write(s);
             }
         }
+    }
+}
+
+fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
+    let mut changed = false;
+    changed |= sync_scrub(s, clock, tx);
+    // a page moved while edited waits for the tree to say its revision. A ship that does not say within twenty seconds is asked for the page itself: the ship answers a read with the revision the moved page has. A save with no claim could replace what someone else wrote there, so one is not sent: while the revision cannot be read the edit waits, and it is said
+    if let Some(name) = s.moved_wait.clone() {
+        if s.moved_at == 0.0 {
+            s.moved_at = clock;
+            tx.wake_after(std::time::Duration::from_secs(21));
+        } else if clock > s.moved_at + 20.0 && !s.rev_req.is_pending() {
+            match s.conn.clone() {
+                Some(c) => s.rev_req.request((c, name), |(c, name)| c.page(&name)),
+                None => s.moved_at = clock,
+            }
+        }
+    }
+    if let Some(read) = s.rev_req.take() {
+        changed = true;
+        moved_read(s, read, clock, tx);
     }
     let was_away = s.away;
     changed |= sync_away(s, clock, tx);

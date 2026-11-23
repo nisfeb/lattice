@@ -64,6 +64,8 @@ struct Stub {
     groups: BTreeMap<String, (Vec<String>, Vec<String>, Vec<String>)>,
     /// Whether the ship speaks the save protocol where a save's list is authoritative (`"v": 2`).
     groups_v2: bool,
+    /// A status a read of one page is answered with (`page-source`).
+    source_fail: u16,
     /// The last body a group was saved with.
     group_saves: Vec<serde_json::Value>,
 }
@@ -131,6 +133,9 @@ fn answer(st: &Mutex<Stub>, method: &str, route: &str, q: &BTreeMap<String, Stri
         }
         ("GET", "page-source") => {
             let s = lock();
+            if s.source_fail > 0 {
+                return (s.source_fail, "bad gateway".into());
+            }
             match (s.links.get(&get("name")), s.pages.get(&get("name"))) {
                 (Some(l), _) => (200, json!({"body": l.1, "kind": "md", "rev": l.2}).to_string()),
                 (_, Some(v)) => (200, json!({"body": v.0, "kind": v.1, "rev": v.2}).to_string()),
@@ -1273,12 +1278,10 @@ fn a_save_landing_keeps_the_later_save_of_the_page_put_by_while_it_was_out() {
     assert!(c.queue().is_empty());
 }
 
-#[test]
-fn a_save_made_when_the_moved_pages_revision_is_not_read_in_time_claims_none() {
-    let _one = one();
-    let ship = Ship::start();
+/// A page edited and then renamed on a ship whose tree answers slowly: `notes/a` becomes `notes/b`, saved by the edit's text.
+fn renamed_while_edited(ship: &Ship) -> Run {
     ship.write("notes/a", "md", "first\n");
-    let mut r = Run::new(&ship);
+    let mut r = Run::new(ship);
     r.open("notes/a");
     start_edit(&mut r.s);
     r.typ("typed after");
@@ -1288,14 +1291,21 @@ fn a_save_made_when_the_moved_pages_revision_is_not_read_in_time_claims_none() {
     r.tick();
     save(&mut r.s);
     assert!(r.s.moved_save && r.s.editing);
-    // twenty seconds pass with the tree not read
+    r
+}
+
+#[test]
+fn a_save_made_when_the_moved_pages_revision_is_not_read_in_time_claims_the_revision_the_ship_says() {
+    let _one = one();
+    let ship = Ship::start();
+    let mut r = renamed_while_edited(&ship);
+    // twenty seconds pass with the tree not read: the page itself is read for its revision
     let c = r.clock() + 30.0;
     poll(&mut r.s, c, &mut Tx::default());
-    r.until("the save answered", |s| !saving(s));
+    r.until("the save answered", |s| s.moved_wait.is_none() && !saving(s) && !s.rev_req.is_pending() && !s.editing);
     r.tick();
     let saves: Vec<Option<String>> = ship.saves_of("notes/b").into_iter().map(|s| s.base).collect();
-    assert_eq!(saves, [None], "the save claims no revision: any number, 0 too, is a claim to the ship");
-    assert!(!r.s.note.contains("not saved") && !r.s.editing, "{:?}", r.s.note);
+    assert_eq!(saves, [Some("1".to_owned())], "the save claims the revision the ship has the moved page at");
     assert_eq!(ship.body("notes/b"), "firsttyped after\n");
     // the next save is over the revision that one landed at
     ship.st().dump_slow = 0.0;
@@ -1309,32 +1319,69 @@ fn a_save_made_when_the_moved_pages_revision_is_not_read_in_time_claims_none() {
 }
 
 #[test]
-fn a_save_put_by_when_the_moved_pages_revision_is_not_known_claims_none() {
+fn a_save_waits_and_says_so_while_the_moved_pages_revision_cannot_be_read() {
     let _one = one();
     let ship = Ship::start();
-    ship.write("notes/a", "md", "first\n");
-    let mut r = Run::new(&ship);
-    r.open("notes/a");
-    start_edit(&mut r.s);
-    r.typ("typed after");
-    ship.st().dump_slow = 3.0;
-    rename(&mut r, "notes/a", "notes/b");
-    r.until("the rename", |s| s.moved_wait.is_some());
+    let mut r = renamed_while_edited(&ship);
+    // the ship does not answer the read of the page
+    ship.st().source_fail = 502;
+    let mut c = r.clock() + 30.0;
+    poll(&mut r.s, c, &mut Tx::default());
+    r.until("the read answered", |s| s.note.contains("could not be read"));
+    assert!(ship.saves_of("notes/b").is_empty(), "a save with no claim was sent: {:?}", ship.saves());
+    assert!(r.s.moved_wait.is_some() && r.s.editing && r.s.moved_save, "the edit waits");
+    assert!(ship.conn().queue().is_empty(), "and is not put by with no claim");
+    // asked again, and the ship answers
+    ship.st().source_fail = 0;
+    c += 30.0;
+    poll(&mut r.s, c, &mut Tx::default());
+    r.until("the save answered", |s| s.moved_wait.is_none() && !saving(s) && !s.rev_req.is_pending() && !s.editing);
     r.tick();
-    // the ship goes away right after it did the rename
-    ship.st().fail = 502;
-    r.s.offline = Some(String::new());
-    save(&mut r.s);
+    let saves: Vec<Option<String>> = ship.saves_of("notes/b").into_iter().map(|s| s.base).collect();
+    assert_eq!(saves, [Some("1".to_owned())]);
+    assert_eq!(ship.body("notes/b"), "firsttyped after\n");
+}
+
+#[test]
+fn a_write_by_someone_else_to_the_moved_page_is_not_replaced_by_a_save_made_after_the_wait() {
+    let _one = one();
+    let ship = Ship::start();
+    let mut r = renamed_while_edited(&ship);
+    ship.write("notes/b", "md", "someone else wrote this\n");
     let c = r.clock() + 30.0;
     poll(&mut r.s, c, &mut Tx::default());
-    let q = ship.conn().queue();
-    assert_eq!(q.get("notes/b").map(|q| (q.base, q.body.as_str())), Some((None, "firsttyped after\n")), "it waits claiming no revision");
-    ship.st().fail = 0;
-    ship.st().dump_slow = 0.0;
+    r.until("the read answered", |s| s.moved_wait.is_none() && !s.rev_req.is_pending());
+    r.tick();
+    assert!(ship.saves_of("notes/b").is_empty(), "the other write was replaced: {:?}", ship.saves());
+    assert!(r.s.stale && r.s.editing, "the change is said and the edit is kept: {:?}", r.s.note);
+    assert_eq!(ship.body("notes/b"), "someone else wrote this\n");
+}
+
+#[test]
+fn a_page_edited_after_a_move_the_ship_refused_for_now_is_put_by_behind_it() {
+    let _one = one();
+    let ship = Ship::start();
+    ship.write("a/one", "md", "one\n");
+    ship.write("a/two", "md", "two\n");
+    let c = ship.conn();
+    c.change_waiting(|ops, q| api::enqueue_op(ops, q, api::QueuedOp::Move { from: "a".into(), to: "b".into(), dname: String::new(), dnames: String::new() })).unwrap();
+    ship.st().op_fail = 500;
+    let mut r = Run::new(&ship);
+    r.sync();
+    r.s.open = Some(Page { name: "b/one".into(), body: "one\n".into(), kind: "md".into(), rev: 1 });
+    start_edit(&mut r.s);
+    r.typ("typed");
+    save(&mut r.s);
+    r.settle();
+    assert!(ship.saves_of("b/one").is_empty(), "sent straight, it made the page at the new name: {:?}", ship.saves());
+    assert_eq!(c.queue().get("b/one").map(|q| q.body.as_str()), Some("onetyped\n"));
+    // the ship takes the move: it goes first, and the save after it, onto the moved page
+    ship.st().op_fail = 0;
     r.sync();
     r.sync();
-    assert_eq!(ship.body("notes/b"), "firsttyped after\n");
-    assert!(!ship.st().pages.keys().any(|n| n.starts_with("conflicts/")) && !r.s.note.contains("had changed on the ship"), "a change made by nobody was said: {:?}", r.s.note);
+    assert_eq!(ship.body("b/one"), "onetyped\n", "{:?}", r.s.note);
+    assert_eq!(ship.body("a/one"), "<none>");
+    assert!(c.queue().is_empty() && c.ops().is_empty());
 }
 
 #[test]
