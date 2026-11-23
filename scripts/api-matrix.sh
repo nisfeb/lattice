@@ -892,7 +892,51 @@ is "a grant on a folder that is there"      200 "$(g9 "$SB/page/$H/g9")"
 is "  and no road on its dir"               no "$(wline apimx-g9 peek "/page/$H/g9")"
 is "  is a folder share, with its index"    yes "$(gin apimx-g9 peek "/page/$H/g9/dir-index")"
 is "  and its page"                         yes "$(gin apimx-g9 peek "/page/$H/g9/a")"
-for g in nus sef ped apimx-g9; do sc -X POST "$B/share-group-del?name=$g" >/dev/null; done
+# a save that says v 2 is every line the client showed: what it leaves out goes
+gv() { python3 -c "
+import json,sys
+g=json.loads(sys.argv[1]); g['v']=2; print(json.dumps(g))" "$1"; }
+for n in v2f/a v2f/b ix/dir-index ix/other st/p st/q; do
+  sc -X POST "$B/page-save?name=$H/$n&type=md&new=1" --data-binary "body $n" >/dev/null
+done
+is "the group list says it takes v 2"       2 "$(G "$B/share-groups" | python3 -c "
+import json,sys; print([g.get('v') for g in json.load(sys.stdin) if g['name']=='sef'][0])")"
+has "a folder shared with a ship"           '"folder":true' "$(G -X POST "$B/share-file?ship=~mer&name=$H/v2f&mode=read")"
+is "a save of no lines and no v"            200 "$(gsave mer '{"ships":["~mer"],"peek":[],"make":[]}')"
+is "  changes nothing, as for an old client" yes "$(gin mer peek "/page/$H/v2f")"
+is "v 3 is refused"                         400 "$(gsave mer '{"v":3,"ships":["~mer"],"peek":[],"make":[]}')"
+is "v as a string is refused"               400 "$(gsave mer '{"v":"2","ships":["~mer"],"peek":[],"make":[]}')"
+is "  and changes nothing"                  yes "$(gin mer peek "/page/$H/v2f")"
+is "a v 2 save with a folder line and its index line left out" 200 "$(gsave mer '{"v":2,"ships":["~mer"],"peek":[],"make":[]}')"
+is "  unshares the folder"                  no "$(gin mer peek "/page/$H/v2f")"
+is "  and its pages"                        no "$(gin mer peek "/page/$H/v2f/a")"
+is "  and leaves no road"                   no "$(wline mer peek "/page/$H/v2f/a/code")"
+has "the folder shared again"               '"folder":true' "$(G -X POST "$B/share-file?ship=~mer&name=$H/v2f&mode=read")"
+is "a v 2 save with only the folder line out" 200 "$(gsave mer "$(gv "$(gdrop "$(glist mer)" "/page/$H/v2f")")")"
+is "  unshares it"                          no "$(gin mer peek "/page/$H/v2f")"
+has "shared again"                          '"folder":true' "$(G -X POST "$B/share-file?ship=~mer&name=$H/v2f&mode=read")"
+is "a v 2 save with the list as read"       200 "$(gsave mer "$(gv "$(glist mer)")")"
+is "  keeps the folder"                     yes "$(gin mer peek "/page/$H/v2f")"
+is "  and its page"                         yes "$(gin mer peek "/page/$H/v2f/b")"
+is "a v 2 save with the index line left out" 200 "$(gsave mer "$(gv "$(gdrop "$(glist mer)" "/page/$H/v2f/dir-index")")")"
+is "  keeps the folder, which names it"     yes "$(gin mer peek "/page/$H/v2f")"
+# a page named dir-index is granted by its dir path
+g4() { gsave apimx-ix "{\"ships\":[\"~bud\"],\"peek\":[\"$SB/page/$H/ix/dir-index\"],\"make\":[]}"; }
+is "a page named dir-index, granted by its path" 200 "$(g4)"
+is "  holds the road on its code"           yes "$(wline apimx-ix peek "/page/$H/ix/dir-index/code")"
+is "  and is listed"                        yes "$(gin apimx-ix peek "/page/$H/ix/dir-index")"
+is "a page beside it, granted by its path"  200 "$(gsave apimx-ix "{\"ships\":[\"~bud\"],\"peek\":[\"$SB/page/$H/ix/dir-index\",\"$SB/page/$H/ix/other\"],\"make\":[]}")"
+is "  holds both"                           yes "$(wline apimx-ix peek "/page/$H/ix/other/code")"
+# a stored line a save may not add, but may take out or leave to a revoke
+gs3() { gsave apimx-st "{\"ships\":[\"$1\"],\"peek\":[\"$SB/page/$H/st/p\",\"$SB/page/$H/st/q\"],\"make\":[]}"; }
+is "a group of two pages"                   200 "$(gs3 "~bud")"
+is "a page deleted that it held"            200 "$(sc -X POST "$B/page-del?name=$H/st/p")"
+is "  a stale road on a new path is still refused" 400 "$(gsave apimx-st "{\"ships\":[\"~bud\"],\"peek\":[\"$SB/page/$H/st/gone\"],\"make\":[]}")"
+is "a save that only changes the ships, the list as read" 200 "$(gsave apimx-st "$(glist apimx-st | python3 -c "
+import json,sys; g=json.load(sys.stdin); g['ships']=['~nus']; print(json.dumps(g))")")"
+is "  and the stale line is gone"           no "$(gin apimx-st peek "/page/$H/st/p")"
+is "  the live one stays"                   yes "$(gin apimx-st peek "/page/$H/st/q")"
+for g in mer apimx-ix apimx-st nus sef ped apimx-g9; do sc -X POST "$B/share-group-del?name=$g" >/dev/null; done
 sc -X POST "$B/page-del?name=$H&tree=1" >/dev/null
 
 echo "==> memory saves keep a block of the sender's own"
@@ -906,6 +950,12 @@ is "an entry superseded, its block with a stray line" 200 "$(sc -X POST "$B/know
 hasnt "  stays out of search"               "$KS" "$(G "$B/know-search?q=qornflaxe")"
 has "  and is found with superseded=1"      "$KS" "$(G "$B/know-search?q=qornflaxe&superseded=1")"
 sc -X POST "$B/know-delete?key=$KS" >/dev/null
+KV="apimx/$$-r2"
+is "an entry superseded, its block closed by ---x" 200 "$(sc -X POST "$B/know-save?key=$KV" --data-binary $'---\nsuperseded-by: /apimx/elsewhere\ncreated: 2020-01-01\n---x\nvornflaxe old body')"
+hasnt "  stays out of search"               "$KV" "$(G "$B/know-search?q=vornflaxe")"
+is "  a save of it by an author"            200 "$(sc -X POST "$B/know-save?key=$KV&author=bob" --data-binary 'edited vornflaxe body')"
+hasnt "  does not make it live"             "$KV" "$(G "$B/know-search?q=vornflaxe")"
+sc -X POST "$B/know-delete?key=$KV" >/dev/null
 
 echo "==> a create that loses the race leaves the winner's display name"
 # a folder move keeps the writer busy, so two creates of one name both
