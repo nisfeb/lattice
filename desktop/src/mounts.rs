@@ -182,6 +182,7 @@ pub async fn install_macfuse(app: AppHandle, webview: tauri::Webview) -> Result<
 
 /// Create a private 0700 staging directory under `cache_dir` for the macFUSE
 /// disk image instead of using a predictable path in `/tmp`.
+#[cfg(any(target_os = "macos", test))]
 fn stage_macfuse_dir(cache_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     let dir = cache_dir.join("macfuse");

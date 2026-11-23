@@ -159,6 +159,7 @@ fn stamp_of<'a>(s: &BackupSchedule, fname: &'a str) -> Option<&'a str> {
 /// `lattice-<slug>-<8 digits>-<6 digits>.tar`) counts: not a rename, not a
 /// copy, not another schedule whose slug happens to share a prefix or label,
 /// and not anything the user put in the directory themselves.
+#[cfg(test)]
 pub fn is_ours(s: &BackupSchedule, fname: &str) -> bool {
     stamp_of(s, fname).is_some()
 }

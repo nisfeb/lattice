@@ -154,13 +154,15 @@ const MAX_ERR: u64 = 64 << 10;
 /// Drive a spawned child with bounded stdout/stderr reader threads started
 /// BEFORE writing stdin on its own thread, so inputs larger than the OS pipe
 /// buffer (64 KiB) cannot deadlock and unbounded output cannot OOM.
+type ChildRun = (std::process::ExitStatus, Vec<u8>, Vec<u8>, std::io::Result<()>);
+
 fn run_child(
     mut child: std::process::Child,
     input: Vec<u8>,
     timeout: Duration,
     max_out: u64,
     max_err: u64,
-) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>, std::io::Result<()>), String> {
+) -> Result<ChildRun, String> {
     use std::io::{Read, Write};
 
     let cout = child.stdout.take().ok_or("could not read from pandoc")?;
