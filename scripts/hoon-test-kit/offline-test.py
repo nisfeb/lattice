@@ -123,7 +123,8 @@ def main():
 '''
     if os.environ.get('DUMP'):
         open(os.environ['DUMP'], 'w').write(hoon)
-    out = subprocess.run([VERE, 'eval'], input=hoon.encode(), capture_output=True)
+    # 8 GB loom: the default 2 GB runs out when a lib compiles at build (lattice-shells)
+    out = subprocess.run([VERE, 'eval', '--loom', '33'], input=hoon.encode(), capture_output=True)
     clean = lambda b: re.sub(r'\x1b\[[0-9;]*m', '', b.decode())
     noise = re.compile(r'^(loom:|lite:|eval \(run\):)')
     log = [l for l in clean(out.stderr).splitlines() if not noise.match(l)]

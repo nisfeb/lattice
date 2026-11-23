@@ -45,6 +45,7 @@
 /<  le   /lib/lattice-eval.hoon
 /<  lu   /lib/lattice-urls.hoon
 /<  pg   /lib/lattice-pg.hoon
+/<  csh  /lib/lattice-shells.hoon
 /<  gfm  /lib/lattice-md.hoon
 /<  tpl  /lib/lattice-templates.hoon
 /<  lkv  /lib/lattice-know-view.hoon
@@ -951,7 +952,7 @@
           ::  shell for its builder is compiled and slammed with the body.
           ?^  pb
             %-  mule  |.
-            (slam (slap !>(pg) (ream (content-shell builder.u.pb))) !>(body.u.pb))
+            (slam (shell-of:csh builder.u.pb) !>(body.u.pb))
           ::  compile the page against the page stdlib (pg): its builders
           ::  (text/html/needs/every/sends/esc) and the +result mold are in
           ::  scope at the top, the full hoon/zuse stack beneath.
@@ -20478,9 +20479,10 @@
 ::  in. The evaluator only knows Hoon gates, so a note IS a gate returning
 ::  (BUILDER '...'): +wrap-content escapes the prose into a single-quote cord
 ::  and drops it in here; +unwrap-content matches this shell to recover the
-::  prose for editing. Keep those two in lockstep with this string.
+::  prose for editing. The string lives in /lib/lattice-shells, which also
+::  compiles the evaluator's shell of it once per builder.
 ::
-++  content-env-pre  "|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]  ^-  result  ("
+++  content-env-pre  content-env-pre:csh
 ::  +make-folder-index: the generated code for an `index`-type page, a gate
 ::  whose whole body is `(folder-index deps /its/folder)`. The folder is the
 ::  page's OWN parent (snip its path), so creating an index page in a folder
@@ -20500,7 +20502,7 @@
   |=  [builder=@tas body=@t]
   ^-  @t
   (rap 3 ~[content-env-pre-cord builder ' \'' (esc-content body) '\')'])
-++  content-env-pre-cord  ^~((crip content-env-pre))
+++  content-env-pre-cord  content-env-pre-cord:csh
 ::  +content-builder: a content page's builder from the first bytes of
 ::  its source, without decoding the body, which +unwrap-content trips
 ::  and unescapes whole. ~ for a source that is not a content page.
@@ -20611,14 +20613,6 @@
   ?.  (~(has in content-builders) builder.u.un)  ~
   ?.  =(src (wrap-content builder.u.un body.u.un))  ~
   un
-::  +content-shell: the page gate of a content page with the body as its
-::  outer sample, so the evaluator compiles a few lines whatever the size.
-::  The inner gate is +content-env-pre, the same gate the stored source is.
-::
-++  content-shell
-  |=  builder=@tas
-  ^-  @t
-  (crip :(weld "|=  body=@t  " content-env-pre (trip builder) " body)"))
 ::  +lock-road: the edit-lock marker of page `rel`. It sits under /lock,
 ::  outside the page dir, so a peer's make grant on the page cannot reach
 ::  it.
@@ -20710,8 +20704,9 @@
   ~
 ::  +content-builders: the pg constructors an editor file wraps its body in.
 ::  md/gmi/html render to a view; text/js/css are shown as code + served raw.
+::  The list is /lib/lattice-shells', which compiles each one's shell.
 ::
-++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css %tex %fodt %fods %geojson %scad])
+++  content-builders  content-builders:csh
 ::  +name-pax: a ?name= value (slash-separated, e.g. notes/todo) -> a validated
 ::  page path under /page, or ~. Each segment must be a non-empty @ta knot.
 ::
