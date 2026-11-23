@@ -1,7 +1,7 @@
 ::  mar/lattice/know-index: the derived live/trash index grub (key -> meta,
 ::  no bodies). Drives know-list / know-tags / know-explore cheaply.
 ::
-/<  lk  /lib/lattice-know.hoon
+/<  lk  /lib/lattice-know-types.hoon
 =,  format
 |_  ix=know-index:lk
 ++  grad  %noun

@@ -2,7 +2,7 @@
 ::  /lib/lattice-share). Sorted on the way out so the UI order is stable
 ::  rather than following set iteration.
 ::
-/<  ls  /lib/lattice-share.hoon
+/<  ls  /lib/lattice-share-types.hoon
 =,  format
 |_  bans=banned:ls
 ++  grad  %noun

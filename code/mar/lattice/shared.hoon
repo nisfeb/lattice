@@ -1,7 +1,7 @@
 ::  mar/lattice/shared: the "shared with me" grub, notices received from
 ::  other ships, newest first, capped (see /lib/lattice-share).
 ::
-/<  ls  /lib/lattice-share.hoon
+/<  ls  /lib/lattice-share-types.hoon
 =,  format
 |_  sh=shared:ls
 ++  grad  %noun

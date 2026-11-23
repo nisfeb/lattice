@@ -1,7 +1,7 @@
 ::  mar/lattice/sub-follows: the crawler's follow set (ships to sweep). One
 ::  always-present grub at /sub/follows; json grow lets the HTTP client read it.
 ::
-/<  lp  /lib/lattice-pub.hoon
+/<  lp  /lib/lattice-pub-types.hoon
 =,  format
 |_  fs=follows:lp
 ++  grad  %noun

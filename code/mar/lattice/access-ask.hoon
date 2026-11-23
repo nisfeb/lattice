@@ -3,7 +3,7 @@
 ::  owner's own UI. The sender comes from the poke's transport, never
 ::  from this payload.
 ::
-/<  ls  /lib/lattice-share.hoon
+/<  ls  /lib/lattice-share-types.hoon
 |_  act=ask:ls
 ++  grad  %noun
 ++  grow

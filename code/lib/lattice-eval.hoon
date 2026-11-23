@@ -14,6 +14,7 @@
 ::    [dat=(unit *) dep=(list path)]
 ::  ~ dat means "no change". dep is the FULL dependency list each run.
 ::
+/<  *   /lib/lattice-eval-types.hoon
 /<  ft  /lib/lattice-forum-types.hoon
 /<  ll  /lib/lattice-link.hoon
 |%
@@ -170,29 +171,18 @@
       ::  only while that same link is still there, so a read that finishes
       ::  after a move or delete never brings it back.
       [%link-seen pax=path host=@p rpax=path got=(unit [kind=@ta body=@t rev=@ud])]
+      ::  serialized ACL writes on /ug/*, /banned, and /forum/members/*:
+      ::  routed through /main.sig so HTTP handlers never race each other or
+      ::  writer revocations (+sens-revoke, +grant-new, +revoke-folder-grants).
+      ::  Each request-bound action stores its outcome in /acl-res under rid.
+      [%acl-ban rid=@ta who=@p]
+      [%acl-unban rid=@ta who=@p]
+      [%acl-forum-member rid=@ta nom=@ta who=@p add=?]
+      [%acl-group-save rid=@ta gname=@t who=(set @p) pkp=(list path) mkp=(list path) v2=?]
+      [%acl-group-del rid=@ta gname=@t]
+      [%acl-share-page rid=@ta shp=@p mode=@t pax=path]
+      [%acl-share-folder rid=@ta gname=@t who=(set @p) mode=@t pax=path tell=?]
+      [%acl-unshare-file rid=@ta shp=@p pax=path]
+      [%acl-move-grants from=path to=(unit path) own=?]
   ==
-::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit.
-::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form
-::  with the same nearest-wins walk as the on/off flag, so a folder can carry
-::  the policy for a whole site.
-+$  form-cfg  [cap=@ud gap=@dr]
-::  +$  form-use: a page's submission tally. Per-page and exact (never
-::  inherited). A folder-level cap that shared one counter across every page
-::  under it would be surprising in both directions.
-+$  form-use  [count=@ud last=@da]
-::  +$  share-mode: a page's sharing preset (docs/platform.md step 4).
-::    %private    not gained, owner-only (default).
-::    %shared     data grub gained + public-usergroup peek. Any ship reads
-::                it over ames (peek-remote), live.
-::    %clearweb   shared, and its data is also served over unauthenticated
-::                HTTP at /apps/lattice/c/<name>.
-::
-+$  share-mode  ?(%private %shared %clearweb)
-::  +$  eval-cmd: the command inbox grub. seq bumps per command so an
-::  identical command still fires a wave (save-file suppresses no-op writes).
-::  bud is the poke budget the run this command triggers may spend. A page
-::  reached via another page's poke gets a decremented budget, so a poke chain
-::  (or cycle) terminates at a fixed depth regardless of timing.
-::
-+$  eval-cmd  [seq=@ud txt=@t bud=@ud]
 --

@@ -14,15 +14,9 @@
 ::    - peeking one grub is cheap, peeking a DIRECTORY is not. So a lookup must be
 ::      a pure name computation and must never enumerate the directory.
 ::
+/<  *  /lib/lattice-index-types.hoon
 |%
-::  +$  posts: who carries a term, and how often.
-::
-::  Keyed by the document key ALONE. Scope is a field, never part of the key. A
-::  page flipping private -> public must move, not fork, or the document ends up
-::  indexed twice under two identities.
-+$  posts  (map key=@t [scope=@t tf=@ud])
-::  +$  bucket: one grub's worth of the index.
-+$  bucket  (map term=@t posts)
+::  Types posts and bucket live in /lib/lattice-index-types.
 ::  +buckets: how many. Fanout of the /idx directory, so it is a write cost.
 ++  buckets  ^-(@ud 256)
 ::  +bucket-of: which bucket a term lives in.

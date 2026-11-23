@@ -2,7 +2,7 @@
 ::  bodies). Lets the agent learn the published key set + parity hashes in one
 ::  always-present scry, without reading every page.
 ::
-/<  lp  /lib/lattice-pub.hoon
+/<  lp  /lib/lattice-pub-types.hoon
 =,  format
 |_  ix=pub-index:lp
 ++  grad  %noun

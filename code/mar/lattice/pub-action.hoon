@@ -2,7 +2,7 @@
 ::  The writer receives it as a NOUN dart (the `noun` grab); the json grab lets
 ::  an owner HTTP client drive a write directly.
 ::
-/<  lp  /lib/lattice-pub.hoon
+/<  lp  /lib/lattice-pub-types.hoon
 =,  format
 |_  act=pub-action:lp
 ++  grad  %noun

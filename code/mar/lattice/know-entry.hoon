@@ -1,7 +1,7 @@
 ::  mar/lattice/know-entry: one stored knowledge entry (the vault grub).
 ::  Payload is the know-entry shape defined in lib/lattice-know.
 ::
-/<  lk  /lib/lattice-know.hoon
+/<  lk  /lib/lattice-know-types.hoon
 =,  format
 |_  e=know-entry:lk
 ++  grad  %noun

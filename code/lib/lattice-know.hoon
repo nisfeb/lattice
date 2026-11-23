@@ -6,47 +6,8 @@
 ::  gub/lib (where the lattice nexus wraps them). The nexus casts our structural
 ::  [pax nom] to a real rail:tarball.
 ::
+/<  *  /lib/lattice-know-types.hoon
 |%
-::  ==  Knowledge types, the canonical know-* shapes the nexus stores and the
-::  HTTP reads emit.
-::
-+$  know-vector  [model=@t dim=@ud vec=(list @rd)]
-+$  know-entry
-  $:  body=@t
-      updated=@da
-      tags=(set @t)
-      vector=(unit know-vector)
-  ==
-::  programmatic knowledge actions (poked at the vault-manager fiber).
-::
-+$  know-action
-  $%  [%save key=@t body=@t]
-  ::  an agent key's save, by key id. The route checked a read that may
-  ::  be stale by now, so the writer checks again against the entry it
-  ::  is about to replace (+apply in the app).
-      [%key-save key=@t body=@t kid=@t]
-      [%del key=@t]
-      [%restore key=@t]
-      [%move from=@t to=@t]
-      [%tag key=@t tag=@t]
-      [%untag key=@t tag=@t]
-  ::  verbatim imports (used by the bulk-import endpoint, POST /know-import).
-  ::  Unlike %save, these write the entry VERBATIM, preserving its original
-  ::  updated/tags/vector, instead of stamping updated=now. %import lands a
-  ::  live entry. %import-trashed lands it then soft-deletes (so it sits in
-  ::  trash, body recoverable).
-      [%import key=@t entry=know-entry]
-      [%import-trashed key=@t entry=know-entry]
-  ==
-::  derived per-entry index row for the trash listing (know-trash). Lists
-::  soft-deleted entries without reading bodies. bytes = body byte-length. restore is a RESERVED
-::  slot for a future revision-restore feature (peek-at the firm cass captured at
-::  delete time). The current soft-delete keeps the body grub live in the trash
-::  vault and restores it whole, so restore is always ~. Kept in the row shape so
-::  adding the feature later doesn't re-key the persisted know-index grub.
-::
-+$  index-entry  [updated=@da bytes=@ud tags=(set @t) restore=(unit @ud)]
-+$  know-index   (map path index-entry)
 ::  +to-index-entry: project a stored entry onto its index row (restore always ~).
 ::
 ++  to-index-entry
@@ -480,9 +441,7 @@
   =/  k=(unit path)  (key-of (crip (trim-sp ?~(bar inner (scag u.bar inner)))))
   =?  out  &(?=(^ k) !(lien out |=(p=path =(p u.k))))  [u.k out]
   $(t (slag (add u.j 2) aft))
-::  +$  doc: an entry as ranking sees it. The key counts twice and each tag
-::  once, over the body's terms; front matter is not ranked.
-+$  doc  [key=path tf=(map @t @ud) len=@ud]
+::  +to-doc: convert an entry to its ranking doc (see /lib/lattice-know-types).
 ++  to-doc
   |=  [key=path e=know-entry]
   ^-  doc
@@ -507,8 +466,7 @@
 ::  its front matter once, when the row is made, under the same freshness
 ::  rule as the doc. A search filters on both for every entry, and parsing
 ::  every body's front matter per prompt cost about twice the vault's bytes.
-+$  term-row  [updated=@da tags=(set @t) =doc sup=? sen=?]
-+$  term-cache  (map path term-row)
+::  Types live in /lib/lattice-know-types.
 ++  row-of
   |=  [k=path e=know-entry]
   ^-  term-row

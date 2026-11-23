@@ -1,6 +1,6 @@
 ::  mar/lattice/eval-cmd: a page's command inbox, [seq=@ud txt=@t].
 ::
-/<  le  /lib/lattice-eval.hoon
+/<  le  /lib/lattice-eval-types.hoon
 |_  c=eval-cmd:le
 ++  grad  %noun
 ++  grow
