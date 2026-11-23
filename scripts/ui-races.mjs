@@ -903,44 +903,47 @@ cases.shareFolderPage = async () => {
   const open = (n) => p.evaluate((n) => window.latTabs.openIn('page', n, {}), n);
   const rowBtn = (t) => p.evaluate((t) => { const b = [...document.querySelectorAll('#grouplist .grow-row button')].find((e) => e.textContent === t); return b ? b.className : null; }, t);
   const click = (t) => p.evaluate((t) => [...document.querySelectorAll('#grouplist .grow-row button')].find((e) => e.textContent === t).click(), t);
-  const lastSave = () => { const l = x.S.log.filter((e) => e.path === 'share-group-save'); return l.length ? JSON.parse(l[l.length - 1].body) : null; };
+  const saves = () => x.S.log.filter((e) => e.path === 'share-group-save' && e.res);
+  const lastSave = () => { const l = saves(); return l.length ? JSON.parse(l[l.length - 1].body) : null; };
   await open('a');
   await waitFor(async () => (await rowBtn('read')) !== null, 15000, 100);
   check.eq('the folder line is not this page: read is off', await rowBtn('read'), '');
   check.eq('and neither is edit', await rowBtn('edit'), '');
   await click('read');
-  await waitFor(() => lastSave(), 5000, 100);
+  await waitFor(() => saves().length >= 1, 5000, 100);
   check.eq('read on the page adds its code path and keeps the folder lines', JSON.stringify(lastSave().peek), JSON.stringify([BASE + '/page/a', BASE + '/page/a/dir-index', BASE + '/page/a/code']));
   check.eq('and leaves the folder edit line alone', JSON.stringify(lastSave().make), JSON.stringify([BASE + '/page/a']));
   await waitFor(async () => (await rowBtn('read')) === 'on', 5000, 100);
   await click('read');
-  await waitFor(() => x.S.log.filter((e) => e.path === 'share-group-save').length >= 2, 5000, 100);
+  await waitFor(() => saves().length >= 2, 5000, 100);
   check.eq('read off removes the code path only: the folder stays shared', JSON.stringify(lastSave().peek) + JSON.stringify(lastSave().make), JSON.stringify([BASE + '/page/a', BASE + '/page/a/dir-index']) + JSON.stringify([BASE + '/page/a']));
   //  a page with no folder is granted by its plain path, as before
   await open('solo');
   await waitFor(async () => (await rowBtn('read')) === '', 5000, 100);
   await click('read');
-  await waitFor(() => x.S.log.filter((e) => e.path === 'share-group-save').length >= 3, 5000, 100);
+  await waitFor(() => saves().length >= 3, 5000, 100);
   check('a page with no folder is granted by its own path', lastSave().peek.includes(BASE + '/page/solo') && !lastSave().peek.some((l) => /solo\/code/.test(l)), JSON.stringify(lastSave().peek));
   //  a folder share toggle only matches its own path, never a page-only /code
   //  grant at the same path
   x.S.v2 = true;
   x.S.groups = [{ name: 'crew', ships: [], peek: [BASE + '/page/a/code'], make: [BASE + '/page/a/code'], poke: [], opaque: 0 }];
+  const reloadAt = x.S.log.length;
   await p.reload({ waitUntil: 'domcontentloaded' });
+  await waitFor(() => x.S.log.slice(reloadAt).some((e) => e.path === 'page-dump' && e.res), 15000, 100);
   await waitFor(() => p.evaluate(() => !!document.querySelector('#treelist [data-tk="f:a"] .fln') && document.getElementById('pname') && document.getElementById('pname').value === 'solo'), 15000, 100);
   await p.evaluate(() => { window.latShell.paneOpen('r', true); window.latShell.paneTab('r', 'page'); });
-  await p.click('#treelist [data-tk="f:a"] .fln');
+  await p.evaluate(() => document.querySelector('#treelist [data-tk="f:a"] .fln').click());
   await waitFor(() => p.evaluate(() => !!document.querySelector('#treelist [data-tk="f:a"].cur') && /the folder/i.test((document.getElementById('sharewhat') || {}).textContent || '') && !![...document.querySelectorAll('#grouplist .grow-row button')].find((e) => e.textContent === 'read')), 15000, 100);
   check.eq('a page /code grant does not mark the folder read', await rowBtn('read'), '');
   check.eq('nor folder edit', await rowBtn('edit'), '');
-  let savesBefore = x.S.log.filter((e) => e.path === 'share-group-save').length;
+  let savesBefore = saves().length;
   await click('read');
-  await waitFor(() => x.S.log.filter((e) => e.path === 'share-group-save').length > savesBefore, 5000, 100);
+  await waitFor(() => saves().length > savesBefore, 5000, 100);
   check.eq('folder read on adds the folder path and keeps the page /code grant', JSON.stringify(lastSave().peek), JSON.stringify([BASE + '/page/a/code', BASE + '/page/a']));
   await waitFor(async () => (await rowBtn('read')) === 'on', 5000, 100);
-  savesBefore = x.S.log.filter((e) => e.path === 'share-group-save').length;
+  savesBefore = saves().length;
   await click('read');
-  await waitFor(() => x.S.log.filter((e) => e.path === 'share-group-save').length > savesBefore, 5000, 100);
+  await waitFor(() => saves().length > savesBefore, 5000, 100);
   check.eq('folder read off removes only the folder path and keeps the page /code grant', JSON.stringify(lastSave().peek) + JSON.stringify(lastSave().make), JSON.stringify([BASE + '/page/a/code']) + JSON.stringify([BASE + '/page/a/code']));
   //  the access pane does not list the index line, and sends it back
   await p.evaluate(() => window.latTabs.openIn('acl', '', {})).catch(() => {});
@@ -966,7 +969,7 @@ cases.shareV2 = async () => {
     await waitFor(() => x.page.evaluate(() => !!document.querySelector('#aclgrid .chips a')), 15000, 100);
     return x;
   };
-  const saves = (x) => x.S.log.filter((e) => e.path === 'share-group-save');
+  const saves = (x) => x.S.log.filter((e) => e.path === 'share-group-save' && e.res);
   const lastBody = (x) => JSON.parse(saves(x)[saves(x).length - 1].body);
   const chip = (p, t) => p.evaluate((t) => { const a = [...document.querySelectorAll('#aclgrid .chips a')].find((e) => e.title === 'remove ' + t); if (a) a.click(); return !!a; }, t);
   //  remove one folder
