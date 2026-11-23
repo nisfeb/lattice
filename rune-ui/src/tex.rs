@@ -88,8 +88,12 @@ pub fn convert(exe: &std::path::Path, src: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
-/// Elements that embed or run, dropped whole.
-const DROP: &[&str] = &["script", "style", "iframe", "frame", "object", "embed", "video", "audio", "source", "track", "form", "base", "meta", "link", "svg"];
+/// Elements that embed, run, or switch HTML parsing into RCDATA/RAWTEXT mode, dropped whole.
+const DROP: &[&str] = &[
+    "script", "style", "iframe", "frame", "object", "embed", "video", "audio", "source", "track",
+    "form", "base", "meta", "link", "svg", "textarea", "title", "noscript", "xmp", "noembed",
+    "noframes", "plaintext", "template",
+];
 /// The ones among them with no closing tag.
 const VOID: &[&str] = &["frame", "embed", "source", "track", "base", "meta", "link"];
 /// Attributes that load something.
@@ -251,7 +255,8 @@ pub fn clean(html: &str) -> String {
                 || n.ends_with("srcset") && ways.iter().any(|v| v.split(',').any(|one| leads_off(one.trim_start().split(char::is_whitespace).next().unwrap_or("")).0))
                 || n == "style" && read.contains(['(', '\\', '@', UNKNOWN]);
             if !bad {
-                out.push_str(&format!(" {n}=\"{}\"", raw.replace('"', "&quot;")));
+                let escaped = raw.replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;");
+                out.push_str(&format!(" {n}=\"{escaped}\""));
             }
         }
         out.push_str(if tag.ends_with("/>") { "/>" } else { ">" });
@@ -440,5 +445,14 @@ mod tests {
         assert_eq!(clean("<img src=\"&unknown;/x.org/t.png\">"), "<img>");
         assert_eq!(clean("<img src=\"/&unknown;x.org/t.png\">"), "<img>");
         assert_eq!(read_refs("a&#58b&#x3a;c&colon;d&amp;e&ampf&g;h&#;i&#xzz&"), format!("a:b:c:d&e&ampf{UNKNOWN}h&#;i&#xzz&"));
+    }
+
+    #[test]
+    fn rcdata_rawtext_tags_are_dropped_and_attribute_brackets_are_escaped() {
+        assert_eq!(clean("<textarea><p title=\"</textarea><script>alert(1)</script>\"></textarea>"), "");
+        assert_eq!(clean("<p title=\"<script>alert(1)</script>\">x</p>"), "<p title=\"&lt;script&gt;alert(1)&lt;/script&gt;\">x</p>");
+        for tag in ["textarea", "title", "noscript", "xmp", "noembed", "noframes", "plaintext", "template"] {
+            assert_eq!(clean(&format!("a<{tag}><script>1</script></{tag}>b")), "ab", "{tag}");
+        }
     }
 }

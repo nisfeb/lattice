@@ -73,11 +73,16 @@ fn cmd_mount(mnt: &str, root: &str) -> Result<(), String> {
     let proj = make_projection(root)?;
     let ship = proj.ship();
     std::fs::create_dir_all(mnt).ok();
-    println!("mounting lattice ({ship}) at {mnt} — Ctrl-C to unmount");
+    {
+        //  stdout may be a pipe nobody reads: that must not end the mount either
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), "mounting lattice ({ship}) at {mnt} — Ctrl-C to unmount");
+    }
     let session = lattice_fs::spawn(proj.clone(), mnt).map_err(|e| e.to_string())?;
 
     wait_for_term_signal();
-    eprintln!("\nunmounting {mnt} …");
+    //  said with `say!`: a panic here would skip the quiesce below
+    lattice_fs::say!("\nunmounting {mnt} …");
     //  drain any reply in flight and half-close the lick socket cleanly
     proj.quiesce(QUIESCE_BOUND);
     //  then unmount, bounded: a wedged FUSE op must not hang the exit. The
@@ -89,7 +94,7 @@ fn cmd_mount(mnt: &str, root: &str) -> Result<(), String> {
         let _ = tx.send(());
     });
     if rx.recv_timeout(QUIESCE_BOUND + std::time::Duration::from_secs(2)).is_err() {
-        eprintln!("unmount did not finish in time; exiting anyway");
+        lattice_fs::say!("unmount did not finish in time; exiting anyway");
     }
     Ok(())
 }

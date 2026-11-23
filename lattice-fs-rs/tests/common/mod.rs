@@ -3,8 +3,8 @@
 //! what the mount reported. Shared by mount.rs and fsx.rs.
 #![allow(dead_code)] // each test binary uses its own subset
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use lattice_fs::projection::{Dump, Node, PErr, Projection};
@@ -27,6 +27,13 @@ pub struct Ship {
     pub dirs: Mutex<Vec<String>>,
     pub log: Mutex<Vec<String>>,
     pub dumps: AtomicUsize,
+    /// A delete takes every page and folder under the name too, as a ship
+    /// before the page-only delete does. Off, a page goes alone, as now.
+    pub subtree: AtomicBool,
+    /// Whether this ship advertises page-only delete to the mount.
+    pub page_only_del: AtomicBool,
+    /// Folders left behind after a page-only delete (`page-gone` marker).
+    pub page_gone: Mutex<HashSet<String>>,
 }
 
 impl Ship {
@@ -108,6 +115,8 @@ impl Projection for Ship {
         if create && self.has(rel) {
             return Err(PErr::new(libc::EEXIST, "page exists")); // page-save new=1 409s
         }
+        self.dirs.lock().unwrap().retain(|d| d != rel);
+        self.page_gone.lock().unwrap().remove(rel);
         self.pages
             .lock()
             .unwrap()
@@ -121,9 +130,36 @@ impl Projection for Ship {
     }
     fn delete(&self, rel: &str) -> Result<(), PErr> {
         self.note(format!("delete {rel}"));
-        self.pages.lock().unwrap().remove(rel);
-        self.dirs.lock().unwrap().retain(|d| d != rel);
+        let under = format!("{rel}/");
+        let all = self.subtree.load(Ordering::SeqCst);
+        if self.page_only_del.load(Ordering::SeqCst) && !all {
+            let mut pages = self.pages.lock().unwrap();
+            let mut dirs = self.dirs.lock().unwrap();
+            let mut gone = self.page_gone.lock().unwrap();
+            let has_kids =
+                pages.keys().any(|r| r.starts_with(&under)) || dirs.iter().any(|d| d.starts_with(&under));
+            if has_kids && gone.contains(rel) {
+                return Err(PErr::new(libc::EEXIST, "page-gone-kept"));
+            }
+            pages.remove(rel);
+            if has_kids {
+                if !dirs.iter().any(|d| d == rel) {
+                    dirs.push(rel.to_string());
+                }
+                gone.insert(rel.to_string());
+            } else {
+                dirs.retain(|d| d != rel);
+                gone.remove(rel);
+            }
+            return Ok(());
+        }
+        let goes = |r: &String| r == rel || (all && r.starts_with(&under));
+        self.pages.lock().unwrap().retain(|r, _| !goes(r));
+        self.dirs.lock().unwrap().retain(|d| !goes(d));
         Ok(())
+    }
+    fn page_only_delete(&self) -> bool {
+        self.page_only_del.load(Ordering::SeqCst)
     }
     fn mv(&self, src: &str, dst: &str) -> Result<(), PErr> {
         self.note(format!("mv {src} {dst}"));

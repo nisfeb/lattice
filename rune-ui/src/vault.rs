@@ -74,9 +74,9 @@ pub fn untar(u: &[u8]) -> Result<Vec<(String, String)>, String> {
 pub fn untar_end(u: &[u8]) -> Result<(Vec<(String, String)>, bool), String> {
     let text = |b: &[u8]| String::from_utf8_lossy(&b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]).into_owned();
     let octal = |b: &[u8]| u64::from_str_radix(&text(b).chars().filter(|c| ('0'..='7').contains(c)).collect::<String>(), 8).ok();
-    let (mut out, mut off, mut long, mut end) = (Vec::new(), 0, None::<String>, false);
-    while off + 512 <= u.len() {
-        let h = &u[off..off + 512];
+    let (mut out, mut off, mut long, mut end) = (Vec::new(), 0usize, None::<String>, false);
+    while let Some(head_end) = off.checked_add(512).filter(|&e| e <= u.len()) {
+        let h = &u[off..head_end];
         if h.iter().all(|&b| b == 0) {
             end = true;
             break;
@@ -85,14 +85,13 @@ pub fn untar_end(u: &[u8]) -> Result<(Vec<(String, String)>, bool), String> {
         if octal(&h[148..156]) != Some(sum) {
             return Err(format!("checksum mismatch at byte {off}"));
         }
-        let size = octal(&h[124..136]).unwrap_or(0) as usize;
         let (kind, name, prefix) = (h[156], text(&h[..100]), text(&h[345..500]));
-        off += 512;
-        if off + size > u.len() {
-            return Err(format!("truncated entry \"{name}\" at byte {off}"));
-        }
-        let data = &u[off..off + size];
-        off += size.div_ceil(512) * 512;
+        let raw_size = octal(&h[124..136]).unwrap_or(0);
+        off = head_end;
+        let size = usize::try_from(raw_size).map_err(|_| format!("truncated entry \"{name}\" at byte {off}"))?;
+        let data_end = off.checked_add(size).filter(|&e| e <= u.len()).ok_or_else(|| format!("truncated entry \"{name}\" at byte {off}"))?;
+        let data = &u[off..data_end];
+        off = size.div_ceil(512).checked_mul(512).and_then(|p| off.checked_add(p)).ok_or_else(|| format!("truncated entry \"{name}\" at byte {off}"))?;
         match kind {
             b'L' => long = Some(String::from_utf8_lossy(data).trim_end_matches('\0').to_owned()),
             b'0' | 0 => out.push((long.take().unwrap_or(if prefix.is_empty() { name } else { format!("{prefix}/{name}") }), String::from_utf8_lossy(data).into_owned())),
@@ -171,7 +170,9 @@ impl Built {
 /// The archive of a store: `dump` is what `page-dump` answered, `know` what
 /// `know-all` did and `scopes` what `page-scopes` did, each none when it
 /// could not be read. `source` reads the body of a page the dump left out.
-pub fn build(dump: &Value, know: Option<&Value>, scopes: Option<&Value>, source: &dyn Fn(&str) -> Option<String>, now: u64) -> Built {
+/// `ship` is the name of the ship whose store it is, written into the
+/// manifest so the file says whose it is. Empty leaves it out.
+pub fn build(dump: &Value, know: Option<&Value>, scopes: Option<&Value>, source: &dyn Fn(&str) -> Option<String>, now: u64, ship: &str) -> Built {
     let empty = Vec::new();
     let nodes = dump["nodes"].as_array().unwrap_or(&empty);
     let s = |v: &Value| v.as_str().unwrap_or_default().to_owned();
@@ -213,26 +214,20 @@ pub fn build(dump: &Value, know: Option<&Value>, scopes: Option<&Value>, source:
     if !names.is_empty() {
         files.push(file("names.json".into(), pretty(&Value::Object(names)), now));
     }
-    let manifest = serde_json::json!({ "pages": pages, "memories": know.map(|_| memories), "missing": missing });
+    let mut manifest = serde_json::json!({ "pages": pages, "memories": know.map(|_| memories), "missing": missing });
+    if !ship.is_empty() {
+        manifest["ship"] = Value::String(ship.to_owned());
+    }
     files.push(file("manifest.json".into(), pretty(&manifest), now));
     files.push(file("README.txt".into(), README.as_bytes().to_vec(), now));
     Built { bytes: tar(&files), pages, memories, missing, excluded }
 }
 
 /// The kind a file's extension puts a page back as, or none for one that
-/// is not a page's.
+/// is not a page's. One table with an upload's, and the web client's
+/// (`KMAP` in `ui-app/vault.js`): every kind an export writes comes back.
 pub fn ext_kind(ext: &str) -> Option<&'static str> {
-    Some(match ext.to_ascii_lowercase().as_str() {
-        "md" => "md",
-        "gmi" => "gmi",
-        "html" | "htm" => "html",
-        "txt" | "text" => "text",
-        "js" => "js",
-        "css" => "css",
-        "hoon" => "hoon",
-        "tex" | "latex" => "tex",
-        _ => return None,
-    })
+    crate::upload::ext_kind(ext)
 }
 
 /// A name the ship takes: parts of lowercase letters, digits and `._~-`,
@@ -399,6 +394,29 @@ mod tests {
     }
 
     #[test]
+    fn untar_end_rejects_huge_tar_entry_sizes_without_overflow() {
+        // Construct a valid checksummed header claiming an 8 GiB - 1 entry (exceeds 32-bit usize and buffer length).
+        let mut h = [0u8; 512];
+        h[..9].copy_from_slice(b"pages/a.m");
+        h[100..108].copy_from_slice(b"0000644\0");
+        h[124..136].copy_from_slice(b"77777777777\0");
+        h[148..156].copy_from_slice(b"        ");
+        h[156] = b'0';
+        h[257..263].copy_from_slice(b"ustar\0");
+        h[263..265].copy_from_slice(b"00");
+        let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+        h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        assert!(untar_end(&h).unwrap_err().contains("truncated"));
+
+        // Also test 4 GiB (0o40000000000), which would truncate to 0 on 32-bit `as usize`.
+        h[124..136].copy_from_slice(b"40000000000\0");
+        h[148..156].copy_from_slice(b"        ");
+        let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+        h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        assert!(untar_end(&h).unwrap_err().contains("truncated"));
+    }
+
+    #[test]
     fn dates_and_names() {
         assert_eq!(da_to_unix("~2026.11.17..20.36.35", 9), 1_794_947_795);
         assert_eq!(da_to_unix("~2026.11.17..20.36.35..a1b2", 9), 1_794_947_795);
@@ -419,7 +437,7 @@ mod tests {
         let know = json!({"items": [{"key": "/project/x", "body": "fact", "tags": ["t"], "updated": "~2026.11.17..20.36.35"}]});
         let scopes = json!({"items": [{"path": "notes/a", "scope": "clearweb"}, {"path": "notes/t", "scope": "private"}]});
         let source = |p: &str| (p == "notes/t").then(|| "plain".to_owned());
-        let b = build(&dump, Some(&know), Some(&scopes), &source, 100);
+        let b = build(&dump, Some(&know), Some(&scopes), &source, 100, "~zod");
         assert_eq!((b.pages, b.memories, b.excluded), (3, 1, 1));
         assert_eq!(b.missing, ["gone"]);
         assert!(b.says("/tmp/v.tar").contains("could NOT read: gone"));
@@ -433,16 +451,17 @@ mod tests {
         let know_back: Value = serde_json::from_str(get("know.json").unwrap()).unwrap();
         assert_eq!(know_back, know);
         let man: Value = serde_json::from_str(get("manifest.json").unwrap()).unwrap();
-        assert_eq!(man, json!({"pages": 3, "memories": 1, "missing": ["gone"]}));
+        assert_eq!(man, json!({"pages": 3, "memories": 1, "missing": ["gone"], "ship": "~zod"}), "the archive says whose store it is");
         // the page's date is the file's
         assert_eq!(&b.bytes[136..148], format!("{:011o}\0", 1_794_947_795u64).as_bytes());
 
         // nothing read of the memories or the share modes is said, not hidden
-        let b = build(&json!({"nodes": [{"path": "a", "page": true, "kind": "md", "body": "x"}]}), None, None, &|_| None, 100);
+        let b = build(&json!({"nodes": [{"path": "a", "page": true, "kind": "md", "body": "x"}]}), None, None, &|_| None, 100, "");
         assert_eq!(b.missing, ["the memories", "the share modes"]);
         let man: Value = serde_json::from_str(&untar(&b.bytes).unwrap().into_iter().find(|(n, _)| n == "manifest.json").unwrap().1).unwrap();
         assert_eq!(man["memories"], Value::Null);
-        let clean = build(&dump, Some(&know), Some(&scopes), &|_| Some("b".into()), 100);
+        assert_eq!(man.get("ship"), None, "with no ship known none is named");
+        let clean = build(&dump, Some(&know), Some(&scopes), &|_| Some("b".into()), 100, "");
         assert_eq!(clean.says("/tmp/v.tar"), "exported 3 page(s) and 1 memories to /tmp/v.tar (1 generated folder index not included, they rebuild themselves)");
     }
 

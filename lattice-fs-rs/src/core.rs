@@ -75,6 +75,10 @@ struct Handle {
     // not move while its IO ran, so a write in that window is never dropped.
     gen: u64,
     new: bool,
+    // Recreating a held page whose ship entry was kept alive while children
+    // existed. The page is overwritten (not created with ?new=1), and an empty
+    // body seeds "\n" so page-save accepts it.
+    recreate: bool,
     scratch: bool, // an editor temp file: commit to the scratch map, never the ship
     // Opened for writing. Only such a handle may take a handle-less truncate:
     // a reader's buffer made empty and dirty would be committed by its RELEASE.
@@ -140,6 +144,21 @@ struct State {
     // ledger. Within RECENT_TTL a snapshot can't evict a created entry or
     // resurrect a deleted one. Entries age out. Steady state is empty.
     recent: HashMap<String, (Instant, bool)>,
+    // Pages whose own file was unlinked while pages were under them, by rel.
+    // An older ship's delete of a page takes everything under it, so it is
+    // not sent then: the file leaves the listing, and the page's delete goes
+    // once nothing is under it (`release_held`), or with its folder's rmdir.
+    // `rm -r` of the folder so works in whatever order it meets the files.
+    held: HashSet<String>,
+    // vpath -> (when, prior base rev) for a page just backed up by rename
+    // (page -> page~). The editor creates `vpath` immediately after while the
+    // page still exists on the ship, so create() uses new=false with this base.
+    backed_up: HashMap<String, (Instant, Option<u64>)>,
+    // Page-backed directories whose ship entry already vanished with their last
+    // file (in unlink or release_held). Hidden from readdir immediately, but
+    // kept lookup-able briefly so a slow `rm -r` past the 1s dentry TTL can
+    // still rmdir them without ENOENT.
+    ghost_dirs: HashMap<String, Instant>,
 }
 
 pub struct GrubberyFs {
@@ -197,19 +216,26 @@ impl GrubberyFs {
             claim_rev: HashMap::new(),
             scratch: HashMap::new(),
             recent: HashMap::new(),
+            held: HashSet::new(),
+            backed_up: HashMap::new(),
+            ghost_dirs: HashMap::new(),
         }));
         // watch thread: invalidate on external change, and track the stream's
-        // own health — while it is up the core trusts it over the TTL clock
+        // own health. While it is up the core trusts it over the TTL clock
         // (see ensure_fresh), so Up/Down are as load-bearing as Changed.
         // Up ALSO invalidates: bumps during the gap before the stream opened
         // are unseen, and one extra dump per (re)connect is the price of
-        // never serving a gap-stale tree.
-        let wst = st.clone();
+        // never serving a gap-stale tree. Hold a Weak ref so dropping the mount
+        // frees State and its body cache immediately even if watch is idle.
+        let wst = Arc::downgrade(&st);
         let wproj = proj.clone();
         thread::spawn(move || {
             let on_event = move |ev: crate::transport::WatchEvent| {
                 use crate::transport::WatchEvent as W;
-                if let Ok(mut s) = wst.lock() {
+                let Some(st) = wst.upgrade() else {
+                    return;
+                };
+                if let Ok(mut s) = st.lock() {
                     match ev {
                         W::Down => s.watch_live = false,
                         W::Up | W::Changed => {
@@ -219,7 +245,7 @@ impl GrubberyFs {
                             invalidate(&mut s);
                         }
                     }
-                }
+                };
             };
             wproj.watch(&on_event);
         });
@@ -305,7 +331,27 @@ impl GrubberyFs {
         let st = self.st.clone();
         let proj = self.proj.clone();
         let swapped = self.swapped.clone();
+        struct RefreshGuard {
+            st: Arc<Mutex<State>>,
+            swapped: Arc<Condvar>,
+            armed: bool,
+        }
+        impl Drop for RefreshGuard {
+            fn drop(&mut self) {
+                if self.armed {
+                    if let Ok(mut s) = self.st.lock() {
+                        s.refresh_pending = false;
+                    }
+                    self.swapped.notify_all();
+                }
+            }
+        }
         thread::spawn(move || {
+            let mut guard = RefreshGuard {
+                st: st.clone(),
+                swapped: swapped.clone(),
+                armed: true,
+            };
             let (start_gen, since, seen) = {
                 let s = st.lock().unwrap();
                 (s.write_gen, s.since.clone(), s.beacon_seen.clone())
@@ -318,6 +364,8 @@ impl GrubberyFs {
             };
             let mut s = st.lock().unwrap();
             s.refresh_pending = false;
+            guard.armed = false;
+            let mut release_after = false;
             match built {
                 // The tree is current: restart the clock instead of
                 // re-dumping, unless something invalidated it meanwhile. A
@@ -332,6 +380,7 @@ impl GrubberyFs {
                 Some(Ok(snap)) => {
                     if s.write_gen == start_gen {
                         apply_swap(&mut s, snap);
+                        release_after = has_free_held(&s);
                     }
                 }
                 Some(Err(_)) => {}
@@ -340,6 +389,9 @@ impl GrubberyFs {
             // every way out of here has cleared refresh_pending, so every way
             // out wakes a body() that is waiting on this refresh
             swapped.notify_all();
+            if release_after {
+                release_held_with(&st, &*proj);
+            }
         });
     }
 
@@ -388,6 +440,7 @@ impl GrubberyFs {
     /// by DUMP_WAIT, because the dump is about to install this very body (or
     /// confirm the cached one) and asking for it separately only queues one
     /// more round trip behind it. Only what the dump didn't bring is fetched.
+    #[cfg(test)]
     fn body(&self, rel: &str) -> Result<Vec<u8>, PErr> {
         self.body_at(rel).map(|(b, _)| b)
     }
@@ -395,7 +448,7 @@ impl GrubberyFs {
     /// body(), with the revision of the bytes served when the cache knows
     /// it (read under the same lock as the bytes, so the two always agree).
     fn body_at(&self, rel: &str) -> Result<(Vec<u8>, Option<u64>), PErr> {
-        {
+        let start_gen = {
             let deadline = Instant::now() + DUMP_WAIT;
             let mut s = self.st.lock().unwrap();
             loop {
@@ -407,30 +460,49 @@ impl GrubberyFs {
                 }
                 let left = deadline.saturating_duration_since(Instant::now());
                 if !s.refresh_pending || left.is_zero() {
-                    break;
+                    break s.write_gen;
                 }
                 s = self.swapped.wait_timeout(s, left).unwrap().0;
             }
-        }
+        };
+        self.fetch_body_at_gen(rel, start_gen)
+    }
+
+    /// Fetch `rel` directly from the projection, caching only if no write or
+    /// invalidation moved `write_gen` while the read was in flight.
+    fn fetch_body_at_gen(&self, rel: &str, start_gen: u64) -> Result<(Vec<u8>, Option<u64>), PErr> {
         let (data, rev) = self.proj.read_at(rel)?;
         let mut s = self.st.lock().unwrap();
-        // what just came off the wire supersedes a stale copy, unless a swap
-        // already settled that copy while we were out
-        if s.stale.contains(rel) {
-            s.cache_take(rel);
-        }
-        // re-check under the lock. A concurrent body() for the same rel may have
-        // fetched and inserted while we were on the wire. Inserting again would
-        // double-count the bytes and slowly rot the cap accounting.
-        if !s.read_cache.contains_key(rel)
-            && s.read_cache_bytes + rel.len() + data.len() <= READ_CACHE_MAX
-        {
-            s.cache_put(rel, data.clone());
-            if let Some(r) = rev {
-                s.claim_rev.insert(rel.to_string(), r);
+        if s.write_gen == start_gen {
+            // what just came off the wire supersedes a stale copy, unless a swap
+            // already settled that copy while we were out
+            if s.stale.contains(rel) {
+                s.cache_take(rel);
+            }
+            // re-check under the lock. A concurrent body() for the same rel may have
+            // fetched and inserted while we were on the wire. Inserting again would
+            // double-count the bytes and slowly rot the cap accounting.
+            if !s.read_cache.contains_key(rel)
+                && s.read_cache_bytes + rel.len() + data.len() <= READ_CACHE_MAX
+            {
+                s.cache_put(rel, data.clone());
+                if let Some(r) = rev {
+                    s.claim_rev.insert(rel.to_string(), r);
+                }
             }
         }
         Ok((data, rev))
+    }
+
+    /// body_at() for a writable open or write-prep path: bypasses the dump
+    /// cache when the projection requires a fresh `read_at` (for example a
+    /// link page whose owner revision comes only from `page-source`).
+    fn body_for_write(&self, rel: &str) -> Result<(Vec<u8>, Option<u64>), PErr> {
+        if self.proj.needs_read_for_write(rel) {
+            let start_gen = self.st.lock().unwrap().write_gen;
+            return self.fetch_body_at_gen(rel, start_gen);
+        }
+        self.body_at(rel)
     }
 
     /// SETATTR's size: truncate (or extend) ino to `sz`.
@@ -494,7 +566,7 @@ impl GrubberyFs {
         }
         let (rel, kind) = self.rel_kind_of(&s, &path);
         drop(s);
-        let (mut buf, base) = self.body_at(&rel).map_err(|e| e.errno)?;
+        let (mut buf, base) = self.body_for_write(&rel).map_err(|e| e.errno)?;
         if buf.len() as u64 == sz {
             return Ok(());
         }
@@ -521,6 +593,7 @@ impl GrubberyFs {
                         dirty: false,
                         gen: 0,
                         new: false,
+                        recreate: false,
                         scratch: true,
                         writable,
                         flushed: false,
@@ -540,7 +613,11 @@ impl GrubberyFs {
             }
             self.rel_kind_of(&s, &path)
         };
-        let (buf, base) = self.body_at(&rel).map_err(|e| e.errno)?;
+        let (buf, base) = if writable {
+            self.body_for_write(&rel).map_err(|e| e.errno)?
+        } else {
+            self.body_at(&rel).map_err(|e| e.errno)?
+        };
         let mut s = self.st.lock().unwrap();
         let fh = s.next_fh;
         s.next_fh += 1;
@@ -551,6 +628,7 @@ impl GrubberyFs {
             dirty: false,
             gen: 0,
             new: false,
+            recreate: false,
             scratch: false,
             writable,
             flushed: false,
@@ -558,6 +636,33 @@ impl GrubberyFs {
         };
         s.handles.insert(fh, h);
         Ok(fh)
+    }
+
+    /// Whether the page behind the file at `path` has anything under it
+    /// besides that file. A ship before the page-only delete takes every page
+    /// and folder under a name it deletes, and the mount cannot tell such a
+    /// ship from a newer one (both report version 146, and no route says
+    /// which delete it has), so a file's unlink, or a rename that would carry
+    /// the pages under it, is never sent for such a page. Editor temp files
+    /// are the mount's own and are not counted.
+    fn holds_others(&self, s: &State, path: &str) -> bool {
+        let (rel, _) = self.rel_kind_of(s, path);
+        let under = format!("/{rel}/");
+        s.vt.keys().any(|k| k.starts_with(&under) && k != path && !s.scratch.contains_key(k))
+    }
+
+    /// Ask the ship directly whether any node exists under `rel/`, matching
+    /// `release_held`'s invariant before sending a destructive delete or move
+    /// of a file.
+    fn ship_holds_others(&self, rel: &str) -> Result<bool, PErr> {
+        let on_ship = self.proj.list()?;
+        let under = format!("{rel}/");
+        Ok(on_ship.iter().any(|n| n.rel.starts_with(&under)))
+    }
+
+    /// Sends the delete of each held page with nothing under it now.
+    fn release_held(&self) {
+        release_held_with(&self.st, &*self.proj);
     }
 
     /// FS vpath -> (projection rel, kind). Strips the extension; maps a
@@ -577,13 +682,22 @@ impl GrubberyFs {
         } else {
             self.proj.kind_for_ext(ext)
         };
+        // An existing file in the vtree already knows its exact projection rel
+        // (for example a child page `a/a` inside a pure folder `a` keeps rel
+        // `a/a`, while page `a` with children keeps rel `a`).
+        if let Some(VEntry { kind: VKind::File, node: Some(n) }) = s.vt.get(path) {
+            return (n.rel.clone(), kind);
+        }
         if !parent.is_empty() {
             let parent_leaf = parent.rsplit('/').next().unwrap();
             if stem == parent_leaf {
-                if let Some(VEntry { kind: VKind::Dir, node: Some(n) }) =
-                    s.vt.get(&format!("/{}", parent))
-                {
-                    if n.is_page {
+                let parent_vpath = format!("/{parent}");
+                if let Some(VEntry { kind: VKind::Dir, node }) = s.vt.get(&parent_vpath) {
+                    let is_page = node.as_ref().is_some_and(|n| n.is_page);
+                    let under = format!("{parent_vpath}/");
+                    let has_children =
+                        s.vt.keys().any(|k| k.starts_with(&under) && !s.scratch.contains_key(k));
+                    if is_page || has_children {
                         return (parent.to_string(), kind);
                     }
                 }
@@ -631,10 +745,19 @@ impl GrubberyFs {
             let ino = ino.unwrap_or_else(|| ino_for(s, path));
             return Ok((
                 file_attr(ino, sz, SystemTime::now(), false, self.uid, self.gid),
-                TTL,
+                FILE_TTL,
             ));
         }
-        let e = s.vt.get(path).cloned().ok_or(libc::ENOENT)?;
+        let Some(e) = s.vt.get(path).cloned() else {
+            // A page-backed directory whose ship entry already vanished with
+            // its last file stays lookup-able briefly with zero TTL so a slow
+            // `rm -r` past the 1s dentry TTL can still rmdir it without ENOENT.
+            if s.ghost_dirs.get(path).is_some_and(|t| t.elapsed() < RECENT_TTL) {
+                let ino = ino.unwrap_or_else(|| ino_for(s, path));
+                return Ok((dir_attr(ino, SystemTime::now(), self.uid, self.gid), FILE_TTL));
+            }
+            return Err(libc::ENOENT);
+        };
         let ino = ino.unwrap_or_else(|| ino_for(s, path));
         let (ov, ttl) = if e.kind == VKind::File {
             let (rel, _) = self.rel_kind_of(s, path);
@@ -654,12 +777,19 @@ impl GrubberyFs {
     /// saved. The writer is still told EEXIST: the page itself is not what
     /// it wrote.
     fn commit(&self, fh: u64) -> Result<(), PErr> {
-        let (rel, kind, buf, new, scratch, gen, base) = {
+        let (rel, kind, buf, new, recreate, scratch, gen, base) = {
             let s = self.st.lock().unwrap();
             match s.handles.get(&fh) {
-                Some(h) if h.dirty => {
-                    (h.rel.clone(), h.kind.clone(), h.buf.clone(), h.new, h.scratch, h.gen, h.base)
-                }
+                Some(h) if h.dirty => (
+                    h.rel.clone(),
+                    h.kind.clone(),
+                    h.buf.clone(),
+                    h.new,
+                    h.recreate,
+                    h.scratch,
+                    h.gen,
+                    h.base,
+                ),
                 _ => return Ok(()),
             }
         };
@@ -679,12 +809,16 @@ impl GrubberyFs {
             }
             return Ok(());
         }
-        match self.save(&rel, &kind, &buf, new, base) {
+        // Recreating a held page as empty overwrites the existing ship page
+        // (create=false), so seed "\n" here just like page-save create does.
+        let payload: &[u8] = if recreate && buf.is_empty() { b"\n" } else { &buf };
+        match self.save(&rel, &kind, payload, new, base) {
             Ok(rev) => {
                 let mut s = self.st.lock().unwrap();
                 if let Some(h) = s.handles.get_mut(&fh) {
                     h.dirty = h.gen != gen;
                     h.new = false;
+                    h.recreate = false;
                     h.base = rev;
                 }
                 Ok(())
@@ -692,7 +826,7 @@ impl GrubberyFs {
             Err(e) if e.errno == libc::EEXIST => {
                 let copy = conflict_name(&rel);
                 if self.proj.write_based(&copy, &kind, &buf, true, None).is_ok() {
-                    eprintln!(
+                    crate::say!(
                         "lattice-fs: the ship refused the save of {rel} as a conflict ({}). \
                          Your text is kept as the page {copy}",
                         e.msg
@@ -725,6 +859,8 @@ impl GrubberyFs {
             .write_based(rel, kind, buf, create, base)
             .map_err(|e| self.moved_away(e))?;
         let mut s = self.st.lock().unwrap();
+        // A landed save over a held page un-holds it.
+        s.held.remove(rel);
         publish(&mut s, rel, buf);
         if let Some(r) = rev {
             s.claim_rev.insert(rel.to_string(), r);
@@ -749,7 +885,21 @@ impl GrubberyFs {
                 _ => break,
             }
         }
-        let h = self.st.lock().unwrap().handles.remove(&fh);
+        let h = {
+            let mut s = self.st.lock().unwrap();
+            let h = s.handles.remove(&fh);
+            // If recreating a held page never landed on the ship, remove the
+            // optimistic file entry so the page stays cleanly hidden and held.
+            if let (Err(_), Some(ref h)) = (&r, &h) {
+                if h.recreate && s.held.contains(&h.rel) {
+                    let rel = h.rel.clone();
+                    s.vt.retain(|_, e| {
+                        !(e.kind == VKind::File && e.node.as_ref().is_some_and(|n| n.rel == rel))
+                    });
+                }
+            }
+            h
+        };
         if let (Err(e), Some(h)) = (&r, h) {
             if h.dirty {
                 self.recover(&h, e);
@@ -785,13 +935,13 @@ impl GrubberyFs {
             f.sync_all()
         })();
         match r {
-            Ok(()) => eprintln!(
+            Ok(()) => crate::say!(
                 "lattice-fs: could not save {} ({}). Your text is kept at {}",
                 h.rel,
                 why.msg,
                 path.display()
             ),
-            Err(io) => eprintln!(
+            Err(io) => crate::say!(
                 "lattice-fs: could not save {} ({}), and could not keep it at {} ({io}). \
                  {} bytes are lost",
                 h.rel,
@@ -829,21 +979,75 @@ impl GrubberyFs {
         dst_kind: &str,
         dst_exists: bool,
     ) -> Result<(), PErr> {
-        let v = self
-            .st
-            .lock()
-            .unwrap()
-            .scratch
-            .get(src_path)
-            .cloned()
-            .ok_or_else(|| PErr::new(libc::ENOENT, "rename: no such temp"))?;
-        self.proj
-            .write(dst_rel, dst_kind, &v, !dst_exists)
+        let (v, open_fh, was_held, base) = {
+            let s = self.st.lock().unwrap();
+            match s.vt.get(dst_path) {
+                Some(VEntry { kind: VKind::File, node: Some(n) }) if n.readonly => {
+                    return Err(PErr::new(libc::EACCES, "rename: destination is read-only"));
+                }
+                Some(VEntry { kind: VKind::Dir, .. }) => {
+                    return Err(PErr::new(libc::EISDIR, "rename: destination is a directory"));
+                }
+                _ => {}
+            }
+            // If the editor renamed the temp before closing its fd, take the
+            // open handle's latest dirty buffer instead of the stale scratch map.
+            let open = s
+                .handles
+                .iter()
+                .filter(|(_, h)| h.scratch && h.rel == src_path && h.dirty)
+                .max_by_key(|(&fh, _)| fh)
+                .map(|(&fh, h)| (fh, h.gen, h.buf.clone()));
+            let (v, open_fh) = match open {
+                Some((fh, gen, buf)) => (buf, Some((fh, gen))),
+                None => {
+                    let buf = s
+                        .scratch
+                        .get(src_path)
+                        .cloned()
+                        .ok_or_else(|| PErr::new(libc::ENOENT, "rename: no such temp"))?;
+                    (buf, None)
+                }
+            };
+            let was_held = s.held.contains(dst_rel);
+            let base = if dst_exists && !was_held {
+                s.claim_rev
+                    .get(dst_rel)
+                    .or_else(|| s.body_rev.get(dst_rel))
+                    .or_else(|| {
+                        s.vt.get(dst_path)
+                            .and_then(|e| e.node.as_ref())
+                            .and_then(|n| n.rev.as_ref())
+                    })
+                    .copied()
+            } else {
+                None
+            };
+            (v, open_fh, was_held, base)
+        };
+        let payload: &[u8] = if was_held && v.is_empty() { b"\n" } else { &v };
+        let rev = self
+            .proj
+            .write_based(dst_rel, dst_kind, payload, !dst_exists, base)
             .map_err(|e| self.moved_away(e))?;
         let mut s = self.st.lock().unwrap();
+        // written over a held page, it is no longer held
+        s.held.remove(dst_rel);
         // the temp no longer exists under its old name
         s.scratch.remove(src_path);
         s.vt.remove(src_path);
+        s.ghost_dirs.remove(dst_path);
+        if let Some((fh, gen)) = open_fh {
+            if let Some(h) = s.handles.get_mut(&fh) {
+                h.dirty = h.gen != gen;
+                h.new = false;
+                h.recreate = false;
+                h.scratch = false;
+                h.rel = dst_rel.to_string();
+                h.kind = dst_kind.to_string();
+                h.base = rev;
+            }
+        }
         s.recent.insert(dst_path.to_string(), (Instant::now(), true));
         // an atomic save may CREATE the page. Seed an optimistic
         // entry, as create() does, so the file the editor just
@@ -862,7 +1066,10 @@ impl GrubberyFs {
             }),
         });
         // and the promoted bytes ARE that page now
-        publish(&mut s, dst_rel, &v);
+        publish(&mut s, dst_rel, payload);
+        if let Some(r) = rev {
+            s.claim_rev.insert(dst_rel.to_string(), r);
+        }
         remap_ino(&mut s, src_path, dst_path);
         Ok(())
     }
@@ -872,13 +1079,93 @@ impl GrubberyFs {
     /// Never delete it, so there is no data-loss window. A body we cannot
     /// read fails the rename. An empty backup would look like a good one.
     fn backup(&self, src_path: &str, dst_path: &str, src_rel: &str) -> Result<(), PErr> {
-        let v = self.body(src_rel)?;
+        let (v, rev) = self.body_for_write(src_rel)?;
         let mut s = self.st.lock().unwrap();
+        let base = rev.or_else(|| {
+            s.claim_rev
+                .get(src_rel)
+                .or_else(|| s.body_rev.get(src_rel))
+                .copied()
+        });
+        s.backed_up.retain(|_, (t, _)| t.elapsed() < RECENT_TTL);
+        s.backed_up.insert(src_path.to_string(), (Instant::now(), base));
         s.scratch.insert(dst_path.to_string(), v);
         // the page stays. Refresh so the new content lands
         s.vt_ts = None;
         remap_ino(&mut s, src_path, dst_path);
         Ok(())
+    }
+}
+
+impl Drop for GrubberyFs {
+    fn drop(&mut self) {
+        self.proj.quiesce(Duration::from_secs(2));
+    }
+}
+
+/// True when any held page has nothing left under it and no active writer.
+fn has_free_held(s: &State) -> bool {
+    s.held.iter().any(|rel| {
+        let under = format!("/{rel}/");
+        let has_kids = s.vt.keys().any(|k| k.starts_with(&under) && !s.scratch.contains_key(k));
+        let has_writer = s.handles.values().any(|h| !h.scratch && h.rel == *rel && h.writable);
+        !has_kids && !has_writer
+    })
+}
+
+/// Sends the delete of each held page with nothing under it now: on any
+/// ship that takes the page alone. One the ship refuses stays held, and is
+/// tried again at the next change. The folder of its name goes with it.
+/// A delete that frees the page above it is followed by that page's, so
+/// the pass repeats until it releases nothing.
+///
+/// The delete is sent later than the unlink that held it, and a ship before
+/// the page-only delete takes everything under a name it deletes. So
+/// the ship is asked what is under the page just before, not the mount's
+/// last listing, and a page with anything under it stays held.
+fn release_held_with(st: &Mutex<State>, proj: &dyn Projection) {
+    loop {
+        let free: Vec<String> = {
+            let s = st.lock().unwrap();
+            s.held
+                .iter()
+                .filter(|rel| {
+                    let under = format!("/{rel}/");
+                    let has_kids =
+                        s.vt.keys().any(|k| k.starts_with(&under) && !s.scratch.contains_key(k));
+                    let has_writer =
+                        s.handles.values().any(|h| !h.scratch && h.rel == **rel && h.writable);
+                    !has_kids && !has_writer
+                })
+                .cloned()
+                .collect()
+        };
+        if free.is_empty() {
+            return;
+        }
+        // a ship that cannot be asked is not sent a delete that could take a page
+        let Ok(on_ship) = proj.list() else { return };
+        let mut released = false;
+        for rel in free {
+            let under = format!("{rel}/");
+            if on_ship.iter().any(|n| n.rel.starts_with(&under)) {
+                continue;
+            }
+            if proj.delete(&rel).is_ok() {
+                let mut s = st.lock().unwrap();
+                s.held.remove(&rel);
+                s.cache_take(&rel);
+                let dir = format!("/{rel}");
+                s.mutated(&dir, false);
+                // its folder went with it, and the page above may be free now
+                s.vt.remove(&dir);
+                s.ghost_dirs.insert(dir, Instant::now());
+                released = true;
+            }
+        }
+        if !released {
+            return;
+        }
     }
 }
 
@@ -973,10 +1260,14 @@ impl State {
     /// the page that used to have that name, not the one that has it now.
     fn carry_body(&mut self, src_rel: &str, dst_rel: &str) {
         let fresh = !self.stale.contains(src_rel);
+        let rev = self.claim_rev.get(src_rel).or_else(|| self.body_rev.get(src_rel)).copied();
         let body = self.cache_take(src_rel);
         self.cache_take(dst_rel);
         if let (true, Some(b)) = (fresh, body) {
             self.cache_put(dst_rel, b);
+            if let Some(r) = rev {
+                self.claim_rev.insert(dst_rel.to_string(), r);
+            }
         }
     }
 }
@@ -1323,7 +1614,9 @@ fn apply_swap(s: &mut State, snap: Snapshot) {
     let Snapshot { mut vt, mut cache, mut bytes, since, beacon } = snap;
     let mut old = std::mem::take(&mut s.read_cache);
     let old_rev = std::mem::take(&mut s.body_rev);
+    let mut old_claim = std::mem::take(&mut s.claim_rev);
     let mut body_rev = HashMap::new();
+    let mut claim_rev = HashMap::new();
     for e in vt.values_mut() {
         if e.kind != VKind::File {
             continue;
@@ -1359,6 +1652,9 @@ fn apply_swap(s: &mut State, snap: Snapshot) {
                 if !cache.contains_key(&rel) {
                     if let Some(b) = old.remove(&rel) {
                         cache_put(&mut cache, &mut bytes, &rel, b);
+                        if let Some(r) = old_claim.remove(&rel) {
+                            claim_rev.insert(rel, r);
+                        }
                     }
                 }
             }
@@ -1366,19 +1662,79 @@ fn apply_swap(s: &mut State, snap: Snapshot) {
             if let Some(n) = gone.node {
                 cache_take(&mut cache, &mut bytes, &n.rel);
                 body_rev.remove(&n.rel);
+                claim_rev.remove(&n.rel);
+                // If a lagging snapshot still listed a page-only-deleted file
+                // `<dir>/<leaf>.<ext>`, keep its parent dir as a pure folder.
+                if gone.kind == VKind::File {
+                    let dir = format!("/{}", n.rel);
+                    if path.rsplit_once('/').is_some_and(|(d, _)| d == dir) {
+                        if let Some(VEntry { kind: VKind::Dir, node: Some(dn) }) = vt.get_mut(&dir)
+                        {
+                            if dn.rel == n.rel && dn.is_page {
+                                demote_to_pure_dir(dn);
+                            }
+                        }
+                    }
+                }
             }
         }
+    }
+    // a held page's file stays out of the listing until its delete is sent.
+    // Only a real page (VKind::File) keeps an entry in s.held; a pure folder
+    // with the same rel needs no page delete.
+    s.held.retain(|rel| {
+        vt.values().any(|e| e.kind == VKind::File && e.node.as_ref().is_some_and(|n| n.rel == *rel))
+    });
+    let active_writers: HashSet<String> = s
+        .handles
+        .values()
+        .filter(|h| !h.scratch && h.writable)
+        .map(|h| h.rel.clone())
+        .collect();
+    vt.retain(|_, e| {
+        !(e.kind == VKind::File
+            && e.node
+                .as_ref()
+                .is_some_and(|n| s.held.contains(&n.rel) && !active_writers.contains(&n.rel)))
+    });
+    s.backed_up.retain(|_, (t, _)| t.elapsed() < RECENT_TTL);
+    let mut expired_ghosts = Vec::new();
+    s.ghost_dirs.retain(|p, t| {
+        if vt.contains_key(p) {
+            return false;
+        }
+        if t.elapsed() < RECENT_TTL {
+            true
+        } else {
+            expired_ghosts.push(p.clone());
+            false
+        }
+    });
+    for p in expired_ghosts {
+        s.to_ino.remove(&p);
     }
     s.vt = vt;
     s.vt_ts = Some(Instant::now());
     s.read_cache = cache;
     s.read_cache_bytes = bytes;
     s.body_rev = body_rev;
+    s.claim_rev = claim_rev;
     // every body cached now is as of this snapshot (or is our own recent write)
     s.stale.clear();
     s.since = since;
     s.beacon_seen = beacon;
     s.warm = true;
+}
+
+/// Turn a page-with-children directory node into a pure folder node once its
+/// own page body has been removed via page-only delete.
+fn demote_to_pure_dir(n: &mut Node) {
+    n.is_dir = true;
+    n.is_page = false;
+    n.kind.clear();
+    n.size = 0;
+    n.readonly = false;
+    n.rev = None;
 }
 
 /// Build the virtual tree from a node list (port of the Python _build). A rel
@@ -1422,9 +1778,591 @@ fn build_vt(nodes: &[Node], ext_for: impl Fn(&str) -> &'static str) -> HashMap<S
     vt
 }
 
+impl GrubberyFs {
+    fn create_in(
+        &self,
+        parent: u64,
+        name: &str,
+    ) -> Result<(FileAttr, Duration, u64), i32> {
+        self.ensure_fresh();
+        let mut s = self.st.lock().unwrap();
+        let parent_path = path_of(&s, parent).ok_or(libc::ENOENT)?;
+        let path = join(&parent_path, name);
+        // an unknown extension that is not an editor temp would live only in
+        // RAM and be lost on unmount. Refuse it here instead.
+        if refuse_as_scratch(name, |ext| self.proj.kind_for_ext(ext)) {
+            return Err(libc::EINVAL);
+        }
+        // editor temp file: keep it entirely in the FUSE layer (never a page).
+        if is_scratch(name, |ext| self.proj.kind_for_ext(ext)) {
+            let ino = ino_for(&mut s, &path);
+            s.scratch.entry(path.clone()).or_default();
+            let fh = s.next_fh;
+            s.next_fh += 1;
+            s.handles.insert(
+                fh,
+                Handle {
+                    rel: path,
+                    kind: String::new(),
+                    buf: Vec::new(),
+                    dirty: true,
+                    gen: 0,
+                    new: true,
+                    recreate: false,
+                    scratch: true,
+                    writable: true,
+                    flushed: false,
+                    base: None,
+                },
+            );
+            let attr = file_attr(ino, 0, SystemTime::now(), false, self.uid, self.gid);
+            return Ok((attr, FILE_TTL, fh));
+        }
+        match s.vt.get(&path) {
+            Some(VEntry { kind: VKind::File, node: Some(n) }) if n.readonly => {
+                return Err(libc::EACCES);
+            }
+            Some(VEntry { kind: VKind::Dir, .. }) => return Err(libc::EISDIR),
+            _ => {}
+        }
+        s.backed_up.retain(|_, (t, _)| t.elapsed() < RECENT_TTL);
+        let backed = s.backed_up.remove(&path);
+        let exists = s.vt.contains_key(&path);
+        let (rel, kind) = self.rel_kind_of(&s, &path);
+        // Keep a held page in s.held until its save actually lands on the ship,
+        // so a failed create or early refresh never resurrects the old body.
+        let held = s.held.contains(&rel);
+        // A page that still exists in s.vt (for example right after backup())
+        // is overwritten rather than created with ?new=1, preserving its base.
+        let new = !held && !exists && backed.is_none();
+        let base = if !new && !held {
+            backed
+                .and_then(|(_, r)| r)
+                .or_else(|| s.claim_rev.get(&rel).or_else(|| s.body_rev.get(&rel)).copied())
+        } else {
+            None
+        };
+        s.ghost_dirs.remove(&path);
+        let ino = ino_for(&mut s, &path);
+        let fh = s.next_fh;
+        s.next_fh += 1;
+        s.handles.insert(
+            fh,
+            Handle {
+                rel: rel.clone(),
+                kind: kind.clone(),
+                buf: Vec::new(),
+                dirty: true,
+                gen: 0,
+                new,
+                recreate: held,
+                scratch: false,
+                writable: true,
+                flushed: false,
+                base,
+            },
+        );
+        s.recent.insert(path.clone(), (Instant::now(), true));
+        // optimistic vt entry so getattr/lookup work before the flush
+        s.vt.entry(path).or_insert_with(|| VEntry {
+            kind: VKind::File,
+            node: Some(Node {
+                rel,
+                is_dir: false,
+                is_page: true,
+                kind,
+                size: 0,
+                mtime: now_secs(),
+                readonly: false,
+                rev: None,
+            }),
+        });
+        let attr = file_attr(ino, 0, SystemTime::now(), false, self.uid, self.gid);
+        Ok((attr, FILE_TTL, fh))
+    }
+
+    fn mkdir_in(&self, parent: u64, name: &str) -> Result<FileAttr, i32> {
+        let parent_path = path_of(&self.st.lock().unwrap(), parent).ok_or(libc::ENOENT)?;
+        let path = join(&parent_path, name);
+        let rel = path.trim_start_matches('/').to_string();
+        self.proj.mkdir(&rel).map_err(|e| e.errno)?;
+        let mut s = self.st.lock().unwrap();
+        s.ghost_dirs.remove(&path);
+        let ino = ino_for(&mut s, &path);
+        s.mutated(&path, true);
+        s.vt.insert(path, VEntry { kind: VKind::Dir, node: None });
+        Ok(dir_attr(ino, SystemTime::now(), self.uid, self.gid))
+    }
+
+    fn unlink_in(&self, parent: u64, name: &str) -> Result<(), i32> {
+        let page_only = self.proj.page_only_delete();
+        let (path, rel, had_others) = {
+            let mut s = self.st.lock().unwrap();
+            let parent_path = path_of(&s, parent).ok_or(libc::ENOENT)?;
+            let path = join(&parent_path, name);
+            // scratch file: drop it from the FUSE layer only. NEVER proj.delete,
+            // which (via the last-dot strip) would delete the page it shadows.
+            if is_scratch(name, |ext| self.proj.kind_for_ext(ext)) {
+                s.scratch.remove(&path);
+                s.vt.remove(&path);
+                s.to_ino.remove(&path);
+                return Ok(());
+            }
+            let (rel, _) = self.rel_kind_of(&s, &path);
+            let had_others = self.holds_others(&s, &path);
+            // rm of one file must never take other pages with it. On a ship
+            // without page-only delete, the page is held: its file leaves the
+            // listing now, and its delete goes once nothing is under it. So
+            // `rm -r` of its folder works whichever side of its own file the
+            // pages under it sort. On a ship with page-only delete, send the
+            // delete right away since descendant pages stay intact.
+            if had_others && !page_only {
+                s.held.insert(rel.clone());
+                s.vt.remove(&path);
+                s.to_ino.remove(&path);
+                s.cache_take(&rel);
+                return Ok(());
+            }
+            (path, rel, had_others)
+        };
+        // Match release_held's invariant on legacy ships: ask the ship before a
+        // destructive delete so a child created remotely cannot be wiped silently.
+        if !page_only && self.ship_holds_others(&rel).map_err(|e| e.errno)? {
+            let mut s = self.st.lock().unwrap();
+            s.held.insert(rel.clone());
+            s.vt.remove(&path);
+            s.to_ino.remove(&path);
+            s.cache_take(&rel);
+            s.vt_ts = None;
+            return Ok(());
+        }
+        self.proj.delete(&rel).map_err(|e| e.errno)?;
+        {
+            let mut s = self.st.lock().unwrap();
+            s.mutated(&path, false);
+            s.vt.remove(&path);
+            s.to_ino.remove(&path);
+            // a page made again under this name must not read as this one
+            s.cache_take(&rel);
+            // Check whether `path` was the page's own file inside the folder of
+            // its name (`/<rel>/<leaf>.<ext>`).
+            let own_dir = path
+                .rsplit_once('/')
+                .map(|(d, _)| d.to_string())
+                .filter(|d| *d == format!("/{rel}"));
+            if let Some(dir) = own_dir {
+                let under = format!("/{rel}/");
+                let still_has_others = s
+                    .vt
+                    .keys()
+                    .any(|k| k.starts_with(&under) && !s.scratch.contains_key(k));
+                if had_others || still_has_others {
+                    // Page-only delete kept descendant pages intact, leaving
+                    // this directory as a pure folder.
+                    if let Some(VEntry { kind: VKind::Dir, node: Some(n) }) = s.vt.get_mut(&dir) {
+                        demote_to_pure_dir(n);
+                    }
+                } else {
+                    // Nothing was under it, so the folder went with the page
+                    // and its rmdir has nothing left to send.
+                    s.mutated(&dir, false);
+                    s.vt.remove(&dir);
+                    s.ghost_dirs.insert(dir, Instant::now());
+                }
+            }
+        }
+        self.release_held();
+        Ok(())
+    }
+
+    fn rmdir_in(&self, parent: u64, name: &str) -> Result<(), i32> {
+        let path = {
+            let s = self.st.lock().unwrap();
+            let parent_path = path_of(&s, parent).ok_or(libc::ENOENT)?;
+            join(&parent_path, name)
+        };
+        // POSIX: a non-empty directory is ENOTEMPTY. Without this, rmdir of a
+        // populated lattice folder would pass straight to page-del and take the
+        // whole subtree with it (rm -r still works because it empties, then rmdirs).
+        {
+            let mut s = self.st.lock().unwrap();
+            let prefix = format!("{path}/");
+            if s.vt.keys().any(|k| k.starts_with(&prefix))
+                || s.scratch.keys().any(|k| k.starts_with(&prefix))
+            {
+                return Err(libc::ENOTEMPTY);
+            }
+            // a folder whose page this mount deleted a moment ago, with the
+            // last thing under it: it is gone already. A second delete could
+            // take a page another client has made at that name since.
+            let gone_recently = s.ghost_dirs.remove(&path).is_some()
+                || s.recent.get(&path).is_some_and(|(t, alive)| !alive && t.elapsed() < RECENT_TTL);
+            if gone_recently {
+                s.vt.remove(&path);
+                s.to_ino.remove(&path);
+                drop(s);
+                self.release_held();
+                return Ok(());
+            }
+        }
+        let rel = path.trim_start_matches('/').to_string();
+        self.proj.delete(&rel).map_err(|e| e.errno)?;
+        {
+            let mut s = self.st.lock().unwrap();
+            s.mutated(&path, false);
+            s.vt.remove(&path);
+            s.to_ino.remove(&path);
+            // a page held for this folder went with it
+            s.held.remove(&rel);
+            s.ghost_dirs.remove(&path);
+        }
+        self.release_held();
+        Ok(())
+    }
+
+    fn rename_in(
+        &self,
+        parent: u64,
+        name: &str,
+        newparent: u64,
+        newname: &str,
+        flags: RenameFlags,
+    ) -> Result<(), i32> {
+        #[cfg(target_os = "linux")]
+        if flags.intersects(RenameFlags::RENAME_EXCHANGE | RenameFlags::RENAME_WHITEOUT) {
+            return Err(libc::EINVAL);
+        }
+        #[cfg(target_os = "linux")]
+        let noreplace = flags.contains(RenameFlags::RENAME_NOREPLACE);
+        #[cfg(not(target_os = "linux"))]
+        let noreplace = {
+            let _ = flags;
+            false
+        };
+        let (src_path, dst_path, src_is_dir) = {
+            let s = self.st.lock().unwrap();
+            let pp = path_of(&s, parent).ok_or(libc::ENOENT)?;
+            let npp = path_of(&s, newparent).ok_or(libc::ENOENT)?;
+            let src_path = join(&pp, name);
+            let dst_path = join(&npp, newname);
+            if noreplace && (s.vt.contains_key(&dst_path) || s.scratch.contains_key(&dst_path)) {
+                return Err(libc::EEXIST);
+            }
+            let src_is_dir = s.vt.get(&src_path).is_some_and(|e| e.kind == VKind::Dir);
+            (src_path, dst_path, src_is_dir)
+        };
+        if src_path == dst_path {
+            return Ok(());
+        }
+        // Directory rename: bypass scratch classification and EditorMove,
+        // derive rels via trim_start_matches('/') matching mkdir/rmdir, and
+        // rewrite all descendant entries and open handles.
+        if src_is_dir {
+            let src_rel = src_path.trim_start_matches('/').to_string();
+            let dst_rel = dst_path.trim_start_matches('/').to_string();
+            self.proj.mv(&src_rel, &dst_rel).map_err(|e| e.errno)?;
+            {
+                let mut s = self.st.lock().unwrap();
+                self.rewrite_renamed_dir(&mut s, &src_path, &dst_path, &src_rel, &dst_rel);
+            }
+            self.release_held();
+            return Ok(());
+        }
+        let src_scratch = is_scratch(name, |ext| self.proj.kind_for_ext(ext));
+        let dst_scratch = is_scratch(newname, |ext| self.proj.kind_for_ext(ext));
+        // same rule as create: a rename may not land a file in RAM under a
+        // name nobody expects to vanish
+        if refuse_as_scratch(newname, |ext| self.proj.kind_for_ext(ext)) {
+            return Err(libc::EINVAL);
+        }
+        let (src_rel, dst_rel, dst_kind, dst_exists) = {
+            let s = self.st.lock().unwrap();
+            let (src_rel, _) = self.rel_kind_of(&s, &src_path);
+            let (dst_rel, dst_kind) = self.rel_kind_of(&s, &dst_path);
+            // a held page's file is hidden from the listing, but the page is on the ship
+            let dst_exists = s.vt.contains_key(&dst_path) || s.held.contains(&dst_rel);
+            (src_rel, dst_rel, dst_kind, dst_exists)
+        };
+        // Any rename touching a scratch name must never delete/clobber the page it
+        // shadows. Handle the editor patterns explicitly: each arm owns both its
+        // wire call and the state fixup that pattern needs, so a fix to one
+        // pattern cannot silently mis-target another.
+        if let Some(mv) = EditorMove::of(src_scratch, dst_scratch) {
+            let res: Result<(), PErr> = match mv {
+                EditorMove::WithinScratch => {
+                    // temp -> temp: move within the scratch map. This arm makes no
+                    // wire call, so it holds the lock for the whole move and a
+                    // concurrent readdir never sees the temp under neither name.
+                    let mut s = self.st.lock().unwrap();
+                    let v = s.scratch.remove(&src_path).unwrap_or_default();
+                    s.scratch.insert(dst_path.clone(), v);
+                    s.vt.remove(&src_path);
+                    // a handle still open on the temp follows it, so its close
+                    // lands under the new name rather than nowhere
+                    for h in s.handles.values_mut() {
+                        if h.scratch && h.rel == src_path {
+                            h.rel = dst_path.clone();
+                        }
+                    }
+                    remap_ino(&mut s, &src_path, &dst_path);
+                    Ok(())
+                }
+                EditorMove::Promote => {
+                    self.promote(&src_path, &dst_path, &dst_rel, &dst_kind, dst_exists)
+                }
+                EditorMove::Backup => self.backup(&src_path, &dst_path, &src_rel),
+            };
+            return res.map_err(|e| e.errno);
+        }
+        // a page's own file, with pages under the page: the ship's move of a
+        // page carries every page under it (`+move-pages`), and a rename of
+        // one file must not move others. Refused, as its unlink is held.
+        let is_file = {
+            let s = self.st.lock().unwrap();
+            let file = s.vt.get(&src_path).is_some_and(|e| e.kind == VKind::File);
+            if file && self.holds_others(&s, &src_path) {
+                return Err(libc::ENOTEMPTY);
+            }
+            file
+        };
+        if is_file && self.ship_holds_others(&src_rel).map_err(|e| e.errno)? {
+            self.st.lock().unwrap().vt_ts = None;
+            return Err(libc::ENOTEMPTY);
+        }
+        self.proj.mv(&src_rel, &dst_rel).map_err(|e| e.errno)?;
+        {
+            let mut s = self.st.lock().unwrap();
+            // a held page moved with its folder is held under its new name
+            let under = format!("{src_rel}/");
+            let moved: Vec<String> =
+                s.held.iter().filter(|r| **r == src_rel || r.starts_with(&under)).cloned().collect();
+            for r in moved {
+                s.held.remove(&r);
+                s.held.insert(format!("{dst_rel}{}", &r[src_rel.len()..]));
+            }
+            // The entry moves in the vtree too. The ship holds it under the
+            // new name now, and leaving the destination to the async
+            // re-dump makes `mv a b && cat b` fail with ENOENT for up to a
+            // whole refresh interval. Carry the cached body across with it
+            // so the read after the rename also skips the round trip.
+            let moved = s.vt.remove(&src_path);
+            if let Some(mut e) = moved {
+                if let Some(n) = e.node.as_mut() {
+                    n.rel = dst_rel.clone();
+                }
+                s.vt.insert(dst_path.clone(), e);
+            }
+            s.carry_body(&src_rel, &dst_rel);
+            for h in s.handles.values_mut() {
+                if !h.scratch && h.rel == src_rel {
+                    h.rel = dst_rel.clone();
+                    h.kind = dst_kind.clone();
+                }
+            }
+            s.ghost_dirs.remove(&dst_path);
+            s.recent.insert(src_path.clone(), (Instant::now(), false));
+            s.mutated(&dst_path, true);
+            remap_ino(&mut s, &src_path, &dst_path);
+        }
+        // a page moved out of a held page's folder may have been the last under it
+        self.release_held();
+        Ok(())
+    }
+
+    /// Rewrite all local state for a directory rename `src_path -> dst_path`
+    /// (`src_rel -> dst_rel`), including every descendant under `{src_path}/`,
+    /// any page-with-children body file `<dir>/<old_leaf>.<ext>`, cached
+    /// bodies/revs, inode mappings, scratch files, recent entries, and handles.
+    fn rewrite_renamed_dir(
+        &self,
+        s: &mut State,
+        src_path: &str,
+        dst_path: &str,
+        src_rel: &str,
+        dst_rel: &str,
+    ) {
+        let src_prefix = format!("{src_path}/");
+        let rel_prefix = format!("{src_rel}/");
+        let new_leaf = leaf_of(dst_path);
+        let now = Instant::now();
+
+        // 1. s.held
+        let moved_held: Vec<String> = s
+            .held
+            .iter()
+            .filter(|r| **r == src_rel || r.starts_with(&rel_prefix))
+            .cloned()
+            .collect();
+        for r in moved_held {
+            s.held.remove(&r);
+            s.held.insert(format!("{dst_rel}{}", &r[src_rel.len()..]));
+        }
+
+        // 2. s.vt (root dir + all descendants, renaming page-with-children own file)
+        let vt_keys: Vec<String> = s
+            .vt
+            .keys()
+            .filter(|k| **k == src_path || k.starts_with(&src_prefix))
+            .cloned()
+            .collect();
+        let mut path_map: HashMap<String, String> = HashMap::new();
+        let mut new_vt: Vec<(String, VEntry)> = Vec::with_capacity(vt_keys.len());
+        for old_p in vt_keys {
+            if let Some(mut e) = s.vt.remove(&old_p) {
+                let new_p = if old_p == src_path {
+                    dst_path.to_string()
+                } else if e.kind == VKind::File
+                    && e.node.as_ref().is_some_and(|n| n.rel == src_rel)
+                {
+                    let ext = self.proj.ext_for_kind(&e.node.as_ref().unwrap().kind);
+                    format!("{dst_path}/{new_leaf}.{ext}")
+                } else {
+                    format!("{dst_path}{}", &old_p[src_path.len()..])
+                };
+                if let Some(n) = e.node.as_mut() {
+                    if n.rel == src_rel {
+                        n.rel = dst_rel.to_string();
+                    } else if n.rel.starts_with(&rel_prefix) {
+                        n.rel = format!("{dst_rel}{}", &n.rel[src_rel.len()..]);
+                    }
+                }
+                path_map.insert(old_p, new_p.clone());
+                new_vt.push((new_p, e));
+            }
+        }
+        for (new_p, e) in new_vt {
+            s.vt.insert(new_p, e);
+        }
+
+        // 3. s.scratch under the moved dir
+        let scratch_keys: Vec<String> =
+            s.scratch.keys().filter(|k| k.starts_with(&src_prefix)).cloned().collect();
+        let mut new_scratch = Vec::with_capacity(scratch_keys.len());
+        for old_p in scratch_keys {
+            if let Some(v) = s.scratch.remove(&old_p) {
+                let new_p = format!("{dst_path}{}", &old_p[src_path.len()..]);
+                path_map.insert(old_p, new_p.clone());
+                new_scratch.push((new_p, v));
+            }
+        }
+        for (new_p, v) in new_scratch {
+            s.scratch.insert(new_p, v);
+        }
+
+        // 4. s.to_ino and s.to_path (all moved paths + any remaining prefix paths)
+        let ino_keys: Vec<String> = s
+            .to_ino
+            .keys()
+            .filter(|k| **k == src_path || k.starts_with(&src_prefix))
+            .cloned()
+            .collect();
+        let mut remapped_inos: Vec<(String, u64)> = Vec::with_capacity(ino_keys.len());
+        for old_p in ino_keys {
+            if let Some(ino) = s.to_ino.remove(&old_p) {
+                let new_p = path_map
+                    .get(&old_p)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{dst_path}{}", &old_p[src_path.len()..]));
+                remapped_inos.push((new_p, ino));
+            }
+        }
+        for (new_p, ino) in remapped_inos {
+            if let Some(prev_ino) = s.to_ino.insert(new_p.clone(), ino) {
+                if prev_ino != ino {
+                    s.to_path.remove(&prev_ino);
+                }
+            }
+            s.to_path.insert(ino, new_p);
+        }
+
+        // 5. Cached bodies and revs (order-independent)
+        let moved_rels: Vec<String> = s
+            .read_cache
+            .keys()
+            .chain(s.body_rev.keys())
+            .chain(s.claim_rev.keys())
+            .filter(|r| **r == src_rel || r.starts_with(&rel_prefix))
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        struct Carried {
+            rel: String,
+            fresh: bool,
+            body: Option<Vec<u8>>,
+            rev: Option<u64>,
+        }
+        let mut carried: Vec<Carried> = Vec::with_capacity(moved_rels.len());
+        for old_r in moved_rels {
+            let new_r = format!("{dst_rel}{}", &old_r[src_rel.len()..]);
+            let fresh = !s.stale.contains(&old_r);
+            let rev = s.claim_rev.get(&old_r).or_else(|| s.body_rev.get(&old_r)).copied();
+            let body = s.cache_take(&old_r);
+            carried.push(Carried { rel: new_r, fresh, body, rev });
+        }
+        for c in carried {
+            s.cache_take(&c.rel);
+            if let (true, Some(b)) = (c.fresh, c.body) {
+                s.cache_put(&c.rel, b);
+                if let Some(r) = c.rev {
+                    s.claim_rev.insert(c.rel, r);
+                }
+            }
+        }
+
+        // 6. s.recent, s.backed_up, s.ghost_dirs
+        let recent_keys: Vec<String> =
+            s.recent.keys().filter(|k| k.starts_with(&src_prefix)).cloned().collect();
+        let mut moved_recent = Vec::new();
+        for old_p in recent_keys {
+            if !path_map.contains_key(&old_p) {
+                if let Some(entry) = s.recent.remove(&old_p) {
+                    moved_recent.push((format!("{dst_path}{}", &old_p[src_path.len()..]), entry));
+                }
+            }
+        }
+        for (new_p, entry) in moved_recent {
+            s.recent.insert(new_p, entry);
+        }
+        for (old_p, new_p) in path_map {
+            s.recent.insert(old_p, (now, false));
+            s.recent.insert(new_p, (now, true));
+        }
+        let backed_keys: Vec<String> =
+            s.backed_up.keys().filter(|k| k.starts_with(&src_prefix)).cloned().collect();
+        let mut moved_backed = Vec::new();
+        for old_p in backed_keys {
+            if let Some(entry) = s.backed_up.remove(&old_p) {
+                moved_backed.push((format!("{dst_path}{}", &old_p[src_path.len()..]), entry));
+            }
+        }
+        for (new_p, entry) in moved_backed {
+            s.backed_up.insert(new_p, entry);
+        }
+        s.ghost_dirs.remove(dst_path);
+        s.mutated(dst_path, true);
+
+        // 7. Open handles (both page handles and scratch handles under the dir)
+        for h in s.handles.values_mut() {
+            if !h.scratch {
+                if h.rel == src_rel {
+                    h.rel = dst_rel.to_string();
+                } else if h.rel.starts_with(&rel_prefix) {
+                    h.rel = format!("{dst_rel}{}", &h.rel[src_rel.len()..]);
+                }
+            } else if h.rel.starts_with(&src_prefix) {
+                h.rel = format!("{dst_path}{}", &h.rel[src_path.len()..]);
+            }
+        }
+    }
+}
+
 // ---------- the FUSE surface ----------
 
 impl Filesystem for GrubberyFs {
+    fn destroy(&mut self) {
+        self.proj.quiesce(Duration::from_secs(2));
+    }
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         self.ensure_fresh();
         let name = match fs_name(name) {
@@ -1681,84 +2619,16 @@ impl Filesystem for GrubberyFs {
         _flags: i32,
         reply: ReplyCreate,
     ) {
-        self.ensure_fresh();
         let name = match fs_name(name) {
             Ok(n) => n,
             Err(e) => return reply.error(err(e)),
         };
-        let mut s = self.st.lock().unwrap();
-        let Some(parent_path) = path_of(&s, parent.0) else {
-            reply.error(err(libc::ENOENT));
-            return;
-        };
-        let path = join(&parent_path, &name);
-        // an unknown extension that is not an editor temp would live only in
-        // RAM and be lost on unmount. Refuse it here instead.
-        if refuse_as_scratch(&name, |ext| self.proj.kind_for_ext(ext)) {
-            reply.error(err(libc::EINVAL));
-            return;
+        match self.create_in(parent.0, &name) {
+            Ok((attr, ttl, fh)) => {
+                reply.created(&ttl, &attr, Generation(0), FileHandle(fh), FopenFlags::empty());
+            }
+            Err(e) => reply.error(err(e)),
         }
-        // editor temp file: keep it entirely in the FUSE layer (never a page).
-        if is_scratch(&name, |ext| self.proj.kind_for_ext(ext)) {
-            let ino = ino_for(&mut s, &path);
-            s.scratch.entry(path.clone()).or_default();
-            let fh = s.next_fh;
-            s.next_fh += 1;
-            s.handles.insert(
-                fh,
-                Handle {
-                    rel: path,
-                    kind: String::new(),
-                    buf: Vec::new(),
-                    dirty: true,
-                    gen: 0,
-                    new: true,
-                    scratch: true,
-                    writable: true,
-                    flushed: false,
-                    base: None,
-                },
-            );
-            drop(s);
-            let attr = file_attr(ino, 0, SystemTime::now(), false, self.uid, self.gid);
-            reply.created(&TTL, &attr, Generation(0), FileHandle(fh), FopenFlags::empty());
-            return;
-        }
-        let (rel, kind) = self.rel_kind_of(&s, &path);
-        let ino = ino_for(&mut s, &path);
-        let fh = s.next_fh;
-        s.next_fh += 1;
-        s.handles.insert(
-            fh,
-            Handle {
-                rel: rel.clone(),
-                kind: kind.clone(),
-                buf: Vec::new(),
-                dirty: true,
-                gen: 0,
-                new: true,
-                scratch: false,
-                writable: true,
-                flushed: false,
-                base: None,
-            },
-        );
-        s.recent.insert(path.clone(), (Instant::now(), true));
-        // optimistic vt entry so getattr/lookup work before the flush
-        let node = Node {
-            rel,
-            is_dir: false,
-            is_page: true,
-            kind,
-            size: 0,
-            mtime: now_secs(),
-            readonly: false,
-            rev: None,
-        };
-        s.vt.insert(path, VEntry { kind: VKind::File, node: Some(node) });
-        drop(s);
-        let attr = file_attr(ino, 0, SystemTime::now(), false, self.uid, self.gid);
-        reply.created(&TTL, &attr, Generation(0), FileHandle(fh), FopenFlags::empty());
     }
 
     fn mkdir(
@@ -1774,23 +2644,9 @@ impl Filesystem for GrubberyFs {
             Ok(n) => n,
             Err(e) => return reply.error(err(e)),
         };
-        let Some(parent_path) = path_of(&self.st.lock().unwrap(), parent.0) else {
-            reply.error(err(libc::ENOENT));
-            return;
-        };
-        let path = join(&parent_path, &name);
-        let rel = path.trim_start_matches('/').to_string();
-        match self.proj.mkdir(&rel) {
-            Ok(()) => {
-                let mut s = self.st.lock().unwrap();
-                let ino = ino_for(&mut s, &path);
-                s.mutated(&path, true);
-                s.vt.insert(path, VEntry { kind: VKind::Dir, node: None });
-                drop(s);
-                let attr = dir_attr(ino, SystemTime::now(), self.uid, self.gid);
-                reply.entry(&TTL, &attr, Generation(0));
-            }
-            Err(e) => reply.error(err(e.errno)),
+        match self.mkdir_in(parent.0, &name) {
+            Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+            Err(e) => reply.error(err(e)),
         }
     }
 
@@ -1799,36 +2655,9 @@ impl Filesystem for GrubberyFs {
             Ok(n) => n,
             Err(e) => return reply.error(err(e)),
         };
-        let (path, rel) = {
-            let mut s = self.st.lock().unwrap();
-            let Some(parent_path) = path_of(&s, parent.0) else {
-                reply.error(err(libc::ENOENT));
-                return;
-            };
-            let path = join(&parent_path, &name);
-            // scratch file: drop it from the FUSE layer only. NEVER proj.delete,
-            // which (via the last-dot strip) would delete the page it shadows.
-            if is_scratch(&name, |ext| self.proj.kind_for_ext(ext)) {
-                s.scratch.remove(&path);
-                s.vt.remove(&path);
-                drop(s);
-                reply.ok();
-                return;
-            }
-            let (rel, _) = self.rel_kind_of(&s, &path);
-            (path, rel)
-        };
-        match self.proj.delete(&rel) {
-            Ok(()) => {
-                let mut s = self.st.lock().unwrap();
-                s.mutated(&path, false);
-                s.vt.remove(&path);
-                // a page made again under this name must not read as this one
-                s.cache_take(&rel);
-                drop(s);
-                reply.ok();
-            }
-            Err(e) => reply.error(err(e.errno)),
+        match self.unlink_in(parent.0, &name) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(err(e)),
         }
     }
 
@@ -1837,36 +2666,9 @@ impl Filesystem for GrubberyFs {
             Ok(n) => n,
             Err(e) => return reply.error(err(e)),
         };
-        let path = {
-            let s = self.st.lock().unwrap();
-            let Some(parent_path) = path_of(&s, parent.0) else {
-                reply.error(err(libc::ENOENT));
-                return;
-            };
-            join(&parent_path, &name)
-        };
-        // POSIX: a non-empty directory is ENOTEMPTY. Without this, rmdir of a
-        // populated lattice folder would pass straight to page-del and take the
-        // whole subtree with it (rm -r still works because it empties, then rmdirs).
-        {
-            let s = self.st.lock().unwrap();
-            let prefix = format!("{path}/");
-            if s.vt.keys().any(|k| k.starts_with(&prefix)) {
-                drop(s);
-                reply.error(err(libc::ENOTEMPTY));
-                return;
-            }
-        }
-        let rel = path.trim_start_matches('/').to_string();
-        match self.proj.delete(&rel) {
-            Ok(()) => {
-                let mut s = self.st.lock().unwrap();
-                s.mutated(&path, false);
-                s.vt.remove(&path);
-                drop(s);
-                reply.ok();
-            }
-            Err(e) => reply.error(err(e.errno)),
+        match self.rmdir_in(parent.0, &name) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(err(e)),
         }
     }
 
@@ -1877,7 +2679,7 @@ impl Filesystem for GrubberyFs {
         name: &OsStr,
         newparent: INodeNo,
         newname: &OsStr,
-        _flags: RenameFlags,
+        flags: RenameFlags,
         reply: ReplyEmpty,
     ) {
         let name = match fs_name(name) {
@@ -1888,91 +2690,9 @@ impl Filesystem for GrubberyFs {
             Ok(n) => n,
             Err(e) => return reply.error(err(e)),
         };
-        let src_scratch = is_scratch(&name, |ext| self.proj.kind_for_ext(ext));
-        let dst_scratch = is_scratch(&newname, |ext| self.proj.kind_for_ext(ext));
-        // same rule as create: a rename may not land a file in RAM under a
-        // name nobody expects to vanish
-        if refuse_as_scratch(&newname, |ext| self.proj.kind_for_ext(ext)) {
-            reply.error(err(libc::EINVAL));
-            return;
-        }
-        let (src_path, dst_path, src_rel, dst_rel, dst_kind, dst_exists) = {
-            let s = self.st.lock().unwrap();
-            let Some(pp) = path_of(&s, parent.0) else {
-                reply.error(err(libc::ENOENT));
-                return;
-            };
-            let Some(npp) = path_of(&s, newparent.0) else {
-                reply.error(err(libc::ENOENT));
-                return;
-            };
-            let src_path = join(&pp, &name);
-            let dst_path = join(&npp, &newname);
-            let (src_rel, _) = self.rel_kind_of(&s, &src_path);
-            let (dst_rel, dst_kind) = self.rel_kind_of(&s, &dst_path);
-            let dst_exists = s.vt.contains_key(&dst_path);
-            (src_path, dst_path, src_rel, dst_rel, dst_kind, dst_exists)
-        };
-        // Any rename touching a scratch name must never delete/clobber the page it
-        // shadows. Handle the editor patterns explicitly: each arm owns both its
-        // wire call and the state fixup that pattern needs, so a fix to one
-        // pattern cannot silently mis-target another.
-        if let Some(mv) = EditorMove::of(src_scratch, dst_scratch) {
-            let res: Result<(), PErr> = match mv {
-                EditorMove::WithinScratch => {
-                    // temp -> temp: move within the scratch map. This arm makes no
-                    // wire call, so it holds the lock for the whole move and a
-                    // concurrent readdir never sees the temp under neither name.
-                    let mut s = self.st.lock().unwrap();
-                    let v = s.scratch.remove(&src_path).unwrap_or_default();
-                    s.scratch.insert(dst_path.clone(), v);
-                    // the temp no longer exists under its old name
-                    s.scratch.remove(&src_path);
-                    s.vt.remove(&src_path);
-                    // a handle still open on the temp follows it, so its close
-                    // lands under the new name rather than nowhere
-                    for h in s.handles.values_mut() {
-                        if h.scratch && h.rel == src_path {
-                            h.rel = dst_path.clone();
-                        }
-                    }
-                    remap_ino(&mut s, &src_path, &dst_path);
-                    Ok(())
-                }
-                EditorMove::Promote => {
-                    self.promote(&src_path, &dst_path, &dst_rel, &dst_kind, dst_exists)
-                }
-                EditorMove::Backup => self.backup(&src_path, &dst_path, &src_rel),
-            };
-            match res {
-                Ok(()) => reply.ok(),
-                Err(e) => reply.error(err(e.errno)),
-            }
-            return;
-        }
-        match self.proj.mv(&src_rel, &dst_rel) {
-            Ok(()) => {
-                let mut s = self.st.lock().unwrap();
-                // The entry moves in the vtree too. The ship holds it under the
-                // new name now, and leaving the destination to the async
-                // re-dump makes `mv a b && cat b` fail with ENOENT for up to a
-                // whole refresh interval. Carry the cached body across with it
-                // so the read after the rename also skips the round trip.
-                let moved = s.vt.remove(&src_path);
-                if let Some(mut e) = moved {
-                    if let Some(n) = e.node.as_mut() {
-                        n.rel = dst_rel.clone();
-                    }
-                    s.vt.insert(dst_path.clone(), e);
-                }
-                s.carry_body(&src_rel, &dst_rel);
-                s.recent.insert(src_path.clone(), (Instant::now(), false));
-                s.mutated(&dst_path, true);
-                remap_ino(&mut s, &src_path, &dst_path);
-                drop(s);
-                reply.ok();
-            }
-            Err(e) => reply.error(err(e.errno)),
+        match self.rename_in(parent.0, &name, newparent.0, &newname, flags) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(err(e)),
         }
     }
 }
@@ -2001,8 +2721,15 @@ fn write_buf(h: &mut Handle, offset: u64, data: &[u8]) -> Result<(), i32> {
 }
 
 fn remap_ino(s: &mut State, src: &str, dst: &str) {
+    if src == dst {
+        return;
+    }
     if let Some(ino) = s.to_ino.remove(src) {
-        s.to_ino.insert(dst.to_string(), ino);
+        if let Some(old_dst_ino) = s.to_ino.insert(dst.to_string(), ino) {
+            if old_dst_ino != ino {
+                s.to_path.remove(&old_dst_ino);
+            }
+        }
         s.to_path.insert(ino, dst.to_string());
     }
 }
@@ -2333,6 +3060,16 @@ mod tests {
         // runs once inside the next write(), while commit holds no lock. That
         // is where a second FUSE thread could land a write.
         during_write: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        // runs once inside the next read_at(), while body_at holds no lock.
+        during_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        // make dump() panic once (to test the refresh_pending Drop guard).
+        panic_dump: AtomicBool,
+        // rels for which needs_read_for_write() returns true (simulating links).
+        needs_read_rels: Mutex<HashSet<String>>,
+        // Whether this fake ship advertises page-only delete.
+        page_only_del: AtomicBool,
+        // Folders left behind after a page-only delete (`page-gone` marker).
+        page_gone: Mutex<HashSet<String>>,
     }
 
     impl Fake {
@@ -2382,9 +3119,20 @@ mod tests {
         }
         fn read_at(&self, rel: &str) -> Result<(Vec<u8>, Option<u64>), PErr> {
             let rev = self.nodes.lock().unwrap().iter().find(|n| n.rel == rel).and_then(|n| n.rev);
-            Ok((self.read(rel)?, rev))
+            let data = self.read(rel)?;
+            let hook = self.during_read.lock().unwrap().take();
+            if let Some(f) = hook {
+                f();
+            }
+            Ok((data, rev))
+        }
+        fn needs_read_for_write(&self, rel: &str) -> bool {
+            self.needs_read_rels.lock().unwrap().contains(rel)
         }
         fn dump(&self) -> Result<crate::projection::Dump, PErr> {
+            if self.panic_dump.swap(false, Ordering::SeqCst) {
+                panic!("fake: simulated refresh panic");
+            }
             // Snapshot FIRST, then stall. A dump held up on the wire carries
             // the state the ship held when it answered, not the state it holds
             // when the bytes finally arrive, and the stale-swap guard exists
@@ -2477,6 +3225,11 @@ mod tests {
             // never deadlock against each other.
             let mut nodes = self.nodes.lock().unwrap();
             let rev = match nodes.iter_mut().find(|n| n.rel == rel) {
+                Some(n) if n.is_dir => {
+                    // Creating a page at a pure folder's path turns it back into a page.
+                    *n = page(rel, kind, data.len() as u64);
+                    n.rev
+                }
                 Some(n) => {
                     n.size = data.len() as u64;
                     n.rev = n.rev.map(|r| r + 1);
@@ -2488,6 +3241,7 @@ mod tests {
                 }
             };
             drop(nodes);
+            self.page_gone.lock().unwrap().remove(rel);
             self.bodies.lock().unwrap().insert(rel.to_string(), data.to_vec());
             self.changed.lock().unwrap().insert(rel.to_string());
             Ok(rev)
@@ -2498,7 +3252,35 @@ mod tests {
         }
         fn delete(&self, rel: &str) -> Result<(), PErr> {
             self.log.lock().unwrap().push(format!("delete {rel}"));
+            if self.page_only_del.load(Ordering::SeqCst) {
+                let under = format!("{rel}/");
+                let mut nodes = self.nodes.lock().unwrap();
+                let has_kids = nodes.iter().any(|n| n.rel.starts_with(&under));
+                let mut gone = self.page_gone.lock().unwrap();
+                if has_kids && gone.contains(rel) {
+                    return Err(PErr::new(libc::EEXIST, "fake: page-gone-kept"));
+                }
+                if has_kids {
+                    // Page-only delete removes the page and leaves a pure folder.
+                    if let Some(n) = nodes.iter_mut().find(|n| n.rel == rel) {
+                        *n = vdir(rel);
+                    }
+                    gone.insert(rel.to_string());
+                } else {
+                    nodes.retain(|n| n.rel != rel);
+                    gone.remove(rel);
+                }
+                drop(gone);
+                drop(nodes);
+                self.bodies.lock().unwrap().remove(rel);
+                return Ok(());
+            }
+            self.nodes.lock().unwrap().retain(|n| n.rel != rel);
+            self.bodies.lock().unwrap().remove(rel);
             Ok(())
+        }
+        fn page_only_delete(&self) -> bool {
+            self.page_only_del.load(Ordering::SeqCst)
         }
         fn mv(&self, s: &str, d: &str) -> Result<(), PErr> {
             self.log.lock().unwrap().push(format!("mv {s} {d}"));
@@ -2555,6 +3337,9 @@ mod tests {
             claim_rev: HashMap::new(),
             scratch: HashMap::new(),
             recent: HashMap::new(),
+            held: HashSet::new(),
+            backed_up: HashMap::new(),
+            ghost_dirs: HashMap::new(),
         }
     }
 
@@ -2601,6 +3386,7 @@ mod tests {
             dirty,
             gen: 0,
             new: false,
+            recreate: false,
             scratch,
             writable: true,
             flushed: false,
@@ -2847,6 +3633,33 @@ mod tests {
     }
 
     #[test]
+    fn a_pages_own_file_is_held_while_anything_is_under_the_page() {
+        let f = Fake::new(
+            vec![
+                page("demo", "md", 1),
+                page("demo/hello", "gmi", 1),
+                page("top", "md", 1),
+                page("topper", "md", 1),
+                page("deep", "md", 1),
+                page("deep/a/b", "md", 1),
+            ],
+            &[],
+        );
+        let fs = warm_fs(f.clone());
+        let mut s = fs.st.lock().unwrap();
+        assert!(fs.holds_others(&s, "/demo/demo.md"), "a page under it");
+        assert!(!fs.holds_others(&s, "/demo/hello.gmi"), "a page with nothing under it");
+        assert!(!fs.holds_others(&s, "/top.md"), "a name that only begins the same is not under it");
+        // with no page directly under it, the page is a file beside the folder of its name
+        assert!(fs.holds_others(&s, "/deep.md"), "a page two levels down is under it too");
+        // an editor's temp file is the mount's alone, and the ship's delete takes nothing of it
+        s.vt.retain(|k, _| k != "/demo/hello.gmi");
+        s.scratch.insert("/demo/demo.md~".into(), b"x".to_vec());
+        s.vt.insert("/demo/demo.md~".into(), VEntry { kind: VKind::File, node: None });
+        assert!(!fs.holds_others(&s, "/demo/demo.md"));
+    }
+
+    #[test]
     fn rel_kind_of_maps_a_vpath_to_the_page_it_actually_writes() {
         // getting this wrong writes the user's bytes into a DIFFERENT page.
         // "demo" is a page WITH children, so its own body file is /demo/demo.md.
@@ -2914,6 +3727,24 @@ mod tests {
         );
         assert!(!s.recent.contains_key("/stale.md"), "the ledger must age out");
         assert!(s.warm && s.vt_ts.is_some());
+    }
+
+    #[test]
+    fn a_held_page_stays_out_of_every_listing_until_its_delete_goes() {
+        let mut s = bare_state();
+        s.held.insert("demo".into());
+        s.held.insert("gone".into());
+        let swap = |s: &mut State, nodes: &[Node]| {
+            let vt = build_vt(nodes, |_| "md");
+            apply_swap(s, Snapshot { vt, cache: HashMap::new(), bytes: 0, since: None, beacon: None });
+        };
+        swap(&mut s, &[page("demo", "md", 1), page("demo/zeta", "md", 1), page("other", "md", 1)]);
+        assert!(!s.vt.contains_key("/demo/demo.md"), "a held page's own file is not listed again");
+        assert!(s.vt.contains_key("/demo") && s.vt.contains_key("/demo/zeta.md") && s.vt.contains_key("/other.md"));
+        assert!(s.held.contains("demo") && !s.held.contains("gone"), "one the ship no longer has needs no delete");
+        // the pages under it went elsewhere: its file would be beside the folder, and is not listed there either
+        swap(&mut s, &[page("demo", "md", 1)]);
+        assert!(!s.vt.contains_key("/demo.md") && s.held.contains("demo"));
     }
 
     #[test]
@@ -3604,6 +4435,600 @@ mod tests {
             (64 << 20..=1 << 30).contains(&READ_CACHE_MAX),
             "READ_CACHE_MAX = {READ_CACHE_MAX} is not a sane memory ceiling"
         );
+    }
+
+    // ---------- regression tests for surgical bug fixes ----------
+
+    #[test]
+    fn apply_swap_drops_held_entry_when_only_a_pure_folder_remains() {
+        let mut s = bare_state();
+        s.held.insert("demo".into());
+        let vt = build_vt(&[vdir("demo"), page("demo/kid", "md", 1)], |_| "md");
+        apply_swap(&mut s, Snapshot { vt, cache: HashMap::new(), bytes: 0, since: None, beacon: None });
+        assert!(
+            !s.held.contains("demo"),
+            "a pure folder with the same rel must not keep a stale entry in s.held"
+        );
+    }
+
+    #[test]
+    fn unlink_and_rename_check_live_ship_before_deleting_or_moving_a_file() {
+        let f = Fake::new(vec![page("demo", "md", 3)], &[("demo", "old")]);
+        let fs = warm_fs(f.clone());
+        // Another client adds a child under demo while our vtree is still fresh.
+        f.nodes.lock().unwrap().push(page("demo/late", "md", 4));
+        f.bodies.lock().unwrap().insert("demo/late".into(), b"late".to_vec());
+
+        let e = fs.rename_in(1, "demo.md", 1, "moved.md", RenameFlags::empty()).unwrap_err();
+        assert_eq!(e, libc::ENOTEMPTY, "rename must refuse when ship has remote children");
+        assert!(f.log().is_empty(), "no mv may reach the ship");
+
+        fs.unlink_in(1, "demo.md").unwrap();
+        assert!(f.log().is_empty(), "unlink must hold instead of deleting remote children");
+        let s = fs.st.lock().unwrap();
+        assert!(s.held.contains("demo"));
+        assert!(!s.vt.contains_key("/demo.md"));
+    }
+
+    #[test]
+    fn recreating_a_held_page_as_empty_keeps_it_held_until_commit_and_seeds_newline() {
+        let dir = scratch_dir("held-empty");
+        let f = Fake::new(
+            vec![page("demo", "md", 3), page("demo/kid", "md", 3)],
+            &[("demo", "old"), ("demo/kid", "kid")],
+        );
+        let fs = quick(warm_fs(f.clone()), &dir);
+        let demo_ino = ino_of(&fs, "/demo");
+
+        // Unlink demo/demo.md while demo/kid exists -> demo is held.
+        fs.unlink_in(demo_ino, "demo.md").unwrap();
+        assert!(fs.st.lock().unwrap().held.contains("demo"));
+
+        // Recreating demo/demo.md must keep "demo" in s.held until commit lands.
+        let (_, ttl, fh) = fs.create_in(demo_ino, "demo.md").unwrap();
+        assert_eq!(ttl, FILE_TTL);
+        {
+            let s = fs.st.lock().unwrap();
+            assert!(s.held.contains("demo"), "must stay held before commit");
+            assert!(!s.handles[&fh].new && s.handles[&fh].recreate);
+        }
+
+        // Deleting demo/kid while the writer handle is open must not delete demo.
+        fs.unlink_in(demo_ino, "kid.md").unwrap();
+        assert!(f.bodies.lock().unwrap().contains_key("demo"), "open writer must block release_held");
+
+        // If the recreate fails at release, demo stays held and its optimistic file is removed.
+        f.fail_write.store(true, Ordering::SeqCst);
+        assert!(fs.release_fh(fh).is_err());
+        {
+            let s = fs.st.lock().unwrap();
+            assert!(s.held.contains("demo"), "failed commit must keep demo held");
+            assert!(!s.vt.contains_key("/demo/demo.md"));
+        }
+
+        // Now recreate as empty and commit cleanly: must seed "\n" with new=false and clear s.held.
+        f.fail_write.store(false, Ordering::SeqCst);
+        let (_, _, fh2) = fs.create_in(demo_ino, "demo.md").unwrap();
+        fs.release_fh(fh2).unwrap();
+        assert!(!fs.st.lock().unwrap().held.contains("demo"));
+        assert_eq!(ship_body(&f, "demo"), b"\n");
+        assert!(f.log().iter().any(|l| l == "write demo md \n new=false"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rmdir_fast_path_ghost_dir_and_external_swap_release_held_pages() {
+        // 1. Ghost dir survives lookup past dentry TTL and swap, while hidden from vt,
+        //    and rmdir succeeds without a second delete.
+        let f = Fake::new(
+            vec![page("demo", "md", 1), page("demo/kid", "md", 1)],
+            &[("demo", "p"), ("demo/kid", "k")],
+        );
+        let fs = warm_fs(f.clone());
+        let demo_ino = ino_of(&fs, "/demo");
+        fs.unlink_in(demo_ino, "demo.md").unwrap();
+        fs.unlink_in(demo_ino, "kid.md").unwrap();
+        assert_eq!(f.log(), vec!["delete demo/kid", "delete demo"]);
+        // Simulate a background refresh landing before rm -r calls rmdir.
+        {
+            let mut s = fs.st.lock().unwrap();
+            let vt = build_vt(&[], |_| "md");
+            apply_swap(&mut s, Snapshot { vt, cache: HashMap::new(), bytes: 0, since: None, beacon: None });
+            assert!(!s.vt.contains_key("/demo"), "readdir hides /demo immediately");
+            let (attr, ttl) = fs.attr_for(&mut s, "/demo", None).unwrap();
+            assert_eq!(attr.kind, FileType::Directory);
+            assert_eq!(ttl, FILE_TTL);
+        }
+        fs.rmdir_in(1, "demo").unwrap();
+        assert_eq!(f.log().len(), 2, "rmdir of ghost dir must not send a second delete");
+        assert_eq!(fs.attr_for(&mut fs.st.lock().unwrap(), "/demo", None).unwrap_err(), libc::ENOENT);
+
+        // 2. rmdir's s.recent early-return path calls release_held() for nested held parents.
+        let f2 = Fake::new(
+            vec![page("top", "md", 1), page("top/sub", "md", 1)],
+            &[("top", "t"), ("top/sub", "s")],
+        );
+        let fs2 = warm_fs(f2.clone());
+        let top_ino = ino_of(&fs2, "/top");
+        fs2.unlink_in(top_ino, "top.md").unwrap();
+        // Pretend top/sub was just deleted and left a recent tombstone directory.
+        f2.nodes.lock().unwrap().retain(|n| n.rel != "top/sub");
+        {
+            let mut s = fs2.st.lock().unwrap();
+            s.vt.remove("/top/sub.md");
+            s.vt.insert("/top/sub".into(), VEntry { kind: VKind::Dir, node: None });
+            s.recent.insert("/top/sub".into(), (Instant::now(), false));
+        }
+        fs2.rmdir_in(top_ino, "sub").unwrap();
+        assert_eq!(f2.log(), vec!["delete top"], "rmdir early-return must release parent held page");
+        assert!(!fs2.st.lock().unwrap().held.contains("top"));
+
+        // 3. apply_swap in background refresh triggers release_held off-lock when
+        //    an external client deleted the last child under a held page.
+        let f3 = Fake::new(
+            vec![page("ext", "md", 1), page("ext/kid", "md", 1)],
+            &[("ext", "e"), ("ext/kid", "k")],
+        );
+        let fs3 = warm_fs(f3.clone());
+        let ext_ino = ino_of(&fs3, "/ext");
+        fs3.unlink_in(ext_ino, "ext.md").unwrap();
+        assert!(fs3.st.lock().unwrap().held.contains("ext"));
+        // External client deletes ext/kid.
+        f3.nodes.lock().unwrap().retain(|n| n.rel != "ext/kid");
+        f3.bodies.lock().unwrap().remove("ext/kid");
+        fs3.st.lock().unwrap().vt_ts = None;
+        fs3.ensure_fresh();
+        wait_until("external child deletion releases held page", || {
+            !fs3.st.lock().unwrap().held.contains("ext")
+        });
+        assert!(f3.log().contains(&"delete ext".to_string()));
+    }
+
+    #[test]
+    fn promote_refuses_readonly_uses_open_dirty_handle_and_claims_base_rev() {
+        let mut ro = page("idx", "index", 3);
+        ro.readonly = true;
+        let f = Fake::new(
+            vec![ro, vdir("folder"), page("note", "md", 3)],
+            &[("idx", "gen"), ("note", "old")],
+        );
+        f.strict_base.store(true, Ordering::SeqCst);
+        let fs = warm_fs(f.clone());
+
+        // Read-only target is refused with EACCES and temp stays intact.
+        fs.st.lock().unwrap().scratch.insert("/.idx.tmp".into(), b"hack".to_vec());
+        let e = fs.promote("/.idx.tmp", "/idx.md", "idx", "md", true).unwrap_err();
+        assert_eq!(e.errno, libc::EACCES);
+        assert_eq!(fs.st.lock().unwrap().scratch["/.idx.tmp"], b"hack");
+
+        // Directory target is refused with EISDIR.
+        fs.st.lock().unwrap().scratch.insert("/.dir.tmp".into(), b"x".to_vec());
+        let e = fs.promote("/.dir.tmp", "/folder", "folder", "hoon", true).unwrap_err();
+        assert_eq!(e.errno, libc::EISDIR);
+        assert!(f.log().is_empty());
+
+        // Open dirty scratch handle renamed before close: promote takes its buffer,
+        // sends base=Some(1), stores returned rev=2 in claim_rev, and close does not double-write.
+        let (_, _, fh) = fs.create_in(1, ".note.md.tmp").unwrap();
+        write_through(&fs, fh, b"from open temp");
+        fs.rename_in(1, ".note.md.tmp", 1, "note.md", RenameFlags::empty()).unwrap();
+        assert_eq!(ship_body(&f, "note"), b"from open temp");
+        assert_eq!(*f.bases.lock().unwrap(), vec![Some(1)]);
+        assert_eq!(fs.st.lock().unwrap().claim_rev.get("note"), Some(&2));
+        fs.release_fh(fh).unwrap();
+        assert_eq!(f.log().len(), 1, "closing the promoted handle must not double-write");
+
+        // If the page moved remotely to rev 3, another atomic save claiming rev 2 conflicts (EEXIST).
+        f.edit("note", "remote edit");
+        fs.st.lock().unwrap().scratch.insert("/.note.md.tmp".into(), b"stale atomic".to_vec());
+        let e = fs.promote("/.note.md.tmp", "/note.md", "note", "md", true).unwrap_err();
+        assert_eq!(e.errno, libc::EEXIST);
+        assert_eq!(ship_body(&f, "note"), b"remote edit");
+    }
+
+    #[test]
+    fn backup_followed_by_create_overwrites_with_base_instead_of_new() {
+        let f = Fake::new(vec![page("edited", "md", 3)], &[("edited", "v1!")]);
+        f.strict_base.store(true, Ordering::SeqCst);
+        let fs = warm_fs(f.clone());
+
+        // Vim backup-by-rename: edited.md -> edited.md~, then create(edited.md) immediately.
+        fs.rename_in(1, "edited.md", 1, "edited.md~", RenameFlags::empty()).unwrap();
+        let (_, ttl, fh) = fs.create_in(1, "edited.md").unwrap();
+        assert_eq!(ttl, FILE_TTL);
+        {
+            let s = fs.st.lock().unwrap();
+            assert!(!s.handles[&fh].new, "create after backup must overwrite, not send new=1");
+            assert_eq!(s.handles[&fh].base, Some(1), "prior rev must be preserved as base");
+        }
+        write_through(&fs, fh, b"v2!");
+        fs.release_fh(fh).unwrap();
+        assert_eq!(f.log(), vec!["write edited md v2! new=false"]);
+        assert_eq!(*f.bases.lock().unwrap(), vec![Some(1)]);
+        assert_eq!(ship_body(&f, "edited"), b"v2!");
+    }
+
+    #[test]
+    fn directory_rename_rewrites_descendants_handles_and_bypasses_scratch_rules() {
+        let f = Fake::new(
+            vec![
+                Node { rev: Some(5), ..page("v1.0", "md", 4) },
+                Node { rev: Some(2), ..page("v1.0/child", "md", 5) },
+                Node { rev: Some(3), ..page("v1.0/sub/deep", "md", 4) },
+            ],
+            &[("v1.0", "root"), ("v1.0/child", "child"), ("v1.0/sub/deep", "deep")],
+        );
+        let fs = warm_fs(f.clone());
+        let dir_ino = ino_of(&fs, "/v1.0");
+        let own_ino = ino_of(&fs, "/v1.0/v1.0.md");
+        let child_ino = ino_of(&fs, "/v1.0/child.md");
+        let deep_ino = ino_of(&fs, "/v1.0/sub/deep.md");
+        let h_own = fs.open_fh(own_ino, true).unwrap();
+        let h_child = fs.open_fh(child_ino, true).unwrap();
+        let (_, _, h_scratch) = fs.create_in(dir_ino, ".swap.swp").unwrap();
+        fs.st.lock().unwrap().scratch.insert("/v1.0/.swap.swp".into(), b"swp".to_vec());
+
+        // Rename dir v1.0 -> v2.0 (dotted dir names would fail refuse_as_scratch if treated as files).
+        fs.rename_in(1, "v1.0", 1, "v2.0", RenameFlags::empty()).unwrap();
+        assert_eq!(f.log(), vec!["mv v1.0 v2.0"]);
+
+        let s = fs.st.lock().unwrap();
+        assert!(!s.vt.keys().any(|k| k == "/v1.0" || k.starts_with("/v1.0/")));
+        assert!(s.vt.contains_key("/v2.0"));
+        assert!(s.vt.contains_key("/v2.0/v2.0.md"), "page-with-children leaf file must rename too");
+        assert!(s.vt.contains_key("/v2.0/child.md"));
+        assert!(s.vt.contains_key("/v2.0/sub/deep.md"));
+        assert_eq!(s.vt["/v2.0/v2.0.md"].node.as_ref().unwrap().rel, "v2.0");
+        assert_eq!(s.vt["/v2.0/child.md"].node.as_ref().unwrap().rel, "v2.0/child");
+        assert_eq!(s.vt["/v2.0/sub/deep.md"].node.as_ref().unwrap().rel, "v2.0/sub/deep");
+        assert_eq!(s.to_path[&dir_ino], "/v2.0");
+        assert_eq!(s.to_path[&own_ino], "/v2.0/v2.0.md");
+        assert_eq!(s.to_path[&child_ino], "/v2.0/child.md");
+        assert_eq!(s.to_path[&deep_ino], "/v2.0/sub/deep.md");
+        assert_eq!(s.scratch.get("/v2.0/.swap.swp").map(Vec::as_slice), Some(&b"swp"[..]));
+        assert_eq!(s.read_cache.get("v2.0").map(Vec::as_slice), Some(&b"root"[..]));
+        assert_eq!(s.read_cache.get("v2.0/child").map(Vec::as_slice), Some(&b"child"[..]));
+        assert_eq!(s.read_cache.get("v2.0/sub/deep").map(Vec::as_slice), Some(&b"deep"[..]));
+        assert_eq!(s.claim_rev.get("v2.0"), Some(&5));
+        assert_eq!(s.claim_rev.get("v2.0/child"), Some(&2));
+        assert_eq!(s.handles[&h_own].rel, "v2.0");
+        assert_eq!(s.handles[&h_child].rel, "v2.0/child");
+        assert_eq!(s.handles[&h_scratch].rel, "/v2.0/.swap.swp");
+        let actual: usize = s.read_cache.iter().map(|(k, v)| k.len() + v.len()).sum();
+        assert_eq!(s.read_cache_bytes, actual);
+    }
+
+    #[test]
+    fn single_file_rename_updates_open_handles_and_honors_rename_flags() {
+        let f = Fake::new(
+            vec![page("a", "md", 1), page("b", "md", 1)],
+            &[("a", "a"), ("b", "b")],
+        );
+        let fs = warm_fs(f.clone());
+        let a_ino = ino_of(&fs, "/a.md");
+        let fh = fs.open_fh(a_ino, true).unwrap();
+        fs.st.lock().unwrap().scratch.insert("/s.tmp".into(), b"t".to_vec());
+
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(
+                fs.rename_in(1, "a.md", 1, "b.md", RenameFlags::RENAME_EXCHANGE),
+                Err(libc::EINVAL)
+            );
+            assert_eq!(
+                fs.rename_in(1, "a.md", 1, "b.md", RenameFlags::RENAME_WHITEOUT),
+                Err(libc::EINVAL)
+            );
+            assert_eq!(
+                fs.rename_in(1, "a.md", 1, "b.md", RenameFlags::RENAME_NOREPLACE),
+                Err(libc::EEXIST)
+            );
+            assert_eq!(
+                fs.rename_in(1, "a.md", 1, "s.tmp", RenameFlags::RENAME_NOREPLACE),
+                Err(libc::EEXIST)
+            );
+            fs.rename_in(1, "a.md", 1, "c.txt", RenameFlags::RENAME_NOREPLACE).unwrap();
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            fs.rename_in(1, "a.md", 1, "c.txt", RenameFlags::empty()).unwrap();
+        }
+        let s = fs.st.lock().unwrap();
+        assert_eq!(s.handles[&fh].rel, "c");
+        assert_eq!(s.handles[&fh].kind, "text");
+    }
+
+    #[test]
+    fn remap_ino_cleans_replaced_dst_and_unlink_rmdir_mint_fresh_inodes() {
+        let mut s = bare_state();
+        let a = ino_for(&mut s, "/a.md");
+        let b = ino_for(&mut s, "/b.md");
+        remap_ino(&mut s, "/a.md", "/b.md");
+        assert_eq!(s.to_ino["/b.md"], a);
+        assert_eq!(s.to_path[&a], "/b.md");
+        assert!(!s.to_path.contains_key(&b), "replaced dst inode must not remain aliased");
+
+        let f = Fake::new(vec![page("x", "md", 1), vdir("d")], &[("x", "1")]);
+        let fs = warm_fs(f.clone());
+        let old_x = ino_of(&fs, "/x.md");
+        let old_d = ino_of(&fs, "/d");
+        fs.unlink_in(1, "x.md").unwrap();
+        assert!(!fs.st.lock().unwrap().to_ino.contains_key("/x.md"));
+        let new_x = ino_of(&fs, "/x.md");
+        assert_ne!(new_x, old_x, "recreating an unlinked path must mint a fresh inode");
+
+        fs.rmdir_in(1, "d").unwrap();
+        assert!(!fs.st.lock().unwrap().to_ino.contains_key("/d"));
+        let new_d = fs.mkdir_in(1, "d").unwrap().ino.0;
+        assert_ne!(new_d, old_d, "recreating an rmdired path must mint a fresh inode");
+    }
+
+    #[test]
+    fn body_at_write_gen_guard_link_writable_open_claim_rev_scratch_rmdir_and_panic_guard() {
+        // 1. body_at does not poison read_cache when write_gen moves while read_at is in flight.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        f.no_inline.store(true, Ordering::SeqCst);
+        let fs = warm_fs(f.clone());
+        let st = fs.st.clone();
+        *f.during_read.lock().unwrap() = Some(Box::new(move || {
+            invalidate(&mut st.lock().unwrap());
+        }));
+        assert_eq!(fs.body("note").unwrap(), b"old");
+        assert!(
+            !fs.st.lock().unwrap().read_cache.contains_key("note"),
+            "stale read_at must not insert into read_cache after write_gen moved"
+        );
+
+        // 2. Writable open of a link fetches via read_at instead of serving dump cache.
+        let f2 = Fake::new(vec![page("lnk", "md", 3)], &[("lnk", "dmp")]);
+        f2.needs_read_rels.lock().unwrap().insert("lnk".into());
+        let fs2 = warm_fs(f2.clone());
+        let lnk_ino = ino_of(&fs2, "/lnk.md");
+        let ro = fs2.open_fh(lnk_ino, false).unwrap();
+        assert_eq!(f2.reads.load(Ordering::SeqCst), 0, "read-only open uses cache");
+        fs2.release_fh(ro).unwrap();
+        let rw = fs2.open_fh(lnk_ino, true).unwrap();
+        assert_eq!(f2.reads.load(Ordering::SeqCst), 1, "writable open of link must call read_at");
+        fs2.release_fh(rw).unwrap();
+
+        // 3. apply_swap clears claim_rev except for carried recent entries.
+        let mut s = bare_state();
+        s.vt.insert("/keep.md".into(), VEntry { kind: VKind::File, node: Some(page("keep", "md", 1)) });
+        s.cache_put("keep", b"k".to_vec());
+        s.claim_rev.insert("keep".into(), 9);
+        s.claim_rev.insert("stale_claim".into(), 5);
+        s.recent.insert("/keep.md".into(), (Instant::now(), true));
+        let vt = build_vt(&[], |_| "md");
+        apply_swap(&mut s, Snapshot { vt, cache: HashMap::new(), bytes: 0, since: None, beacon: None });
+        assert_eq!(s.claim_rev.get("keep"), Some(&9));
+        assert!(!s.claim_rev.contains_key("stale_claim"));
+
+        // 4. rmdir returns ENOTEMPTY when scratch files exist under the dir,
+        //    and scratch attr_for uses FILE_TTL.
+        let f3 = Fake::new(vec![vdir("d")], &[]);
+        let fs3 = warm_fs(f3.clone());
+        let d_ino = ino_of(&fs3, "/d");
+        let (_, ttl, _) = fs3.create_in(d_ino, ".tmp.swp").unwrap();
+        assert_eq!(ttl, FILE_TTL);
+        let (_, attr_ttl) = fs3.attr_for(&mut fs3.st.lock().unwrap(), "/d/.tmp.swp", None).unwrap();
+        assert_eq!(attr_ttl, FILE_TTL);
+        assert_eq!(fs3.rmdir_in(1, "d"), Err(libc::ENOTEMPTY));
+
+        // 5. Panic in refresh thread still clears refresh_pending via RefreshGuard.
+        let f4 = Fake::new(vec![page("p", "md", 1)], &[("p", "1")]);
+        let fs4 = warm_fs(f4.clone());
+        f4.panic_dump.store(true, Ordering::SeqCst);
+        fs4.st.lock().unwrap().vt_ts = None;
+        fs4.ensure_fresh();
+        wait_until("refresh_pending cleared after panic", || {
+            !fs4.st.lock().unwrap().refresh_pending
+        });
+    }
+
+    #[test]
+    fn page_only_del_unlinks_page_directly_and_keeps_pure_folder_and_children() {
+        let f = Fake::new(
+            vec![page("a", "md", 3), page("a/child", "md", 3)],
+            &[("a", "top"), ("a/child", "kid")],
+        );
+        f.page_only_del.store(true, Ordering::SeqCst);
+        let fs = warm_fs(f.clone());
+        let a_ino = ino_of(&fs, "/a");
+
+        // Unlink /a/a.md on a modern ship: sends delete directly, does not hold,
+        // demotes /a to a pure folder, keeps /a/child.md intact.
+        fs.unlink_in(a_ino, "a.md").unwrap();
+        assert_eq!(f.log(), vec!["delete a"]);
+        {
+            let s = fs.st.lock().unwrap();
+            assert!(s.held.is_empty(), "modern ship must not use s.held");
+            assert!(!s.vt.contains_key("/a/a.md"), "page file is gone");
+            assert!(s.vt.contains_key("/a/child.md"), "child page stays");
+            let dir = s.vt.get("/a").expect("/a stays as pure folder");
+            assert!(dir.kind == VKind::Dir);
+            let dn = dir.node.as_ref().expect("dir node present");
+            assert!(dn.is_dir && !dn.is_page, "/a must be demoted to pure folder");
+            assert!(
+                s.recent.get("/a/a.md").is_some_and(|(_, alive)| !alive),
+                "/a/a.md recorded as deleted in s.recent"
+            );
+            assert!(!s.ghost_dirs.contains_key("/a"), "/a is not a ghost dir");
+        }
+
+        // A lagging snapshot that still contains page "a" must not resurrect
+        // /a/a.md and must keep /a demoted to a pure folder.
+        {
+            let mut s = fs.st.lock().unwrap();
+            let lagging = build_vt(&[page("a", "md", 3), page("a/child", "md", 3)], |_| "md");
+            apply_swap(
+                &mut s,
+                Snapshot {
+                    vt: lagging,
+                    cache: HashMap::from([
+                        ("a".to_string(), b"top".to_vec()),
+                        ("a/child".to_string(), b"kid".to_vec()),
+                    ]),
+                    bytes: 6,
+                    since: None,
+                    beacon: None,
+                },
+            );
+            assert!(!s.vt.contains_key("/a/a.md"), "lagging swap must not resurrect /a/a.md");
+            assert!(!s.read_cache.contains_key("a"), "deleted body must not stay cached");
+            let dn = s.vt.get("/a").unwrap().node.as_ref().unwrap();
+            assert!(dn.is_dir && !dn.is_page, "lagging swap must keep /a as a pure folder");
+        }
+
+        // Unmount and remount against the same ship: /a is a pure folder with
+        // /a/child.md and no resurrected /a/a.md.
+        let fs_remount = warm_fs(f.clone());
+        {
+            let s = fs_remount.st.lock().unwrap();
+            assert!(!s.vt.contains_key("/a/a.md"), "remount must not resurrect /a/a.md");
+            assert!(s.vt.contains_key("/a/child.md"), "remount keeps /a/child.md");
+            let dn = s.vt.get("/a").unwrap().node.as_ref().unwrap();
+            assert!(dn.is_dir && !dn.is_page);
+        }
+    }
+
+    #[test]
+    fn page_only_del_rm_r_works_in_both_orders_without_409() {
+        // Order 1: parent file first, then child, then rmdir.
+        let f1 = Fake::new(
+            vec![page("a", "md", 3), page("a/child", "md", 3)],
+            &[("a", "top"), ("a/child", "kid")],
+        );
+        f1.page_only_del.store(true, Ordering::SeqCst);
+        let fs1 = warm_fs(f1.clone());
+        let a_ino = ino_of(&fs1, "/a");
+        fs1.unlink_in(a_ino, "a.md").unwrap();
+        // rmdir while child still exists returns ENOTEMPTY (never sends 409 delete).
+        assert_eq!(fs1.rmdir_in(1, "a"), Err(libc::ENOTEMPTY));
+        fs1.unlink_in(a_ino, "child.md").unwrap();
+        fs1.rmdir_in(1, "a").unwrap();
+        assert_eq!(f1.log(), vec!["delete a", "delete a/child", "delete a"]);
+        assert!(f1.nodes.lock().unwrap().is_empty(), "folder and page-gone marker are gone");
+        assert!(fs1.st.lock().unwrap().held.is_empty());
+
+        // Order 2: child first, then parent file, then rmdir.
+        let f2 = Fake::new(
+            vec![page("a", "md", 3), page("a/child", "md", 3)],
+            &[("a", "top"), ("a/child", "kid")],
+        );
+        f2.page_only_del.store(true, Ordering::SeqCst);
+        let fs2 = warm_fs(f2.clone());
+        let a_ino2 = ino_of(&fs2, "/a");
+        fs2.unlink_in(a_ino2, "child.md").unwrap();
+        fs2.unlink_in(a_ino2, "a.md").unwrap();
+        fs2.rmdir_in(1, "a").unwrap();
+        // When child went first, unlink of a.md took the empty folder too, so
+        // rmdir hits ghost_dirs and sends no duplicate delete.
+        assert_eq!(f2.log(), vec!["delete a/child", "delete a"]);
+        assert!(f2.nodes.lock().unwrap().is_empty());
+        assert!(fs2.st.lock().unwrap().held.is_empty());
+    }
+
+    #[test]
+    fn page_only_del_recreate_and_atomic_save_create_fresh_page_with_new_true() {
+        let dir = scratch_dir("pod-recreate");
+        let f = Fake::new(
+            vec![page("a", "md", 3), page("a/child", "md", 3)],
+            &[("a", "old"), ("a/child", "kid")],
+        );
+        f.page_only_del.store(true, Ordering::SeqCst);
+        let fs = quick(warm_fs(f.clone()), &dir);
+        let a_ino = ino_of(&fs, "/a");
+
+        // 1. Delete /a/a.md, then create and write /a/a.md -> fresh page "a" with new=true.
+        fs.unlink_in(a_ino, "a.md").unwrap();
+        assert!(fs.st.lock().unwrap().held.is_empty());
+        let (_, _, fh) = fs.create_in(a_ino, "a.md").unwrap();
+        assert!(fs.st.lock().unwrap().handles[&fh].new, "recreate must set new=true");
+        write_through(&fs, fh, b"hi\n");
+        fs.release_fh(fh).unwrap();
+        assert_eq!(ship_body(&f, "a"), b"hi\n");
+        assert!(f.log().contains(&"write a md hi\n new=true".to_string()), "{:?}", f.log());
+        assert!(!f.bodies.lock().unwrap().contains_key("a/a"), "must recreate a, not a/a");
+
+        // 2. Delete /a/a.md again, then touch /a/a.md (empty create) -> new=true cleanly.
+        fs.unlink_in(a_ino, "a.md").unwrap();
+        let (_, _, efh) = fs.create_in(a_ino, "a.md").unwrap();
+        assert!(fs.st.lock().unwrap().handles[&efh].new);
+        fs.release_fh(efh).unwrap();
+        assert!(f.log().contains(&"write a md  new=true".to_string()), "{:?}", f.log());
+
+        // 3. Delete /a/a.md again, then atomic-save via temp rename -> fresh page "a" with new=true.
+        fs.unlink_in(a_ino, "a.md").unwrap();
+        let (_, _, tfh) = fs.create_in(a_ino, "a.md~").unwrap();
+        write_through(&fs, tfh, b"atomic\n");
+        fs.release_fh(tfh).unwrap();
+        fs.rename_in(a_ino, "a.md~", a_ino, "a.md", RenameFlags::empty()).unwrap();
+        assert_eq!(ship_body(&f, "a"), b"atomic\n");
+        assert!(f.log().contains(&"write a md atomic\n new=true".to_string()), "{:?}", f.log());
+        assert!(!f.bodies.lock().unwrap().contains_key("a/a"), "atomic save must target a");
+
+        // 4. After remounting a pure folder /a with /a/child, touch /a/a.md still targets "a".
+        fs.unlink_in(a_ino, "a.md").unwrap();
+        let fs2 = quick(warm_fs(f.clone()), &dir);
+        let a_ino2 = ino_of(&fs2, "/a");
+        let (_, _, fh2) = fs2.create_in(a_ino2, "a.md").unwrap();
+        assert!(fs2.st.lock().unwrap().handles[&fh2].new);
+        write_through(&fs2, fh2, b"remounted\n");
+        fs2.release_fh(fh2).unwrap();
+        assert_eq!(ship_body(&f, "a"), b"remounted\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rel_kind_of_distinguishes_existing_child_page_and_empty_pure_folder() {
+        // Pure folder "a" holding an existing child page "a/a" and another child "a/kid",
+        // plus an empty pure folder "empty".
+        let f = Fake::new(
+            vec![
+                vdir("a"),
+                page("a/a", "md", 2),
+                page("a/kid", "md", 2),
+                vdir("empty"),
+            ],
+            &[("a/a", "aa"), ("a/kid", "kk")],
+        );
+        let fs = warm_fs(f.clone());
+        let s = fs.st.lock().unwrap();
+        assert_eq!(
+            fs.rel_kind_of(&s, "/a/a.md"),
+            ("a/a".into(), "md".into()),
+            "existing child page a/a inside pure folder a keeps its own rel"
+        );
+        assert_eq!(
+            fs.rel_kind_of(&s, "/empty/empty.md"),
+            ("empty/empty".into(), "md".into()),
+            "empty pure folder does not hijack empty/empty.md to parent rel"
+        );
+    }
+
+    #[test]
+    fn page_only_del_false_keeps_legacy_held_fallback_and_true_deletes_with_remote_child() {
+        // Legacy ship (page_only_del = false): holds when remote child exists.
+        let f_old = Fake::new(vec![page("demo", "md", 3)], &[("demo", "old")]);
+        let fs_old = warm_fs(f_old.clone());
+        f_old.nodes.lock().unwrap().push(page("demo/late", "md", 4));
+        f_old.bodies.lock().unwrap().insert("demo/late".into(), b"late".to_vec());
+        fs_old.unlink_in(1, "demo.md").unwrap();
+        assert!(f_old.log().is_empty(), "legacy ship must hold instead of deleting");
+        assert!(fs_old.st.lock().unwrap().held.contains("demo"));
+
+        // Modern ship (page_only_del = true): deletes demo directly and keeps demo/late.
+        let f_new = Fake::new(vec![page("demo", "md", 3)], &[("demo", "old")]);
+        f_new.page_only_del.store(true, Ordering::SeqCst);
+        let fs_new = warm_fs(f_new.clone());
+        f_new.nodes.lock().unwrap().push(page("demo/late", "md", 4));
+        f_new.bodies.lock().unwrap().insert("demo/late".into(), b"late".to_vec());
+        fs_new.unlink_in(1, "demo.md").unwrap();
+        assert_eq!(f_new.log(), vec!["delete demo"]);
+        assert!(fs_new.st.lock().unwrap().held.is_empty());
+        assert!(f_new.bodies.lock().unwrap().contains_key("demo/late"), "remote child survives");
+        assert!(!f_new.bodies.lock().unwrap().contains_key("demo"), "parent page is deleted");
     }
 }
 

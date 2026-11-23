@@ -21,6 +21,9 @@ pulldown-cmark = { version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 flate2 = "1"
+# the one that draws SVG pictures a page shows (`html::drawing`), the version Rune's picture cache draws them with, and
+# already in the build under it. Drawn here, with options that resolve no file, so no drawing reaches a copy of it that does
+resvg = { version = "0.45", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # the file dialog is the desktop's
@@ -69,6 +72,9 @@ winit = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e
 parley_engine = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
 accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
 accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
+
+# usvg with a default that reads no file from this computer's disk: see `vendor/usvg/Cargo.toml`
+usvg = { path = "vendor/usvg" }
 
 # Rune's layout crate with one arm added, so it builds beside Blitz: see `vendor/rune-taffy/Cargo.toml`
 [patch."https://github.com/anomalyco/rune"]

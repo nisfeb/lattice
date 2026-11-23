@@ -513,43 +513,47 @@ fn find_ci(hay: &str, needle: &str) -> Option<usize> {
     if n.is_empty() || h.len() < n.len() {
         return None;
     }
-    (0..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
+    let at = (0..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n));
+    #[cfg(test)]
+    READ.with(|r| r.set(r.get() + at.map_or(h.len(), |a| a + n.len())));
+    at
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many bytes the searches of a page have passed over, for the tests that hold them to one reading.
+    static READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The widest and tallest a picture may say it is and still be decoded.
 const PICTURE_SIDE: u64 = 8192;
+/// The most pixels a raster picture may allocate (16M pixels = 64 MiB RGBA).
+const PICTURE_PIXELS: u64 = 16_777_216;
 
-/// Whether bytes fetched for a page may be handed on to be decoded. A
-/// picture says how large it is in its first bytes, and a few thousand
-/// bytes can say gigabytes: one past `PICTURE_SIDE` either way is not
-/// decoded. A drawing (SVG) that draws other files in is refused too,
-/// since what draws it would read them from this computer's own disk.
-/// What is not a picture this knows (a style sheet, a font) passes.
-// ponytail: PNG, GIF, JPEG, WebP and BMP are measured. A bomb in another format the decoder knows is not caught here. A size limit in the decoder itself is the fix
-pub fn fetched_ok(b: &[u8]) -> bool {
-    let be = |at: usize, n: usize| b.get(at..at + n).map(|x| x.iter().fold(0u64, |a, c| a << 8 | u64::from(*c)));
-    let le = |at: usize, n: usize| b.get(at..at + n).map(|x| x.iter().rev().fold(0u64, |a, c| a << 8 | u64::from(*c)));
-    let fits = |w: Option<u64>, h: Option<u64>| matches!((w, h), (Some(w), Some(h)) if w <= PICTURE_SIDE && h <= PICTURE_SIDE);
+fn raster_dims(b: &[u8]) -> Option<Option<(u64, u64)>> {
+    let be = |at: usize, n: usize| b.get(at..at.checked_add(n)?).map(|x| x.iter().fold(0u64, |a, c| a << 8 | u64::from(*c)));
+    let le = |at: usize, n: usize| b.get(at..at.checked_add(n)?).map(|x| x.iter().rev().fold(0u64, |a, c| a << 8 | u64::from(*c)));
+    let pair = |w: Option<u64>, h: Option<u64>| Some(w.zip(h));
     if b.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return fits(be(16, 4), be(20, 4));
+        return pair(be(16, 4), be(20, 4));
     }
     if b.starts_with(b"GIF8") {
-        return fits(le(6, 2), le(8, 2));
+        return pair(le(6, 2), le(8, 2));
     }
     if b.starts_with(b"BM") {
-        return fits(le(18, 4).map(|w| w.min(u64::from(u32::MAX))), le(22, 4).map(|h| (h as u32 as i32).unsigned_abs().into()));
+        return pair(le(18, 4).map(|w| w.min(u64::from(u32::MAX))), le(22, 4).map(|h| (h as u32 as i32).unsigned_abs().into()));
     }
     if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"WEBP") {
         return match b.get(12..16) {
-            Some(b"VP8X") => fits(le(24, 3).map(|w| w + 1), le(27, 3).map(|h| h + 1)),
-            Some(b"VP8 ") => fits(le(26, 2).map(|w| w & 0x3fff), le(28, 2).map(|h| h & 0x3fff)),
-            Some(b"VP8L") => le(21, 4).is_some_and(|v| fits(Some((v & 0x3fff) + 1), Some(((v >> 14) & 0x3fff) + 1))),
-            _ => false,
+            Some(b"VP8X") => pair(le(24, 3).map(|w| w + 1), le(27, 3).map(|h| h + 1)),
+            Some(b"VP8 ") => pair(le(26, 2).map(|w| w & 0x3fff), le(28, 2).map(|h| h & 0x3fff)),
+            Some(b"VP8L") => Some(le(21, 4).map(|v| ((v & 0x3fff) + 1, ((v >> 14) & 0x3fff) + 1))),
+            _ => Some(None),
         };
     }
     if b.starts_with(&[0xff, 0xd8]) {
         // the frame header, among the segments before the picture's data
-        let mut at = 2;
+        let mut at = 2usize;
         while let (Some(0xff), Some(kind)) = (b.get(at).copied(), b.get(at + 1).copied()) {
             // a marker may be led by any number of fill bytes
             if kind == 0xff {
@@ -557,12 +561,39 @@ pub fn fetched_ok(b: &[u8]) -> bool {
                 continue;
             }
             if matches!(kind, 0xc0..=0xcf) && !matches!(kind, 0xc4 | 0xc8 | 0xcc) {
-                return fits(be(at + 7, 2), be(at + 5, 2));
+                return pair(be(at + 7, 2), be(at + 5, 2));
             }
-            let Some(len) = be(at + 2, 2) else { return false };
-            at += 2 + len as usize;
+            let Some(len) = be(at + 2, 2).and_then(|n| usize::try_from(n).ok()) else { return Some(None) };
+            let Some(next) = at.checked_add(2).and_then(|n| n.checked_add(len)) else { return Some(None) };
+            at = next;
         }
-        return false;
+        return Some(None);
+    }
+    None
+}
+
+fn dims_fit((w, h): (u64, u64)) -> bool {
+    w > 0 && h > 0 && w <= PICTURE_SIDE && h <= PICTURE_SIDE && w.checked_mul(h).is_some_and(|p| p <= PICTURE_PIXELS)
+}
+
+/// Whether bytes are a supported raster picture whose stated dimensions fit within `PICTURE_SIDE` and `PICTURE_PIXELS`.
+pub fn raster_ok(b: &[u8]) -> bool {
+    matches!(raster_dims(b), Some(Some(dims)) if dims_fit(dims))
+}
+
+/// Whether bytes fetched for a page may be handed on to be decoded. A
+/// picture says how large it is in its first bytes, and a few thousand
+/// bytes can say gigabytes: one past `PICTURE_SIDE` or `PICTURE_PIXELS` is not
+/// decoded. A drawing (SVG) that draws other files in is refused too.
+/// That is a second guard, and it reads the text only as it is plainly
+/// written: a drawing that is zipped, or spelt with a prefix, passes
+/// it. What holds is that nothing that reads drawings resolves an
+/// address to a file: `vendor/usvg` for an HTML page's, and `drawing`
+/// for the pictures a Markdown page shows.
+/// What is not a picture this knows (a style sheet, a font) passes.
+pub fn fetched_ok(b: &[u8]) -> bool {
+    if let Some(dims) = raster_dims(b) {
+        return dims.is_some_and(dims_fit);
     }
     // a drawing: its text is looked through for what would read a file
     let head = &b[..b.len().min(4096)];
@@ -574,15 +605,320 @@ pub fn fetched_ok(b: &[u8]) -> bool {
     true
 }
 
-/// HTML as it is given to what draws it. A drawing set into the page
-/// may name a file to draw in, and what draws it would read that file
-/// from this computer's disk, the whole of it: such an element is made
-/// one that means nothing. A page nested past what the drawing's stack
-/// holds is put aside for a line that says so.
-pub fn tamed(html: &str) -> std::borrow::Cow<'_, str> {
-    if deeper_than(html, DEEPEST) {
-        return std::borrow::Cow::Borrowed("<html><body><p>This page is nested too deeply to draw.</p></body></html>");
+/// Whether bytes are a drawing as Rune's picture cache takes them to be: gzip (SVGZ), or markup after an optional
+/// byte order mark and white space. No raster format starts with `<`.
+pub fn is_drawing(bytes: &[u8]) -> bool {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return true;
     }
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<')
+}
+
+/// The longest side, in pixels, a drawing is drawn at.
+const DRAWING_SIDE: u32 = 4096;
+
+/// The most text, in bytes, a drawing may be once inflated.
+const DRAWING_TEXT: usize = 32 << 20;
+
+/// How many elements a drawing may hold open at once. The thread that draws has a stack sized for this
+/// (`DRAWER_STACK`) with room to spare in a debug build.
+const DRAWING_DEPTH: usize = 1024;
+
+/// The stack of the thread that draws, in bytes. It is address space that is used only as a drawing needs it.
+const DRAWER_STACK: usize = 256 << 20;
+
+/// The bytes of a drawing as plain text: gzip is inflated, to at most `cap` bytes, and anything else is as it came.
+fn inflated(bytes: &[u8], cap: usize) -> Result<std::borrow::Cow<'_, [u8]>, String> {
+    use std::io::Read;
+    if !bytes.starts_with(&[0x1f, 0x8b]) {
+        return Ok(std::borrow::Cow::Borrowed(bytes));
+    }
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(bytes).take(cap as u64 + 1).read_to_end(&mut out).map_err(|e| format!("drawing: {e}"))?;
+    if out.len() > cap {
+        return Err("the drawing is too large once inflated".to_owned());
+    }
+    Ok(std::borrow::Cow::Owned(out))
+}
+
+/// The most elements open at once in XML text, counted in one pass with no recursion: comments, processing
+/// instructions, declarations and CDATA are passed over, and a bracket inside a quoted value is no end of a tag.
+fn nesting(xml: &[u8]) -> usize {
+    let (mut depth, mut deepest, mut i) = (0usize, 0usize, 0usize);
+    let find = |from: usize, pat: &[u8]| xml[from.min(xml.len())..].windows(pat.len()).position(|w| w == pat).map_or(xml.len(), |p| from + p + pat.len());
+    while let Some(at) = xml[i..].iter().position(|c| *c == b'<') {
+        i += at;
+        let rest = &xml[i..];
+        if rest.starts_with(b"<!--") {
+            i = find(i + 4, b"-->");
+        } else if rest.starts_with(b"<![CDATA[") {
+            i = find(i + 9, b"]]>");
+        } else if rest.starts_with(b"<?") {
+            i = find(i + 2, b"?>");
+        } else if rest.starts_with(b"<!") {
+            // a declaration, with an inner subset in brackets when it has one
+            let (mut j, mut inner) = (i + 2, false);
+            while let Some(&c) = xml.get(j) {
+                match c {
+                    b'[' => inner = true,
+                    b']' => inner = false,
+                    b'>' if !inner => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            i = j + 1;
+        } else {
+            let end_tag = rest.get(1) == Some(&b'/');
+            let (mut j, mut quote) = (i + 1, 0u8);
+            while let Some(&c) = xml.get(j) {
+                match (quote, c) {
+                    (0, b'>') => break,
+                    (0, b'"' | b'\'') => quote = c,
+                    (q, c) if q == c => quote = 0,
+                    _ => {}
+                }
+                j += 1;
+            }
+            // a tag that is not ended opens nothing
+            if xml.get(j).is_none() {
+                break;
+            }
+            let selfclosed = j > i + 1 && xml.get(j - 1) == Some(&b'/');
+            if end_tag {
+                depth = depth.saturating_sub(1);
+            } else if !selfclosed {
+                depth += 1;
+                deepest = deepest.max(depth);
+            } else {
+                deepest = deepest.max(depth + 1);
+            }
+            i = j + 1;
+        }
+        if i >= xml.len() {
+            break;
+        }
+    }
+    deepest
+}
+
+/// Maximum number of queued SVG drawing jobs waiting behind the active render.
+pub const DRAW_QUEUE_CAP: usize = 64;
+
+/// Active generation for `draw_later`. Bumped when navigating away or switching ships
+/// so queued SVGs from earlier pages are skipped before rendering.
+static DRAW_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Advances the active drawing generation so queued SVGs from prior pages are skipped.
+pub fn draw_cancel() -> u64 {
+    DRAW_GEN.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1
+}
+
+#[derive(Clone)]
+enum DrawGen {
+    Global(&'static std::sync::atomic::AtomicU64),
+    #[cfg(test)]
+    Local(std::sync::Arc<std::sync::atomic::AtomicU64>),
+}
+
+impl DrawGen {
+    fn load(&self) -> u64 {
+        match self {
+            DrawGen::Global(a) => a.load(std::sync::atomic::Ordering::Acquire),
+            #[cfg(test)]
+            DrawGen::Local(a) => a.load(std::sync::atomic::Ordering::Acquire),
+        }
+    }
+
+    #[cfg(test)]
+    fn cancel(&self) -> u64 {
+        match self {
+            DrawGen::Global(a) => a.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1,
+            DrawGen::Local(a) => a.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1,
+        }
+    }
+}
+
+type DrawJob = (u64, Box<dyn FnOnce() + Send>);
+
+struct Drawer {
+    tx: std::sync::mpsc::SyncSender<DrawJob>,
+    epoch: DrawGen,
+}
+
+impl Drawer {
+    fn new_with_gen(cap: usize, stack: usize, epoch: DrawGen) -> Drawer {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<DrawJob>(cap);
+        let worker_gen = epoch.clone();
+        std::thread::Builder::new()
+            .name("drawings".into())
+            .stack_size(stack)
+            .spawn(move || {
+                for (job_gen, job) in rx {
+                    if worker_gen.load() != job_gen {
+                        continue;
+                    }
+                    job();
+                }
+            })
+            .expect("a thread to draw on");
+        Drawer { tx, epoch }
+    }
+
+    fn submit(&self, bytes: Vec<u8>, done: impl FnOnce(Result<(u32, u32, Vec<u8>), String>) + Send + 'static) -> bool {
+        if !is_drawing(&bytes) {
+            return false;
+        }
+        let job_gen = self.epoch.load();
+        let job: Box<dyn FnOnce() + Send> = Box::new(move || {
+            // the engine is a beta: a drawing that panics it is a drawing that failed
+            let out = std::panic::catch_unwind(|| drawing(&bytes)).ok().flatten().unwrap_or_else(|| Err("the drawing could not be drawn".to_owned()));
+            done(out);
+        });
+        self.tx.try_send((job_gen, job)).is_ok()
+    }
+}
+
+/// Draws drawings on one thread of its own, with a stack made for `DRAWING_DEPTH`, and hands each result to
+/// `done` there. The caller is not held for the drawing: a drawing that is costly holds only the drawings after it.
+/// `done` is not called for bytes that are no drawing (`is_drawing`), or when the bounded queue is full, which
+/// returns `false` immediately without blocking the caller. Queued jobs from an earlier generation (`draw_cancel`)
+/// are skipped before rendering.
+pub fn draw_later(bytes: Vec<u8>, done: impl FnOnce(Result<(u32, u32, Vec<u8>), String>) + Send + 'static) -> bool {
+    use std::sync::OnceLock;
+    static DRAWER: OnceLock<Drawer> = OnceLock::new();
+    if !is_drawing(&bytes) {
+        return false;
+    }
+    let drawer = DRAWER.get_or_init(|| Drawer::new_with_gen(DRAW_QUEUE_CAP, DRAWER_STACK, DrawGen::Global(&DRAW_GEN)));
+    drawer.submit(bytes, done)
+}
+
+/// Maximum nesting depth for sub-SVGs embedded via `data:image/svg+xml`.
+const DRAWING_SUB_DEPTH: usize = 4;
+
+fn resolve_drawing_data(mime: &str, data: std::sync::Arc<Vec<u8>>, opts: &resvg::usvg::Options) -> Option<resvg::usvg::ImageKind> {
+    use resvg::usvg;
+    let load_sub = |bytes: &[u8]| -> Option<usvg::ImageKind> {
+        if bytes.len() > DRAWING_TEXT {
+            return None;
+        }
+        let plain = inflated(bytes, DRAWING_TEXT).ok()?;
+        if plain.len() > DRAWING_TEXT || nesting(&plain) > DRAWING_DEPTH {
+            return None;
+        }
+        thread_local! {
+            static SUB_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        }
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                SUB_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+            }
+        }
+        let entered = SUB_DEPTH.with(|d| {
+            let cur = d.get();
+            if cur >= DRAWING_SUB_DEPTH {
+                false
+            } else {
+                d.set(cur + 1);
+                true
+            }
+        });
+        if !entered {
+            return None;
+        }
+        let _guard = Guard;
+        usvg::Tree::from_data(&plain, opts).ok().map(usvg::ImageKind::SVG)
+    };
+    let raster = |data: std::sync::Arc<Vec<u8>>, kind: fn(std::sync::Arc<Vec<u8>>) -> usvg::ImageKind| {
+        if data.len() <= DRAWING_TEXT && raster_ok(&data) {
+            Some(kind(data))
+        } else {
+            None
+        }
+    };
+    match mime {
+        "image/jpg" | "image/jpeg" => raster(data, usvg::ImageKind::JPEG),
+        "image/png" => raster(data, usvg::ImageKind::PNG),
+        "image/gif" => raster(data, usvg::ImageKind::GIF),
+        "image/webp" => raster(data, usvg::ImageKind::WEBP),
+        "image/svg+xml" => load_sub(&data),
+        "text/plain" => {
+            if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+                raster(data, usvg::ImageKind::PNG)
+            } else if data.starts_with(&[0xff, 0xd8]) {
+                raster(data, usvg::ImageKind::JPEG)
+            } else if data.starts_with(b"GIF8") {
+                raster(data, usvg::ImageKind::GIF)
+            } else if data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP") {
+                raster(data, usvg::ImageKind::WEBP)
+            } else {
+                load_sub(&data)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// A drawing a page shows, drawn as straight RGBA at twice its own size, as Rune's picture cache draws one but
+/// with a reader that resolves no address to a file: a drawing may hold only the pictures written out in it
+/// (`data:`). `None` when the bytes are no drawing by `is_drawing`, which are for the cache to decode. Every
+/// drawing that comes to the cache is drawn here, since the one it draws with reads any file a drawing names.
+pub fn drawing(bytes: &[u8]) -> Option<Result<(u32, u32, Vec<u8>), String>> {
+    use resvg::{tiny_skia, usvg};
+    if !is_drawing(bytes) {
+        return None;
+    }
+    let draw = || {
+        if bytes.len() > 32 << 20 {
+            return Err("the drawing is too large".to_owned());
+        }
+        // a gzipped drawing is inflated here, to a bound, and the reader is given the plain text: it inflates without one
+        let plain = inflated(bytes, DRAWING_TEXT)?;
+        let bytes = &plain[..];
+        // the reader and the renderer call themselves once for each level of nesting
+        if nesting(bytes) > DRAWING_DEPTH {
+            return Err("the drawing is nested too deeply".to_owned());
+        }
+        let options = usvg::Options {
+            image_href_resolver: usvg::ImageHrefResolver {
+                resolve_data: Box::new(resolve_drawing_data),
+                resolve_string: Box::new(|_, _| None),
+            },
+            ..Default::default()
+        };
+        let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| format!("drawing: {e}"))?;
+        let size = tree.size();
+        let side = size.width().max(size.height());
+        let px = if side > 0.0 && side.is_finite() { (side * 2.0).ceil().clamp(1.0, DRAWING_SIDE as f32) as u32 } else { return Err("the drawing is empty".to_owned()) };
+        let k = px as f32 / side;
+        let (w, h) = (((size.width() * k).round() as u32).clamp(1, px), ((size.height() * k).round() as u32).clamp(1, px));
+        let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("the drawing is empty")?;
+        resvg::render(&tree, tiny_skia::Transform::from_scale(k, k), &mut pixmap.as_mut());
+        Ok((
+            w,
+            h,
+            pixmap
+                .pixels()
+                .iter()
+                .flat_map(|p| {
+                    let c = p.demultiply();
+                    [c.red(), c.green(), c.blue(), c.alpha()]
+                })
+                .collect(),
+        ))
+    };
+    Some(draw())
+}
+
+/// HTML as it is given to what draws it. A drawing set into the page
+/// may name a file to draw in: such an element is made one that means
+/// nothing. As in `fetched_ok` this is the second guard, and
+/// `vendor/usvg`, which reads no file, is the first. How deep a page nests
+/// is measured on the tree that draws it (`htmlview::document`).
+pub fn tamed(html: &str) -> std::borrow::Cow<'_, str> {
     if !draws_a_file(html) {
         return std::borrow::Cow::Borrowed(html);
     }
@@ -605,12 +941,24 @@ pub fn tamed(html: &str) -> std::borrow::Cow<'_, str> {
 
 /// The next element that draws a picture in, `image` or `feImage` and no other name that begins so: where its tag starts, and how long the tag is.
 fn next_image(s: &str) -> Option<(usize, usize)> {
+    // by bytes: the letters after a name may be of more than one byte, and a slice of a set length would cut one in two
+    let b = s.as_bytes();
     let mut from = 0;
     loop {
-        let at = from + [find_ci(&s[from..], "<image"), find_ci(&s[from..], "<feimage")].into_iter().flatten().min()?;
-        // by bytes: the letters after the match may be of more than one byte, and a slice of a set length would cut one in two
-        let b = s.as_bytes();
-        let name_end = at + if b.len() >= at + 8 && b[at..at + 8].eq_ignore_ascii_case(b"<feimage") { 8 } else { 6 };
+        // the text is passed over once: each `<` is asked whether one of the two names follows it. A search for each name from where the last picture ended would read the rest of the page once for each picture
+        let lt = b[from..].iter().position(|c| *c == b'<');
+        #[cfg(test)]
+        READ.with(|r| r.set(r.get() + lt.map_or(b.len() - from, |l| l + 1)));
+        let at = from + lt?;
+        let named = |name: &[u8]| b.get(at + 1..at + 1 + name.len()).is_some_and(|n| n.eq_ignore_ascii_case(name));
+        let name_end = at + if named(b"feimage") {
+            8
+        } else if named(b"image") {
+            6
+        } else {
+            from = at + 1;
+            continue;
+        };
         let whole = b.get(name_end).is_none_or(|c| c.is_ascii_whitespace() || *c == b'/' || *c == b'>');
         if whole {
             // to the `>` that ends the tag: one inside a quoted value does not
@@ -624,6 +972,8 @@ fn next_image(s: &str) -> Option<(usize, usize)> {
                 }
                 i += 1;
             }
+            #[cfg(test)]
+            READ.with(|r| r.set(r.get() + i - name_end));
             return Some((at, (i + 1).min(b.len()) - at));
         }
         from = name_end;
@@ -640,7 +990,8 @@ fn reads_a_file(tag: &str) -> bool {
             continue;
         };
         let value = value.trim_start().trim_start_matches(['"', '\'']).trim_start();
-        let held = ["data:image/png", "data:image/jpeg", "data:image/jpg", "data:image/gif", "data:image/webp"].iter().any(|p| value.len() >= p.len() && value[..p.len()].eq_ignore_ascii_case(p));
+        // by bytes: the address may be in letters of more than one byte, and a slice of a prefix's length would cut one in two
+        let held = ["data:image/png", "data:image/jpeg", "data:image/jpg", "data:image/gif", "data:image/webp"].iter().any(|p| value.as_bytes().get(..p.len()).is_some_and(|v| v.eq_ignore_ascii_case(p.as_bytes())));
         if !held && !value.starts_with('#') {
             return true;
         }
@@ -657,48 +1008,6 @@ fn draws_a_file(s: &str) -> bool {
             return true;
         }
         rest = &rest[at + len..];
-    }
-    false
-}
-
-/// The deepest a page's elements may stand one inside another and be drawn.
-pub const DEEPEST: usize = 4096;
-
-/// Whether HTML has elements one inside another deeper than `most`.
-/// Counted from its tags alone, so an element left open counts as one
-/// that holds all that follows: the count errs towards deep.
-pub fn deeper_than(src: &str, most: usize) -> bool {
-    // elements with no inside, and those a browser closes by itself when the next of their kind opens: a list of five thousand items written with no closing tags is not five thousand deep
-    const VOID: [&str; 28] = ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr", "li", "p", "td", "th", "tr", "option", "dt", "dd", "thead", "tbody", "tfoot", "colgroup", "optgroup", "rp"];
-    let (b, mut i, mut depth) = (src.as_bytes(), 0, 0usize);
-    while let Some(lt) = b[i..].iter().position(|c| *c == b'<').map(|p| p + i) {
-        i = lt + 1;
-        let closing = b.get(i) == Some(&b'/');
-        let from = if closing { i + 1 } else { i };
-        let len = b[from.min(b.len())..].iter().take_while(|c| c.is_ascii_alphanumeric()).count();
-        if len == 0 {
-            continue;
-        }
-        let name = &src[from..from + len];
-        // a script's or a style's inside is not markup: `i<n` there opens nothing. Neither its opening nor its closing is counted
-        if name.eq_ignore_ascii_case("script") || name.eq_ignore_ascii_case("style") {
-            if !closing {
-                let end = format!("</{}", name.to_ascii_lowercase());
-                i = find_ci(&src[i..], &end).map_or(src.len(), |e| i + e);
-            }
-            continue;
-        }
-        if VOID.iter().any(|v| v.eq_ignore_ascii_case(name)) {
-            continue;
-        }
-        if closing {
-            depth = depth.saturating_sub(1);
-        } else {
-            depth += 1;
-            if depth > most {
-                return true;
-            }
-        }
     }
     false
 }
@@ -870,20 +1179,213 @@ mod tests {
         // a `>` inside a quoted value does not end the tag before its address is read
         assert_eq!(tamed("<svg><image title=\"a>b\" href=\"file:///etc/passwd\"/></svg>"), "<svg><x-image title=\"a>b\" href=\"file:///etc/passwd\"/></svg>");
         assert!(!fetched_ok(b"<svg><feImage result='>' xlink:href='/dev/zero'/></svg>"));
-        // scripts between do not hide how deep a page is
-        assert!(deeper_than(&"<div><script></script>".repeat(100_000), DEEPEST));
-        // a long list written with no closing tags is not deep, nor is a script that compares
-        let list = format!("<html><body><ul>{}</ul></body></html>", "<li>item\n".repeat(30_000));
-        assert!(!deeper_than(&list, DEEPEST));
-        assert!(!deeper_than(&format!("<script>{}</script><p>x", "if(i<n){}".repeat(30_000)), DEEPEST));
-        let deep = format!("<html><body>{}x</body></html>", "<span>".repeat(100_000));
-        assert!(tamed(&deep).contains("too deeply"));
-        assert!(!deeper_than(&format!("{}x{}", "<div>".repeat(100), "</div>".repeat(100)), 200));
-        assert!(!deeper_than(&"<br><img><p>a</p>".repeat(50_000), 10));
         // many skipped elements are passed over in one reading
         let t = std::time::Instant::now();
         let _ = to_markdown(&"<svg></svg>".repeat(80_000));
         assert!(t.elapsed().as_secs() < 8);
+    }
+
+    #[test]
+    fn an_address_in_letters_of_many_bytes_does_not_end_the_app() {
+        // each prefix a held picture may start with is 14 or 15 bytes long: a letter of two, three or four bytes across that length is not cut in two
+        for page in ["<image href=\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}>", "<svg><image xlink:href=\"\u{65e5}\u{672c}\u{8a9e}\u{65e5}\u{672c}\u{8a9e}\"/></svg>", "<feImage href='aaaaaaaaaaaaa\u{1f469}'>", "<image href=data:image/pn\u{e9}>", "<image href=\"data:image/jpe\u{1f469}\">"] {
+            assert!(tamed(page).contains("<x-"), "{page}");
+            assert!(!fetched_ok(format!("<svg>{page}</svg>").as_bytes()), "{page}");
+        }
+        // a held picture is still let be, whatever follows its prefix
+        assert!(matches!(tamed("<svg><image href=\"data:image/png;base64,\u{e9}\u{e9}\"/></svg>"), std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(tamed("<svg><image href='DATA:IMAGE/WEBP\u{1f469}'/></svg>"), std::borrow::Cow::Borrowed(_)));
+    }
+
+    /// Every text made from `seed` by putting a letter of two, three or four bytes (or a joining mark) in at each place, by writing one over each byte, and by cutting the seed off there.
+    fn with_wide_letters(seed: &str, mut f: impl FnMut(&str)) {
+        assert!(seed.is_ascii());
+        for at in 0..=seed.len() {
+            f(&seed[..at]);
+            for wide in ["\u{e9}", "\u{65e5}", "\u{1f469}", "\u{301}", "\u{e9}\u{65e5}\u{1f469}"] {
+                f(&format!("{}{wide}{}", &seed[..at], &seed[at..]));
+                if at < seed.len() {
+                    f(&format!("{}{wide}{}", &seed[..at], &seed[at + 1..]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn letters_of_many_bytes_anywhere_in_a_tag_do_not_end_the_app() {
+        let seeds = [
+            "<svg><image href=\"data:image/png;base64,AAAA\"/></svg>",
+            "<svg><image href=data:image/jpeg;base64,AAAA></svg>",
+            "<svg><feImage xlink:href = 'data:image/webp;base64,AA' result='>'/></svg>",
+            "<IMAGE HREF=/dev/zero><feimage href='#a'/><image-gallery href=x>",
+            "<image href href= href=\"\" href='data:image/gif' />",
+            "<svg><circle r=\"1\"/><path d='M0 0'/></svg><math><mi/></math>",
+            "<script>if(a<b){}</script><style>p{}</style><div><p>x</p></div>",
+            "<SCRIPT src=x></SCRIPT ><style>a</style x><textarea>t</textarea>",
+            "<a href=\"x y\" title='a>b' =c d = e>t</a><img src=a.png alt=\"A\">",
+            "<!-- note --><!doctype html><?xml version='1.0'?><p/></p></>",
+            "a &amp; b &#233; &#x263A; &bogus; &#; &#x; &lt",
+            "<pre><code class=\"language-rust lang-x\">a ` b</code></pre>",
+            "<ol start=3><li>c<li>d</ol><table><caption>C</caption><tr><th>a<td>b</table>",
+            "<math display=\"block\"><semantics><annotation encoding=\"application/x-tex\">x^2</annotation></semantics></math>",
+            "<h1>T</h1><blockquote><p>1. said</p></blockquote><hr><b> x </b>",
+        ];
+        for seed in seeds {
+            with_wide_letters(seed, |page| {
+                let _ = tamed(page);
+                let _ = fetched_ok(page.as_bytes());
+                let _ = fetched_ok(format!("<svg>{page}").as_bytes());
+                let _ = to_markdown(page);
+                let _ = decode(page);
+            });
+        }
+        for seed in ["# One\n## Two\n### Three\n#### four\n#no", "=> https://x.org A page\n=>  urb://~zod/p\n=> gemini://x y\n=>x", "```\ncode\n``` \n> said\n* item"] {
+            with_wide_letters(seed, |page| {
+                let _ = gemtext(page);
+            });
+        }
+    }
+
+    #[test]
+    fn letters_of_many_bytes_anywhere_in_markdown_do_not_end_the_app() {
+        let seeds = [
+            "# T\n\nsee [[a/b|label]] and [[c]] and [[ | ]] `[[code]]` [[open\n",
+            "![alt](a.png) ![b](https://x.org/b.png \"t\") ![c]( ) ![d\n",
+            "[t](lattice:a%20b%2Fc#h) [u](/apps/lattice/page/x%zz?q) [v](http://x)\n",
+            "**b** *i* ~~s~~ `c` ``d ` e`` ***bi*** \\* [l\\]](u) [a [b](c)\n",
+            "- one\n  - two\n1. three\n   1. four\n> quote\n```\ncode\n```\n",
+            "> > > > > > > > > > deep\n- - - - - - - - - - - - list\n1. 2. 3. 4. 5. 6. 7. 8. 9. 10. n\n",
+            "a<br>b <b>bold</b> <i>soft</i> <kbd>k</kbd> </b>\n\n<div class=\"x\">\n<p>block</p>\n</div>\n\n| a | b |\n| --- | --- |\n| c<br>d | e \\| f |\n",
+            "[ref]: http://x\n\n12. item\n12) item\n- [ ] task\n\n---\n",
+        ];
+        for seed in seeds {
+            with_wide_letters(seed, |page| {
+                let _ = crate::md::exact(page);
+                let _ = crate::md::parse(page);
+                let _ = crate::md::html_shown(page);
+                let _ = crate::md::html_made(page);
+                let _ = crate::md::shallow(page);
+                let _ = crate::md::wikilinks(page, &|n| n.len() % 2 == 0);
+                let _ = crate::md::images(page);
+                let _ = crate::md::links(page);
+                let _ = crate::md::page_of(page.trim());
+                let _ = crate::md::label_escapes(page);
+                // the caret may be handed in anywhere, inside a letter too
+                for caret in 0..=page.len() + 1 {
+                    let _ = crate::md::link_query(page, caret);
+                }
+                let _ = crate::scrub::blocks(page);
+                let _ = crate::scrub::source_md("rust", page);
+            });
+        }
+        let doc = "<office:body><text:h text:outline-level=\"1\">T</text:h><text:list><text:list-item><text:p>1. a &amp; b</text:p></text:list-item></text:list><text:p text:style-name='x'>p<text:s/>q</text:p><text:p/></office:body>";
+        with_wide_letters(doc, |page| {
+            let _ = crate::scrub::doc_md(page);
+        });
+    }
+
+    #[test]
+    fn a_page_of_many_pictures_is_read_through_a_set_number_of_times() {
+        // the work is counted in bytes passed over, and may be a few readings of the page, never one for each picture
+        let read = |f: &dyn Fn()| {
+            READ.with(|r| r.set(0));
+            f();
+            READ.with(|r| r.get())
+        };
+        for n in [1_000, 20_000] {
+            let held = format!("<svg>{}</svg>", "<image href='data:image/png;base64,AA'></image>".repeat(n));
+            assert!(read(&|| assert!(matches!(tamed(&held), std::borrow::Cow::Borrowed(_)))) <= 4 * held.len(), "{n} held pictures");
+            assert!(read(&|| assert!(fetched_ok(held.as_bytes()))) <= 4 * held.len(), "{n} held pictures, fetched");
+            // one that reads a file at the very end: the whole page is written out again
+            let last = format!("{held}<svg><image href='/dev/zero'/><feImage href='x'/></svg>");
+            assert!(read(&|| assert!(tamed(&last).ends_with("<svg><x-image href='/dev/zero'/><x-feImage href='x'/></svg>"))) <= 6 * last.len(), "{n} and one that reads a file");
+            // names that only begin the same, and brackets that open nothing
+            let near = format!("<svg>{}</svg>", "<images><imag <feimages> < <fe".repeat(n));
+            assert!(read(&|| assert!(matches!(tamed(&near), std::borrow::Cow::Borrowed(_)))) <= 4 * near.len(), "{n} near names");
+            let filters = format!("<svg>{}</svg>", "<feImage href='#a'/>".repeat(n));
+            assert!(read(&|| assert!(fetched_ok(filters.as_bytes()))) <= 4 * filters.len(), "{n} filters");
+        }
+    }
+
+    /// Straight RGBA of the middle of a drawing as `drawing` draws it, or what it said.
+    fn middle(bytes: &[u8]) -> Result<[u8; 4], String> {
+        let (w, h, px) = drawing(bytes).expect("a drawing")?;
+        let at = ((h / 2 * w + w / 2) * 4) as usize;
+        Ok([px[at], px[at + 1], px[at + 2], px[at + 3]])
+    }
+
+    #[test]
+    fn a_drawing_a_markdown_page_shows_that_names_a_file_does_not_read_it() {
+        use std::io::Write;
+        const SVG: &str = "http://www.w3.org/2000/svg";
+        // a drawing in a file that would paint the middle red if it were read
+        let red = format!("<svg xmlns='{SVG}' width='100' height='100'><rect width='100' height='100' fill='#ff0000'/></svg>");
+        let dir = std::env::temp_dir().join(format!("lattice-drawing-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("red.svg");
+        std::fs::write(&file, &red).unwrap();
+        let gz = |text: &str| {
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(text.as_bytes()).unwrap();
+            e.finish().unwrap()
+        };
+        let enc = |text: &str| text.replace('<', "%3C").replace('>', "%3E").replace('\'', "%27");
+        // every spelling by which a drawing may name an address: the same of a file, and of the drawing written out
+        let spelt = |href: &str| {
+            let plain = format!("<svg xmlns='{SVG}' width='10' height='10'><image href='{href}' width='10' height='10'/></svg>");
+            vec![
+                ("plain", plain.clone().into_bytes()),
+                ("xlink", format!("<svg xmlns='{SVG}' xmlns:xlink='http://www.w3.org/1999/xlink' width='10' height='10'><image xlink:href='{href}' width='10' height='10'/></svg>").into_bytes()),
+                ("past the first 4096 bytes", format!("<?xml version='1.0'?><!--{}-->{plain}", "x".repeat(4100)).into_bytes()),
+                ("a prefix for the namespace", format!("<s:svg xmlns:s='{SVG}' width='10' height='10'><s:image href='{href}' width='10' height='10'/></s:svg>").into_bytes()),
+                ("a byte order mark and white space", format!("\u{feff} \n{plain}").into_bytes()),
+                ("gzip", gz(&plain)),
+                ("gzip of a prefix", gz(&format!("<s:svg xmlns:s='{SVG}' width='10' height='10'><s:image href='{href}' width='10' height='10'/></s:svg>"))),
+                ("an entity for the address", format!("<!DOCTYPE svg [<!ENTITY e \"{href}\">]><svg xmlns='{SVG}' width='10' height='10'><image href='&e;' width='10' height='10'/></svg>").into_bytes()),
+                ("a filter", format!("<svg xmlns='{SVG}' width='10' height='10'><filter id='f' x='0' y='0' width='1' height='1'><feImage href='{href}' width='10' height='10'/></filter><rect width='10' height='10' filter='url(#f)'/></svg>").into_bytes()),
+                ("a drawing in a drawing", format!("<svg xmlns='{SVG}' width='10' height='10'><image href=\"data:image/svg+xml,{}\" width='10' height='10'/></svg>", enc(&plain)).into_bytes()),
+            ]
+        };
+        let data = format!("data:image/svg+xml;base64,{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, red.as_bytes()));
+        let mut read = Vec::new();
+        for ((how, named), (_, written)) in spelt(file.to_str().unwrap()).into_iter().zip(spelt(&data)) {
+            // the control: the drawing written out in the drawing is drawn, so a read of the file would be seen
+            if how != "a drawing in a drawing" {
+                let control = middle(&written).unwrap();
+                assert!(control[0] > 200 && control[1] < 50 && control[3] > 200, "{how}: the control draws {control:?}");
+            }
+            let got = middle(&named).unwrap();
+            if got[3] != 0 {
+                read.push(format!("{how}: {got:?}"));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(read.is_empty(), "drawn from the file: {read:?}");
+        // what is no drawing is left to the picture cache, and what is one is said when it cannot be drawn
+        assert!(drawing(b"\x89PNG\r\n\x1a\n").is_none() && drawing(b"GIF89a").is_none() && drawing(b"").is_none());
+        assert!(matches!(drawing(b"<svg"), Some(Err(_))) && matches!(drawing(b"\x1f\x8b\x08"), Some(Err(_))));
+        assert!(is_drawing(b"\xef\xbb\xbf\n <svg>") && !is_drawing(b"\xef\xbb\xbf\n x <svg>"));
+    }
+
+    #[test]
+    fn what_is_no_drawing_here_is_no_drawing_to_the_picture_cache_either() {
+        // the cache draws what it takes to be a drawing with a reader that reads files, so every drawing must be
+        // one `is_drawing` knows, and so be drawn here. What it does not know is read by the cache as no drawing
+        const SVG: &str = "http://www.w3.org/2000/svg";
+        let dir = std::env::temp_dir().join(format!("lattice-cache-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("red.svg");
+        std::fs::write(&file, format!("<svg xmlns='{SVG}' width='100' height='100'><rect width='100' height='100' fill='#ff0000'/></svg>")).unwrap();
+        let named = format!("<svg xmlns='{SVG}' width='10' height='10'><image href='{}' width='10' height='10'/></svg>", file.display());
+        let cache = rune::ImageCache::new(std::sync::Arc::new(|| {}));
+        for lead in ["\0", "\u{a0}", "x", "\u{b}", "\u{feff}\u{feff}", "\u{2028}"] {
+            let bytes = format!("{lead}{named}").into_bytes();
+            if is_drawing(&bytes) {
+                continue;
+            }
+            assert!(cache.load(bytes).wait().is_err(), "{lead:?}: the cache drew what is no drawing here");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -899,4 +1401,234 @@ mod tests {
         let quotes = "<blockquote>".repeat(5_000) + "x";
         let _ = to_markdown(&quotes);
     }
+
+    /// What `draw_later` hands on for these bytes, waited for.
+    fn drawn_later(bytes: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(draw_later(bytes, move |out| tx.send(out).unwrap()));
+        rx.recv().expect("the drawing thread answered")
+    }
+
+    fn gzip(text: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        e.write_all(text).unwrap();
+        e.finish().unwrap()
+    }
+
+    const SVG: &str = "http://www.w3.org/2000/svg";
+
+    #[test]
+    fn a_drawing_is_drawn_on_a_thread_of_its_own_and_the_caller_is_not_held() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        // the drawing is made to wait for the test, so that it cannot have been drawn before the call returned
+        let bytes = format!("<svg xmlns='{SVG}' width='10000' height='5000'><rect width='10000' height='5000' fill='#f00'/></svg>").into_bytes();
+        let caller = std::thread::current().id();
+        // a first job holds the thread until the caller has been seen to return
+        assert!(draw_later(bytes.clone(), move |_| {
+            go_rx.recv().unwrap();
+        }));
+        assert!(draw_later(bytes, move |out| tx.send((std::thread::current().id(), out)).unwrap()));
+        assert!(rx.try_recv().is_err(), "nothing was drawn when the call returned");
+        go_tx.send(()).unwrap();
+        let (on, out) = rx.recv().unwrap();
+        assert_ne!(on, caller, "drawn on the caller's thread");
+        let (w, h, px) = out.unwrap();
+        assert_eq!((w, h, px.len()), (4096, 2048, 4096 * 2048 * 4), "a drawing is drawn up to 4096 on its longer side");
+        // bytes that are no drawing are for the cache, and are not taken
+        assert!(!draw_later(b"\x89PNG\r\n\x1a\n".to_vec(), |_| panic!("not a drawing")));
+    }
+
+    #[test]
+    fn a_drawing_nested_at_the_bound_is_drawn_and_one_past_it_or_far_past_it_is_refused_with_no_stack_used() {
+        let nest = |tag: &str, n: usize, inner: &str| format!("<svg xmlns='{SVG}' width='10' height='10'>{}{inner}{}</svg>", format!("<{tag}>").repeat(n - 1), format!("</{}>", tag.split(' ').next().unwrap()).repeat(n - 1)).into_bytes();
+        // depth counts the root: the bound is of elements open at once
+        for tag in ["g", "g opacity='0.9'", "svg"] {
+            let name = tag.split(' ').next().unwrap();
+            let at = nest(name, DRAWING_DEPTH, "<rect width='10' height='10'/>");
+            assert_eq!(nesting(&at), DRAWING_DEPTH + 1, "{tag}");
+            let at = nest(tag, DRAWING_DEPTH - 1, "<rect width='10' height='10'/>");
+            assert!(drawn_later(at).is_ok(), "{tag} at the bound");
+            let past = nest(tag, DRAWING_DEPTH + 1, "<rect width='10' height='10'/>");
+            assert!(drawn_later(past).unwrap_err().contains("too deeply"), "{tag} past the bound");
+            let far = nest(name, 50_000, "<rect width='10' height='10'/>");
+            assert!(drawn_later(far).unwrap_err().contains("too deeply"), "{tag} far past it");
+        }
+        // gzipped, as an SVGZ the same
+        assert!(drawn_later(gzip(&nest("g", 50_000, "<rect width='10' height='10'/>"))).unwrap_err().contains("too deeply"));
+        assert!(drawn_later(gzip(&nest("g", 100, "<rect width='10' height='10'/>"))).is_ok());
+    }
+
+    #[test]
+    fn what_nests_in_a_drawing_is_counted_as_the_reader_nests_it() {
+        assert_eq!(nesting(b"<a><b/><b></b></a>"), 2);
+        assert_eq!(nesting(b"<?xml version='1.0'?><!DOCTYPE svg [<!ENTITY x '<g><g>'>]><!-- <g><g><g> --><a><![CDATA[<g><g>]]><b a='>' c=\"<d>\"/></a>"), 2);
+        assert_eq!(nesting(b"</x></x><a>"), 1);
+        assert_eq!(nesting(b"<a><a><a></a></a></a><a/>"), 3);
+        assert_eq!(nesting(b""), 0);
+        assert_eq!(nesting(b"<a><"), 1);
+    }
+
+    #[test]
+    fn a_gzipped_drawing_is_inflated_to_a_bound_and_no_more() {
+        let svg = |pad: usize| format!("<svg xmlns='{SVG}' width='10' height='10'><rect width='10' height='10'/>{}</svg>", " ".repeat(pad)).into_bytes();
+        // the cap is kept on what comes out, whatever the gzip was
+        assert_eq!(inflated(&gzip(&svg(100)), 1 << 20).unwrap().len(), svg(100).len());
+        assert!(inflated(&gzip(&svg(2 << 20)), 1 << 20).unwrap_err().contains("too large"));
+        assert!(inflated(&gzip(&svg(2 << 20)), 4 << 20).is_ok());
+        assert_eq!(inflated(b"<svg/>", 1).unwrap().as_ref(), b"<svg/>", "plain text is as it came");
+        // through the drawing: a gzip of more than the cap is refused, one under it is drawn
+        let bomb = gzip(&svg(DRAWING_TEXT + 1));
+        assert!(bomb.len() < 1 << 20);
+        assert!(matches!(drawing(&bomb), Some(Err(e)) if e.contains("too large")));
+        assert!(matches!(drawing(&gzip(&svg(1 << 20))), Some(Ok(_))));
+        // a gzip that is cut short is an error, not a hang
+        assert!(matches!(drawing(&bomb[..bomb.len() / 2]), Some(Err(_))));
+    }
+
+    #[test]
+    fn nested_svg_data_uri_enforces_depth_and_gzip_limits() {
+        use base64::Engine as _;
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let wrap = |data: &[u8]| {
+            format!(
+                "<svg xmlns='{SVG}' width='20' height='20'><image href='data:image/svg+xml;base64,{}' width='20' height='20'/></svg>",
+                b64(data)
+            )
+            .into_bytes()
+        };
+        // A nested SVG with deep XML nesting is skipped safely (does not crash or paint red).
+        let deep_inner = format!(
+            "<svg xmlns='{SVG}' width='20' height='20'>{}<rect width='20' height='20' fill='#ff0000'/>{}</svg>",
+            "<g>".repeat(DRAWING_DEPTH + 100),
+            "</g>".repeat(DRAWING_DEPTH + 100)
+        );
+        let got = middle(&wrap(deep_inner.as_bytes())).unwrap();
+        assert_eq!(got[3], 0, "deeply nested sub-SVG must be rejected: {got:?}");
+
+        // A nested SVGZ gzip bomb over 32 MiB is skipped safely without OOM.
+        let huge = format!(
+            "<svg xmlns='{SVG}' width='20' height='20'><rect width='20' height='20' fill='#ff0000'/>{}</svg>",
+            " ".repeat(DRAWING_TEXT + 1)
+        );
+        let bomb = gzip(huge.as_bytes());
+        assert!(bomb.len() < 1 << 20);
+        let got = middle(&wrap(&bomb)).unwrap();
+        assert_eq!(got[3], 0, "gzip bomb inside data:image/svg+xml must be rejected: {got:?}");
+
+        // Sub-SVG recursion past DRAWING_SUB_DEPTH is skipped safely.
+        let red = format!("<svg xmlns='{SVG}' width='20' height='20'><rect width='20' height='20' fill='#ff0000'/></svg>").into_bytes();
+        let mut shallow = red.clone();
+        for _ in 0..DRAWING_SUB_DEPTH {
+            shallow = wrap(&shallow);
+        }
+        let got_ok = middle(&shallow).unwrap();
+        assert!(got_ok[0] > 200 && got_ok[3] > 200, "sub-SVG at depth {DRAWING_SUB_DEPTH} still draws: {got_ok:?}");
+        let too_deep = wrap(&shallow);
+        let got_drop = middle(&too_deep).unwrap();
+        assert_eq!(got_drop[3], 0, "sub-SVG past depth {DRAWING_SUB_DEPTH} must be dropped: {got_drop:?}");
+    }
+
+    #[test]
+    fn raster_dimensions_enforce_pixel_cap_and_format_check() {
+        let make_png = |w: u32, h: u32| {
+            let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\0\0\0\0\0".to_vec();
+            b[16..20].copy_from_slice(&w.to_be_bytes());
+            b[20..24].copy_from_slice(&h.to_be_bytes());
+            b
+        };
+        assert!(raster_ok(&make_png(4096, 4096)));
+        assert!(raster_ok(&make_png(8192, 2048)));
+        assert!(!raster_ok(&make_png(8192, 8192)), "67M pixels exceeds 16M pixel cap");
+        assert!(!fetched_ok(&make_png(8192, 8192)));
+        assert!(!raster_ok(&make_png(0, 100)));
+        assert!(!raster_ok(b"II*\0\x08\0\0\0"), "unrecognized raster format (TIFF) is rejected by raster_ok");
+    }
+
+    #[test]
+    fn stale_generation_drawing_jobs_are_skipped_without_rendering() {
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+        use std::sync::{Arc, mpsc};
+        let epoch = Arc::new(AtomicU64::new(0));
+        let drawer = Drawer::new_with_gen(DRAW_QUEUE_CAP, 8 << 20, DrawGen::Local(epoch));
+        let svg_bytes = format!("<svg xmlns='{SVG}' width='10' height='10'><rect width='10' height='10' fill='#0f0'/></svg>").into_bytes();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        // Hold the worker thread inside an active job so subsequent jobs sit queued.
+        assert!(drawer.submit(svg_bytes.clone(), move |_| {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        }));
+        started_rx.recv().unwrap();
+
+        let stale_ran = Arc::new(AtomicUsize::new(0));
+        for _ in 0..5 {
+            let ran = stale_ran.clone();
+            assert!(drawer.submit(svg_bytes.clone(), move |_| {
+                ran.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+
+        // Advance generation while those 5 jobs are still queued.
+        assert_eq!(drawer.epoch.cancel(), 1);
+
+        // Queue a fresh current-generation job behind the stale ones.
+        let (fresh_tx, fresh_rx) = mpsc::channel();
+        assert!(drawer.submit(svg_bytes, move |out| {
+            let _ = fresh_tx.send(out);
+        }));
+
+        // Release the blocker: stale jobs must be skipped and only the fresh job runs.
+        release_tx.send(()).unwrap();
+        let res = fresh_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("fresh job completed");
+        assert!(res.is_ok());
+        assert_eq!(stale_ran.load(Ordering::SeqCst), 0, "stale-generation jobs must be skipped without rendering");
+    }
+
+    #[test]
+    fn drawing_queue_cap_drops_excess_jobs_without_blocking() {
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+        use std::sync::{Arc, mpsc};
+        const CAP: usize = 4;
+        let epoch = Arc::new(AtomicU64::new(0));
+        let drawer = Drawer::new_with_gen(CAP, 8 << 20, DrawGen::Local(epoch));
+        let svg_bytes = format!("<svg xmlns='{SVG}' width='10' height='10'><rect width='10' height='10' fill='#00f'/></svg>").into_bytes();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        assert!(drawer.submit(svg_bytes.clone(), move |_| {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        }));
+        started_rx.recv().unwrap();
+
+        let ran = Arc::new(AtomicUsize::new(0));
+        for _ in 0..CAP {
+            let r = ran.clone();
+            assert!(drawer.submit(svg_bytes.clone(), move |_| {
+                r.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+
+        // Submissions past the queue cap must drop immediately without blocking.
+        let began = std::time::Instant::now();
+        let dropped_ran = Arc::new(AtomicUsize::new(0));
+        for _ in 0..10 {
+            let dr = dropped_ran.clone();
+            assert!(!drawer.submit(svg_bytes.clone(), move |_| {
+                dr.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        assert!(began.elapsed() < std::time::Duration::from_millis(200), "queue overflow must not block caller");
+
+        release_tx.send(()).unwrap();
+        // Wait for the CAP accepted jobs by draining a sentinel after the queue has space.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ran.load(Ordering::SeqCst) < CAP {
+            assert!(std::time::Instant::now() < deadline, "queued jobs did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(dropped_ran.load(Ordering::SeqCst), 0, "dropped jobs must never run");
+    }
+
 }

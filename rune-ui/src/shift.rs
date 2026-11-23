@@ -102,21 +102,24 @@ pub fn blocked(src: &str, s: usize, rows: bool, at: i64, n: i64) -> Result<(), S
         return Err("that is past the edge of the sheet".into());
     }
     walk(src, &body(src)?)?;
-    // a merged cell the change would cut through
+    // a merged cell the change would cut through, or the cells an array formula spreads its results over: put in or
+    // taken out through either, the cell would still say how far it reaches, over cells that are not its own
     let (_, els, _) = sheet::sheet_rows(src, s)?;
     let mut r = 0;
     for row in &els {
         let rep = count(src, row, ROWS) as i64;
         let mut c = 0;
         for cell in kids(src, row)? {
-            let (cs, rs) = (count(src, &cell, "table:number-columns-spanned") as i64, count(src, &cell, "table:number-rows-spanned") as i64);
-            if cs > 1 || rs > 1 {
-                for i in 0..rep.min(1024) {
-                    let (lo, span) = if rows { (r + i, rs) } else { (c, cs) };
-                    let hi = lo + span - 1;
-                    let cut = (lo < at && hi >= at) || (n < 0 && lo >= at && lo < at + cnt && hi >= at + cnt);
-                    if cut {
-                        return Err("that would cut through a merged cell".into());
+            for (wide, tall, what) in [("table:number-columns-spanned", "table:number-rows-spanned", "a merged cell"), ("table:number-matrix-columns-spanned", "table:number-matrix-rows-spanned", "an array formula")] {
+                let (cs, rs) = (count(src, &cell, wide) as i64, count(src, &cell, tall) as i64);
+                if cs > 1 || rs > 1 {
+                    for i in 0..rep.min(1024) {
+                        let (lo, span) = if rows { (r + i, rs) } else { (c, cs) };
+                        let hi = lo + span - 1;
+                        let cut = (lo < at && hi >= at) || (n < 0 && lo >= at && lo < at + cnt && hi >= at + cnt);
+                        if cut {
+                            return Err(format!("that would cut through {what}"));
+                        }
                     }
                 }
             }

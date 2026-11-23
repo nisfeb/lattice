@@ -158,6 +158,25 @@ pub struct Group {
     pub peek: Vec<String>,
     #[serde(default)]
     pub make: Vec<String>,
+    /// The version of the save protocol the ship that listed it speaks: 2 when its list is authoritative on a save
+    /// (every line not sent back is removed). It is sent back as it came, and 0 for a ship that says none.
+    #[serde(default)]
+    pub v: u8,
+}
+
+/// The groups in what `/share-groups` answers: a list of them, or an object with the list in `groups` and the
+/// save protocol's version in `v`, which each group then carries to its save.
+pub fn parse_groups(raw: &str) -> Result<Vec<Group>, String> {
+    let value: serde_json::Value = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+    let (v, list) = match value {
+        serde_json::Value::Object(mut o) => (o.get("v").and_then(|v| v.as_u64()).unwrap_or(0).min(u8::MAX as u64) as u8, o.remove("groups").unwrap_or_default()),
+        list => (0, list),
+    };
+    let mut groups: Vec<Group> = serde_json::from_value(list).map_err(|e| e.to_string())?;
+    for g in &mut groups {
+        g.v = g.v.max(v);
+    }
+    Ok(groups)
 }
 
 /// A sharing group from before lattice kept its own (`/legacy-groups`,
@@ -219,16 +238,38 @@ impl Group {
         format!("{base}/page/{name}/code")
     }
 
-    /// Whether `path` names the page `name` under the lattice at `base`.
-    fn names_page(path: &str, base: &str, name: &str) -> bool {
-        *path == Group::road(base, name) || *path == Group::code_road(base, name)
+    /// Whether this group holds the folder at the page's own path whole: the ship lists such a
+    /// folder as its path and as `<path>/dir-index`, and a save that leaves the path out but keeps
+    /// the index line unshares the folder.
+    fn holds_folder(&self, base: &str, name: &str) -> bool {
+        let index = format!("{}/dir-index", Group::road(base, name));
+        self.peek.iter().chain(&self.make).any(|p| *p == index)
+    }
+
+    /// Whether `path` names the page `name` under the lattice at `base`. Where the group holds a
+    /// folder at that path, the plain path is the folder's line, and only the page's text path
+    /// is the page's.
+    fn names_page(&self, path: &str, base: &str, name: &str) -> bool {
+        *path == Group::code_road(base, name) || (*path == Group::road(base, name) && !self.holds_folder(base, name))
+    }
+
+    /// The path that grants the page `name` to this group: the page's path, or its text path
+    /// where the plain path is a folder's line.
+    fn grant_road(&self, base: &str, name: &str) -> String {
+        if self.holds_folder(base, name) { Group::code_road(base, name) } else { Group::road(base, name) }
+    }
+
+    /// The paths a group holds that are its own to show: the ship's index lines (`<folder>/dir-index`)
+    /// are sent back as they came and not counted.
+    pub fn shown(paths: &[String]) -> usize {
+        paths.iter().filter(|p| !p.ends_with("/dir-index")).count()
     }
 
     /// What this group may do with the page `name` by the page's own grant.
     pub fn level(&self, base: &str, name: &str) -> Level {
-        if self.make.iter().any(|p| Group::names_page(p, base, name)) {
+        if self.make.iter().any(|p| self.names_page(p, base, name)) {
             Level::Edit
-        } else if self.peek.iter().any(|p| Group::names_page(p, base, name)) {
+        } else if self.peek.iter().any(|p| self.names_page(p, base, name)) {
             Level::Read
         } else {
             Level::None
@@ -246,10 +287,10 @@ impl Group {
     /// This group with its grant on the page `name` set to `level`. Every
     /// other path it holds is kept as it is.
     pub fn with_level(&self, base: &str, name: &str, level: Level) -> Group {
-        let road = Group::road(base, name);
+        let road = self.grant_road(base, name);
         let mut g = self.clone();
-        g.peek.retain(|p| !Group::names_page(p, base, name));
-        g.make.retain(|p| !Group::names_page(p, base, name));
+        g.peek.retain(|p| !self.names_page(p, base, name));
+        g.make.retain(|p| !self.names_page(p, base, name));
         if level != Level::None {
             g.peek.push(road.clone());
         }
@@ -326,6 +367,14 @@ pub fn readers(groups: &[Group], name: &str) -> Vec<Reader> {
     }
     out.sort_by(|a, b| a.ship.cmp(&b.ship));
     out
+}
+
+/// The ship a session cookie names (`urbauth-~zod=..` is `~zod`'s), when the name is a ship's.
+/// The name comes from whatever answered the sign-in and goes on to name files and a folder to
+/// mount at, so one that is not a ship's name is no session at all.
+pub fn cookie_ship(cookie: &str) -> Option<&str> {
+    let name = cookie.split('=').next()?.strip_prefix("urbauth-")?;
+    (name.starts_with('~') && ship_name(name).as_deref() == Some(name)).then_some(name)
 }
 
 /// A ship's name as typed, with its sig: `nec` and `~nec` are both `~nec`.
@@ -564,6 +613,36 @@ pub struct Asks {
     pub sent: Vec<Ask>,
 }
 
+/// Shared HTTP agent for authenticated ship requests. Redirects are disabled
+/// structurally so session cookies are never forwarded to another host.
+/// Callers set per-request overall timeouts on each `ureq::Request`.
+#[cfg(not(target_arch = "wasm32"))]
+fn ship_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| ureq::AgentBuilder::new().redirects(0).build())
+}
+
+/// Shared HTTP agent for unauthenticated external fetches where redirects are allowed.
+/// Callers set per-request overall timeouts on each `ureq::Request`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn public_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| ureq::AgentBuilder::new().build())
+}
+
+/// Shared HTTP agent for long-lived authenticated SSE streams with per-read
+/// silence timeout `quiet` seconds and no overall request deadline.
+#[cfg(not(target_arch = "wasm32"))]
+fn sse_agent(quiet: u64) -> ureq::Agent {
+    static AGENTS: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<u64, ureq::Agent>>> = std::sync::OnceLock::new();
+    let map = AGENTS.get_or_init(Default::default);
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .entry(quiet)
+        .or_insert_with(|| ureq::AgentBuilder::new().redirects(0).timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(quiet)).build())
+        .clone()
+}
+
 /// The most an image may weigh, fetched.
 const IMAGE_MAX: u64 = 8 * 1024 * 1024;
 
@@ -581,7 +660,8 @@ pub fn fetch_bytes(url: &str, cookie: Option<&str>) -> Result<Vec<u8>, String> {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err("not a web address".into());
         }
-        let mut req = ureq::get(url).timeout(Duration::from_secs(20));
+        let agent = if cookie.is_some() { ship_agent() } else { public_agent() };
+        let mut req = agent.get(url).timeout(Duration::from_secs(20));
         if let Some(c) = cookie {
             req = req.set("cookie", c);
         }
@@ -589,6 +669,9 @@ pub fn fetch_bytes(url: &str, cookie: Option<&str>) -> Result<Vec<u8>, String> {
             ureq::Error::Status(code, _) => format!("{code}"),
             e => e.to_string(),
         })?;
+        if cookie.is_some() && (300..400).contains(&res.status()) {
+            return Err(format!("{}", res.status()));
+        }
         let mut out = Vec::new();
         std::io::Read::read_to_end(&mut std::io::Read::take(res.into_reader(), IMAGE_MAX + 1), &mut out).map_err(|e| e.to_string())?;
         if out.len() as u64 > IMAGE_MAX {
@@ -832,8 +915,11 @@ pub fn ship_dress(url: &str, label: &str, colour: &str) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     if !cfg!(test) {
         if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
-            let mut all = crate::accounts::load_at(dir, now_secs());
-            return all.dress(url, label, colour) && crate::accounts::store_at(dir, &all).is_ok();
+            return crate::accounts::update_at(dir, now_secs(), |all| {
+                let ok = all.dress(url, label, colour);
+                (ok, ok)
+            })
+            .unwrap_or(false);
         }
     }
     let _ = (url, label, colour);
@@ -871,7 +957,8 @@ pub fn ship_sessions() -> Vec<(String, String)> {
     Vec::new()
 }
 
-/// One thing the watcher sent to a ship while it was not in front.
+/// One thing that waited and was sent to a ship: by the watcher while the ship was not in front,
+/// or by the window when the files could not be written after it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BgSent {
     Save(String, Queued),
@@ -881,28 +968,28 @@ pub enum BgSent {
 /// Held while anything that waited is being sent to a ship, by the window or by the watcher of the
 /// ships not in front: one sender at a time, so nothing is ever sent by both.
 static SENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-/// What the watcher sent, by the ship's address, until the window has taken it out of its own list.
-static BG_SENT: std::sync::Mutex<Vec<(String, BgSent)>> = std::sync::Mutex::new(Vec::new());
+/// What the watcher sent, by `(url, ship)`, until the window has taken it out of its own list.
+static BG_SENT: std::sync::Mutex<Vec<(String, String, BgSent)>> = std::sync::Mutex::new(Vec::new());
 
 /// The lock every sender of waiting saves holds.
 pub fn send_lock() -> std::sync::MutexGuard<'static, ()> {
     SENDING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// What the watcher has sent to the ship at `url` that the window has not yet been told of.
-pub fn bg_sent(url: &str, take: bool) -> Vec<BgSent> {
+/// What the watcher has sent to `(url, ship)` that the window has not yet been told of.
+pub fn bg_sent(url: &str, ship: &str, take: bool) -> Vec<BgSent> {
     let mut all = BG_SENT.lock().unwrap_or_else(|e| e.into_inner());
-    let mine: Vec<BgSent> = all.iter().filter(|(u, _)| u == url).map(|(_, x)| x.clone()).collect();
+    let mine: Vec<BgSent> = all.iter().filter(|(u, s, _)| u == url && s == ship).map(|(_, _, x)| x.clone()).collect();
     if take {
-        all.retain(|(u, _)| u != url);
+        all.retain(|(u, s, _)| !(u == url && s == ship));
     }
     mine
 }
 
 /// Notes a thing as sent by the watcher, for a test of how the window takes it.
 #[cfg(test)]
-pub fn bg_note_for_test(url: &str, x: BgSent) {
-    BG_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((url.to_owned(), x));
+pub fn bg_note_for_test(url: &str, ship: &str, x: BgSent) {
+    BG_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((url.to_owned(), ship.to_owned(), x));
 }
 
 /// What is known of a ship signed in that is not in front, from one look at it.
@@ -943,12 +1030,15 @@ pub fn ship_look(url: &str, cookie: &str, stop: &std::sync::atomic::AtomicBool) 
     }
     if seen.expired && !cfg!(test) {
         if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
-            let mut all = crate::accounts::load_at(dir, now_secs());
-            // only the session that was turned away is marked: one signed in again since holds another cookie, and is good
-            if all.get(url).is_some_and(|a| a.cookie == cookie) {
-                all.expire(url);
-                let _ = crate::accounts::store_at(dir, &all);
-            }
+            let _ = crate::accounts::update_at(dir, now_secs(), |all| {
+                // only the session that was turned away is marked: one signed in again since holds another cookie, and is good
+                if all.get(url).is_some_and(|a| a.cookie == cookie) {
+                    all.expire(url);
+                    (true, ())
+                } else {
+                    (false, ())
+                }
+            });
         }
     }
     seen
@@ -959,8 +1049,11 @@ pub fn ship_bring(url: &str) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     if !cfg!(test) {
         if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
-            let mut all = crate::accounts::load_at(dir, now_secs());
-            return all.bring(url, now_secs()) && crate::accounts::store_at(dir, &all).is_ok();
+            return crate::accounts::update_at(dir, now_secs(), |all| {
+                let ok = all.bring(url, now_secs());
+                (ok, ok)
+            })
+            .unwrap_or(false);
         }
     }
     let _ = url;
@@ -970,58 +1063,260 @@ pub fn ship_bring(url: &str) -> bool {
 /// Signs out of every ship.
 pub fn ships_forget() {
     #[cfg(not(target_arch = "wasm32"))]
-    if !cfg!(test) {
-        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
-            for a in crate::accounts::load_at(dir, now_secs()).list {
-                end_session(a.url, a.cookie);
-            }
-            let _ = crate::accounts::store_at(dir, &crate::accounts::Accounts::default());
+    if !cfg!(test)
+        && let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent)
+        && let Ok(list) = crate::accounts::update_at(dir, now_secs(), |all| {
+            let list = std::mem::take(&mut all.list);
+            all.front = None;
+            (true, list)
+        })
+    {
+        for a in list {
+            end_session(a.url, a.cookie);
         }
     }
 }
 
 /// Ends a session that was signed out of: the ship is asked to end it,
 /// so the cookie is good for nothing, and the copy of every page's text
-/// kept on this device for it is taken away. Before this, signing out
-/// only forgot the session here, and both stayed. What still waits to
+/// kept on this device for it is taken away, with the copy of the session
+/// handed to a mounter. Before this, signing out only forgot the session
+/// here, and these stayed. What still waits to
 /// be sent to the ship is left: it is work not yet saved there.
 #[cfg(not(target_arch = "wasm32"))]
 fn end_session(url: String, cookie: String) {
-    if let Some(kept) = kept_path(&url) {
-        let _ = std::fs::remove_file(kept);
-    }
+    let kept = kept_path(&url, (Conn { url: url.clone(), cookie: cookie.clone() }).ship());
+    // and the copy of the session a mount of this ship was started with: a ship that is away now never ends it, and it would stay good on disk
+    crate::mounts::forget_session(&url);
+    let kept_after = kept.clone();
     // asked once and not waited for: a ship that is away keeps the session until it lapses
-    let _ = std::thread::Builder::new().name("sign-out".to_owned()).spawn(move || {
-        // what still waits is sent first, while the session is good: the edit being typed when Sign out was pressed is kept there a moment before, and would else reach the ship with a cookie it had just ended
+    let spawned = std::thread::Builder::new().name("sign-out".to_owned()).spawn(move || {
+        // what still waits is sent first, while the session is good and the kept tree is still on disk for `kept_link`
         let c = Conn { url: url.clone(), cookie: cookie.clone() };
         if !c.queue().is_empty() || !c.ops().is_empty() {
-            let _ = c.send_waiting(&std::sync::atomic::AtomicBool::new(false));
+            let _ = c.send_waiting_inner(&std::sync::atomic::AtomicBool::new(false), false);
         }
-        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(10)).build();
-        let _ = agent.post(&format!("{url}/~/logout")).set("cookie", &cookie).set("origin", &url).send_string("");
+        if let Some(kept) = kept_after {
+            let _ = std::fs::remove_file(kept);
+        }
+        let _ = ship_agent().post(&format!("{url}/~/logout")).timeout(Duration::from_secs(10)).set("cookie", &cookie).set("origin", &url).send_string("");
     });
+    if spawned.is_err()
+        && let Some(kept) = kept
+    {
+        let _ = std::fs::remove_file(kept);
+    }
 }
 
 /// Where a signed-in session is kept between runs: the app's own file,
 /// readable by its owner alone.
 fn session_path() -> Option<std::path::PathBuf> {
-    Some(config_dir()?.join("session.json"))
+    let dir = config_dir()?;
+    // before anything is read or signed in to: what was kept under an address alone is given to its ship
+    // only while the sessions on disk are those of before. A test's own folder alone is looked at in a test
+    #[cfg(all(not(test), not(target_arch = "wasm32")))]
+    adopt_old_names(&dir);
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if TEST_CONFIG.with(|t| t.borrow().is_some()) {
+        adopt_old_names(&dir);
+    }
+    Some(dir.join("session.json"))
+}
+
+/// The part of a kept file's name that says whose it is: the ship's name, then its address. Every
+/// byte that is not a letter, a digit or one of `.-~` is written `%XX`, so two ships or two
+/// addresses never make one name, and `+` stands only between the two. A name too long for a file
+/// is cut and ends in a sum of the whole of it, after `%%`, which no other name holds.
+fn ship_key(url: &str, ship: &str) -> String {
+    let esc = |t: &str| t.bytes().map(|b| if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'~') { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
+    let key = format!("{}+{}", esc(ship), esc(url));
+    if key.len() <= 180 {
+        return key;
+    }
+    // ponytail: FNV-1a, to tell long names apart, not to keep anyone out. The address is the owner's own
+    let sum = key.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    format!("{}%%{sum:016x}", &key[..160])
+}
+
+/// The part of a file's name an address made before files were named for a ship: every character
+/// that is not a letter or a digit a dash. Two addresses could make one, and it names no ship.
+#[cfg(not(target_arch = "wasm32"))]
+fn old_key(url: &str) -> String {
+    url.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+/// One of a ship's own files: `what` is `kept`, `waiting`, `ops` or `prefs`.
+fn ship_file(what: &str, url: &str, ship: &str) -> Option<std::path::PathBuf> {
+    let name = format!("{what}-{}.json", ship_key(url, ship));
+    #[cfg(test)]
+    if let Some(dir) = TEST_SHIP_DIRS.lock().unwrap_or_else(|e| e.into_inner()).get(url) {
+        return Some(dir.join(name));
+    }
+    Some(session_path()?.with_file_name(name))
+}
+
+#[cfg(test)]
+/// A folder for each address a test's stand-in ship answers at: what is kept for a ship there is
+/// made and read in it from any thread, the window's workers too, and goes with the test.
+pub(crate) static TEST_SHIP_DIRS: std::sync::Mutex<std::collections::BTreeMap<String, std::path::PathBuf>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The file that says the files in a folder are named for their ships.
+#[cfg(not(target_arch = "wasm32"))]
+const NAMED_BY_SHIP: &str = "named-by-ship";
+
+/// Gives the files kept under an address alone to the ship they are for, once, at the first run
+/// that names files for a ship. Such a file says nothing of whose it is, so it is given only to
+/// the ship signed in at its address at that moment, and only when no other ship signed in makes
+/// the same old name. Any other is left as it is, under its old name, and is never read or sent
+/// again: a ship signed in later may not be the one it was written for.
+#[cfg(not(target_arch = "wasm32"))]
+fn adopt_old_names(dir: &std::path::Path) {
+    let mark = dir.join(NAMED_BY_SHIP);
+    if mark.exists() {
+        return;
+    }
+    let ships = signed_in_at(dir);
+    for (url, ship) in &ships {
+        let old = old_key(url);
+        if ships.iter().filter(|(u, _)| old_key(u) == old).count() != 1 {
+            continue;
+        }
+        for what in ["kept", "waiting", "ops", "prefs"] {
+            let (from, to) = (dir.join(format!("{what}-{old}.json")), dir.join(format!("{what}-{}.json", ship_key(url, ship))));
+            if std::fs::symlink_metadata(&from).is_ok_and(|m| m.is_file()) && std::fs::symlink_metadata(&to).is_err() {
+                let _ = std::fs::rename(&from, &to);
+            }
+        }
+    }
+    // the mark is what stops a ship signed in later from being given what is left
+    let _ = write_private(&mark, b"");
+}
+
+/// The ships signed in on this computer, by address and name: those kept, and the environment's.
+#[cfg(not(target_arch = "wasm32"))]
+fn signed_in_at(dir: &std::path::Path) -> Vec<(String, String)> {
+    let mut ships: Vec<(String, String)> = crate::accounts::load_at(dir, now_secs()).list.iter().map(|a| (a.url.clone(), a.ship().to_owned())).collect();
+    if let Some(c) = Conn::from_env().map(|c| (c.url.clone(), c.ship().to_owned())) {
+        if !ships.contains(&c) {
+            ships.push(c);
+        }
+    }
+    ships
+}
+
+/// An older version, after this one's first run, still keeps what waits under an address alone,
+/// as it always did: a window of it left open, or the older program run again. At each start a
+/// file of that kind written since the mark is taken in by the ship signed in at its address, by
+/// the first run's rule (one ship signed in makes that old name), and only while that ship has
+/// nothing waiting of its own: two lists of deletes and saves cannot be put in one order. A file
+/// from before the mark is never taken in: a ship signed in since may not be the one it was for.
+/// Answers the files under an address alone that still hold a save, a delete or a move and were
+/// not taken in. Whose they are cannot be told, so they are never sent, and the window says where
+/// they are.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn adopt_late() -> Vec<std::path::PathBuf> {
+    let Some(dir) = config_dir() else { return Vec::new() };
+    // a test's own folder alone is looked at in a test
+    #[cfg(test)]
+    if TEST_CONFIG.with(|t| t.borrow().is_none()) {
+        return Vec::new();
+    }
+    adopt_old_names(&dir);
+    let Some(mark) = std::fs::metadata(dir.join(NAMED_BY_SHIP)).and_then(|m| m.modified()).ok() else { return Vec::new() };
+    // no file, one written since the mark, or one from before it
+    let since = |p: &std::path::Path| std::fs::symlink_metadata(p).ok().filter(std::fs::Metadata::is_file).map(|m| m.modified().is_ok_and(|t| t > mark));
+    // a file that is not there is empty, and one that cannot be read is not taken in
+    fn read<T: serde::de::DeserializeOwned + Default>(p: &std::path::Path) -> Option<T> {
+        match std::fs::read(p) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(T::default()),
+            Err(_) => None,
+            Ok(b) => serde_json::from_slice(&b).ok(),
+        }
+    }
+    let ships = signed_in_at(&dir);
+    for (url, ship) in &ships {
+        let old = old_key(url);
+        if ships.iter().filter(|(u, _)| old_key(u) == old).count() != 1 {
+            continue;
+        }
+        let (oq, oo) = (dir.join(format!("waiting-{old}.json")), dir.join(format!("ops-{old}.json")));
+        let (wq, wo) = (since(&oq), since(&oo));
+        if !(wq == Some(true) || wo == Some(true)) || wq == Some(false) || wo == Some(false) {
+            continue;
+        }
+        let (Some(qp), Some(op)) = (queue_path(url, ship), ops_path(url, ship)) else { continue };
+        let _held = waiting_lock(&qp);
+        let (Some(q), Some(o)) = (read::<Queue>(&oq), read::<Vec<QueuedOp>>(&oo)) else { continue };
+        // the ship's own lists, empty: one that holds anything, or cannot be read, is not written over
+        if read::<Queue>(&qp).is_none_or(|q| !q.is_empty()) || read::<Vec<QueuedOp>>(&op).is_none_or(|o| !o.is_empty()) {
+            continue;
+        }
+        // serialize both before touching disk, write queue first, and roll it back if ops fails so neither file is left non-empty on partial failure
+        let wrote = (|| -> Result<(), String> {
+            let qb = serde_json::to_vec(&q).map_err(|e| e.to_string())?;
+            let ob = serde_json::to_vec(&o).map_err(|e| e.to_string())?;
+            write_private(&qp, &qb)?;
+            if let Err(e) = write_private(&op, &ob) {
+                let _ = std::fs::remove_file(&qp);
+                return Err(e);
+            }
+            Ok(())
+        })();
+        if wrote.is_ok() {
+            let _ = std::fs::remove_file(&oq);
+            let _ = std::fs::remove_file(&oo);
+        }
+    }
+    let mut left: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            // a ship's own file has a `+` between its ship and its address. One named for an address alone has none
+            let alone = ["waiting-", "ops-"].iter().any(|w| name.strip_prefix(w).and_then(|r| r.strip_suffix(".json")).is_some_and(|k| !k.contains('+')));
+            let holds = || match std::fs::read(e.path()).ok().map(|b| serde_json::from_slice::<serde_json::Value>(&b)) {
+                Some(Ok(serde_json::Value::Object(m))) => !m.is_empty(),
+                Some(Ok(serde_json::Value::Array(a))) => !a.is_empty(),
+                Some(Ok(_)) | None => false,
+                Some(Err(_)) => true,
+            };
+            alone && holds()
+        })
+        .map(|e| e.path())
+        .collect();
+    left.sort();
+    left
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The folder a test keeps the app's files in, on its own thread: the folder of whoever runs the tests is not written to.
+    pub(crate) static TEST_CONFIG: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The app's own folder for what it keeps between runs.
 // ponytail: XDG_CONFIG_HOME, then HOME. Windows sets neither, so nothing is kept there. The system's own folder for it is the fix
 pub(crate) fn config_dir() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(dir) = TEST_CONFIG.with(|t| t.borrow().clone()) {
+        return Some(dir);
+    }
     // one set and empty is not set: it would name the folder the app was started in
     let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+    // a test run that names no folder keeps what it writes among the system's temporary files, never in the folder of whoever runs it: their preferences and what waits for their ships are there
+    #[cfg(test)]
+    if var("XDG_CONFIG_HOME").is_none() {
+        return Some(std::env::temp_dir().join("lattice-rune-tests").join("lattice-rune"));
+    }
     let base = var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|h| h.join(".config")))?;
     Some(base.join("lattice-rune"))
 }
 
 /// Where a ship's tree and pages are kept between runs, to read when it
-/// does not answer: beside the session, one file for each ship's address.
-fn kept_path(url: &str) -> Option<std::path::PathBuf> {
-    let name: String = url.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-    Some(session_path()?.with_file_name(format!("kept-{name}.json")))
+/// does not answer: beside the session, one file for each ship at each address.
+fn kept_path(url: &str, ship: &str) -> Option<std::path::PathBuf> {
+    ship_file("kept", url, ship)
 }
 
 fn keep_at(p: &std::path::Path, nodes: Vec<Node>) -> Result<(), String> {
@@ -1100,27 +1395,104 @@ pub mod web {
     }
 }
 
+/// Random hex bytes for unpredictable temporary file and folder names.
+pub(crate) fn random_hex(n: usize) -> Result<String, String> {
+    let mut buf = vec![0u8; n];
+    #[cfg(unix)]
+    {
+        use ring::rand::{SecureRandom, SystemRandom};
+        SystemRandom::new().fill(&mut buf).map_err(|_| "could not draw random bytes".to_owned())?;
+    }
+    #[cfg(not(unix))]
+    {
+        use std::collections::hash_map::RandomState;
+        use std::hash::{BuildHasher, Hasher};
+        static STEP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        for chunk in buf.chunks_mut(8) {
+            let mut h = RandomState::new().build_hasher();
+            h.write_u64(STEP.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+            h.write_u128(since_epoch().map_or(0, |d| d.as_nanos()));
+            let v = h.finish().to_le_bytes();
+            chunk.copy_from_slice(&v[..chunk.len()]);
+        }
+    }
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Creates a private temporary directory non-recursively with an unpredictable name (0700 on Unix).
+pub(crate) fn make_temp_dir(prefix: &str) -> Result<std::path::PathBuf, String> {
+    let base = std::env::temp_dir();
+    for _ in 0..16 {
+        let suffix = random_hex(12)?;
+        let dir = base.join(format!("{prefix}-{}-{suffix}", std::process::id()));
+        let mut b = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            b.mode(0o700);
+        }
+        match b.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("could not create a temporary folder".into())
+}
+
 /// Writes a file only its owner reads, whole or not at all: beside it first, then moved into place.
 pub fn write_private(p: &std::path::Path, body: &[u8]) -> Result<(), String> {
-    std::fs::create_dir_all(p.parent().ok_or("no parent")?).map_err(|e| e.to_string())?;
-    // a name of its own for each write: two writes of one file at once, each to the same name beside it, could leave the file with one's start and the other's end
-    static TURN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let turn = TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = p.with_extension(format!("{}-{turn}.part", std::process::id()));
-    #[cfg(unix)]
-    let wrote = {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(body).and_then(|()| f.sync_all())).map_err(|e| e.to_string())
-    };
-    #[cfg(not(unix))]
-    let wrote = std::fs::write(&tmp, body).map_err(|e| e.to_string());
-    // a write that failed leaves nothing beside the file: each has a name of its own, so a full disk would else gather a part for every try
-    let done = wrote.and_then(|()| std::fs::rename(&tmp, p).map_err(|e| e.to_string()));
-    if done.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    use std::io::Write;
+    let parent = p.parent().ok_or("no parent")?;
+    if !parent.as_os_str().is_empty() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    done
+    let base = p.file_name().and_then(|n| n.to_str()).unwrap_or("tmp");
+    for _ in 0..16 {
+        let suffix = random_hex(12)?;
+        let tmp = parent.join(format!(".{base}.{}.{suffix}.part", std::process::id()));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = match opts.open(&tmp) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        };
+        let wrote = f.write_all(body).and_then(|()| f.sync_all()).map_err(|e| e.to_string());
+        drop(f);
+        let done = wrote.and_then(|()| std::fs::rename(&tmp, p).map_err(|e| e.to_string()));
+        if done.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        return done;
+    }
+    Err("could not create a temporary file".into())
+}
+
+/// The most of one answer that is read: a whole store comes as one answer, with every page's
+/// text. `ureq`'s own way of reading an answer as text stops at 10 MB, which a store with a few
+/// large maps or sheets is over. This is far above any store, and is still a limit: a ship, or
+/// what answers in its place, cannot fill the memory.
+#[cfg(not(target_arch = "wasm32"))]
+const ANSWER_LIMIT: u64 = 256 * 1024 * 1024;
+
+/// An answer's text, up to `limit` bytes. One over it is refused by name, with its status, so it
+/// is not taken for a ship that is away.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_text(r: ureq::Response, limit: u64) -> Result<String, String> {
+    use std::io::Read;
+    let code = r.status();
+    let mut body = Vec::new();
+    r.into_reader().take(limit.saturating_add(1)).read_to_end(&mut body).map_err(|e| format!("{code}: the answer could not be read: {e}"))?;
+    if body.len() as u64 > limit {
+        return Err(format!("{code}: the answer is too large to read: over {} MB", limit.div_ceil(1024 * 1024)));
+    }
+    Ok(String::from_utf8(body).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
 }
 
 fn kept_at(p: &std::path::Path) -> Option<(Dump, u64)> {
@@ -1163,16 +1535,20 @@ const SSE_MOST: usize = 1 << 20;
 /// The whole events in what has come of a stream so far, each its name
 /// and its data. What follows the last blank line stays, to be added to.
 pub fn sse_events(buf: &mut String) -> Vec<(String, String)> {
+    if buf.contains("\r\n") {
+        *buf = buf.replace("\r\n", "\n");
+    }
     let mut out = Vec::new();
     while let Some(end) = buf.find("\n\n") {
-        let (mut name, mut data) = (String::new(), String::new());
+        let (mut name, mut data) = (String::new(), Vec::new());
         for ln in buf[..end].split('\n') {
-            if let Some(n) = ln.strip_prefix("event: ") {
+            if let Some(n) = ln.strip_prefix("event:") {
                 name = n.trim().to_owned();
-            } else if let Some(d) = ln.strip_prefix("data: ") {
-                data = d.trim().to_owned();
+            } else if let Some(d) = ln.strip_prefix("data:") {
+                data.push(d.strip_prefix(' ').unwrap_or(d).trim_end_matches('\r'));
             }
         }
+        let data = data.join("\n");
         buf.drain(..end + 2);
         if !name.is_empty() {
             out.push((name, data));
@@ -1324,7 +1700,7 @@ pub fn link(offline: bool, lapsed: bool) -> Link {
 
 /// Whether an error is the ship saying this session is not signed in.
 pub fn lapsed(error: &str) -> bool {
-    error.starts_with("401") || error.starts_with("403")
+    error.starts_with("401") || error.starts_with("403") || (error.starts_with("30") && error.contains("/~/login"))
 }
 
 /// What stands at a `urb://` address, as the ship reads it (`GET /urb-read`).
@@ -1647,7 +2023,11 @@ pub fn knows_with(mut knows: Vec<Know>, q: &Queue) -> Vec<Know> {
 /// reverse. Pages and folders only.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum QueuedOp {
+    /// A folder, with everything in it. Also any delete put by before a page was deleted alone.
     Del(String),
+    /// A page alone: the pages under it stay, as the ship keeps them (`+page-del-run` in app.hoon,
+    /// a page-del with no `tree`). Both are sent as the one request the window sends at once.
+    DelPage(String),
     /// From a path to a path, with the names to show for it (`RealName`).
     Move { from: String, to: String, dname: String, dnames: String },
 }
@@ -1660,18 +2040,20 @@ fn moved(path: &str, at: &str, to: &str) -> Option<String> {
 
 /// Puts a delete or a move by, and settles now what it means for the
 /// saves that wait, so that when the ship answers every one of these can
-/// go before every save and still be right. A delete drops the saves
-/// under its path. A move carries them to their new names, and they then
+/// go before every save and still be right. A folder's delete drops the
+/// saves under its path, and a page's delete the page's own save. A move carries them to their new names, and they then
 /// name no revision: the page they go over is the moved one, whatever
 /// the ship numbers it. Memories are not under any page's path.
 pub fn enqueue_op(ops: &mut Vec<QueuedOp>, saves: &mut Queue, op: QueuedOp) {
     match &op {
         // a page made away and deleted away was never the ship's: its save goes, and there is nothing to send
-        QueuedOp::Del(name) if saves.get(name).is_some_and(|q| q.is_new) => {
+        QueuedOp::Del(name) | QueuedOp::DelPage(name) if saves.get(name).is_some_and(|q| q.is_new) => {
             saves.remove(name);
             return;
         }
         QueuedOp::Del(name) => saves.retain(|k, _| queued_know(k).is_some() || moved(k, name, "").is_none()),
+        // the page's own save goes with it, and those of the pages under it stay: so do those pages
+        QueuedOp::DelPage(name) => drop(saves.remove(name)),
         QueuedOp::Move { from, to, .. } => {
             let carried: Vec<(String, String)> = saves.keys().filter(|k| queued_know(k).is_none()).filter_map(|k| Some((k.clone(), moved(k, from, to)?))).collect();
             for (old, new) in carried {
@@ -1691,6 +2073,7 @@ pub fn ops_over(mut nodes: Vec<Node>, ops: &[QueuedOp]) -> Vec<Node> {
     for op in ops {
         match op {
             QueuedOp::Del(name) => nodes.retain(|n| moved(&n.path, name, "").is_none()),
+            QueuedOp::DelPage(name) => nodes.retain(|n| !(n.page && n.path == *name)),
             QueuedOp::Move { from, to, dname, .. } => {
                 for n in &mut nodes {
                     if let Some(new) = moved(&n.path, from, to) {
@@ -1707,13 +2090,84 @@ pub fn ops_over(mut nodes: Vec<Node>, ops: &[QueuedOp]) -> Vec<Node> {
     nodes
 }
 
-fn ops_path(url: &str) -> Option<std::path::PathBuf> {
-    let q = queue_path(url)?;
-    Some(q.with_file_name(format!("ops-{}", q.file_name()?.to_str()?.trim_start_matches("waiting-"))))
+/// What a save sent straight from the editor, once the ship has it at `rev`, means for the save of
+/// that page that waits. The same text is done with. One put by since that save was sent (`at` no
+/// earlier than `sent_at`) is newer: it stays, and claims `rev`, so it goes over the one that landed
+/// and is not taken for a change made elsewhere. One put by before it is another window's, which
+/// this window never held (its own would have sent the save behind it): it stays as it is, and when
+/// it is sent the ship keeps whichever text it replaces as a page of its own.
+pub fn landed_over(q: &mut Queue, name: &str, body: &str, sent_at: u64, rev: u64) {
+    let Some(w) = q.get_mut(name) else { return };
+    if w.body == body {
+        q.remove(name);
+    } else if w.at >= sent_at {
+        // a memory has no revision to claim
+        if queued_know(name).is_none() {
+            w.base = Some(rev);
+        }
+        w.is_new = false;
+    }
 }
 
-fn queue_path(url: &str) -> Option<std::path::PathBuf> {
-    Some(kept_path(url)?.with_file_name(format!("waiting-{}", kept_path(url)?.file_name()?.to_str()?.trim_start_matches("kept-"))))
+/// Whether a waiting save must go after the deletes and moves that wait: it is at or under a path
+/// one of them changes. Sent before it, it would be written to a page the delete then takes, or
+/// where the move then finds a page in its way. Any other save does not depend on them, and goes
+/// while one the ship refuses for now waits.
+pub fn held_by(ops: &[QueuedOp], name: &str) -> bool {
+    queued_know(name).is_none()
+        && ops.iter().any(|op| match op {
+            QueuedOp::Del(at) => moved(name, at, "").is_some(),
+            QueuedOp::DelPage(at) => name == at,
+            QueuedOp::Move { from, to, .. } => moved(name, from, "").is_some() || moved(name, to, "").is_some(),
+        })
+}
+
+/// Takes a delete or move out of the front of those that wait, if it is still the first there.
+pub fn drop_first(ops: &mut Vec<QueuedOp>, op: &QueuedOp) {
+    if ops.first() == Some(op) {
+        ops.remove(0);
+    }
+}
+
+/// Takes a save that was sent out of those that wait, unless the page was saved again meanwhile: that newer save still waits.
+pub fn drop_sent(q: &mut Queue, name: &str, sent: &Queued) {
+    if q.get(name) == Some(sent) {
+        q.remove(name);
+    }
+}
+
+/// Whether a waiting save that was not taken means none of the rest will be either: the ship did
+/// not answer, or it has ended the session. Any other refusal is of that one save.
+#[cfg(not(target_arch = "wasm32"))]
+fn stops_all(why: &str) -> bool {
+    gone(why) || why.starts_with("401")
+}
+
+/// A file locked until it is dropped, made if it is not there: whoever else asks for it, in this
+/// program or in another window's, waits until then. `None` where
+/// it cannot be made or locked (a folder that cannot be written, a file system with no locks): the
+/// caller goes on without it, as it did before there was one.
+pub(crate) fn file_lock(p: &std::path::Path) -> Option<std::fs::File> {
+    std::fs::create_dir_all(p.parent()?).ok()?;
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(p).ok()?;
+    f.lock().ok()?;
+    Some(f)
+}
+
+/// The lock a change to what waits is made under: this process's own, and a file's beside the
+/// list for the other windows on this computer.
+fn waiting_lock(queue: &std::path::Path) -> (std::sync::MutexGuard<'static, ()>, Option<std::fs::File>) {
+    static HERE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let here = HERE.lock().unwrap_or_else(|e| e.into_inner());
+    (here, file_lock(&queue.with_extension("lock")))
+}
+
+fn ops_path(url: &str, ship: &str) -> Option<std::path::PathBuf> {
+    ship_file("ops", url, ship)
+}
+
+fn queue_path(url: &str, ship: &str) -> Option<std::path::PathBuf> {
+    ship_file("waiting", url, ship)
 }
 
 fn queue_at(p: &std::path::Path) -> Queue {
@@ -1810,17 +2264,19 @@ pub struct Prefs {
     /// The address of the ship these are kept for. Empty with no ship: the computer's own alone.
     #[serde(skip)]
     pub of: String,
+    /// The name of that ship. Another ship that answers at the address later has its own.
+    #[serde(skip)]
+    pub ship: String,
 }
 
 impl Prefs {
-    /// Where they are kept: a file for each ship's address, and `prefs.json` for what is the
+    /// Where they are kept: a file for each ship at each address, and `prefs.json` for what is the
     /// computer's whichever ship is in front.
-    fn path_for(of: &str) -> Option<std::path::PathBuf> {
+    fn path_for(of: &str, ship: &str) -> Option<std::path::PathBuf> {
         if of.is_empty() {
             return Some(session_path()?.with_file_name("prefs.json"));
         }
-        let name: String = of.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-        Some(session_path()?.with_file_name(format!("prefs-{name}.json")))
+        ship_file("prefs", of, ship)
     }
 
     /// What is the computer's, not a ship's, taken from `from`: light or dark, the editor's font,
@@ -1833,29 +2289,29 @@ impl Prefs {
 
     /// The kept preferences with no ship in front.
     pub fn load() -> Prefs {
-        Prefs::load_for("")
+        Prefs::load_for("", "")
     }
 
-    /// The preferences for the ship at `of`: its own (the last page, tabs, pins, the theme it wears),
+    /// The preferences for the ship named `ship` at `of`: its own (the last page, tabs, pins, the theme it wears),
     /// with the computer's laid over them. A ship with none of its own yet starts from what was
     /// kept before ships had their own, so the first ship keeps its tabs through the change.
-    pub fn load_for(of: &str) -> Prefs {
+    pub fn load_for(of: &str, ship: &str) -> Prefs {
         #[cfg(target_arch = "wasm32")]
         {
             let kept = web::storage().and_then(|st| st.get_item(web::PREFS).ok().flatten());
             let mut p: Prefs = kept.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-            p.of = of.to_owned();
+            (p.of, p.ship) = (of.to_owned(), ship.to_owned());
             p
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let read = |of: &str| Prefs::path_for(of).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Prefs>(&t).ok());
+            let read = |of: &str| Prefs::path_for(of, ship).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Prefs>(&t).ok());
             let device = read("");
             let mut p = if of.is_empty() { device.clone().unwrap_or_default() } else { read(of).or_else(|| device.clone()).unwrap_or_default() };
             if let (false, Some(d)) = (of.is_empty(), &device) {
                 p.take_device(d);
             }
-            p.of = of.to_owned();
+            (p.of, p.ship) = (of.to_owned(), ship.to_owned());
             p
         }
     }
@@ -1870,7 +2326,7 @@ impl Prefs {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let put = |of: &str, p: &Prefs| {
-                if let (Some(path), Ok(t)) = (Prefs::path_for(of), serde_json::to_string(p)) {
+                if let (Some(path), Ok(t)) = (Prefs::path_for(of, &self.ship), serde_json::to_string(p)) {
                     // whole or not at all, and the owner's alone: they hold the names of pages lately read
                     let _ = write_private(&path, t.as_bytes());
                 }
@@ -2292,7 +2748,7 @@ impl Conn {
 
     /// Keeps the tree with every page's text, to read when the ship does not answer. In a file only its owner reads, written whole or not at all.
     pub fn keep_tree(&self, nodes: Vec<Node>) -> Result<(), String> {
-        keep_at(&kept_path(&self.url).ok_or("no home directory")?, nodes)
+        keep_at(&kept_path(&self.url, self.ship()).ok_or("no home directory")?, nodes)
     }
 
     /// Sends one save that waited (`docs/offline-edits.md`). A page made here
@@ -2319,7 +2775,8 @@ impl Conn {
                     Err(e) => Sent::Stop(format!("the ship's answer was not read: {e}")),
                 }
             }
-            Err(e) if !replay_drop(&e) => return Sent::Stop(e),
+            // a 403 is the ship refusing this page for good (a link shared to read) unless the session itself is turned away. The two are told apart below: the text is kept aside only if the ship takes that save, and a session turned away is refused that too, so the save stays waiting
+            Err(e) if !replay_drop(&e) && !e.starts_with("403") => return Sent::Stop(e),
             Err(e) => e,
         };
         // the name taken by this very text is an earlier try of this save that landed after all
@@ -2347,17 +2804,18 @@ impl Conn {
 
     /// The deletes and moves that wait for this ship, in the order they were made.
     pub fn ops(&self) -> Vec<QueuedOp> {
-        ops_path(&self.url).and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        ops_path(&self.url, self.ship()).and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
     }
 
     pub fn store_ops(&self, ops: &[QueuedOp]) -> Result<(), String> {
-        write_private(&ops_path(&self.url).ok_or("no home directory")?, &serde_json::to_vec(ops).map_err(|e| e.to_string())?)
+        write_private(&ops_path(&self.url, self.ship()).ok_or("no home directory")?, &serde_json::to_vec(ops).map_err(|e| e.to_string())?)
     }
 
     /// Sends one delete or move that waited, as it would have gone at the time.
     pub fn send_op(&self, op: &QueuedOp) -> Result<(), String> {
         match op {
-            QueuedOp::Del(name) => self.delete(name),
+            QueuedOp::Del(name) => self.delete_tree(name),
+            QueuedOp::DelPage(name) => self.delete(name),
             QueuedOp::Move { from, to, dname, dnames } => self.rename_as(from, &RealName { name: to.clone(), dname: dname.clone(), dnames: dnames.clone() }),
         }
     }
@@ -2397,8 +2855,7 @@ impl Conn {
         let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string();
         #[cfg(not(target_arch = "wasm32"))]
         let text = {
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(120)).build();
-            match agent.post(&format!("{}/mcp", self.url)).set("cookie", &self.cookie).set("content-type", "application/json").set("accept", "application/json, text/event-stream").send_string(&body) {
+            match ship_agent().post(&format!("{}/mcp", self.url)).timeout(Duration::from_secs(120)).set("cookie", &self.cookie).set("content-type", "application/json").set("accept", "application/json, text/event-stream").send_string(&body) {
                 Ok(r) if r.status() == 200 => r.into_string().map_err(|e| e.to_string())?,
                 Ok(r) => return Err(format!("{}: this ship has no %mcp", r.status())),
                 Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: %mcp did not take that")),
@@ -2421,9 +2878,7 @@ impl Conn {
     /// What of lattice's software the ship has. An error when the ship could not be asked at all, which is not the same as having nothing.
     pub fn stack(&self) -> Result<Stack, String> {
         #[cfg(not(target_arch = "wasm32"))]
-        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(20)).build();
-        #[cfg(not(target_arch = "wasm32"))]
-        let status = |path: &str| match agent.get(&format!("{}{path}", self.url)).set("cookie", &self.cookie).call() {
+        let status = |path: &str| match ship_agent().get(&format!("{}{path}", self.url)).timeout(Duration::from_secs(20)).set("cookie", &self.cookie).call() {
             Ok(r) => Ok(r.status()),
             Err(ureq::Error::Status(code, _)) => Ok(code),
             Err(e) => Err(e.to_string()),
@@ -2470,9 +2925,12 @@ impl Conn {
     #[cfg(not(target_arch = "wasm32"))]
     fn sse(&self, url: &str, quiet: u64, mut on: impl FnMut(&str, &str) -> bool) -> Result<(), String> {
         use std::io::Read;
-        // no limit on the whole request: the stream is held open
-        let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(quiet)).build();
-        let resp = match agent.get(url).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
+        // no limit on the whole request: the stream is held open. Redirects are never followed so expired 307 redirects to /~/login are caught
+        let resp = match sse_agent(quiet).get(url).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
+            Ok(r) if (300..400).contains(&r.status()) => {
+                let loc = r.header("location").unwrap_or("");
+                return Err(format!("{}: redirect{}", r.status(), if loc.is_empty() { String::new() } else { format!(" to {loc}") }));
+            }
             Ok(r) => r,
             Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: no stream")),
             Err(e) => return Err(e.to_string()),
@@ -2573,9 +3031,10 @@ impl Conn {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let req = ureq::post(&format!("{}/apps/lattice/key-mint", self.url)).timeout(Duration::from_secs(30)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/json");
+            let req = ship_agent().post(&format!("{}/apps/lattice/key-mint", self.url)).timeout(Duration::from_secs(30)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/json");
             let text = match req.send_string(&ask.to_string()) {
-                Ok(r) => r.into_string().map_err(|e| e.to_string())?,
+                Ok(r) if (300..400).contains(&r.status()) => return Err(format!("{}: redirect", r.status())),
+                Ok(r) => read_text(r, ANSWER_LIMIT)?,
                 Err(ureq::Error::Status(code, r)) => return Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
                 Err(e) => return Err(e.to_string()),
             };
@@ -2591,36 +3050,51 @@ impl Conn {
 
     /// The saves that wait for this ship, from the file they are kept in.
     pub fn queue(&self) -> Queue {
-        queue_path(&self.url).map(|p| queue_at(&p)).unwrap_or_default()
+        queue_path(&self.url, self.ship()).map(|p| queue_at(&p)).unwrap_or_default()
     }
 
     /// Sends what waits for this ship while it is not in front, as the window sends it for the ship
     /// in front: the deletes and moves first in the order made, then the saves, the new pages
-    /// before the edits, stopping at the first the ship neither takes nor refuses for good. Each
+    /// before the edits. A ship that does not answer, or a session it has ended, stops it. A
+    /// delete or move refused for now waits with those after it, and so do the saves it changes. Each
     /// one is sent under the senders' lock and taken out of the kept list as soon as the ship has
     /// it, and is noted for the window, so going to the ship mid-way sends nothing twice. `stop`
     /// ends it between two sends. The number the ship refused for good and kept as pages of their own.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn send_waiting(&self, stop: &std::sync::atomic::AtomicBool) -> usize {
+        self.send_waiting_inner(stop, true)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn send_waiting_inner(&self, stop: &std::sync::atomic::AtomicBool, note_bg: bool) -> usize {
         use std::sync::atomic::Ordering;
-        let note = |x: BgSent| BG_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((self.url.clone(), x));
+        let note = |x: BgSent| {
+            if note_bg {
+                BG_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((self.url.clone(), self.ship().to_owned(), x));
+            }
+        };
         loop {
             if stop.load(Ordering::Relaxed) {
                 return 0;
             }
             let _held = send_lock();
-            let mut ops = self.ops();
+            let _file = self.sending_lock();
+            let ops = self.ops();
             let Some(op) = ops.first().cloned() else { break };
-            if self.send_op(&op).is_err_and(|e| !replay_drop(&e)) {
-                return 0;
+            match self.send_op(&op) {
+                // the ship away, or the session ended: nothing else goes either
+                Err(e) if !replay_drop(&e) && stops_all(&e) => return 0,
+                // refused for now: it and the deletes and moves after it wait, in their order, and so do the saves they change
+                Err(e) if !replay_drop(&e) => break,
+                _ => {}
             }
-            ops.remove(0);
-            if self.store_ops(&ops).is_err() {
+            if self.change_waiting(|ops, _| drop_first(ops, &op)).is_err() {
                 return 0;
             }
             note(BgSent::Op(op));
         }
-        let mut names: Vec<(String, bool)> = self.queue().iter().map(|(n, q)| (n.clone(), q.is_new)).collect();
+        let ops = self.ops();
+        let mut names: Vec<(String, bool)> = self.queue().iter().filter(|(n, _)| !held_by(&ops, n)).map(|(n, q)| (n.clone(), q.is_new)).collect();
         names.sort_by_key(|(_, new)| !new);
         let mut aside = 0;
         for (name, _) in names {
@@ -2628,13 +3102,14 @@ impl Conn {
                 break;
             }
             let _held = send_lock();
-            let mut q = self.queue();
-            let Some(item) = q.get(&name).cloned() else { continue };
+            let _file = self.sending_lock();
+            let Some(item) = self.queue().get(&name).cloned() else { continue };
             match self.send_queued(&name, &item) {
-                Sent::Stop(_) => break,
+                // a ship that is away, or a session it has ended, takes none of the rest either. Any other refusal is of this one save, and the rest go. A 504 for a link is the ship saying the link's host did not answer (`+link-write` in app.hoon): the ship itself is here
+                Sent::Stop(why) if stops_all(&why) && !(why.starts_with("504") && self.kept_link(&name)) => break,
+                Sent::Stop(_) => {}
                 sent => {
-                    q.remove(&name);
-                    if self.store_queue(&q).is_err() {
+                    if self.change_waiting(|_, q| drop_sent(q, &name, &item)).is_err() {
                         break;
                     }
                     if matches!(sent, Sent::Aside(..)) {
@@ -2647,14 +3122,53 @@ impl Conn {
         aside
     }
 
+    /// Changes what waits for this ship in the files that keep it: the lists are read as they stand,
+    /// changed, and written back, with a lock held from the read to the write. Two windows on one
+    /// ship keep their waiting saves in the same files, so a list written whole from one window's
+    /// memory would drop what the other put by. Every change is one entry put in or taken out of
+    /// what is there now. Answers the lists as the files then hold them. A failure is one to say:
+    /// a save that waits is nowhere else.
+    pub fn change_waiting(&self, change: impl FnOnce(&mut Vec<QueuedOp>, &mut Queue)) -> Result<(Vec<QueuedOp>, Queue), String> {
+        let path = queue_path(&self.url, self.ship()).ok_or("no home directory")?;
+        let _held = waiting_lock(&path);
+        let (was_ops, was) = (self.ops(), self.queue());
+        let (mut ops, mut q) = (was_ops.clone(), was.clone());
+        change(&mut ops, &mut q);
+        let ops_changed = ops != was_ops;
+        if ops_changed {
+            self.store_ops(&ops)?;
+        }
+        if q != was
+            && let Err(e) = self.store_queue(&q)
+        {
+            if ops_changed {
+                let _ = self.store_ops(&was_ops);
+            }
+            return Err(e);
+        }
+        Ok((ops, q))
+    }
+
+    /// Held by a sender of what waits for this ship from before it reads the first to after it has
+    /// sent the last, across windows: two that sent at once would each send every save.
+    pub fn sending_lock(&self) -> Option<std::fs::File> {
+        file_lock(&queue_path(&self.url, self.ship())?.with_extension("sending"))
+    }
+
+    /// Whether the tree last kept for this ship has a link to another ship's page at `name`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn kept_link(&self, name: &str) -> bool {
+        self.kept_tree().is_some_and(|(d, _)| d.nodes.iter().any(|n| n.path == name && n.link.is_some()))
+    }
+
     /// Keeps the saves that wait. They are nowhere else, so a failure here is one to say.
     pub fn store_queue(&self, q: &Queue) -> Result<(), String> {
-        write_private(&queue_path(&self.url).ok_or("no home directory")?, &serde_json::to_vec(q).map_err(|e| e.to_string())?)
+        write_private(&queue_path(&self.url, self.ship()).ok_or("no home directory")?, &serde_json::to_vec(q).map_err(|e| e.to_string())?)
     }
 
     /// The tree as it was last kept for this ship, and how many seconds ago. Its `since` is empty, so the next read of the ship is a whole one.
     pub fn kept_tree(&self) -> Option<(Dump, u64)> {
-        kept_at(&kept_path(&self.url)?)
+        kept_at(&kept_path(&self.url, self.ship())?)
     }
 
     /// Keeps this session for the next run, among the ships signed in, and brings its ship to the front.
@@ -2666,9 +3180,10 @@ impl Conn {
         }
         let p = session_path().ok_or("no home directory")?;
         let dir = p.parent().ok_or("no parent")?;
-        let mut all = crate::accounts::load_at(dir, now_secs());
-        all.put(&self.url, &self.cookie, now_secs());
-        crate::accounts::store_at(dir, &all)
+        crate::accounts::update_at(dir, now_secs(), |all| {
+            all.put(&self.url, &self.cookie, now_secs());
+            (true, ())
+        })
     }
 
     /// In a browser the session is the browser's own.
@@ -2683,12 +3198,13 @@ impl Conn {
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
-            let mut all = crate::accounts::load_at(dir, now_secs());
-            if let Some(gone) = all.remove(url) {
-                end_session(gone.url, gone.cookie);
-            }
-            let _ = crate::accounts::store_at(dir, &all);
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent)
+            && let Ok(Some(gone)) = crate::accounts::update_at(dir, now_secs(), |all| {
+                let gone = all.remove(url);
+                (gone.is_some(), gone)
+            })
+        {
+            end_session(gone.url, gone.cookie);
         }
         #[cfg(target_arch = "wasm32")]
         let _ = url;
@@ -2700,14 +3216,13 @@ impl Conn {
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
-            let mut all = crate::accounts::load_at(dir, now_secs());
-            if let Some(front) = all.front.clone() {
-                if let Some(gone) = all.remove(&front) {
-                    end_session(gone.url, gone.cookie);
-                }
-                let _ = crate::accounts::store_at(dir, &all);
-            }
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent)
+            && let Ok(Some(gone)) = crate::accounts::update_at(dir, now_secs(), |all| {
+                let gone = all.front.clone().and_then(|front| all.remove(&front));
+                (gone.is_some(), gone)
+            })
+        {
+            end_session(gone.url, gone.cookie);
         }
     }
 
@@ -2723,9 +3238,9 @@ impl Conn {
         {
             let url = base_url(typed_url);
             // the cookie comes on the redirect itself, so it is not followed
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(20)).build();
-            let res = agent
+            let res = ship_agent()
                 .post(&format!("{url}/~/login"))
+                .timeout(Duration::from_secs(20))
                 .set("content-type", "application/x-www-form-urlencoded")
                 .send_string(&format!("password={}", enc(code.trim())));
             let res = match res {
@@ -2733,10 +3248,9 @@ impl Conn {
                 Err(ureq::Error::Status(code, _)) => return Err(login_refused(&url, code)),
                 Err(e) => return Err(format!("{url} does not answer: {e}")),
             };
-            let cookie = res.header("set-cookie").and_then(|c| c.split(';').next()).unwrap_or("").trim().to_owned();
-            if !cookie.starts_with("urbauth-~") {
-                return Err("the ship gave no session".into());
-            }
+            // the ship's own among the cookies set: something in front of it may set one of its own, before or after
+            let cookie = res.all("set-cookie").into_iter().filter_map(|c| c.split(';').next()).map(str::trim).find(|c| cookie_ship(c).is_some());
+            let Some(cookie) = cookie.map(str::to_owned) else { return Err("the ship gave no session".into()) };
             let c = Conn { url, cookie };
             // the ship is there and took the code: is lattice on it? Where that cannot be told, it is let through
             if let Some(why) = lattice_missing(c.ship(), &c.call("GET", "streams", None)) {
@@ -2773,9 +3287,7 @@ impl Conn {
         #[cfg(not(target_arch = "wasm32"))]
         {
             // a redirect is not followed. The ship answers one for an address nothing is bound to, as while lattice is being put in or started: followed, a write would be taken as done and a read would be the sign-in page
-            let req = ureq::AgentBuilder::new()
-                .redirects(0)
-                .build()
+            let req = ship_agent()
                 .request(method, url)
                 .timeout(Duration::from_secs(secs))
                 .set("cookie", &self.cookie)
@@ -2788,10 +3300,7 @@ impl Conn {
             match res {
                 Ok(r) if (300..400).contains(&r.status()) => Err(format!("{}: the ship sent this elsewhere. Lattice may be starting", r.status())),
                 // the ship answered, so it is not away: an answer cut short is said as one, with its status
-                Ok(r) => {
-                    let code = r.status();
-                    r.into_string().map_err(|e| format!("{code}: the answer could not be read: {e}"))
-                }
+                Ok(r) => read_text(r, ANSWER_LIMIT),
                 Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
                 Err(e) => Err(e.to_string()),
             }
@@ -2829,8 +3338,10 @@ impl Conn {
         #[cfg(not(target_arch = "wasm32"))]
         {
             use std::io::Read;
-            let req = ureq::get(url).timeout(Duration::from_secs(5)).set("cookie", &self.cookie).set("accept", "text/event-stream");
-            if let Ok(r) = req.call() {
+            let req = ship_agent().get(url).timeout(Duration::from_secs(5)).set("cookie", &self.cookie).set("accept", "text/event-stream");
+            if let Ok(r) = req.call()
+                && !(300..400).contains(&r.status())
+            {
                 let _ = r.into_reader().read(&mut [0u8; 64]);
             }
         }
@@ -2895,7 +3406,7 @@ impl Conn {
         let json = |path: &str| self.call_in(120, "GET", path, None).ok().and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
         let dump = json("page-dump").ok_or("export failed: could not read the page tree")?;
         let source = |name: &str| self.page(name).ok().map(|p| p.body);
-        Ok(crate::vault::build(&dump, json("know-all").as_ref(), json("page-scopes").as_ref(), &source, now))
+        Ok(crate::vault::build(&dump, json("know-all").as_ref(), json("page-scopes").as_ref(), &source, now, self.ship()))
     }
 
     /// Puts an archive back, as the web client does: the folders, the pages
@@ -3076,6 +3587,27 @@ impl Conn {
         self.call("POST", &format!("know-move?from={}&to={}", enc(from), enc(to)), Some("")).map(drop)
     }
 
+    /// What a form's answer says of it. The ship answers a form it took by sending the browser on
+    /// to one of its own pages, which is not followed. Sent anywhere else, the form was not taken:
+    /// to the sign-in page while lattice is being put in or started, or by something in front of
+    /// the ship whose own session ended. A refusal is the ship's own word for it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn form_answer(&self, res: Result<ureq::Response, ureq::Error>) -> Result<ureq::Response, String> {
+        match res {
+            Ok(r) if (300..400).contains(&r.status()) => {
+                let to = r.header("location").unwrap_or("");
+                let path = to.strip_prefix(self.url.as_str()).unwrap_or(to);
+                match path.strip_prefix("/apps/lattice") {
+                    Some(rest) if rest.is_empty() || rest.starts_with(['/', '?', '#']) => Ok(r),
+                    _ => Err(format!("{}: the ship sent this elsewhere. Lattice may be starting", r.status())),
+                }
+            }
+            Ok(r) => Ok(r),
+            Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     /// Sends one of the forum's own forms, as the ship's forum pages do: `path` under `/forum/`, and the
     /// fields. The ship answers by sending the browser on to a page, which is not followed, and it
     /// answers the same when its rules refuse what was sent: the board is read again to see.
@@ -3091,16 +3623,10 @@ impl Conn {
         {
             let body = fields.iter().map(|(k, v)| format!("{k}={}", enc(v))).collect::<Vec<_>>().join("&");
             // the ship waits on another ship before it answers for a board there: about 30 s when that ship is not reachable
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(90)).build();
             // a board on another ship (`~ship/board`) has the same forms under its own route, which the ship sends on to that ship
             let root = if path.starts_with('~') { "forum-remote" } else { "forum" };
-            let res = agent.post(&format!("{}/apps/lattice/{root}/{path}", self.url)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&body);
-            match res {
-                Ok(_) => Ok(()),
-                Err(ureq::Error::Status(code, _)) if (300..400).contains(&code) => Ok(()),
-                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-                Err(e) => Err(e.to_string()),
-            }
+            let res = ship_agent().post(&format!("{}/apps/lattice/{root}/{path}", self.url)).timeout(Duration::from_secs(90)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&body);
+            self.form_answer(res).map(drop)
         }
     }
 
@@ -3146,13 +3672,7 @@ impl Conn {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
-            match agent.post(&format!("{}/apps/lattice/forum-notes/clear", self.url)).set("cookie", &self.cookie).set("origin", &self.url).send_string("") {
-                Ok(_) => Ok(()),
-                Err(ureq::Error::Status(code, _)) if (300..400).contains(&code) => Ok(()),
-                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-                Err(e) => Err(e.to_string()),
-            }
+            self.form_answer(ship_agent().post(&format!("{}/apps/lattice/forum-notes/clear", self.url)).timeout(Duration::from_secs(30)).set("cookie", &self.cookie).set("origin", &self.url).send_string("")).map(drop)
         }
     }
 
@@ -3378,7 +3898,7 @@ impl Conn {
     }
 
     pub fn groups(&self) -> Result<Vec<Group>, String> {
-        serde_json::from_str(&self.call("GET", "share-groups", None)?).map_err(|e| e.to_string())
+        parse_groups(&self.call("GET", "share-groups", None)?)
     }
 
     /// Where this lattice lives on the ship: the start of every grant path.
@@ -3390,7 +3910,12 @@ impl Conn {
     /// Writes a group: its ships and the paths it may read and write
     /// replace what it had. The ship keeps anything else the group holds.
     pub fn group_save(&self, g: &Group) -> Result<(), String> {
-        let body = serde_json::json!({ "ships": g.ships, "peek": g.peek, "make": g.make }).to_string();
+        let mut body = serde_json::json!({ "ships": g.ships, "peek": g.peek, "make": g.make });
+        // a ship that said its list is authoritative is told that this one is: what is not sent back is removed
+        if g.v >= 2 {
+            body["v"] = g.v.into();
+        }
+        let body = body.to_string();
         self.call_in(120, "POST", &format!("share-group-save?name={}", enc(&g.name)), Some(&body)).map(drop)
     }
 
@@ -3523,12 +4048,8 @@ impl Conn {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(40)).build();
-            match agent.post(&url).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&form) {
-                Ok(res) => Ok(res.header("location").is_some_and(|l| l.contains("&sent="))),
-                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-                Err(e) => Err(e.to_string()),
-            }
+            let res = self.form_answer(ship_agent().post(&url).timeout(Duration::from_secs(40)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&form))?;
+            Ok(res.header("location").is_some_and(|l| l.contains("&sent=")))
         }
     }
 
@@ -3559,7 +4080,7 @@ impl Conn {
 
     /// Posts the owner's comment on a page. The ship answers a form post
     /// with a redirect to the reader, which is not followed: that it
-    /// answered so is the success.
+    /// answered so is the success (`form_answer`).
     pub fn comment(&self, page: &str, body: &str) -> Result<(), String> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -3567,18 +4088,14 @@ impl Conn {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
-            let res = agent
+            let res = ship_agent()
                 .post(&format!("{}/apps/lattice/comment?page={}", self.url, enc(page)))
+                .timeout(Duration::from_secs(30))
                 .set("cookie", &self.cookie)
                 .set("origin", &self.url)
                 .set("content-type", "application/x-www-form-urlencoded")
                 .send_string(&format!("body={}", enc(body)));
-            match res {
-                Ok(_) => Ok(()),
-                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-                Err(e) => Err(e.to_string()),
-            }
+            self.form_answer(res).map(drop)
         }
     }
 
@@ -3749,8 +4266,15 @@ impl Conn {
         self.call("POST", &format!("page-move?from={}&to={}{q}", enc(from), enc(&rn.name)), Some("")).map(drop)
     }
 
+    /// Deletes a page alone: the pages under it stay (`+page-del-run`, a page-del with no `tree`).
     pub fn delete(&self, name: &str) -> Result<(), String> {
         self.call("POST", &format!("page-del?name={}", enc(name)), Some("")).map(drop)
+    }
+
+    /// Deletes a folder with all in it. A page-only delete of a name whose page is gone is refused
+    /// (409), so a folder left by one is only deleted with `tree=1`.
+    pub fn delete_tree(&self, name: &str) -> Result<(), String> {
+        self.call("POST", &format!("page-del?name={}&tree=1", enc(name)), Some("")).map(drop)
     }
 }
 
@@ -3767,6 +4291,351 @@ pub fn enc(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One request a stand-in ship was sent.
+    #[derive(Clone, Debug)]
+    struct Asked {
+        path: String,
+        head: String,
+        body: String,
+    }
+
+    impl Asked {
+        fn cookie(&self) -> &str {
+            self.head.lines().find_map(|h| h.strip_prefix("cookie: ").or_else(|| h.strip_prefix("Cookie: "))).unwrap_or("")
+        }
+    }
+
+    /// A stand-in ship on this computer alone, answering each request with what `h` gives, raw. Its address, and what it was asked.
+    fn serve(h: impl Fn(&Asked) -> Vec<u8> + Send + Sync + 'static) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Asked>>>) {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (log2, h) = (log.clone(), std::sync::Arc::new(h));
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { continue };
+                let (h, log) = (h.clone(), log2.clone());
+                std::thread::spawn(move || {
+                    let (mut buf, mut b) = (Vec::new(), [0u8; 4096]);
+                    let end = loop {
+                        match s.read(&mut b) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&b[..n]),
+                        }
+                        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break i;
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&buf[..end]).into_owned();
+                    let len = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0))).unwrap_or(0);
+                    while buf.len() < end + 4 + len {
+                        match s.read(&mut b) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => buf.extend_from_slice(&b[..n]),
+                        }
+                    }
+                    let mut first = head.lines().next().unwrap_or("").split(' ');
+                    let asked = Asked { path: first.nth(1).unwrap_or("").to_owned(), head: head.clone(), body: String::from_utf8_lossy(&buf[(end + 4).min(buf.len())..]).into_owned() };
+                    let out = h(&asked);
+                    log.lock().unwrap().push(asked);
+                    let _ = s.write_all(&out);
+                    let _ = s.flush();
+                });
+            }
+        });
+        (url, log)
+    }
+
+    fn answer(code: &str, extra: &str, body: &[u8]) -> Vec<u8> {
+        let mut out = format!("HTTP/1.1 {code}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n{extra}\r\n", body.len()).into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn ok(body: &str) -> Vec<u8> {
+        answer("200 OK", "", body.as_bytes())
+    }
+
+    fn conn(url: &str, ship: &str) -> Conn {
+        Conn { url: url.to_owned(), cookie: format!("urbauth-{ship}=0v7.of{}", &ship[1..]) }
+    }
+
+    /// The app's own folder for one test, on that test's thread, until it is dropped.
+    struct Home(std::path::PathBuf);
+
+    impl Home {
+        fn new(tag: &str) -> Home {
+            let dir = std::env::temp_dir().join(format!("lr-home-{tag}-{}", std::process::id())).join("lattice-rune");
+            let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+            std::fs::create_dir_all(&dir).unwrap();
+            TEST_CONFIG.with(|t| *t.borrow_mut() = Some(dir.clone()));
+            Home(dir)
+        }
+    }
+
+    impl Drop for Home {
+        fn drop(&mut self) {
+            TEST_CONFIG.with(|t| *t.borrow_mut() = None);
+            let _ = std::fs::remove_dir_all(self.0.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn what_is_kept_for_a_ship_is_never_read_or_sent_for_another_that_answers_at_its_address() {
+        let _home = Home::new("same-address");
+        let (url, log) = serve(|r| if r.path.contains("page-save") { ok(r#"{"rev":9,"conflicted":false,"kept":""}"#) } else { ok("{}") });
+        let (zod, bus) = (conn(&url, "~zod"), conn(&url, "~bus"));
+        // ~zod wrote and deleted with the ship away, and was signed out of: what waits is left
+        let mut q = Queue::new();
+        enqueue(&mut q, &Page { name: "diary".into(), body: "what ~zod wrote with the ship away".into(), kind: "md".into(), rev: 3 }, Some(3), false, 1);
+        zod.store_queue(&q).unwrap();
+        zod.store_ops(&[QueuedOp::Del("drafts".into())]).unwrap();
+        zod.keep_tree(vec![Node { path: "diary".into(), page: true, kind: "md".into(), rev: 3, body: Some("~zod's diary".into()), ..Node::default() }]).unwrap();
+        let mut p = Prefs::load_for(&url, "~zod");
+        p.last = "diary".into();
+        p.save();
+        // another ship answers at the address and is signed in to: none of it is that ship's
+        assert!(bus.queue().is_empty() && bus.ops().is_empty() && bus.kept_tree().is_none());
+        assert_eq!(Prefs::load_for(&url, "~bus").last, "");
+        assert_eq!(bus.send_waiting(&std::sync::atomic::AtomicBool::new(false)), 0);
+        assert!(log.lock().unwrap().is_empty(), "nothing of ~zod's is sent under ~bus's session: {:?}", log.lock().unwrap());
+        // and what ~bus keeps does not go over ~zod's
+        bus.keep_tree(vec![Node { path: "home".into(), page: true, ..Node::default() }]).unwrap();
+        bus.store_queue(&Queue::new()).unwrap();
+        bus.store_ops(&[]).unwrap();
+        // it all still waits for ~zod, and goes to ~zod under its own session
+        assert_eq!((zod.queue(), zod.ops()), (q, vec![QueuedOp::Del("drafts".into())]));
+        assert_eq!(zod.kept_tree().unwrap().0.nodes[0].body.as_deref(), Some("~zod's diary"));
+        assert_eq!(Prefs::load_for(&url, "~zod").last, "diary");
+        zod.send_waiting(&std::sync::atomic::AtomicBool::new(false));
+        let sent = log.lock().unwrap().clone();
+        assert!(sent.iter().any(|r| r.path.contains("page-del?name=drafts")) && sent.iter().any(|r| r.path.contains("page-save?name=diary") && r.body == "what ~zod wrote with the ship away"), "{sent:?}");
+        assert!(sent.iter().all(|r| r.cookie() == zod.cookie), "{sent:?}");
+        assert!(zod.queue().is_empty() && zod.ops().is_empty());
+        let _ = bg_sent(&url, zod.ship(), true);
+    }
+
+    #[test]
+    fn files_kept_under_an_address_alone_go_to_the_ship_signed_in_there_and_to_no_other() {
+        let home = Home::new("old-names");
+        let dir = home.0.clone();
+        // as the version before left them: each file named for an address, with nothing in it to say whose it is
+        let waiting = |body: &str| format!(r#"{{"diary":{{"kind":"md","body":"{body}","base":3,"is_new":false,"at":1}}}}"#);
+        let old = |what: &str, key: &str, text: &str| std::fs::write(dir.join(format!("{what}-{key}.json")), text).unwrap();
+        old("waiting", "http---ship-example-8080", &waiting("zod's edit"));
+        old("ops", "http---ship-example-8080", r#"[{"Del":"drafts"}]"#);
+        old("kept", "http---ship-example-8080", r#"{"nodes":[{"path":"diary","page":true,"kind":"md","rev":3,"body":"zod's diary"}],"since":""}"#);
+        old("prefs", "http---ship-example-8080", r#"{"last":"diary","theme":"dark"}"#);
+        // a ship signed out of before the change, whose edit still waits
+        old("waiting", "http---gone-example", &waiting("of a ship signed out of"));
+        // two addresses signed in that made one name
+        old("waiting", "https---my-ship-example", &waiting("of one of the two"));
+        let mut all = crate::accounts::Accounts::default();
+        all.put("https://my.ship.example", "urbauth-~nec=0v1", 1);
+        all.put("https://my-ship.example", "urbauth-~bud=0v1", 1);
+        all.put("http://ship.example:8080", "urbauth-~zod=0v1", 1);
+        crate::accounts::store_at(&dir, &all).unwrap();
+
+        let zod = conn("http://ship.example:8080", "~zod");
+        assert_eq!(zod.queue()["diary"].body, "zod's edit");
+        assert_eq!(zod.ops(), [QueuedOp::Del("drafts".into())]);
+        assert_eq!(zod.kept_tree().unwrap().0.nodes[0].body.as_deref(), Some("zod's diary"));
+        assert_eq!(Prefs::load_for(&zod.url, "~zod").last, "diary");
+        assert!(!dir.join("waiting-http---ship-example-8080.json").exists(), "it was moved, not copied");
+        // another ship at that address is given none of it
+        assert!(conn("http://ship.example:8080", "~bus").queue().is_empty());
+        // the two that shared a name: which one wrote it cannot be told, so neither is given it
+        assert!(conn("https://my.ship.example", "~nec").queue().is_empty() && conn("https://my-ship.example", "~bud").queue().is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("waiting-https---my-ship-example.json")).unwrap(), waiting("of one of the two"));
+        // a ship signed in later at the address of the one signed out of is not given what was left, and the file stays as it was
+        all.put("http://gone.example", "urbauth-~bus=0v1", 2);
+        crate::accounts::store_at(&dir, &all).unwrap();
+        assert!(conn("http://gone.example", "~bus").queue().is_empty() && conn("http://gone.example", "~bus").ops().is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("waiting-http---gone-example.json")).unwrap(), waiting("of a ship signed out of"));
+    }
+
+    #[test]
+    fn a_fresh_folder_gives_nothing_away_to_the_first_ship_signed_in() {
+        // the first run of this version with nobody signed in, and files left from before
+        let home = Home::new("old-names-signed-out");
+        std::fs::write(home.0.join("waiting-http---ship-example-8080.json"), r#"{"diary":{"kind":"md","body":"x","base":3}}"#).unwrap();
+        assert_eq!(Prefs::load().last, "", "the first thing a window with no ship reads");
+        let mut all = crate::accounts::Accounts::default();
+        all.put("http://ship.example:8080", "urbauth-~bus=0v1", 1);
+        crate::accounts::store_at(&home.0, &all).unwrap();
+        assert!(conn("http://ship.example:8080", "~bus").queue().is_empty());
+        assert!(home.0.join("waiting-http---ship-example-8080.json").exists());
+    }
+
+    #[test]
+    fn a_save_an_older_version_keeps_after_the_names_changed_is_taken_in_or_said() {
+        let home = Home::new("older-after");
+        let dir = home.0.clone();
+        let mut all = crate::accounts::Accounts::default();
+        all.put("http://ship.example:8080", "urbauth-~zod=0v1", 1);
+        all.put("https://my.ship.example", "urbauth-~nec=0v1", 1);
+        all.put("https://my-ship.example", "urbauth-~bud=0v1", 1);
+        crate::accounts::store_at(&dir, &all).unwrap();
+        let zod = conn("http://ship.example:8080", "~zod");
+        // the new version's first look: the names change, and the mark is written
+        assert!(zod.queue().is_empty() && dir.join(NAMED_BY_SHIP).exists());
+        // an older version's window, still open or run again, keeps saves with the ship away as it always did: after the mark
+        let after = std::fs::metadata(dir.join(NAMED_BY_SHIP)).unwrap().modified().unwrap() + Duration::from_secs(2);
+        let old = |what: &str, key: &str, text: &str| {
+            let p = dir.join(format!("{what}-{key}.json"));
+            std::fs::write(&p, text).unwrap();
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(after).unwrap();
+        };
+        old("waiting", "http---ship-example-8080", r#"{"diary":{"kind":"md","body":"typed in the old window","base":3,"is_new":false,"at":1}}"#);
+        old("ops", "http---ship-example-8080", r#"[{"Del":"drafts"}]"#);
+        // and one for an address two signed-in ships make: whose it is cannot be told
+        old("waiting", "https---my-ship-example", r#"{"plan":{"kind":"md","body":"of one of the two","base":1,"is_new":false,"at":1}}"#);
+        // the next start takes in the one it can tell, and says the one it cannot
+        let left = adopt_late();
+        assert_eq!(zod.queue()["diary"].body, "typed in the old window", "a save the older version kept after the change is read");
+        assert_eq!(zod.ops(), [QueuedOp::Del("drafts".into())]);
+        assert!(!dir.join("waiting-http---ship-example-8080.json").exists() && !dir.join("ops-http---ship-example-8080.json").exists());
+        assert_eq!(left, [dir.join("waiting-https---my-ship-example.json")], "the one whose ship cannot be told is said, not left unseen");
+        assert!(conn("https://my.ship.example", "~nec").queue().is_empty() && conn("https://my-ship.example", "~bud").queue().is_empty(), "and given to neither");
+        // one kept again while this ship has saves of its own waiting is not merged in over them: it is said
+        old("waiting", "http---ship-example-8080", r#"{"diary":{"kind":"md","body":"typed in the old window again","base":3,"is_new":false,"at":2}}"#);
+        assert_eq!(adopt_late().len(), 2);
+        assert_eq!(zod.queue()["diary"].body, "typed in the old window");
+        // one left from before the change (older than the mark) is never given to a ship signed in since
+        let before = std::fs::metadata(dir.join(NAMED_BY_SHIP)).unwrap().modified().unwrap() - Duration::from_secs(60);
+        let p = dir.join("waiting-http---gone-example.json");
+        std::fs::write(&p, r#"{"x":{"kind":"md","body":"of a ship signed out of","base":1}}"#).unwrap();
+        std::fs::File::options().write(true).open(&p).unwrap().set_modified(before).unwrap();
+        all.put("http://gone.example", "urbauth-~bus=0v1", 2);
+        crate::accounts::store_at(&dir, &all).unwrap();
+        assert!(adopt_late().contains(&p));
+        assert!(conn("http://gone.example", "~bus").queue().is_empty() && p.exists());
+    }
+
+    #[test]
+    fn two_addresses_or_two_ships_never_make_one_file_name() {
+        let differ = |a: (&str, &str), b: (&str, &str)| assert_ne!(ship_key(a.0, a.1), ship_key(b.0, b.1), "{a:?} {b:?}");
+        differ(("https://my.ship.example", "~zod"), ("https://my-ship.example", "~zod"));
+        differ(("https://\u{65e5}\u{672c}.example", "~zod"), ("https://\u{4e2d}\u{56fd}.example", "~zod"));
+        differ(("https://ship.example", "~zod"), ("https://ship.example", "~bus"));
+        differ(("http://ship.example:80", "~zod"), ("http://ship.example/80", "~zod"));
+        // the mark between the two parts cannot be made by either part
+        differ(("b", "~zod+a"), ("a+b", "~zod"));
+        differ(("http://a%2Fb", "~zod"), ("http://a/b", "~zod"));
+        assert_eq!(ship_key("http://ship.example:8080", "~zod"), "~zod+http%3A%2F%2Fship.example%3A8080");
+        // a long address still makes a name a file can have, and its own
+        let long = |end: &str| format!("https://{}.example/{end}", "\u{65e5}".repeat(60));
+        differ((&long("a"), "~zod"), (&long("b"), "~zod"));
+        assert!(format!("waiting-{}.json", ship_key(&long("a"), "~sampel-palnet-sampel-palnet")).len() < 255);
+        // and no name made now is one made before
+        assert!(!ship_key("http://x", "~zod").chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    }
+
+    #[test]
+    fn a_form_the_ship_sends_to_its_sign_in_page_is_not_taken_as_posted() {
+        // as a ship answers while lattice is being put in or started, and as whatever stands in front of it answers when its own session ends
+        for to in ["/~/login?redirect=/apps/lattice/comment", "https://elsewhere.example/apps/lattice/x", "/apps/latticework", ""] {
+            let to = to.to_owned();
+            let (url, _) = serve(move |_| answer("307 Temporary Redirect", &if to.is_empty() { String::new() } else { format!("location: {to}\r\n") }, b""));
+            let c = conn(&url, "~zod");
+            for r in [c.comment("p", "my long comment"), c.forum_comment("chat", 1, None, "a reply"), c.forum_submit("chat", "T", "", "body", &[]), c.forum_board_delete("chat"), c.forum_notes_clear(), c.forum_comment("~bus/chat", 1, None, "x"), c.comment_remote("~bus", "p", "x").map(drop)] {
+                assert!(r.as_ref().is_err_and(|e| e.starts_with("307")), "{r:?}");
+            }
+        }
+        // the ship's own answer to a form it took: on to one of its own pages
+        let (url, _) = serve(|r| {
+            let host = r.head.lines().find_map(|h| h.strip_prefix("Host: ")).unwrap_or("");
+            // one of them with the whole address, as something in front of the ship may write it
+            let to = if r.path.contains("forum-notes") { format!("http://{host}/apps/lattice/forum-notes?u=1") } else if r.path.contains("comment-remote") { "/apps/lattice?url=urb%3A%2F%2F~bus%2Fp&sent=x&u=1".into() } else { "/apps/lattice/forum/chat?u=7".into() };
+            answer("303 See Other", &format!("location: {to}\r\n"), b"")
+        });
+        let c = conn(&url, "~zod");
+        assert_eq!((c.comment("p", "x"), c.forum_comment("chat", 1, None, "a reply"), c.forum_notes_clear(), c.comment_remote("~bus", "p", "x")), (Ok(()), Ok(()), Ok(()), Ok(true)));
+        // and a refusal is still one
+        let (url, _) = serve(|_| answer("403 Forbidden", "", b"no"));
+        assert_eq!(conn(&url, "~zod").comment("p", "x"), Err("403: no".into()));
+    }
+
+    #[test]
+    fn an_answer_far_over_ten_megabytes_is_read_and_one_over_the_limit_is_said_to_be_too_large() {
+        let (url, _) = serve(|r| {
+            let big = "x".repeat(11 * 1024 * 1024);
+            if r.path.contains("page-dump") { ok(&format!(r#"{{"nodes":[{{"path":"big","page":true,"kind":"md","rev":1,"body":"{big}"}}],"since":"s1"}}"#)) } else if r.path.contains("page-source") { ok(&format!(r#"{{"body":"{big}","kind":"md","rev":1}}"#)) } else { ok(r#"{"items":[]}"#) }
+        });
+        let c = conn(&url, "~zod");
+        assert_eq!(c.dump("").map(|d| d.nodes[0].body.as_ref().map(String::len)), Ok(Some(11 * 1024 * 1024)));
+        assert_eq!(c.page("big").map(|p| p.body.len()), Ok(11 * 1024 * 1024));
+        assert_eq!(c.vault(1).map(|b| b.pages), Ok(1));
+        // the limit is a limit: one byte over is refused by name, and at it is read
+        let get = || ureq::get(&format!("{url}/apps/lattice/know-all")).call().unwrap();
+        assert_eq!(read_text(get(), 12), Ok(r#"{"items":[]}"#.to_owned()));
+        let over = read_text(get(), 11).unwrap_err();
+        assert!(over.starts_with("200: ") && over.contains("too large"), "{over}");
+        assert!(!gone(&over), "the ship answered: what was kept is not read in its place");
+    }
+
+    #[test]
+    fn a_session_is_taken_only_when_it_names_a_ship_and_wherever_it_stands_among_the_cookies() {
+        let ship = |cookies: &'static str| serve(move |r| if r.path == "/~/login" { answer("204 No Content", cookies, b"") } else { ok(r#"{"base":"/b","streams":{}}"#) }).0;
+        // a name that is no ship's would name a folder to mount at, outside the home directory
+        for bad in ["set-cookie: urbauth-~zod/../../../../../tmp/elsewhere=0v1; Path=/\r\n", "set-cookie: urbauth-~Zod=0v1\r\n", "set-cookie: urbauth-~zod.x=0v1\r\n", "set-cookie: urbauth-~=0v1\r\n", "set-cookie: urbauth-~zod bus=0v1\r\n", "set-cookie: lb=sticky1; Path=/\r\n"] {
+            assert_eq!(Conn::login(&ship(bad), "code").map(|c| c.cookie), Err("the ship gave no session".into()), "{bad}");
+        }
+        assert_eq!(Conn::login(&ship("set-cookie: urbauth-~sampel-palnet=0v1.x; Path=/; Max-Age=604800\r\n"), "code").map(|c| c.ship().to_owned()), Ok("~sampel-palnet".into()));
+        // something in front of the ship set a cookie of its own first, or after
+        assert_eq!(Conn::login(&ship("set-cookie: lb=sticky1; Path=/\r\nset-cookie: urbauth-~zod=0v1.x; Path=/; Max-Age=604800\r\nset-cookie: later=1\r\n"), "code").map(|c| c.cookie), Ok("urbauth-~zod=0v1.x".into()));
+        // and one already kept under such a name is not read back as a ship signed in
+        let kept = crate::accounts::Accounts::parse(r#"{"list":[{"url":"http://a","cookie":"urbauth-~zod/../x=0v1"},{"url":"http://b","cookie":"urbauth-~zod=0v1"}],"front":"http://a"}"#);
+        assert_eq!((kept.list.len(), kept.list[0].url.as_str(), kept.front), (1, "http://b", None));
+        assert!(crate::accounts::Accounts::from_session(r#"{"url":"http://a","cookie":"urbauth-~zod/../x=0v1"}"#, 1).is_none());
+    }
+
+    #[test]
+    fn signing_out_takes_back_the_session_handed_to_the_mounter() {
+        let home = Home::new("fs-cookie");
+        // nothing answers at either: the ship is away at sign-out, so the session is never ended there
+        let (url, other) = ("http://127.0.0.1:1", "http://127.0.0.1:2");
+        let file = |u: &str| home.0.join("fs-home/.config/lattice-fs").join(crate::mounts::cookie_file_name(u).unwrap());
+        for u in [url, other] {
+            crate::mounts::hand_session(u, "urbauth-~zod=0v7.secret").unwrap();
+            assert_eq!(std::fs::read_to_string(file(u)).unwrap(), "urbauth-~zod=0v7.secret");
+        }
+        end_session(url.into(), "urbauth-~zod=0v7.secret".into());
+        assert!(!file(url).exists(), "the session is not left where the mounter reads it");
+        assert!(file(other).exists(), "another ship's is not touched");
+        // signing out of a ship never mounted is not an error
+        end_session("http://127.0.0.1:3".into(), "urbauth-~zod=0v7.secret".into());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_file_is_never_written_through_a_link_planted_where_it_is_first_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("lr-plant-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("shared")).unwrap();
+        let theirs = dir.join("theirs.txt");
+        std::fs::write(&theirs, "").unwrap();
+        std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let file = dir.join("shared/lattice-daily-20261122-140304.tar");
+        // whoever else writes to the folder plants links at the names the file is first written under: this program and a count. Other tests write files too, so a wide run of counts
+        for turn in 0..20_000 {
+            let _ = std::os::unix::fs::symlink(&theirs, file.with_extension(format!("{}-{turn}.part", std::process::id())));
+        }
+        // the name itself a link too: the file takes its place, and is not written through it
+        std::os::unix::fs::symlink(&theirs, &file).unwrap();
+        write_private(&file, b"every page of the store").unwrap();
+        assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "", "nothing reached the other's file");
+        let m = std::fs::symlink_metadata(&file).unwrap();
+        assert!(m.file_type().is_file() && m.permissions().mode() & 0o777 == 0o600);
+        assert_eq!(std::fs::read(&file).unwrap(), b"every page of the store");
+        // written again over itself, as every kept file is
+        write_private(&file, b"again").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"again");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn a_sign_in_that_fails_says_which_of_three_things_it_was() {
@@ -3833,7 +4702,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new(), edit_size: 0.0, no_wrap: false }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new(), ship: String::new(), edit_size: 0.0, no_wrap: false }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert!(back.sort_desc);
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
@@ -3847,6 +4716,7 @@ mod tests {
             ships: ships.iter().map(|s| (*s).to_owned()).collect(),
             peek: peek.iter().map(|p| format!("{base}{p}")).collect(),
             make: make.iter().map(|p| format!("{base}{p}")).collect(),
+            ..Group::default()
         };
         let groups = [
             g("nec", &["~nec"], &["notes/today/code"], &[]),
@@ -3877,7 +4747,7 @@ mod tests {
         // text-path grant too
         let base = "/apps/x/lattice";
         let page = format!("{base}/page/a/b");
-        let g = Group { name: "nec".into(), ships: vec!["~nec".into()], peek: vec![page.clone()], make: vec![page.clone()] };
+        let g = Group { name: "nec".into(), ships: vec!["~nec".into()], peek: vec![page.clone()], make: vec![page.clone()], ..Group::default() };
         assert_eq!(g.level(base, "a/b"), Level::Edit);
         let gone = g.with_level(base, "a/b", Level::None);
         assert!(gone.peek.is_empty() && gone.make.is_empty(), "unsharing takes the ship's own form out");
@@ -3888,9 +4758,36 @@ mod tests {
     }
 
     #[test]
+    fn a_page_at_a_shared_folders_own_path_is_granted_by_its_text_path_and_the_index_line_goes_back() {
+        // the ship lists a folder shared whole as `<folder>` and `<folder>/dir-index`, and a save that
+        // leaves the first out and keeps the second unshares the folder. The page at the folder's own
+        // path is granted by `<folder>/code` only
+        let base = "/apps/x/lattice";
+        let (folder, index, code) = (format!("{base}/page/trip"), format!("{base}/page/trip/dir-index"), format!("{base}/page/trip/code"));
+        let g = Group { name: "nec".into(), ships: vec!["~nec".into()], peek: vec![folder.clone(), index.clone()], make: vec![], ..Group::default() };
+        assert_eq!(g.level(base, "trip"), Level::None, "the folder's line is not the page's grant");
+        let read = g.with_level(base, "trip", Level::Read);
+        assert_eq!(read.peek, vec![folder.clone(), index.clone(), code.clone()]);
+        assert_eq!(read.level(base, "trip"), Level::Read);
+        let edit = read.with_level(base, "trip", Level::Edit);
+        assert_eq!((edit.peek.clone(), edit.make.clone()), (vec![folder.clone(), index.clone(), code.clone()], vec![code.clone()]));
+        // toggled off: the folder's line and its index line are as the ship gave them
+        assert_eq!(edit.with_level(base, "trip", Level::None), g);
+        assert_eq!(g.with_level(base, "trip", Level::None), g);
+        // a page under the folder, and another folder's page, leave both lines alone too
+        assert_eq!(g.with_level(base, "trip/day", Level::Read).peek, vec![folder.clone(), index.clone(), format!("{base}/page/trip/day")]);
+        assert_eq!(g.with_level(base, "trip/day", Level::Read).with_level(base, "trip/day", Level::None), g);
+        // a group that does not hold the folder takes the page as the page's path, as before
+        let other = Group { name: "bud".into(), ships: vec![], peek: vec![], make: vec![], ..Group::default() };
+        assert_eq!(other.with_level(base, "trip", Level::Read).peek, vec![folder.clone()]);
+        // index lines are not counted as paths the group reads
+        assert_eq!(Group::shown(&g.peek), 1);
+    }
+
+    #[test]
     fn a_groups_grant_on_a_page_is_set_without_touching_its_others() {
         let base = "/apps/x/lattice";
-        let g = Group { name: "team".into(), ships: vec!["~nec".into()], peek: vec![format!("{base}/page/other/code"), format!("{base}/page/dir")], make: vec![] };
+        let g = Group { name: "team".into(), ships: vec!["~nec".into()], peek: vec![format!("{base}/page/other/code"), format!("{base}/page/dir")], make: vec![], ..Group::default() };
         assert_eq!(g.level(base, "a/b"), Level::None);
         let read = g.with_level(base, "a/b", Level::Read);
         assert_eq!((read.level(base, "a/b"), read.peek.len(), read.make.len()), (Level::Read, 3, 0));
@@ -4265,8 +5162,8 @@ mod tests {
         assert!(age < 60 && d.since.is_empty());
         assert_eq!((d.nodes.len(), d.nodes[0].dname.as_str(), d.nodes[1].rev, d.nodes[1].body.as_deref()), (2, "Notes", 7, Some("# A\n\ntext \u{e9}\n")));
         // each ship's address has its own file
-        assert_ne!(kept_path("http://ship.example:8080"), kept_path("http://other.example"));
-        assert!(kept_path("http://ship.example:8080").unwrap().ends_with("lattice-rune/kept-http---ship-example-8080.json"));
+        assert_ne!(kept_path("http://ship.example:8080", "~zod"), kept_path("http://other.example", "~zod"));
+        assert!(kept_path("http://ship.example:8080", "~zod").unwrap().ends_with("lattice-rune/kept-~zod+http%3A%2F%2Fship.example%3A8080.json"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -4301,7 +5198,7 @@ mod tests {
         std::fs::write(&file, "not json").unwrap();
         assert!(queue_at(&file).is_empty());
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
-        assert!(queue_path("http://ship.example:8080").unwrap().ends_with("lattice-rune/waiting-http---ship-example-8080.json"));
+        assert!(queue_path("http://ship.example:8080", "~zod").unwrap().ends_with("lattice-rune/waiting-~zod+http%3A%2F%2Fship.example%3A8080.json"));
     }
 
     #[test]
@@ -4404,7 +5301,7 @@ mod tests {
         // a move with a name to show
         let shown = ops_over(vec![node("x", true)], &[QueuedOp::Move { from: "x".into(), to: "my-page".into(), dname: "My Page".into(), dnames: String::new() }]);
         assert_eq!((shown[0].path.as_str(), shown[0].dname.as_str()), ("my-page", "My Page"));
-        assert!(ops_path("http://ship.example:8080").unwrap().ends_with("lattice-rune/ops-http---ship-example-8080.json"));
+        assert!(ops_path("http://ship.example:8080", "~zod").unwrap().ends_with("lattice-rune/ops-~zod+http%3A%2F%2Fship.example%3A8080.json"));
     }
 
     /// Deletes and moves that waited, sent to a ship in order, and a save carried by a move.
@@ -5279,5 +6176,195 @@ mod tests {
         let c = Conn::login(&url, &std::env::var("LATTICE_CODE").unwrap()).unwrap();
         assert!(c.ship().starts_with('~') && c.tree().is_ok(), "the session opens the ship");
         assert!(Conn::login(&url, "ridlur-figbud-capmut-bidrup").is_err(), "a wrong code is refused");
+    }
+
+    #[test]
+    fn sse_events_handles_crlf_and_multiline_data() {
+        let mut buf = String::from("event: old /rev\r\ndata: 41\r\n\r\nevent: here\r\ndata: line1\r\ndata: line2\r\n\r\nevent: upd /rev\r\ndata: 42\r\n\r");
+        assert_eq!(
+            sse_events(&mut buf),
+            vec![
+                ("old /rev".to_owned(), "41".to_owned()),
+                ("here".to_owned(), "line1\nline2".to_owned()),
+            ]
+        );
+        // The trailing `\r` from a split `\r\n` delimiter is preserved until `\n` arrives.
+        buf.push('\n');
+        assert_eq!(sse_events(&mut buf), vec![("upd /rev".to_owned(), "42".to_owned())]);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn authenticated_routes_reject_307_redirects_and_sse_detects_lapsed_login_redirect() {
+        let (url, log) = serve(|r| {
+            if r.path == "/final" {
+                ok("public-ok")
+            } else if r.path == "/public-redir" {
+                answer("307 Temporary Redirect", "location: /final\r\n", b"")
+            } else {
+                answer("307 Temporary Redirect", "location: /~/login?redirect=/apps/lattice\r\n", b"")
+            }
+        });
+        let c = conn(&url, "~zod");
+
+        // SSE rejects 307 and `lapsed` recognizes the /~/login target so the listener stops.
+        let sse_err = c.beacon_stream("/base", |_| true).unwrap_err();
+        assert!(sse_err.starts_with("307"), "{sse_err}");
+        assert!(lapsed(&sse_err), "307 to /~/login must be detected as lapsed: {sse_err}");
+
+        // key_mint rejects 307 without following.
+        let mint_err = c.key_mint(&serde_json::json!({"name": "a"})).unwrap_err();
+        assert!(mint_err.starts_with("307"), "{mint_err}");
+
+        // Authenticated fetch_bytes rejects 307 without following or leaking cookie.
+        let auth_err = fetch_bytes(&format!("{url}/public-redir"), Some(&c.cookie)).unwrap_err();
+        assert_eq!(auth_err, "307");
+
+        // channel_answer does not follow redirects.
+        c.channel_answer(&format!("{url}/public-redir"));
+        assert!(!log.lock().unwrap().iter().any(|r| r.path == "/final"), "authenticated requests must not follow redirects");
+
+        // Unauthenticated fetch_bytes still follows public redirects.
+        let pub_bytes = fetch_bytes(&format!("{url}/public-redir"), None).unwrap();
+        assert_eq!(pub_bytes, b"public-ok");
+    }
+
+    #[test]
+    fn bg_sent_is_keyed_by_url_and_ship_and_skipped_on_signout_flush() {
+        let _home = Home::new("bg-sent-keyed");
+        let (url, _) = serve(|_| ok(r#"{"rev":1}"#));
+        let zod = conn(&url, "~zod");
+        let bus = conn(&url, "~bus");
+        let _ = bg_sent(&url, "~zod", true);
+        let _ = bg_sent(&url, "~bus", true);
+        bg_note_for_test(&url, "~zod", BgSent::Op(QueuedOp::Del("a".into())));
+        bg_note_for_test(&url, "~bus", BgSent::Op(QueuedOp::Del("b".into())));
+        assert_eq!(bg_sent(&url, "~zod", true), vec![BgSent::Op(QueuedOp::Del("a".into()))]);
+        assert_eq!(bg_sent(&url, "~bus", true), vec![BgSent::Op(QueuedOp::Del("b".into()))]);
+
+        // Sign-out flush (`note_bg = false`) sends queued items without polluting `BG_SENT`.
+        zod.store_ops(&[QueuedOp::Del("gone".into())]).unwrap();
+        zod.send_waiting_inner(&std::sync::atomic::AtomicBool::new(false), false);
+        assert!(zod.ops().is_empty());
+        assert!(bg_sent(&url, "~zod", false).is_empty());
+        let _ = bus;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn change_waiting_rolls_back_ops_when_queue_write_fails() {
+        let _home = Home::new("change-waiting-rollback");
+        let c = conn("https://rollback.test", "~zod");
+        let qp = queue_path(&c.url, c.ship()).unwrap();
+        // Make `qp` a non-empty directory so `rename(&tmp, &qp)` fails after `store_ops` succeeds.
+        std::fs::create_dir_all(&qp).unwrap();
+        std::fs::write(qp.join("blocker"), b"x").unwrap();
+        let res = c.change_waiting(|ops, q| {
+            ops.push(QueuedOp::Del("a".into()));
+            q.insert("b".into(), Queued { kind: "md".into(), body: "x".into(), ..Queued::default() });
+        });
+        assert!(res.is_err(), "queue write into a directory must fail");
+        assert!(c.ops().is_empty(), "ops must be rolled back when store_queue fails");
+        let _ = std::fs::remove_dir_all(&qp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn adopt_late_rolls_back_queue_when_ops_write_fails() {
+        let home = Home::new("adopt-late-rollback");
+        let dir = home.0.clone();
+        let url = "https://adopt-rb.test";
+        let ship = "~zod";
+        let mut all = crate::accounts::Accounts::default();
+        all.put(url, "urbauth-~zod=0v1", 10);
+        crate::accounts::store_at(&dir, &all).unwrap();
+        // Establish the named-by-ship marker first, then write late legacy files newer than it.
+        let _ = adopt_late();
+        std::thread::sleep(Duration::from_millis(20));
+        let old = old_key(url);
+        let (oq, oo) = (dir.join(format!("waiting-{old}.json")), dir.join(format!("ops-{old}.json")));
+        let mut q = Queue::new();
+        q.insert("note".into(), Queued { kind: "md".into(), body: "late".into(), ..Queued::default() });
+        write_private(&oq, &serde_json::to_vec(&q).unwrap()).unwrap();
+        write_private(&oo, &serde_json::to_vec(&vec![QueuedOp::Del("gone".into())]).unwrap()).unwrap();
+        // Make target `op` a non-empty directory so writing ops fails after writing `qp`.
+        let op = ops_path(url, ship).unwrap();
+        let qp = queue_path(url, ship).unwrap();
+        std::fs::create_dir_all(&op).unwrap();
+        std::fs::write(op.join("blocker"), b"x").unwrap();
+        let left = adopt_late();
+        assert!(!left.is_empty(), "legacy files stay reported when adoption fails");
+        assert!(!qp.exists(), "qp must be rolled back when writing op fails");
+        assert!(oq.exists() && oo.exists(), "legacy files must not be deleted on partial failure");
+        // Removing the blocker allows a subsequent adopt_late call to succeed completely.
+        std::fs::remove_dir_all(&op).unwrap();
+        let left_after = adopt_late();
+        assert!(left_after.is_empty(), "after clearing blocker, adoption succeeds: {left_after:?}");
+        let c = conn(url, ship);
+        assert_eq!(c.queue().get("note").map(|x| x.body.as_str()), Some("late"));
+        assert_eq!(c.ops(), vec![QueuedOp::Del("gone".into())]);
+    }
+
+    #[test]
+    fn shared_agents_reuse_instances_and_enforce_redirects_zero() {
+        assert!(std::ptr::eq(ship_agent(), ship_agent()));
+        assert!(std::ptr::eq(public_agent(), public_agent()));
+        assert!(!std::ptr::eq(ship_agent(), public_agent()));
+
+        // Verify HTTP keep-alive connection reuse on the shared ship_agent across two calls.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let accepts_srv = accepts.clone();
+        let handle = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            accepts_srv.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            for _ in 0..2 {
+                let mut buf = [0u8; 4096];
+                let mut got = Vec::new();
+                loop {
+                    let n = stream.read(&mut buf).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&buf[..n]);
+                    if got.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let body = br#"{"base":"/b"}"#;
+                let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n", body.len());
+                stream.write_all(resp.as_bytes()).unwrap();
+                stream.write_all(body).unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        let c = conn(&format!("http://{addr}"), "~zod");
+        assert_eq!(c.lat_base().unwrap(), "/b");
+        assert_eq!(c.lat_base().unwrap(), "/b");
+        handle.join().unwrap();
+        assert_eq!(accepts.load(std::sync::atomic::Ordering::SeqCst), 1, "ship_agent should reuse keep-alive TCP connection");
+
+        // Verify ship_agent and sse_agent enforce redirects(0), while public_agent follows redirects.
+        let (url, log) = serve(|r| {
+            if r.path == "/bounce" {
+                answer("302 Found", "location: /landed\r\n", b"")
+            } else {
+                answer("200 OK", "", b"landed-body")
+            }
+        });
+        let c = conn(&url, "~zod");
+        let call_err = c.call_url(10, "GET", &format!("{url}/bounce"), None).unwrap_err();
+        assert!(call_err.starts_with("302"), "{call_err}");
+        let fetch_err = fetch_bytes(&format!("{url}/bounce"), Some(&c.cookie)).unwrap_err();
+        assert_eq!(fetch_err, "302");
+        let sse_err = c.sse(&format!("{url}/bounce"), 5, |_, _| false).unwrap_err();
+        assert!(sse_err.starts_with("302"), "{sse_err}");
+        assert!(!log.lock().unwrap().iter().any(|r| r.path == "/landed"), "authenticated agents must never follow redirects");
+        let pub_body = fetch_bytes(&format!("{url}/bounce"), None).unwrap();
+        assert_eq!(pub_body, b"landed-body");
+        assert!(log.lock().unwrap().iter().any(|r| r.path == "/landed"), "public_agent follows redirects");
     }
 }

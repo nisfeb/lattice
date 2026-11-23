@@ -195,8 +195,7 @@ fn signed_name(comment: &str) -> Option<&str> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn check(endpoint: &str, flavor: &Flavor, anywhere: bool) -> Result<Option<Offer>, String> {
     use std::io::Read;
-    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build();
-    let res = agent.get(endpoint).call().map_err(|e| e.to_string())?;
+    let res = crate::api::public_agent().get(endpoint).timeout(std::time::Duration::from_secs(30)).call().map_err(|e| e.to_string())?;
     let mut text = String::new();
     res.into_reader().take(1 << 20).read_to_string(&mut text).map_err(|e| e.to_string())?;
     offer(&text, VERSION, flavor, &platform(), anywhere)
@@ -210,8 +209,9 @@ const LONGEST: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 #[cfg(not(target_arch = "wasm32"))]
 pub fn fetch(url: &str, signature: &str, pubkey: &str, named: Option<&str>, seen: &dyn Fn(u8)) -> Result<Vec<u8>, String> {
     use std::io::Read;
+    static DOWNLOAD_AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
     let began = std::time::Instant::now();
-    let agent = ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(30)).timeout_read(std::time::Duration::from_secs(60)).build();
+    let agent = DOWNLOAD_AGENT.get_or_init(|| ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(30)).timeout_read(std::time::Duration::from_secs(60)).build());
     let res = agent.get(url).call().map_err(|e| e.to_string())?;
     let total = res.header("content-length").and_then(|l| l.parse::<u64>().ok()).filter(|t| *t > 0);
     if total.is_some_and(|t| t > MOST) {

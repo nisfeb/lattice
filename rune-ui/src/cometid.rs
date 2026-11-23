@@ -272,14 +272,7 @@ pub fn install(dir: &Path, id: &Identity) -> Result<Option<PathBuf>, String> {
 
 /// Writes a file that only its owner may read, whole and on the disk before it is answered for.
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let put = || -> std::io::Result<()> {
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
-        f.write_all(bytes)?;
-        f.sync_all()
-    };
-    put().map_err(|e| format!("{}: {e}", path.display()))
+    crate::api::write_private(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn install_locked(dir: &Path, id: &Identity) -> Result<Option<PathBuf>, String> {

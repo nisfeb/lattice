@@ -88,6 +88,13 @@ const DEEP: usize = 64;
 
 /// The most cells a grid of values may hold: see `Engine::grid`.
 const GRID_MOST: usize = 200_000;
+/// The most cells one formula may read, with whatever it pulls in.
+const WALK_ONE: usize = 5_000_000;
+/// The most cells one change to a sheet may read, in all the formulas it reaches. The work is done where the
+/// typing is, so this is what keeps a small hostile page from holding the window. It is well above what the
+/// 5,000 rows the sheet shows can make of an ordinary sheet: a share of the total, a rank and a running total
+/// down every row read about 25 million cells each.
+const WALK_ALL: usize = 100_000_000;
 
 /// Spans along one column or one row, each with the formula that reads it, kept so that
 /// the spans over one place are found without looking at the rest.
@@ -300,6 +307,44 @@ pub fn to_str(v: &V) -> String {
     }
 }
 
+/// Whether two numbers are one number to Calc: the same, or apart by no more than what
+/// binary arithmetic leaves, about one part in 2^48 of their size. 0.1+0.2 is 0.3 so. A
+/// nought is only itself, and two whole numbers that differ are two numbers.
+pub fn approx_eq(a: f64, b: f64) -> bool {
+    const E48: f64 = 1.0 / (16_777_216.0 * 16_777_216.0);
+    if a == b {
+        return true;
+    }
+    let d = (a - b).abs();
+    if a == 0.0 || b == 0.0 || !d.is_finite() || (d >= 1.0 && d < 9_007_199_254_740_992.0 && a.fract() == 0.0 && b.fract() == 0.0) {
+        return false;
+    }
+    d < a.abs() * E48 && d < b.abs() * E48
+}
+
+/// A number as Calc's INT, ROUND and ROUNDDOWN see it: rounded to fifteen figures, so that what binary
+/// arithmetic leaves of 0.29*100 (28.999999999999996) is 29, and 5.99999999999999, which has fifteen figures
+/// of its own, is not 6. A positive number past 2^41 is left as it is.
+pub fn approx_value(x: f64) -> f64 {
+    if x == 0.0 || !x.is_finite() || x > 2_199_023_255_552.0 {
+        return x;
+    }
+    let v = x.abs();
+    // Calc keeps 999999999999.999 as it is, so a big number is read to three decimals at most
+    let scale = 10f64.powi((14 - v.log10().floor() as i32).max(3));
+    let scaled = v * scale;
+    if !scaled.is_finite() {
+        return x;
+    }
+    let back = (scaled + 0.5).floor() / scale;
+    if x < 0.0 { -back } else { back }
+}
+
+/// The whole number at or below a number, as Calc takes it: see `approx_value`.
+pub fn approx_floor(x: f64) -> f64 {
+    approx_value(x).floor()
+}
+
 /// Numbers sort before text, and text compares without case.
 pub fn compare(a: &V, b: &V) -> i32 {
     let fill = |v: &V, other: &V| match v {
@@ -311,6 +356,7 @@ pub fn compare(a: &V, b: &V) -> i32 {
     let (a, b) = (fill(&a, &b), fill(&b, &a));
     let sign = |o: std::cmp::Ordering| o as i32;
     match (&a, &b) {
+        (V::Num(x), V::Num(y)) if approx_eq(*x, *y) => 0,
         (V::Num(x), V::Num(y)) => x.partial_cmp(y).map_or(0, sign),
         (V::Str(x), V::Str(y)) => sign(x.to_lowercase().cmp(&y.to_lowercase())),
         (V::Num(_), _) => -1,
@@ -365,6 +411,13 @@ pub struct Engine<'a> {
     extents: HashMap<usize, (usize, usize)>,
     /// The cells walked for the formula being worked out: a hostile run of them is not walked to its end.
     steps: usize,
+    /// The cells walked in all since the engine was made, by every formula: one change to a sheet is not
+    /// let walk more than `WALK_ALL`, however many formulas it reaches. What is left is left stale.
+    walked: usize,
+    /// The most it may walk so: `WALK_ALL`, but where a test sets less.
+    walk_all: usize,
+    /// Whether a formula was left because the walk of a cell budget ran out: what it still holds is old.
+    ran_out: std::cell::Cell<bool>,
     /// Those worked out.
     done: Vec<Key>,
     depth: usize,
@@ -382,7 +435,7 @@ pub struct Engine<'a> {
 
 impl<'a> Engine<'a> {
     pub fn new(book: &'a Book, styles: &'a Styles) -> Engine<'a> {
-        let mut e = Engine { book, styles, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, done: Vec::new(), depth: 0, first: None, unsure: HashSet::new(), wide: Vec::new(), tainted: false };
+        let mut e = Engine { book, styles, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, walked: 0, walk_all: WALK_ALL, ran_out: Default::default(), done: Vec::new(), depth: 0, first: None, unsure: HashSet::new(), wide: Vec::new(), tainted: false };
         for (s, sh) in book.sheets.iter().enumerate() {
             let mut r = 0usize;
             for row in &sh.rows {
@@ -506,8 +559,11 @@ impl<'a> Engine<'a> {
 
     /// The value at a cell, worked out first when it is waiting to be.
     pub fn value(&mut self, at: Key) -> V {
-        // what is being worked out is being left: nothing more is begun
-        if self.first.is_some() {
+        // every cell read is counted, here where every reading comes through
+        self.steps = self.steps.saturating_add(1);
+        self.walked = self.walked.saturating_add(1);
+        // what is being worked out is being left, or has read all it may: nothing more is begun
+        if self.first.is_some() || self.over() {
             return V::Blank;
         }
         match self.pending.get(&at).copied() {
@@ -522,9 +578,26 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// Whether what is being worked out is being left for now, so a long walk may stop.
+    /// Whether what is being worked out is being left, for now or for good, so a long walk may stop.
     pub fn leaving(&self) -> bool {
-        self.first.is_some()
+        self.first.is_some() || self.over()
+    }
+
+    /// Whether the formula being worked out has read more cells than one may, or all the formulas of this change
+    /// more than they may together. It is then left stale, and so is every formula after it.
+    fn over(&self) -> bool {
+        let over = self.steps > WALK_ONE || self.walked > self.walk_all;
+        if over {
+            self.ran_out.set(true);
+        }
+        over
+    }
+
+    /// Counts work that reads no cell: an operator over a grid of values.
+    fn count(&mut self, n: usize) -> Result<(), Unsupported> {
+        self.steps = self.steps.saturating_add(n);
+        self.walked = self.walked.saturating_add(n);
+        if self.over() { Err(Unsupported) } else { Ok(()) }
     }
 
     /// The day the document counts its dates from, in days since 1970.
@@ -591,8 +664,7 @@ impl<'a> Engine<'a> {
                     }
                     for cc in left.max(g.c1)..=right.min(g.c2) {
                         // a million rows of sixteen thousand cells are not walked: the formula keeps what it had
-                        self.steps += 1;
-                        if self.steps > 5_000_000 || self.first.is_some() {
+                        if self.leaving() {
                             return Err(Unsupported);
                         }
                         let v = self.value((g.s, rr, cc));
@@ -635,8 +707,22 @@ impl<'a> Engine<'a> {
             Node::Paren(x) => self.ev(x, ctx)?,
             Node::Un(op, x) => {
                 let v = self.ev(x, ctx)?;
-                match to_num(&self.one(v, ctx)) {
-                    V::Num(v) => V::Num(if *op == '-' { -v } else { v }),
+                let v = self.one(v, ctx);
+                // a plus before a value leaves text and numbers as they are: `=+B1` is what B1 holds. A
+                // logical read from a cell is its number, and one that is the result of an expression or a
+                // function stays a logical
+                if *op != '-' {
+                    let mut inner = &**x;
+                    while let Node::Paren(i) = inner {
+                        inner = i;
+                    }
+                    return Ok(match v {
+                        V::Bool(b) if matches!(inner, Node::Ref(_)) => V::Num(f64::from(b)),
+                        v => v,
+                    });
+                }
+                match to_num(&v) {
+                    V::Num(v) => V::Num(-v),
                     e => e,
                 }
             }
@@ -693,6 +779,9 @@ impl<'a> Engine<'a> {
                     let mut v = Vec::with_capacity(g.rows() * g.cols());
                     for r in g.r1..=g.r2 {
                         for c in g.c1..=g.c2 {
+                            if self.leaving() {
+                                return Err(Unsupported);
+                            }
                             v.push(self.value((g.s, r, c)));
                         }
                     }
@@ -730,6 +819,7 @@ impl<'a> Engine<'a> {
                     _ => return Err(Unsupported),
                 };
                 let at = |g: &Grid, i: usize| g.v[if g.v.len() == 1 { 0 } else { i }].clone();
+                self.count(rows * cols)?;
                 Grid { rows, cols, v: (0..rows * cols).map(|i| bin(op, at(&l, i), at(&r, i))).collect() }
             }
             // a function over ranges is one value only when it takes its ranges whole
@@ -805,10 +895,13 @@ impl<'a> Engine<'a> {
         self.busy.insert(at);
         self.depth += 1;
         let outer = std::mem::replace(&mut self.tainted, false);
+        // once the change has read all it may, nothing more is worked out: this formula keeps what it had
         let got = match self.formulas[i].ast.clone() {
-            Some(ast) => self.evaluate(&ast, at),
-            None => Err(Unsupported),
+            Some(ast) if self.walked <= self.walk_all => self.evaluate(&ast, at),
+            _ => Err(Unsupported),
         };
+        // and one that ran out part way came to nothing that can be kept
+        let got = if self.over() { Err(Unsupported) } else { got };
         self.depth -= 1;
         self.busy.remove(&at);
         let read_unsure = std::mem::replace(&mut self.tainted, outer);
@@ -1220,7 +1313,23 @@ pub fn enter_knowing(src: &str, s: usize, r: usize, c: usize, typed: &str, stale
             }
         }
     }
+    let results = if eng.ran_out.get() { with_blanks(&book, results, &stale) } else { results };
     Ok(Entered { body: write(body, results)?, stale, done })
+}
+
+/// The results of a change, and with them a blank for each formula that was left stale for want of a budget of
+/// cells to read: it still says what it worked out to before the change, and saved with that value it would read
+/// as current. With none, LibreOffice works it out when the page is opened, as it does for a formula typed in
+/// here that cannot be worked out. A formula left stale for a function not known here keeps its value, as it
+/// does in the web client, whose pages this one is held to.
+fn with_blanks(book: &Book, mut results: Vec<(Key, Put)>, stale: &[Key]) -> Vec<(Key, Put)> {
+    let done: HashSet<Key> = results.iter().map(|(k, _)| *k).collect();
+    for &k in stale.iter().filter(|k| !done.contains(k)) {
+        if let Some(cell) = book.at(k.0, k.1, k.2).filter(|c| c.f.is_some() && !c.array && !c.covered) {
+            results.push((k, Put { f: cell.f.clone(), vt: String::new(), v: Val::Blank, text: String::new(), err: false, st: None }));
+        }
+    }
+    results
 }
 
 /// The page with each sheet's results written, in one pass over the page for each sheet.
@@ -1400,15 +1509,30 @@ mod tests {
         assert_eq!(n, 59);
     }
 
+    /// The formulas of the web client's corpora that LibreOffice answers otherwise, with its answer, which
+    /// is the one held here: a year of two figures under 30 is in the 2000s, the hour and the minute of a
+    /// time are those it is in, a criterion of "TRUE" finds the truth and the text, a number and a step
+    /// of unlike signs are refused, and a step of nought gives nought.
+    const LIBREOFFICE: [(&str, &str); 19] = [
+        ("DATE(0,1,1)+0", "36526"), ("HOUR(0.999999)", "23"), ("MINUTE(0.999999)", "59"), ("HOUR(B2)", "23"), ("MINUTE(B2)", "59"), ("COUNTIF(A1:E4,\"TRUE\")", "2"), ("CEILING(-2.1,0.5)", "Err:502"), ("FLOOR(2,0)", "0"),
+        // a capital after a figure, nothing found when there is nothing to look for, `*` for any run in SEARCH, and no
+        // occurrence, start or count below what there can be
+        ("PROPER(\"hello wORLD-foo 2nd o'brien\")", "Hello World-Foo 2Nd O'Brien"), ("FIND(\"\",\"hello\")", "#VALUE!"), ("FIND(\"\",\"hello\",9)", "#VALUE!"), ("SEARCH(\"*\",\"a*b\")", "1"),
+        ("SUBSTITUTE(\"a-b-c\",\"-\",\"+\",0)", "Err:502"), ("SUBSTITUTE(\"a-b-c\",\"-\",\"+\",1.5)", "a+b-c"), ("SUBSTITUTE(\"abcd\",\"bc\",\"X\",0)", "Err:502"), ("SUBSTITUTE(\"a-b\",\"-\",\"+\",-1)", "Err:502"),
+        ("REPLACE(\"hello\",0,1,\"X\")", "Err:502"), ("REPLACE(\"hello\",2,-1,\"X\")", "Err:502"), ("REPLACE(\"hello\",2.5,1.5,\"X\")", "hXllo"),
+    ];
+
     /// Checks formulas against the web client's answers. Each line of a corpus is a formula and what
     /// the web client's engine shows for it in G8 of the sheet, from ui-src/sheet/book.js run under
-    /// node. STALE is a formula it does not work out either.
+    /// node. STALE is a formula it does not work out either. Where LibreOffice answers otherwise
+    /// (`LIBREOFFICE`), its answer is the one checked.
     fn corpus(sheet: &[&[&str]], lines: &str, count: usize) {
         let src = doc(sheet);
         let (mut n, mut wrong) = (0, Vec::new());
         for line in lines.lines() {
             let (f, want) = line.split_once('\t').unwrap();
             let (f, want): (String, String) = (serde_json::from_str(f).unwrap(), serde_json::from_str(want).unwrap());
+            let want = LIBREOFFICE.iter().find(|(g, _)| *g == f).map_or(want, |(_, lo)| (*lo).to_owned());
             let got = enter(&src, 0, 7, 6, &format!("={f}")).unwrap();
             let shown = if got.stale.contains(&(0, 7, 6)) { "STALE".to_owned() } else { grid(&got.body).get(7).and_then(|r| r.get(6).cloned()).unwrap_or_default() };
             if shown != want {
@@ -1442,7 +1566,9 @@ mod tests {
     #[test]
     fn numbers_are_shown_by_their_cells_format_as_on_the_web() {
         // a sheet with eleven number formats, typed into. The expected grid is what the web client's
-        // Book gives for the same sheet and the same typing, from node: each cell's text and type
+        // Book gives for the same sheet and the same typing, from node: each cell's text and type.
+        // But for money that is owed, in a format with no form of its own for it: the web client writes
+        // $-1,234.50, and here it is -$1,234.50, as LibreOffice writes it
         let mut body = include_str!("formats_fixture.fods").to_owned();
         for line in include_str!("formats_edits.txt").lines() {
             let p: Vec<&str> = line.splitn(4, ',').collect();
@@ -1780,11 +1906,12 @@ mod tests {
         for typed in ["Mon, 21 Nov 2026", "Sun, 24 Nov 2026"] {
             assert_eq!(cell(&enter(FORMATTED, 0, 0, 4, typed).unwrap().body, 4), ("string".to_owned(), typed.to_owned()), "{typed}");
         }
-        // a negative number is typed back as the format writes it, the sign at the number, or before the symbol
+        // a negative number is read with its sign before the symbol, as the format writes it, or at the number,
+        // and is written the first way, as LibreOffice writes it
         for typed in ["$-5.00", "-$5.00", "$-1,234.50"] {
             let got = enter(FORMATTED, 0, 0, 5, typed).unwrap().body;
             let (vt, text) = cell(&got, 5);
-            assert_eq!((vt.as_str(), text.starts_with("$-")), ("currency", true), "{typed}: {text}");
+            assert_eq!((vt.as_str(), text.starts_with("-$")), ("currency", true), "{typed}: {text}");
         }
         assert!(enter(FORMATTED, 0, 0, 5, "$-1,234.50").unwrap().body.contains("office:currency=\"USD\" office:value=\"-1234.5\""));
         assert_eq!(cell(&enter(FORMATTED, 0, 0, 5, "-$-5.00").unwrap().body, 5).0, "string");
@@ -1794,6 +1921,31 @@ mod tests {
         for typed in ["($6.00)", "-($6.00)"] {
             assert_eq!(cell(&enter(&owed, 0, 0, 5, typed).unwrap().body, 5), ("string".to_owned(), typed.to_owned()));
         }
+    }
+
+    #[test]
+    fn a_number_typed_into_a_cell_whose_format_has_a_form_for_negatives_shows_as_libreoffice_shows_it() {
+        // a file LibreOffice wrote, one number format to a column. Its toolbar's money format, `[$$-409]#,##0.00;[RED]-[$$-409]#,##0.00`,
+        // is written as a format for the negative numbers that hands the others on to a second format
+        let src = include_str!("lo_formats.fods");
+        let typed = |column: usize, text: &str| {
+            let b = sheet::book(&enter(src, 0, 1, column, text).unwrap().body).unwrap();
+            let c = b.at(0, 1, column).cloned().unwrap();
+            (c.vt, c.text)
+        };
+        let money = |text: &str| ("currency".to_owned(), text.to_owned());
+        let number = |text: &str| ("float".to_owned(), text.to_owned());
+        // money with the negative in red, and money with it in brackets
+        assert_eq!((typed(0, "7"), typed(0, "-7"), typed(0, "0")), (money("$7.00"), money("-$7.00"), money("$0.00")));
+        assert_eq!((typed(1, "7"), typed(1, "-7"), typed(1, "1234.5")), (money("$7.00"), money("($7.00)"), money("$1,234.50")));
+        // and what a formula there comes to
+        assert_eq!((typed(0, "=3+4").1, typed(0, "=3-10").1, typed(1, "=3-10").1, typed(1, "=3+4").1), ("$7.00".to_owned(), "-$7.00".to_owned(), "($7.00)".to_owned(), "$7.00".to_owned()));
+        // a number with the negative in red, one with it in brackets, and one with a form each for more, less and nought
+        assert_eq!((typed(16, "7"), typed(16, "-7")), (number("7.00"), number("-7.00")));
+        assert_eq!((typed(17, "7"), typed(17, "-7"), typed(17, "-1234.567")), (number("7"), number("(7)"), number("(1,235)")));
+        assert_eq!((typed(18, "7"), typed(18, "-7"), typed(18, "0")), (number("7.0 up"), number("7.0 down"), number("zero")));
+        // money with no form of its own for what is owed: the sign goes before the symbol
+        assert_eq!((typed(2, "7"), typed(2, "-7")), (money("$7.00"), money("-$7.00")));
     }
 
     /// What a formula typed into A3 of a small sheet shows.
@@ -1917,6 +2069,145 @@ mod tests {
     }
 
     #[test]
+    fn nothing_is_put_in_taken_out_or_typed_through_the_cells_an_array_formula_spreads_over() {
+        let array = |src: String, from: &str, rows: usize, cols: usize| {
+            let out = src.replacen(&format!("table:formula=\"of:={from}"), &format!("table:number-matrix-columns-spanned=\"{cols}\" table:number-matrix-rows-spanned=\"{rows}\" table:formula=\"of:={from}"), 1);
+            assert_ne!(out, src);
+            out
+        };
+        const WHY: &str = "that would cut through an array formula";
+        // B2 is an array formula over B2:B3, with a cell above it, below it and beside it
+        let tall = array(doc(&[&["0", "top"], &["1", "=A2:A3*3|3", "x"], &["2", "6", "y"], &["5", "keep", "z"]]), "[.A2:.A3]", 2, 1);
+        // a row put in between its two cells, or a row of its two taken out and not the other
+        for (at, n) in [(2, 1), (2, 3), (2, -1), (1, -1), (2, -2), (0, -2)] {
+            assert_eq!(shift(&tall, 0, true, at, n).map(|e| e.body).unwrap_err(), WHY, "rows at {at}: {n}");
+        }
+        // above it, below it, and with the whole of it: those are no cut
+        for (at, n) in [(0, 1), (1, 1), (3, 1), (4, 2), (0, -1), (3, -1), (1, -2), (1, -3), (0, -4)] {
+            assert!(shift(&tall, 0, true, at, n).is_ok(), "rows at {at}: {n}");
+        }
+        // columns do not cut one that is a single column wide, wherever they go
+        for (at, n) in [(0, 1), (1, 1), (2, 1), (1, -1), (0, -2), (2, -1)] {
+            assert!(shift(&tall, 0, false, at, n).is_ok(), "columns at {at}: {n}");
+        }
+        // what is below it moves and it stays whole
+        let down = shift(&tall, 0, true, 1, 1).unwrap().body;
+        assert_eq!(grid(&down), [vec!["0", "top"], vec![], vec!["1", "3", "x"], vec!["2", "6", "y"], vec!["5", "keep", "z"]]);
+        assert_eq!(sheet::book(&down).unwrap().at(0, 2, 1).map(|c| (c.array, c.spill)), Some((true, (2, 1))));
+        // B2 over B2:C2, the same with columns
+        let wide = array(doc(&[&["0", "1", "2", "5"], &["top", "=B1:C1*3|3", "6", "keep"], &["", "x", "y", "z"]]), "[.B1:.C1]", 1, 2);
+        for (at, n) in [(2, 1), (2, 3), (2, -1), (1, -1), (2, -2), (0, -2)] {
+            assert_eq!(shift(&wide, 0, false, at, n).map(|e| e.body).unwrap_err(), WHY, "columns at {at}: {n}");
+        }
+        for (at, n) in [(0, 1), (1, 1), (3, 1), (0, -1), (3, -1), (1, -2), (1, -3)] {
+            assert!(shift(&wide, 0, false, at, n).is_ok(), "columns at {at}: {n}");
+        }
+        for (at, n) in [(0, 1), (1, 1), (2, 1), (1, -1), (0, -2)] {
+            assert!(shift(&wide, 0, true, at, n).is_ok(), "rows at {at}: {n}");
+        }
+        // an array on another sheet is not in the way, and a merged cell still says it is one
+        let merged = tall.replace("table:number-matrix-columns-spanned=\"1\" table:number-matrix-rows-spanned=\"2\"", "table:number-columns-spanned=\"1\" table:number-rows-spanned=\"2\"");
+        assert_eq!(shift(&merged, 0, true, 2, 1).map(|e| e.body).unwrap_err(), "that would cut through a merged cell");
+        // typing into a cell it spreads over is refused, a value or a formula, and the page is as it was
+        for typed in ["99", "text", "=A1+1", ""] {
+            assert_eq!(enter(&tall, 0, 2, 1, typed).map(|e| e.body).unwrap_err(), "that cell is part of an array formula", "{typed:?}");
+            assert_eq!(enter(&wide, 0, 1, 2, typed).map(|e| e.body).unwrap_err(), "that cell is part of an array formula", "{typed:?}");
+        }
+        assert_eq!(sheet::set_cell(&tall, 0, 2, 1, "99").unwrap_err(), "that cell is part of an array formula");
+        // the cells round it, and its own first cell, are typed into as any cell is
+        for (r, c) in [(0, 1), (3, 1), (1, 0), (2, 0), (1, 2), (2, 2), (1, 1), (4, 1), (2, 5)] {
+            assert!(enter(&tall, 0, r, c, "7").is_ok(), "row {r} column {c}");
+        }
+        // typed over, the array spreads no more, and the cell that was under it can be typed into
+        let over = enter(&tall, 0, 1, 1, "7").unwrap().body;
+        assert_eq!(grid(&enter(&over, 0, 2, 1, "99").unwrap().body)[2][1], "99");
+    }
+
+    /// A page of a few kilobytes that says it is full: one row said 1,048,576 times, of one number said 16,384 times, and a second sheet of `n` cells with one formula each.
+    fn full(n: usize, formula: &str) -> String {
+        let cell = format!("<table:table-cell table:formula=\"of:={}\" office:value-type=\"float\" office:value=\"0\" calcext:value-type=\"float\"><text:p>0</text:p></table:table-cell>", formula.replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;"));
+        format!("<?xml version=\"1.0\"?>\n<office:document xmlns:calcext=\"urn:c\">\n <office:body>\n  <office:spreadsheet>\n   <table:table table:name=\"One\"><table:table-row table:number-rows-repeated=\"1048576\"><table:table-cell table:number-columns-repeated=\"16384\" office:value-type=\"float\" office:value=\"1\" calcext:value-type=\"float\"><text:p>1</text:p></table:table-cell></table:table-row></table:table>\n   <table:table table:name=\"Two\"><table:table-row>{}</table:table-row></table:table>\n  </office:spreadsheet>\n </office:body>\n</office:document>\n", cell.repeat(n))
+    }
+
+    #[test]
+    fn one_change_walks_no_more_than_a_set_number_of_cells_however_many_formulas_it_reaches() {
+        // each of these reads far more cells than a formula may walk. The work is counted in cells read, by every
+        // formula together, and what the count does not reach is left stale and keeps what it had
+        for formula in [
+            "SUM([$One.A1:.XFD1048576])",
+            "COUNTIF([$One.A1:.XFD1048576];\">0\")",
+            "SUMIFS([$One.A1:.A1048576];[$One.B1:.B1048576];\">0\";[$One.C1:.C1048576];1)",
+            "SUMPRODUCT([$One.A1:.A200000]*[$One.A1:.A200000]*[$One.A1:.A200000]*[$One.A1:.A200000]*[$One.A1:.A200000]*[$One.A1:.A200000]*[$One.A1:.A200000]*[$One.A1:.A200000])",
+            "SUMPRODUCT([$One.A1:.XFD1048576];[$One.A1:.XFD1048576])",
+            "VLOOKUP(-1;[$One.A1:.B1048576];2;0)",
+            "MATCH(-1;[$One.A1:.A1048576];0)",
+            "TEXTJOIN(\"\";1;[$One.A1:.XFD1048576])",
+            "AVERAGE([$One.A1:.XFD1048576])+COUNT([$One.A1:.XFD1048576])",
+        ] {
+            for (n, most) in [(20, 300_000), (80, 300_000), (320, 300_000), (80, 1), (80, 0)] {
+                let page = sheet::put_cell(&full(n, formula), 0, 0, 0, &Typed::Number(2.0).into(), Care::Typed).unwrap();
+                let book = sheet::book(&page).unwrap();
+                let styles = Styles::read(&page, book.null_date);
+                let mut eng = Engine::new(&book, &styles);
+                eng.walk_all = most;
+                assert_eq!(eng.formulas.len(), n, "{formula}");
+                eng.recalc(&[(0, 0, 0)], None);
+                // every formula is either worked out or said to be stale, and no more is read than the bound, with one cell
+                // more for the reading that passed it and one for each formula left
+                assert_eq!(eng.done.len() + eng.stale.len(), n, "{formula}");
+                assert!(eng.walked <= most + 1 + n, "{n} of {formula} with {most} allowed: {} cells read", eng.walked);
+                // and a formula that was not worked out keeps what it had, and is not written
+                assert!(eng.stale.len() >= n - 1 || most > 1, "{formula}");
+            }
+        }
+        // with the bound as it is set: a formula may read five million cells, and a change a hundred million (the
+        // formulas that go past their own five are what is left stale)
+        let page = sheet::put_cell(&full(3, "SUM([$One.A1:.XFD1048576])"), 0, 0, 0, &Typed::Number(2.0).into(), Care::Typed).unwrap();
+        let book = sheet::book(&page).unwrap();
+        let styles = Styles::read(&page, book.null_date);
+        let mut eng = Engine::new(&book, &styles);
+        let changed = eng.recalc(&[(0, 0, 0)], None);
+        assert!(eng.walked <= WALK_ALL + 21 && eng.walked > WALK_ONE, "{} cells read", eng.walked);
+        assert_eq!((eng.stale.len(), eng.done.len(), changed.len()), (3, 0, 0));
+        // a sheet of many light formulas is worked out whole
+        let light = doc(&[&["1"; 1], &["=A1+1|2"; 200]]);
+        let book = sheet::book(&light).unwrap();
+        let styles = Styles::read(&light, book.null_date);
+        let mut eng = Engine::new(&book, &styles);
+        eng.recalc(&[(0, 0, 0)], None);
+        assert_eq!((eng.done.len(), eng.stale.len()), (200, 0));
+    }
+
+    #[test]
+    fn a_formula_left_for_want_of_cells_to_read_is_not_saved_with_the_value_it_had() {
+        // two formulas that each read more than a formula may: they keep nothing that passes for what they work out to
+        let got = enter(&full(2, "SUM([$One.A1:.XFD1048576])"), 0, 0, 0, "2").unwrap();
+        assert_eq!((got.stale.len(), got.done.len()), (2, 0));
+        let book = sheet::book(&got.body).unwrap();
+        for c in 0..2 {
+            let cell = book.at(1, 0, c).unwrap();
+            assert!(cell.f.is_some() && cell.vt.is_empty(), "{cell:?}");
+        }
+        // one that was left stale for a function not known here keeps its value, as it does in the web client
+        let got = enter(&doc(&[&["2", "=NOPE(A1:A1)+3|5"]]), 0, 0, 0, "100").unwrap();
+        assert_eq!((grid(&got.body)[0][1].as_str(), got.stale), ("5", vec![(0, 0, 1)]));
+    }
+
+    #[test]
+    fn an_ordinary_sheet_of_five_thousand_rows_is_worked_out_whole() {
+        // a share of the total down 4,600 rows reads the whole column in every row: 21 million cells, which a
+        // bound of 20 million once left stale, and saved with the numbers it had before
+        let rows = 4_600;
+        let cells: String = (1..=rows).map(|i| format!("<table:table-row><table:table-cell office:value-type=\"float\" office:value=\"{i}\"><text:p>{i}</text:p></table:table-cell><table:table-cell table:formula=\"of:=[.A{i}]/SUM([.A$1:.A${rows}])\" office:value-type=\"float\" office:value=\"0\"><text:p>0</text:p></table:table-cell></table:table-row>")).collect();
+        let src = format!("<?xml version=\"1.0\"?>\n<office:document xmlns:calcext=\"urn:c\">\n <office:body>\n  <office:spreadsheet>\n   <table:table table:name=\"One\">{cells}</table:table>\n  </office:spreadsheet>\n </office:body>\n</office:document>\n");
+        let got = enter(&src, 0, 0, 0, "100").unwrap();
+        assert_eq!((got.stale.len(), got.done.len()), (0, rows));
+        // the shares come to the whole
+        let total: f64 = grid(&got.body).iter().map(|r| r[1].parse::<f64>().unwrap()).sum();
+        assert!((total - 1.0).abs() < 1e-3, "{total}");
+    }
+
+    #[test]
     fn rows_put_in_do_not_forget_what_was_stale_and_an_array_typed_over_frees_its_cells() {
         let array = |src: String, from: &str, rows: usize| {
             let out = src.replacen(&format!("table:formula=\"of:={from}"), &format!("table:number-matrix-columns-spanned=\"1\" table:number-matrix-rows-spanned=\"{rows}\" table:formula=\"of:={from}"), 1);
@@ -1972,9 +2263,47 @@ mod tests {
     }
 
     #[test]
-    fn comparisons_and_sums_are_exact_as_on_the_web() {
+    fn two_numbers_a_hair_apart_through_binary_arithmetic_are_one_number_as_in_calc() {
         let v = shown;
-        assert_eq!((v("=0.1*3>0.3"), v("=1e16-9999999999999998"), v("=0.1+0.2=0.3"), v("=0.1+0.2-0.3")), ("TRUE".into(), "2".into(), "FALSE".into(), "5.55111512312578E-017".into()));
+        // the web client compares them exactly: 0.1+0.2=0.3 is false there. A sum is still exact here
+        assert_eq!((v("=0.1*3>0.3"), v("=1e16-9999999999999998"), v("=0.1+0.2=0.3"), v("=0.1+0.2-0.3")), ("FALSE".into(), "2".into(), "TRUE".into(), "5.55111512312578E-017".into()));
+        for (a, b, same) in [(0.1 + 0.2, 0.3, true), (1.0, 1.000000000000001, true), (1.0, 1.0000000000001, false), (0.0, 1e-300, false), (0.0, 0.0, true), (1e300, 1.0000000000000002e300, true), (5.0, 6.0, false), (1e15, 1e15 + 1.0, false), (-0.3, -(0.1 + 0.2), true), (0.3, -0.3, false), (f64::NAN, f64::NAN, false), (f64::INFINITY, f64::INFINITY, true), (f64::INFINITY, 1e308, false)] {
+            assert_eq!((approx_eq(a, b), approx_eq(b, a)), (same, same), "{a} {b}");
+        }
+        for (x, want) in [(28.999999999999996, 29.0), (-28.999999999999996, -29.0), (2.5, 2.0), (-2.5, -3.0), (0.9999999999999999, 1.0), (-1e-16, -1.0), (1e15 + 0.5, 1e15), (0.0, 0.0), (-0.0, 0.0), (7.0, 7.0), (1e300, 1e300)] {
+            assert_eq!(approx_floor(x), want, "{x}");
+        }
+    }
+
+    #[test]
+    fn every_answer_held_against_the_web_clients_is_of_a_formula_its_corpora_have() {
+        let all = [include_str!("funcs_corpus.tsv"), include_str!("funcs_text_corpus.tsv"), include_str!("funcs_date_corpus.tsv"), include_str!("funcs_lookup_corpus.tsv"), include_str!("calc_corpus.tsv")].concat();
+        for (f, lo) in LIBREOFFICE {
+            let line = all.lines().find(|l| l.split_once('\t').is_some_and(|(g, _)| serde_json::from_str::<String>(g).is_ok_and(|g| g == f)));
+            let web: Option<String> = line.and_then(|l| serde_json::from_str(l.split_once('\t')?.1).ok());
+            assert!(web.as_deref().is_some_and(|w| w != lo), "{f}: the corpora have {web:?}");
+        }
+    }
+
+    #[test]
+    fn formulas_give_what_libreoffice_gives() {
+        // Each line is a formula and what LibreOffice shows for it, worked out by LibreOffice itself from a page
+        // with no results in it, over a small sheet of numbers, texts, a truth, a date, a time, a percentage and
+        // money, with `*` and `?` standing for other characters as they do for COUNTIF here
+        let src = include_str!("lo_funcs_sheet.fods");
+        let (mut n, mut wrong) = (0, Vec::new());
+        for line in include_str!("lo_funcs_corpus.tsv").lines() {
+            let (f, want) = line.split_once('\t').unwrap();
+            let (f, want): (String, String) = (serde_json::from_str(f).unwrap(), serde_json::from_str(want).unwrap());
+            let got = enter(src, 0, 20, 4, &format!("={f}")).unwrap();
+            let shown = if got.stale.contains(&(0, 20, 4)) { "STALE".to_owned() } else { sheet::book(&got.body).unwrap().at(0, 20, 4).map_or(String::new(), |c| c.text.clone()) };
+            if shown != want {
+                wrong.push(format!("={f} gave {shown}, LibreOffice gives {want}"));
+            }
+            n += 1;
+        }
+        assert!(wrong.is_empty(), "{} of {n} differ:\n{}", wrong.len(), wrong.join("\n"));
+        assert_eq!(n, 372);
     }
 
     #[test]

@@ -202,8 +202,7 @@ impl NetProvider for Net {
                 }
                 let _ = std::thread::Builder::new().name("html-fetch".to_owned()).spawn(move || {
                     use std::io::Read;
-                    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)).build();
-                    let Ok(res) = agent.get(url.as_str()).call() else { return };
+                    let Ok(res) = crate::api::public_agent().get(url.as_str()).timeout(std::time::Duration::from_secs(15)).call() else { return };
                     let mut bytes = Vec::new();
                     if res.into_reader().take(FETCH_BYTES as u64 + 1).read_to_end(&mut bytes).is_ok() && bytes.len() <= FETCH_BYTES {
                         done(bytes, url.to_string());
@@ -223,6 +222,141 @@ struct Page {
     have: BTreeSet<usize>,
     /// The height of the room it was laid out for.
     view: f32,
+}
+
+/// The deepest a page's elements may stand one in another, as the parser that draws it reads them, and be
+/// drawn. Style, layout and paint go down a level at a time on the thread's own stack (64 MiB), and a table
+/// or a list costs several times what a plain element does: 8,000 nested elements end the app in a debug build.
+/// No page written by a person nests a tenth of this.
+pub const DEEPEST: usize = 1024;
+
+/// What a page nested past `DEEPEST` is drawn as.
+const TOO_DEEP: &str = "<html><body><p>This page is nested too deeply to draw.</p></body></html>";
+
+/// How deep the elements of a parsed page stand one in another, counted without recursion.
+pub fn tree_depth(doc: &HtmlDocument) -> usize {
+    let (mut most, mut left) = (0, vec![(doc.root_node().id, 0usize)]);
+    while let Some((id, above)) = left.pop() {
+        let Some(node) = doc.get_node(id) else { continue };
+        let depth = above + usize::from(node.element_data().is_some());
+        most = most.max(depth);
+        left.extend(node.children.iter().map(|c| (*c, depth)));
+    }
+    most
+}
+
+/// A page parsed. The depth is that of the tree the parser made, so no spelling of nesting passes (a closing
+/// tag that closes nothing, a table inside a cell, a list inside an item). One nested past `DEEPEST` is not
+/// laid out: the page that says so is parsed in its place. `config` is asked for once for each parse.
+fn document(html: &str, config: impl Fn() -> DocumentConfig) -> HtmlDocument {
+    // the parser's cost grows with the square of the depth, so a page measured as too deep by a linear
+    // count of its tags is refused before the parser starts, and not after it has spent minutes on it
+    if !nests_within(html, 2 * DEEPEST) {
+        return HtmlDocument::from_html(TOO_DEEP, config());
+    }
+    // measured on a parse that has no way to fetch: a page refused for its depth must not have asked for
+    // its images and stylesheets on the way
+    let deep = tree_depth(&HtmlDocument::from_html(html, DocumentConfig::default())) > DEEPEST;
+    HtmlDocument::from_html(if deep { TOO_DEEP } else { html }, config())
+}
+
+/// Whether the elements of `html`, counted in one pass the way the parser nests them in the common
+/// cases, stay within `limit` open at once. It is a guard on the parser's time and no more: an element
+/// that closes itself (a paragraph, an item, a cell), a void one, and a text inside a script, a style
+/// or a comment are not counted, an end tag closes the nearest open element of its name or nothing, and
+/// the tree the parser built is measured again after (`tree_depth`) for what this lets by.
+fn nests_within(html: &str, limit: usize) -> bool {
+    const SELF_CLOSING: [&str; 38] = [
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr", "param", "keygen", "basefont", "bgsound", "frame", "p", "li", "dt", "dd", "option",
+        "optgroup", "tr", "td", "th", "thead", "tbody", "tfoot", "colgroup", "caption", "head", "body", "html", "rb", "rt", "rp",
+    ];
+    const RAW: [&str; 7] = ["script", "style", "textarea", "title", "xmp", "iframe", "noembed"];
+    const SCOPE: [&str; 9] = ["table", "td", "th", "caption", "template", "svg", "math", "object", "button"];
+    const HTML_INTEGRATION: [&str; 4] = ["foreignobject", "desc", "title", "annotation-xml"];
+    let b = html.as_bytes();
+    let mut open: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while let Some(at) = html[i..].find('<') {
+        i += at + 1;
+        let rest = &html[i..];
+        if rest.starts_with("!--") {
+            i += rest.find("-->").map_or(rest.len(), |e| e + 3);
+            continue;
+        }
+        let end_tag = rest.starts_with('/');
+        let name_from = i + usize::from(end_tag);
+        if !b.get(name_from).is_some_and(u8::is_ascii_alphabetic) {
+            continue;
+        }
+        let name_len = b[name_from..].iter().take_while(|c| !c.is_ascii_whitespace() && !matches!(c, b'/' | b'>')).count();
+        let name = &html[name_from..name_from + name_len];
+        // to the tag's closing bracket, past any quoted value that holds one
+        let mut j = name_from + name_len;
+        let mut quote = 0u8;
+        while let Some(&c) = b.get(j) {
+            match (quote, c) {
+                (0, b'>') => break,
+                (0, b'"' | b'\'') => quote = c,
+                (q, c) if q == c => quote = 0,
+                _ => {}
+            }
+            j += 1;
+        }
+        let selfclosed = j > 0 && b.get(j - 1) == Some(&b'/');
+        i = j.min(b.len());
+        let lower = name.to_ascii_lowercase();
+        let in_foreign = lower == "svg"
+            || lower == "math"
+            || open
+                .iter()
+                .rev()
+                .find_map(|o| {
+                    if o.eq_ignore_ascii_case("svg") || o.eq_ignore_ascii_case("math") {
+                        Some(true)
+                    } else if HTML_INTEGRATION.iter().any(|h| o.eq_ignore_ascii_case(h)) {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(false);
+        if end_tag {
+            let found = open
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(idx, o)| {
+                    if o.eq_ignore_ascii_case(&lower) {
+                        Some(Some(idx))
+                    } else if SCOPE.iter().any(|s| o.eq_ignore_ascii_case(s)) {
+                        Some(None)
+                    } else {
+                        None
+                    }
+                })
+                .flatten();
+            if let Some(at) = found {
+                open.truncate(at);
+            }
+        } else if RAW.contains(&lower.as_str()) && !(selfclosed && in_foreign) {
+            // its text is no markup: on to its end tag
+            let mut k = i.min(html.len());
+            i = loop {
+                let Some(at) = html[k..].find("</") else { break html.len() };
+                let tail = &b[k + at + 2..];
+                if tail.len() >= lower.len() && tail[..lower.len()].eq_ignore_ascii_case(lower.as_bytes()) {
+                    break k + at;
+                }
+                k += at + 2;
+            };
+        } else if !(selfclosed && in_foreign) && !SELF_CLOSING.contains(&lower.as_str()) {
+            open.push(name);
+            if open.len() > limit {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn viewport(ask: &Ask, view: f32) -> Viewport {
@@ -343,7 +477,7 @@ fn serve(rx: &Receiver<Cmd>, own: &Sender<Cmd>, out: &Arc<Mutex<Vec<Out>>>, wake
                     // a new page: nothing of it is under the pointer yet
                     (seen.0, hot) = (0.0, false);
                     let net = Arc::new(Net { tx: Mutex::new(own.clone()), outside: ask.outside, left: FETCHES.into(), held: 0.into() });
-                    let doc = HtmlDocument::from_html(&html, DocumentConfig { viewport: Some(viewport(&ask, seen.1)), net_provider: Some(net.clone()), ..Default::default() });
+                    let doc = document(&html, || DocumentConfig { viewport: Some(viewport(&ask, seen.1)), net_provider: Some(net.clone()), ..Default::default() });
                     let mut p = Page { ask, doc, net, height: 1.0, have: BTreeSet::new(), view: seen.1 };
                     lay(&mut p);
                     page = Some(p);
@@ -407,17 +541,247 @@ mod tests {
     #[test]
     fn a_page_nested_very_deep_is_laid_out_or_said_to_have_failed_and_the_next_is_drawn() {
         let h = Html::start(Arc::new(|| {}));
+        // the page is asked for alone and the next after it is laid out: the worker must not leave out the first (it takes the newest of what is waiting) and parse it
         let deep = format!("{}x{}", "<div>".repeat(20_000), "</div>".repeat(20_000));
-        h.show(Ask { key: Key { name: "deep".into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some(deep));
-        h.show(Ask { key: Key { name: "next".into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some("<p>after</p>".to_owned()));
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        loop {
-            if h.take().into_iter().any(|o| matches!(o, Out::Laid { ask, .. } if ask.key.name == "next")) {
-                break;
+        let ask = |name: &str| Ask { key: Key { name: name.into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false };
+        let laid = |name: &str| {
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                if h.take().into_iter().any(|o| matches!(o, Out::Laid { ask, .. } if ask.key.name == name)) {
+                    break;
+                }
+                assert!(std::time::Instant::now() < end, "{name} is laid out");
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            assert!(std::time::Instant::now() < end, "the page after a hard one is still drawn");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        h.show(ask("deep"), Some(deep));
+        laid("deep");
+        h.show(ask("next"), Some("<p>after</p>".to_owned()));
+        laid("next");
+    }
+
+    #[test]
+    fn a_page_refused_as_too_deep_has_fetched_nothing() {
+        // deep to the parser, shallow to the count that guards its time, and naming a picture and a stylesheet
+        let named = "<img src='http://example.invalid/a.png'><link rel=stylesheet href='http://example.invalid/a.css'>";
+        let fetched = |page: &str| {
+            let (tx, _rx) = channel();
+            let net = Arc::new(Net { tx: Mutex::new(tx), outside: false, left: FETCHES.into(), held: 0.into() });
+            let ask = Ask { key: Key { name: "f".into(), rev: 1, text: 0 }, width: 100.0, scale: 1.0, dark: false, outside: false };
+            let doc = document(page, || DocumentConfig { viewport: Some(viewport(&ask, 100.0)), net_provider: Some(net.clone()), ..Default::default() });
+            (tree_depth(&doc), net.held.load(std::sync::atomic::Ordering::Relaxed))
+        };
+        let (depth, held) = fetched(&format!("{named}<p>x</p>"));
+        assert!(depth > 2 && held > 0, "a page that is let by names what it fetches ({depth}, {held})");
+        let deep = format!("{}{named}x", "<div>".repeat(DEEPEST + 50));
+        assert!(nests_within(&deep, 2 * DEEPEST), "this page is for the parse to refuse");
+        assert_eq!(fetched(&deep), (tree_depth(&HtmlDocument::from_html(TOO_DEEP, DocumentConfig::default())), 0));
+    }
+
+    #[test]
+    fn a_page_is_measured_in_one_pass_before_the_parser_spends_its_time_on_it() {
+        // the parser takes time with the square of the depth: 20,000 nested divs took over a minute in a debug build
+        // and 100,000 more than half an hour, so such a page is refused on a count that is linear in its text
+        let n = 2 * DEEPEST;
+        let deep = |tag: &str, n: usize| format!("{}x", format!("<{tag}>").repeat(n));
+        assert!(!nests_within(&deep("div", 20_000), n) && !nests_within(&deep("span", n + 1), n) && !nests_within(&deep("b", 100_000), n));
+        assert!(!nests_within(&deep("svg", n + 1), n), "a drawing's elements are counted too");
+        assert!(!nests_within(&format!("{}x", "<div class='a>b' >".repeat(n + 1)), n), "a bracket in a quoted value is no end of the tag");
+        // a page the limit lets by, whatever its length
+        assert!(nests_within(&deep("div", n), n));
+        assert!(nests_within(&"<p>a</p>".repeat(100_000), n) && nests_within(&"<li>a".repeat(100_000), n) && nests_within(&"<br>".repeat(100_000), n));
+        assert!(nests_within(&"<div><span></span></div>".repeat(100_000), n), "elements that close do not add up");
+        assert!(nests_within(&format!("<b>{}</b>", "<i>x</i>".repeat(100_000)), n));
+        // text in a script, a style or a comment is no markup, and a stray end tag closes nothing
+        assert!(nests_within(&format!("<script>var a={};</script>", "'<div>'+".repeat(5000)), n));
+        assert!(nests_within(&format!("<STYLE>{}</Style><p>x", "a<b{".repeat(5000)), n));
+        assert!(nests_within(&format!("<!--{}-->", "<div>".repeat(5000)), n));
+        assert!(nests_within(&"</x></div>".repeat(5000), n));
+        // an end tag closes what it names and what is open inside it
+        assert!(nests_within(&"<div><b><i></div>".repeat(5000), n));
+        assert!(nests_within("<div>ünï<b>", n) && nests_within("<", n) && nests_within("<div", n) && nests_within("<script>", n));
+        // the page that is refused is replaced by the notice, and the parser is not asked for it
+        let page = document(&deep("div", 100_000), DocumentConfig::default);
+        assert!(tree_depth(&page) <= 8);
+    }
+
+    #[test]
+    fn a_page_nested_past_the_limit_in_the_trees_own_count_is_not_laid_out() {
+        let config = DocumentConfig::default;
+        // what the old count of tags let through and overflowed the stack on: tables and lists, closing tags that close
+        // nothing, and the plain nesting of elements. Each is measured on the tree, whatever way it is spelt
+        let closex = format!("{}x", format!("{}{}", "<div>".repeat(4000), "</x>".repeat(4000)).repeat(2));
+        let pages = [
+            ("table", format!("{}x", "<table><tr><td>".repeat(2000))),
+            ("list", format!("{}x", "<ul><li>".repeat(3000))),
+            ("closex", closex),
+            ("div", format!("{}x", "<div>".repeat(DEEPEST + 10))),
+            ("svg", format!("<svg>{}</svg>", "<g>".repeat(DEEPEST + 10))),
+            ("a stray end tag in a drawing", format!("<svg></x></svg><div>{}</div>", "<div>".repeat(DEEPEST))),
+        ];
+        for (what, page) in &pages {
+            let seen = HtmlDocument::from_html(page, config());
+            assert!(tree_depth(&seen) > DEEPEST, "{what}: the parser has it {} deep", tree_depth(&seen));
+            let drawn = document(page, config);
+            assert!(tree_depth(&drawn) <= 8, "{what}: laid out {} deep", tree_depth(&drawn));
         }
+        // a page of the depth the limit lets by is drawn as it is
+        for page in [format!("{}x", "<div>".repeat(DEEPEST - 10)), format!("{}x", "<ul><li>".repeat(100)), "<p>a</p>".repeat(100_000)] {
+            let drawn = document(&page, config);
+            assert_eq!(tree_depth(&drawn), tree_depth(&HtmlDocument::from_html(&page, config())));
+            assert!(tree_depth(&drawn) > 2);
+        }
+        // pages that were wrongly refused as deep, harmless to the parser, are drawn: a script and a list of choices after a stray end tag in a drawing
+        for page in [
+            format!("<svg><path d='M0 0'/></path></svg><script>var e=0;{}</script><p>x</p>", "if(e<t)e++;".repeat(5000)),
+            format!("<svg><g></g></g></svg><select>{}</select>", "<option>a".repeat(5000)),
+            format!("<form><svg></x></svg>{}", "<input name=a>".repeat(5000)),
+            format!("<svg></x></svg><style>{}</style>", "a<b{}".repeat(5000)),
+        ] {
+            let (drawn, parsed) = (document(&page, config), tree_depth(&HtmlDocument::from_html(&page, config())));
+            assert_eq!(tree_depth(&drawn), parsed);
+            assert!((3..10).contains(&parsed), "{parsed}");
+        }
+    }
+
+    #[test]
+    fn pages_that_overflowed_the_drawing_threads_stack_are_refused_before_they_are_laid_out() {
+        // each was counted as shallow by the count of tags, and ended the app when laid out on this thread
+        let h = Html::start(Arc::new(|| {}));
+        let pages = [
+            format!("{}x", "<table><tr><td>".repeat(2000)),
+            format!("{}x", "<ul><li>".repeat(3000)),
+            format!("{}x", format!("{}{}", "<div>".repeat(4000), "</x>".repeat(4000)).repeat(2)),
+        ];
+        for (n, page) in pages.into_iter().enumerate() {
+            h.show(Ask { key: Key { name: format!("deep{n}"), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some(page));
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let height = loop {
+                if let Some(Out::Laid { height, .. }) = h.take().into_iter().find(|o| matches!(o, Out::Laid { .. })) {
+                    break height;
+                }
+                assert!(std::time::Instant::now() < end, "page {n} was not laid out");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            // the line that says it is too deep, and not the page
+            assert!(height < 400.0, "page {n} is {height} high");
+        }
+    }
+
+    #[test]
+    fn pages_as_deep_as_the_limit_allows_are_laid_out_and_painted_on_the_thread() {
+        // the limit is only as high as the thread's stack lets any shape of element go: each of these is as deep as is
+        // let by, and is laid out and painted (the stack is deeper-hungry in a debug build, so passing here holds in a release)
+        let h = Html::start(Arc::new(|| {}));
+        let room = DEEPEST - 8;
+        let pages = [
+            format!("{}x", "<div>".repeat(room)),
+            format!("{}x", "<table><tr><td>".repeat(room / 4)),
+            format!("{}x", "<ul><li>".repeat(room / 2)),
+            format!("{}x", "<div style='display:flex'>".repeat(room)),
+            format!("{}x", "<p><b><i>".repeat(room / 3)),
+        ];
+        for (n, page) in pages.into_iter().enumerate() {
+            assert!(tree_depth(&HtmlDocument::from_html(&page, DocumentConfig::default())) <= DEEPEST, "shape {n} is let by");
+            h.show(Ask { key: Key { name: format!("near{n}"), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some(page));
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            let mut got = (false, false);
+            while !(got.0 && got.1) {
+                for o in h.take() {
+                    match o {
+                        Out::Laid { .. } => got.0 = true,
+                        Out::Band { .. } => got.1 = true,
+                        Out::Failed => panic!("shape {n} failed in the engine"),
+                        _ => {}
+                    }
+                }
+                assert!(std::time::Instant::now() < end, "shape {n} was not painted");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+
+    /// The pixel in the middle of a 100 by 100 band of a page, laid out and painted as the page's thread does.
+    fn middle_of(html: &str) -> [u8; 4] {
+        let (tx, _rx) = channel();
+        let net = Arc::new(Net { tx: Mutex::new(tx), outside: false, left: FETCHES.into(), held: 0.into() });
+        let ask = Ask { key: Key { name: "paint".into(), rev: 1, text: 0 }, width: 100.0, scale: 1.0, dark: false, outside: false };
+        let doc = document(html, || DocumentConfig { viewport: Some(viewport(&ask, 100.0)), net_provider: Some(net.clone()), ..Default::default() });
+        let mut p = Page { ask, doc, net, height: 1.0, have: BTreeSet::new(), view: 100.0 };
+        lay(&mut p);
+        // what a page names as `data:` has come, and is laid out again, once for what that names in turn
+        for _ in 0..3 {
+            p.doc.handle_messages();
+            lay(&mut p);
+        }
+        let (w, h, px) = paint(&mut p, &mut None, 0);
+        let at = ((h.min(100) / 2 * w + w / 2) * 4) as usize;
+        [px[at], px[at + 1], px[at + 2], px[at + 3]]
+    }
+
+    #[test]
+    fn a_drawing_in_an_html_page_that_names_a_file_does_not_read_it() {
+        use base64::Engine as _;
+        const SVG: &str = "http://www.w3.org/2000/svg";
+        // a drawing in a file that would paint the page red if it were read
+        let red = format!("<svg xmlns='{SVG}' width='100' height='100'><rect width='100' height='100' fill='#ff0000'/></svg>");
+        let dir = std::env::temp_dir().join(format!("lattice-page-drawing-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("red.svg");
+        std::fs::write(&file, &red).unwrap();
+        let b64 = |t: &str| base64::engine::general_purpose::STANDARD.encode(t.as_bytes());
+        let gz = |t: &str| {
+            use std::io::Write;
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(t.as_bytes()).unwrap();
+            e.finish().unwrap()
+        };
+        // the ways a page puts a drawing in: set in the page, as a picture, as a background, with the address spelt several ways
+        let ways = |href: &str| {
+            let prefixed = format!("<s:svg xmlns:s='{SVG}' width='100' height='100'><s:image href='{href}' width='100' height='100'/></s:svg>");
+            let wrap = |body: &str| format!("<html><body style='margin:0'>{body}</body></html>");
+            vec![
+                ("set in the page", wrap(&format!("<svg width='100' height='100'><image href='{href}' width='100' height='100'/></svg>"))),
+                ("set in the page, xlink", wrap(&format!("<svg width='100' height='100' xmlns:xlink='http://www.w3.org/1999/xlink'><image xlink:href='{href}' width='100' height='100'/></svg>"))),
+                ("set in the page, with a prefix", wrap(&format!("<svg xmlns:x=\"{SVG}\" width=\"100\" height=\"100\"><x:image href=\"{href}\" width=\"100\" height=\"100\"></x:image></svg>"))),
+                // the guard on what is fetched (`html::fetched_ok`) reads the text as it is plainly written, so a
+                // picture is taken in the spellings it misses, and the drawing reader is what holds
+                ("a picture, with a prefix", wrap(&format!("<img width='100' height='100' src='data:image/svg+xml;base64,{}'>", b64(&prefixed)))),
+                ("a picture, gzip of a prefix", wrap(&format!("<img width='100' height='100' src='data:image/svg+xml;base64,{}'>", base64::engine::general_purpose::STANDARD.encode(gz(&prefixed))))),
+                ("a background", wrap(&format!("<div style=\"width:100px;height:100px;background-image:url('data:image/svg+xml;base64,{}')\"></div>", b64(&prefixed)))),
+            ]
+        };
+        let data = format!("data:image/svg+xml;base64,{}", b64(&red));
+        let mut read = Vec::new();
+        for ((how, named), (_, written)) in ways(file.to_str().unwrap()).into_iter().zip(ways(&data)) {
+            // the control: the same page with the drawing written out is drawn, so a read of the file would be seen
+            let control = middle_of(&written);
+            assert!(control[0] > 200 && control[1] < 50, "{how}: the control paints {control:?}");
+            let got = middle_of(&named);
+            if got[0] > 200 && got[1] < 100 {
+                read.push(format!("{how}: {got:?}"));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(read.is_empty(), "painted from the file: {read:?}");
+    }
+
+    #[test]
+    fn every_drawing_reader_the_build_links_that_a_page_reaches_reads_no_file() {
+        // `[patch.crates-io]` replaces only the version it names. A usvg the build links from the registry is
+        // stock, and reads any file a drawing names, so it must be one that no page's drawing reaches: the 0.45 that
+        // Rune's picture cache draws icons with, which `html::drawing` keeps every page's drawing from. When
+        // blitz-dom or anything else moves to a usvg of another version, the patch drops away and this stops the build
+        let lock = include_str!("../Cargo.lock");
+        let mut stock = Vec::new();
+        for package in lock.split("[[package]]").skip(1) {
+            let field = |k: &str| package.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix(" = \"")?.strip_suffix('"'));
+            if field("name") == Some("usvg") && field("source").is_some() {
+                stock.push(field("version").unwrap_or("?").to_owned());
+            }
+        }
+        assert!(stock.iter().all(|v| v.starts_with("0.45.")), "usvg from the registry, reading any file a drawing names: {stock:?}. Patch it in Cargo.toml (`vendor/usvg`) or draw with options that resolve no file");
+        assert!(lock.contains("name = \"usvg\"\nversion = \"0.48.1\"\ndependencies"), "the usvg that Blitz draws with is the vendored copy");
     }
 
     #[test]
@@ -559,5 +923,64 @@ mod tests {
         got.sort();
         let g = [0x10, 0x20, 0x30];
         assert_eq!(got, [(0, 600, 1024, g, g), (1, 600, 1024, g, g), (2, 600, 552, g, g)]);
+    }
+
+    #[test]
+    fn nests_within_rejects_html_self_closing_and_scope_boundary_bypasses() {
+        let n = 2 * DEEPEST;
+        // HTML elements do not self-close on `/>`, so `<div/>` repeated nests deeply.
+        assert!(!nests_within(&"<div/>".repeat(5000), n));
+        // Foreign content elements inside `<svg>` and `<math>` still self-close.
+        assert!(nests_within(&format!("<svg>{}</svg>", "<path d='M0 0'/>".repeat(5000)), n));
+        assert!(nests_within(&format!("<math>{}</math>", "<mspace/>".repeat(5000)), n));
+        // Inside an HTML integration point like `<foreignObject>`, `<div/>` does not self-close.
+        assert!(!nests_within(&format!("<svg><foreignObject>{}</foreignObject></svg>", "<div/>".repeat(5000)), n));
+        // End tags cannot cross HTML5 scope boundaries like `table` or `template`.
+        assert!(!nests_within(&"<div><table><tr><td></div>".repeat(5000), n));
+        assert!(!nests_within(&"<div><template></div>".repeat(5000), n));
+        assert!(!nests_within(&"<div><button></div>".repeat(5000), n));
+        // Properly closed scope boundaries do not accumulate.
+        assert!(nests_within(&"<div><table><tr><td></table></div>".repeat(5000), n));
+    }
+
+    #[test]
+    fn htmlview_nested_svg_data_uri_enforces_depth_and_gzip_limits() {
+        use base64::Engine as _;
+        use std::io::Write;
+        const SVG: &str = "http://www.w3.org/2000/svg";
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let gz = |b: &[u8]| {
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            e.write_all(b).unwrap();
+            e.finish().unwrap()
+        };
+        let wrap_svg = |data: &[u8]| {
+            format!(
+                "<svg xmlns='{SVG}' width='100' height='100'><image href='data:image/svg+xml;base64,{}' width='100' height='100'/></svg>",
+                b64(data)
+            )
+            .into_bytes()
+        };
+        let page_of = |svg: &[u8]| format!("<html><body style='margin:0'><img width='100' height='100' src='data:image/svg+xml;base64,{}'></body></html>", b64(svg));
+
+        // Nested SVGZ gzip bomb (> 32 MiB inflated) is rejected safely by vendored usvg.
+        let huge = format!("<svg xmlns='{SVG}' width='100' height='100'><rect width='100' height='100' fill='#ff0000'/>{}</svg>", " ".repeat((32 << 20) + 1));
+        let bomb = gz(huge.as_bytes());
+        assert!(bomb.len() < 1 << 20);
+        let got = middle_of(&page_of(&wrap_svg(&bomb)));
+        assert!(got[0] > 200 && got[1] > 200 && got[2] > 200, "gzip bomb must not paint red: {got:?}");
+
+        // Nested SVG with deep XML nesting (> 1024) is rejected safely.
+        let deep = format!("<svg xmlns='{SVG}' width='100' height='100'>{}<rect width='100' height='100' fill='#ff0000'/>{}</svg>", "<g>".repeat(1200), "</g>".repeat(1200));
+        let got = middle_of(&page_of(&wrap_svg(deep.as_bytes())));
+        assert!(got[0] > 200 && got[1] > 200 && got[2] > 200, "deep sub-SVG must not paint red: {got:?}");
+
+        // Sub-SVG nested more than 4 levels deep is rejected safely.
+        let mut chain = format!("<svg xmlns='{SVG}' width='100' height='100'><rect width='100' height='100' fill='#ff0000'/></svg>").into_bytes();
+        for _ in 0..5 {
+            chain = wrap_svg(&chain);
+        }
+        let got = middle_of(&page_of(&chain));
+        assert!(got[0] > 200 && got[1] > 200 && got[2] > 200, "5-deep sub-SVG chain must be stopped: {got:?}");
     }
 }

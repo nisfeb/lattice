@@ -16,12 +16,52 @@ const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "Jun
 const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 /// A number with fixed decimals, rounded half away from nothing on its decimal
-/// spelling: 1.005 to two places is 1.01, as Calc shows it.
+/// spelling: 1.005 to two places is 1.01, as Calc shows it. The spelling is the
+/// number's first fifteen figures, which is all Calc goes by, and the rounding is
+/// done on those figures, so no number is pushed up by the sum that rounds it.
 pub fn fixed(n: f64, places: usize, min_int: usize, group: bool) -> String {
-    let f = 10f64.powi(places as i32);
-    let a = ((n.abs() * f * (1.0 + 4.0 * f64::EPSILON)) + 0.5).floor() / f;
-    let text = format!("{a:.*}", places.min(20));
+    let places = places.min(20);
+    let a = n.abs();
+    // the figures before and after the point, rounded at `places`
+    let text = if !a.is_finite() || a >= 1e15 || a == 0.0 {
+        // nothing after the point is left to round in a number this large
+        format!("{:.*}", places, if a.is_finite() { a } else { 0.0 })
+    } else {
+        let sci = format!("{a:.14e}");
+        let (mant, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
+        let exp: i32 = exp.parse().unwrap_or(0);
+        let mut figures: Vec<u8> = mant.bytes().filter(u8::is_ascii_digit).map(|d| d - b'0').collect();
+        // how many of the figures stand before the point, and how many are kept in all
+        let mut whole = exp + 1;
+        let keep = whole + places as i32;
+        if keep < 0 {
+            figures.clear();
+        } else if (keep as usize) < figures.len() {
+            let up = figures[keep as usize] >= 5;
+            figures.truncate(keep as usize);
+            if up {
+                let mut at = figures.len();
+                loop {
+                    if at == 0 {
+                        figures.insert(0, 1);
+                        whole += 1;
+                        break;
+                    }
+                    at -= 1;
+                    if figures[at] < 9 {
+                        figures[at] += 1;
+                        break;
+                    }
+                    figures[at] = 0;
+                }
+            }
+        }
+        let at = |i: i32| char::from(b'0' + usize::try_from(i).ok().and_then(|i| figures.get(i)).copied().unwrap_or(0));
+        let int: String = if whole > 0 { (0..whole).map(at).collect() } else { "0".to_owned() };
+        format!("{int}.{}", (whole..whole + places as i32).map(at).collect::<String>())
+    };
     let (i, d) = text.split_once('.').unwrap_or((&text, ""));
+    let nought = !text.bytes().any(|c| (b'1'..=b'9').contains(&c));
     let mut i = format!("{i:0>w$}", w = min_int.min(64));
     if min_int == 0 && i == "0" {
         i.clear();
@@ -36,21 +76,23 @@ pub fn fixed(n: f64, places: usize, min_int: usize, group: bool) -> String {
         }
         i = out;
     }
-    format!("{}{i}{}", if n < 0.0 && a != 0.0 { "-" } else { "" }, if places > 0 { format!(".{d}") } else { String::new() })
+    format!("{}{i}{}", if n < 0.0 && !nought { "-" } else { "" }, if places > 0 { format!(".{d}") } else { String::new() })
 }
 
 /// One piece of a number format.
 #[derive(Debug)]
 enum Part {
     Text(String),
-    Number { places: Option<usize>, min_int: usize, group: bool, factor: f64 },
+    /// `least` is how many of the decimal places are written even when they are noughts: `0.0##` has three places and one at least.
+    Number { places: Option<usize>, least: usize, min_int: usize, group: bool, factor: f64 },
     Year(bool),
     Month { textual: bool, long: bool },
     Day(bool),
     DayOfWeek(bool),
     Hours(bool),
     Minutes(bool),
-    Seconds(bool),
+    /// Whether two figures at least, and how many decimals of a second.
+    Seconds(bool, usize),
     AmPm,
     Boolean,
     Content,
@@ -68,6 +110,34 @@ struct Format {
     /// It hands some numbers on to another format (`style:map`), as money does that writes
     /// what is owed in brackets: its own words are then for the numbers it keeps, the negative ones.
     mapped: bool,
+    /// The formats it hands numbers on to, in order: which numbers, and the format's name.
+    maps: Vec<(Cond, String)>,
+}
+
+/// Which numbers a format hands on to another: `value()>=0` and its like.
+#[derive(Debug, Clone, Copy)]
+struct Cond {
+    op: &'static str,
+    limit: f64,
+}
+
+impl Cond {
+    fn read(text: &str) -> Option<Cond> {
+        let rest = text.trim().strip_prefix("value()")?.trim_start();
+        let op = [">=", "<=", "!=", ">", "<", "="].into_iter().find(|op| rest.starts_with(op))?;
+        Some(Cond { op, limit: rest[op.len()..].trim().parse().ok()? })
+    }
+
+    fn holds(&self, v: f64) -> bool {
+        match self.op {
+            ">=" => v >= self.limit,
+            "<=" => v <= self.limit,
+            "!=" => v != self.limit,
+            ">" => v > self.limit,
+            "<" => v < self.limit,
+            _ => v == self.limit,
+        }
+    }
 }
 
 fn attr<'a>(src: &'a str, el: &El, name: &str) -> Option<&'a str> {
@@ -94,6 +164,8 @@ fn compile(src: &str, el: &El) -> Option<Format> {
             "number:text" | "number:currency-symbol" => Part::Text(text(k)),
             "number:number" => Part::Number {
                 places: attr(src, k, "number:decimal-places").map(|d| d.parse().unwrap_or(0)),
+                // with nothing said, every place is written
+                least: attr(src, k, "number:min-decimal-places").map_or(usize::MAX, |d| d.parse().unwrap_or(0)),
                 min_int: attr(src, k, "number:min-integer-digits").map_or(1, |d| d.parse().unwrap_or(1)),
                 group: attr(src, k, "number:grouping") == Some("true"),
                 factor: attr(src, k, "number:display-factor").and_then(|f| f.parse::<f64>().ok()).filter(|f| *f != 0.0).unwrap_or(1.0),
@@ -104,7 +176,7 @@ fn compile(src: &str, el: &El) -> Option<Format> {
             "number:day-of-week" => Part::DayOfWeek(long),
             "number:hours" => Part::Hours(long),
             "number:minutes" => Part::Minutes(long),
-            "number:seconds" => Part::Seconds(long),
+            "number:seconds" => Part::Seconds(long, attr(src, k, "number:decimal-places").and_then(|d| d.parse().ok()).unwrap_or(0).min(9)),
             "number:am-pm" => Part::AmPm,
             "number:boolean" => Part::Boolean,
             "number:text-content" => Part::Content,
@@ -115,7 +187,9 @@ fn compile(src: &str, el: &El) -> Option<Format> {
     if parts.is_empty() {
         return None;
     }
-    Some(Format { kind: el.name.clone(), am_pm: parts.iter().any(|p| matches!(p, Part::AmPm)), long_hours: attr(src, el, "number:truncate-on-overflow") == Some("false"), mapped: all.iter().any(|k| k.name == "style:map"), parts })
+    // a map whose condition is not read hands nothing on, and the format is still known as one that maps
+    let maps = all.iter().filter(|k| k.name == "style:map").filter_map(|k| Some((Cond::read(&attr(src, k, "style:condition")?.replace("&gt;", ">").replace("&lt;", "<"))?, attr(src, k, "style:apply-style-name")?.replace("&amp;", "&")))).collect();
+    Some(Format { kind: el.name.clone(), am_pm: parts.iter().any(|p| matches!(p, Part::AmPm)), long_hours: attr(src, el, "number:truncate-on-overflow") == Some("false"), mapped: all.iter().any(|k| k.name == "style:map"), maps, parts })
 }
 
 /// A number of days as a whole number, held where the sums done on it cannot wrap: a number
@@ -226,7 +300,7 @@ impl Format {
                     mi = Some(v);
                     r
                 }
-                Part::Seconds(_) => {
+                Part::Seconds(..) => {
                     let (v, r) = digits(rest, 2)?;
                     s = Some(v);
                     r
@@ -276,21 +350,60 @@ impl Format {
 
     fn text(&self, v: f64, null_date: f64) -> String {
         let timed = self.kind == "number:date-style" || self.kind == "number:time-style";
-        let whole = (v + 1e-9).floor();
-        let secs = if timed { ((v - whole) * 86_400.0 + 0.5).floor() as i64 } else { 0 };
-        let (y, m, d) = sheet::civil_from_days(day(whole) + null_date as i64 + i64::from(secs >= 86_400));
+        // a length of time that runs past a day is written by its size, with the sign before it: -9:36:00
+        let span = self.kind == "number:time-style" && self.long_hours;
+        let t = if span { v.abs() } else { v };
+        // The seconds of the day, as LibreOffice reads them. A time of day is cut to the second it is in, never
+        // rounded up to the next: 23:59:59.9 is 23:59:59 (`sheet::day_seconds`). A length of time is rounded
+        // to the nearest second, or to the decimals of a second it shows
+        let shown = self.parts.iter().find_map(|p| if let Part::Seconds(_, places) = p { Some(*places) } else { None }).unwrap_or(0);
+        let (whole, secs) = if !timed {
+            (t.floor(), 0.0)
+        } else if span {
+            let to = 10f64.powi(shown as i32);
+            let secs = ((t - t.floor()) * 86_400.0 * to).round() / to;
+            if secs >= 86_400.0 { (t.floor() + 1.0, secs - 86_400.0) } else { (t.floor(), secs) }
+        } else {
+            sheet::day_seconds(t)
+        };
+        let (y, m, d) = sheet::civil_from_days(day(whole) + null_date as i64);
         // 1970 began on a Thursday
-        let dow = (day(whole) + null_date as i64 + i64::from(secs >= 86_400) + 4).rem_euclid(7) as usize;
-        let sod = secs % 86_400;
-        let (h, mi, s) = (sod / 3600 + if self.long_hours { day(whole) * 24 } else { 0 }, sod / 60 % 60, sod % 60);
+        let dow = (day(whole) + null_date as i64 + 4).rem_euclid(7) as usize;
+        let sod = secs.floor() as i64;
+        // the first of hours, minutes and seconds that a length of time has takes all the days too
+        let first = self.parts.iter().find(|p| matches!(p, Part::Hours(_) | Part::Minutes(_) | Part::Seconds(..))).filter(|_| self.long_hours);
+        let days = day(whole);
+        let (h, mi, sec) = match first {
+            Some(Part::Hours(_)) => (sod / 3600 + days.saturating_mul(24), sod / 60 % 60, sod % 60),
+            Some(Part::Minutes(_)) => (0, sod / 60 + days.saturating_mul(1440), sod % 60),
+            Some(Part::Seconds(..)) => (0, 0, sod + days.saturating_mul(86_400)),
+            _ => (sod / 3600, sod / 60 % 60, sod % 60),
+        };
         let show = if self.kind == "number:percentage-style" { v * 100.0 } else { v };
         let two = |n: i64, long: bool| if long { format!("{n:02}") } else { n.to_string() };
+        // a number is written by its size, and its sign goes before everything, the words and the symbol too: -$5.00
+        let mut signed = span && v < 0.0 && (h, mi, sec) != (0, 0, 0);
+        let mut number = |text: String| {
+            signed |= text.starts_with('-');
+            text.trim_start_matches('-').to_owned()
+        };
         let mut out = String::new();
         for p in &self.parts {
             out.push_str(&match p {
                 Part::Text(t) => t.clone(),
-                Part::Number { places: None, factor, .. } => general(show / factor),
-                Part::Number { places: Some(d), min_int, group, factor } => fixed(show / factor, *d, *min_int, *group),
+                Part::Number { places: None, factor, .. } => number(general(show / factor)),
+                Part::Number { places: Some(d), least, min_int, group, factor } => {
+                    let mut text = number(fixed(show / factor, *d, *min_int, *group));
+                    // the decimal places that need not be written are not, when they are noughts
+                    if least < d && text.contains('.') {
+                        let cut = text.trim_end_matches('0').len().max(text.len().saturating_sub(d - least));
+                        text.truncate(cut);
+                        if text.ends_with('.') {
+                            text.pop();
+                        }
+                    }
+                    text
+                }
                 Part::Year(long) => if *long { y.to_string() } else { format!("{:02}", y.rem_euclid(100)) },
                 Part::Month { textual: true, long } => if *long { MONTHS[m as usize - 1].to_owned() } else { MONTHS[m as usize - 1][..3].to_owned() },
                 Part::Month { textual: false, long } => two(m, *long),
@@ -298,13 +411,15 @@ impl Format {
                 Part::DayOfWeek(long) => if *long { DAYS[dow].to_owned() } else { DAYS[dow][..3].to_owned() },
                 Part::Hours(long) => two(if self.am_pm { if h % 12 == 0 { 12 } else { h % 12 } } else { h }, *long),
                 Part::Minutes(long) => two(mi, *long),
-                Part::Seconds(long) => two(s, *long),
+                // the decimals of a second are cut, as the second is
+                Part::Seconds(long, 0) => two(sec, *long),
+                Part::Seconds(long, places) => format!("{}.{:0>w$}", two(sec, *long), ((secs - secs.floor()) * 10f64.powi(*places as i32) + 1e-6).floor() as i64, w = *places),
                 Part::AmPm => if h < 12 { "AM" } else { "PM" }.to_owned(),
                 Part::Boolean => if show != 0.0 { "TRUE" } else { "FALSE" }.to_owned(),
                 Part::Content => sheet::num_attr(show).replace('E', "e"),
             });
         }
-        out
+        if signed { format!("-{out}") } else { out }
     }
 }
 
@@ -683,6 +798,23 @@ impl Styles {
         f.read(text, self.null_date).or_else(|| f.read(body, self.null_date).filter(|n| neg && !timed && *n >= 0.0).map(|n| -n))
     }
 
+    /// A number as a format writes it, through the format it hands that number on to when
+    /// it has such (`style:map`): the first whose condition holds, and else its own words.
+    /// LibreOffice writes `0.00;(0.00)` as a format for the negative numbers, brackets and
+    /// all, that hands the others on. The form that only negative numbers come to writes
+    /// the number's size, its sign being in its words. Nothing when a format it names is
+    /// not one read here.
+    fn mapped(&self, f: &Format, v: f64) -> Option<String> {
+        let Some((cond, name)) = f.maps.iter().find(|(c, _)| c.holds(v)) else {
+            // its own words: for the negative numbers when the others are handed on
+            let owed = f.maps.iter().any(|(c, _)| matches!(c.op, ">=" | ">") && c.limit == 0.0);
+            return Some(f.text(if owed { v.abs() } else { v }, self.null_date));
+        };
+        let (_, Some(to)) = self.data.get(name)? else { return None };
+        let owed = matches!((cond.op, cond.limit), ("<", l) if l <= 0.0) || matches!((cond.op, cond.limit), ("<=", l) if l < 0.0);
+        Some(to.text(if owed { v.abs() } else { v }, self.null_date))
+    }
+
     /// The text a number shows in a cell of this style and value type.
     pub fn text(&self, style: &str, v: f64, vt: &str) -> String {
         // a day number no calendar date stands for is shown as the number it is, not as a date made up for it
@@ -694,8 +826,8 @@ impl Styles {
         if v < 0.0 && self.data_of(style).is_some_and(|d| DATA.iter().any(|(k, xml)| *k == "currency" && d == format!("Ln{}", hash(xml)))) {
             return format!("-${}", fixed(v.abs(), 2, 1, true));
         }
-        if let Some((_, Some(f))) = self.data_of(style).and_then(|d| self.data.get(d)) {
-            return f.text(v, self.null_date);
+        if let Some(text) = self.data_of(style).and_then(|d| self.data.get(d)).and_then(|(_, f)| self.mapped(f.as_ref()?, v)) {
+            return text;
         }
         // a format not read here: something sensible for the kind of value
         match vt {
@@ -739,11 +871,63 @@ mod tests {
     }
 
     #[test]
+    fn numbers_are_written_as_libreoffice_writes_them() {
+        // a file LibreOffice wrote: 29 numbers down, a number format to each column, each cell with the text
+        // LibreOffice showed for it. The formats, in the columns' order, by what they are in its own spelling
+        const FORMATS: [&str; 37] = [
+            "[$$-409]#,##0.00;[RED]-[$$-409]#,##0.00", "$#,##0.00;($#,##0.00)", "$#,##0.00", "#,##0.00 [$\u{20ac}-407]", "0.00%", "0%", "#,##0.00", "0", "0.0##", "0.##", "000", ".00", "#,##0.0,", "0.0\" kg\"", "0.00E+00", "# ?/?",
+            "#,##0.00;[RED]-#,##0.00", "#,##0;(#,##0)", "0.0\" up\";0.0\" down\";\"zero\"", "YYYY-MM-DD", "MM/DD/YY", "M/D/YYYY", "DDDD, MMMM D, YYYY", "D MMM YY", "DDD DD", "QQ YYYY", "WW", "MM/DD/YYYY HH:MM:SS", "HH:MM:SS", "HH:MM AM/PM",
+            "H:MM:SS AM/PM", "[H]:MM:SS", "MM:SS.00", "HH:MM", "[M]:SS", "BOOLEAN", "@",
+        ];
+        // a format with a piece not read here is not written its way: scientific, a fraction, the quarter, the week
+        let unread = [14, 15, 25, 26];
+        let src = include_str!("lo_formats.fods");
+        let book = sheet::book(src).unwrap();
+        let styles = Styles::read(src, book.null_date);
+        let (mut same, mut wrong) = (0, Vec::new());
+        for r in 0..40 {
+            for (c, format) in FORMATS.iter().enumerate().filter(|(c, _)| !unread.contains(c)) {
+                let Some((cell, v)) = book.at(0, r, c).and_then(|cell| if let Some(sheet::Val::Num(v)) = cell.v { Some((cell, v)) } else { None }) else { continue };
+                // a day LibreOffice has no date for, which it says so of, and a number of days past what it reads a time of day from
+                if cell.text == "#FMT" || v.abs() > 1e7 {
+                    continue;
+                }
+                let style = book.style_at(0, r, c);
+                let ours = styles.text(&style, v, &cell.vt);
+                if ours == cell.text {
+                    same += 1;
+                } else {
+                    wrong.push(format!("{v} as {format} is {:?} here and {:?} there", ours, cell.text));
+                }
+                // and the text, read back through the format, is a number that is written the same
+                if let Some(back) = styles.read_as(&style, &cell.text) {
+                    let again = styles.text(&style, back, &cell.vt);
+                    if again != cell.text {
+                        wrong.push(format!("{:?} as {format} is read as {back}, which is written {again:?}", cell.text));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{} differ:\n{}", wrong.len(), wrong.join("\n"));
+        assert!(same > 850, "only {same} cells were compared");
+    }
+
+    #[test]
     fn a_number_is_fixed_as_calc_fixes_it() {
         // what ui-src/sheet/styles.js fixed gives
         for (n, places, min_int, group, want) in [
             (1.005, 2, 1, false, "1.01"), (2.5, 0, 1, false, "3"), (-2.5, 0, 1, false, "-3"), (1234567.891, 2, 1, true, "1,234,567.89"), (0.5, 2, 0, false, ".50"), (0.0, 2, 0, false, ".00"),
             (-0.001, 2, 1, false, "0.00"), (7.0, 0, 3, false, "007"), (999.995, 2, 1, true, "1,000.00"), (123.0, 0, 1, true, "123"), (1234.0, 0, 1, true, "1,234"), (-1234.5, 1, 1, true, "-1,234.5"), (0.125, 2, 1, false, "0.13"),
+        ] {
+            assert_eq!(fixed(n, places, min_int, group), want, "{n} {places} {min_int} {group}");
+        }
+        // a large number gains nothing from the sum that rounds it, and a small one is not lost in it
+        for (n, places, min_int, group, want) in [
+            (1e15, 2, 1, true, "1,000,000,000,000,000.00"), (1e15, 0, 1, false, "1000000000000000"), (1e13, 2, 1, false, "10000000000000.00"), (999_999_999_999.994, 2, 1, false, "999999999999.99"), (123_456_789_012.2, 0, 1, false, "123456789012"),
+            (-1e15, 1, 1, false, "-1000000000000000.0"), (1e21, 0, 1, false, "1000000000000000000000"),
+            (2.675, 2, 1, false, "2.68"), (9.995, 2, 1, false, "10.00"), (99.5, 0, 1, false, "100"), (0.999, 2, 1, false, "1.00"), (0.994, 2, 1, false, "0.99"), (0.004, 2, 1, false, "0.00"), (0.005, 2, 1, false, "0.01"), (-0.005, 2, 1, false, "-0.01"), (-0.004, 2, 1, false, "0.00"),
+            (1e-20, 2, 1, false, "0.00"), (0.5, 0, 1, false, "1"), (0.4999, 0, 1, false, "0"), (0.05, 0, 1, false, "0"), (0.0, 0, 1, false, "0"), (5e-324, 3, 0, false, ".000"), (1.0049, 2, 1, false, "1.00"), (1.00499999999, 2, 1, false, "1.00"), (12.0, 3, 1, false, "12.000"), (0.1 + 0.2, 20, 1, false, "0.30000000000000000000"),
+            (f64::NAN, 2, 1, false, "0.00"), (f64::INFINITY, 1, 1, false, "0.0"),
         ] {
             assert_eq!(fixed(n, places, min_int, group), want, "{n} {places} {min_int} {group}");
         }

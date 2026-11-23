@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:calcext="urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0" office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.spreadsheet">
+ <office:body>
+  <office:spreadsheet>
+   <table:calculation-settings table:use-regular-expressions="false" table:use-wildcards="true"/>
+   <table:table table:name="One">
+    <table:table-row>
+     <table:table-cell office:value-type="float" office:value="3" calcext:value-type="float"><text:p>3</text:p></table:table-cell>
+     <table:table-cell office:value-type="string" calcext:value-type="string"><text:p>apple</text:p></table:table-cell>
+     <table:table-cell office:value-type="boolean" office:boolean-value="true" calcext:value-type="boolean"><text:p>TRUE</text:p></table:table-cell>
+    </table:table-row>
+    <table:table-row>
+     <table:table-cell office:value-type="float" office:value="-2.5" calcext:value-type="float"><text:p>-2.5</text:p></table:table-cell>
+     <table:table-cell office:value-type="string" calcext:value-type="string"><text:p>Banana</text:p></table:table-cell>
+     <table:table-cell office:value-type="date" office:date-value="2024-02-29" calcext:value-type="date"><text:p>2024-02-29</text:p></table:table-cell>
+    </table:table-row>
+    <table:table-row>
+     <table:table-cell office:value-type="float" office:value="0" calcext:value-type="float"><text:p>0</text:p></table:table-cell>
+     <table:table-cell office:value-type="string" calcext:value-type="string"><text:p>12</text:p></table:table-cell>
+     <table:table-cell office:value-type="time" office:time-value="PT13H30M00S" calcext:value-type="time"><text:p>PT13H30M00S</text:p></table:table-cell>
+    </table:table-row>
+    <table:table-row>
+     <table:table-cell office:value-type="float" office:value="10" calcext:value-type="float"><text:p>10</text:p></table:table-cell>
+     <table:table-cell office:value-type="string" calcext:value-type="string"><text:p></text:p></table:table-cell>
+     <table:table-cell office:value-type="percentage" office:value="0.25" calcext:value-type="percentage"><text:p>0.25</text:p></table:table-cell>
+    </table:table-row>
+    <table:table-row>
+     <table:table-cell office:value-type="float" office:value="7" calcext:value-type="float"><text:p>7</text:p></table:table-cell>
+     <table:table-cell/>
+     <table:table-cell office:value-type="currency" office:currency="USD" office:value="5" calcext:value-type="currency"><text:p>5</text:p></table:table-cell>
+    </table:table-row>
+    <table:table-row>
+     <table:table-cell office:value-type="float" office:value="7" calcext:value-type="float"><text:p>7</text:p></table:table-cell>
+     <table:table-cell office:value-type="string" calcext:value-type="string"><text:p>x y</text:p></table:table-cell>
+     <table:table-cell office:value-type="string" calcext:value-type="string"><text:p>3.5</text:p></table:table-cell>
+    </table:table-row>
+    <table:table-row>
+     <table:table-cell/>
+     <table:table-cell office:value-type="string" calcext:value-type="string"><text:p>TRUE</text:p></table:table-cell>
+     <table:table-cell/>
+    </table:table-row>
+    <table:table-row>
+     <table:table-cell office:value-type="float" office:value="10000000000" calcext:value-type="float"><text:p>10000000000</text:p></table:table-cell>
+     <table:table-cell office:value-type="string" calcext:value-type="string"><text:p>apple</text:p></table:table-cell>
+     <table:table-cell office:value-type="float" office:value="4" calcext:value-type="float"><text:p>4</text:p></table:table-cell>
+    </table:table-row>
+   </table:table>
+  </office:spreadsheet>
+ </office:body>
+</office:document>

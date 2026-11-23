@@ -65,6 +65,13 @@ pub trait Projection: Send + Sync {
         Ok((self.read(rel)?, None))
     }
 
+    /// Whether a writable open of `rel` must fetch fresh bytes via `read_at`
+    /// instead of serving from the dump cache (for example a link page whose
+    /// owner revision comes only from `page-source`). Default: false.
+    fn needs_read_for_write(&self, _rel: &str) -> bool {
+        false
+    }
+
     /// Bulk warm: the whole tree AND every page body in one round-trip. The core
     /// calls this to fill the read cache so grep/cat run from RAM. lattice serves
     /// it from a single page-dump peek, falling back to list()+read() on an old
@@ -115,6 +122,14 @@ pub trait Projection: Send + Sync {
     fn mkdir(&self, rel: &str) -> Result<(), PErr>;
     fn delete(&self, rel: &str) -> Result<(), PErr>;
     fn mv(&self, src: &str, dst: &str) -> Result<(), PErr>;
+
+    /// Whether `delete(rel)` deletes only the page at `rel` while keeping
+    /// descendant pages intact (leaving `rel` as a pure folder). Older ships
+    /// delete the entire subtree, so the core falls back to holding the page
+    /// until all descendants are gone. Default: false.
+    fn page_only_delete(&self) -> bool {
+        false
+    }
 
     /// Block, calling `on_event` for external changes and for the health of
     /// the watch stream itself. Delegates to the transport. The core trusts
@@ -254,6 +269,7 @@ mod tests {
         assert_eq!(p.kind_for_ext("MD"), "md");
         assert_eq!(p.kind_for_ext("Txt"), "text");
         assert_eq!(p.kind_for_ext("LATEX"), "tex");
+        assert!(!p.page_only_delete(), "default capability is false for legacy ships");
     }
 
     #[test]

@@ -530,6 +530,245 @@ fn with_mount(tag: &str, ship: &Arc<Ship>, secs: u64, body: impl FnOnce(&Path) +
     }
 }
 
+/// The mounter as an app starts it: its stderr is a pipe whose reading end
+/// is let go once the folder is a mount. A word on stderr then fails, and it
+/// must not end the mounter: on SIGTERM it says "unmounting" before it
+/// drains the lick socket, and a socket dropped mid-write crashes the ship.
+#[test]
+fn a_mounter_whose_stderr_is_gone_still_stops_cleanly() {
+    use std::net::TcpListener;
+    use std::process::{Command, Stdio};
+    // a ship that answers every read with an empty tree
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { continue };
+            std::thread::spawn(move || {
+                let mut b = [0u8; 8192];
+                let _ = s.read(&mut b);
+                let body = r#"{"nodes":[],"since":"s"}"#;
+                let _ = write!(s, "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            });
+        }
+    });
+    let dir = std::env::temp_dir().join(format!("lattice-fs-epipe-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let (home, mnt) = (dir.join("home"), dir.join("mnt"));
+    fs::create_dir_all(home.join(".config/lattice-fs")).unwrap();
+    fs::create_dir_all(&mnt).unwrap();
+    fs::write(home.join(format!(".config/lattice-fs/cookie-http-127.0.0.1-{port}")), "urbauth-~zod=0v1.x").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lattice-fs"))
+        .args(["mount", mnt.to_str().unwrap()])
+        .env("HOME", &home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env("LATTICE_URL", format!("http://127.0.0.1:{port}"))
+        .env_remove("LATTICE_SOCK")
+        .env_remove("LATTICE_ROOT")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let said = child.stderr.take().unwrap();
+    let is_mount = |mnt: &Path| fs::read_to_string("/proc/self/mounts").is_ok_and(|t| t.lines().any(|l| l.split(' ').nth(1) == mnt.to_str()));
+    let until = std::time::Instant::now() + Duration::from_secs(15);
+    while !is_mount(&mnt) && child.try_wait().unwrap().is_none() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !is_mount(&mnt) {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = fs::remove_dir_all(&dir);
+        eprintln!("skipped: no usable FUSE here");
+        return;
+    }
+    // nobody reads what it says from here on
+    drop(said);
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    let status = child.wait().unwrap();
+    let left = is_mount(&mnt);
+    let _ = fs::remove_dir_all(&dir);
+    assert!(status.success(), "the mounter must reach its drain and unmount, and ended with {status}");
+    assert!(!left, "and the folder is no longer a mount");
+}
+
+fn deletes(s: &Ship) -> Vec<String> {
+    s.log().into_iter().filter(|l| l.starts_with("delete")).collect()
+}
+
+/// A page with pages under it shows as a folder holding its own file. A ship
+/// before the page-only delete takes everything under a name it deletes, and
+/// the mount cannot tell it from a newer one, so unlinking that file sends
+/// nothing while anything is under the page: the file leaves the listing,
+/// and the page's delete goes once nothing is under it. Run against both.
+#[test]
+fn unlinking_a_pages_own_file_never_takes_the_pages_under_it() {
+    for older in [false, true] {
+        let ship = Ship::with(
+            &[
+                ("demo", "md", "the parent body\n"),
+                ("demo/child", "gmi", "child body\n"),
+                ("demo/keep", "md", "kept body\n"),
+                ("demo/sub/deep", "md", "deep body\n"),
+                ("solo", "md", "alone\n"),
+                ("again", "md", "the page made again\n"),
+                ("again/kid", "md", "kid\n"),
+            ],
+            &[],
+        );
+        ship.subtree.store(older, std::sync::atomic::Ordering::SeqCst);
+        let s = ship.clone();
+        with_mount(if older { "unlink-parent-older" } else { "unlink-parent" }, &ship, 30, move |mnt| {
+            fs::remove_file(mnt.join("demo/demo.md")).unwrap();
+            assert_eq!(deletes(&s), Vec::<String>::new(), "no delete may reach the ship while pages are under it");
+            assert!(!names(&mnt.join("demo")).contains(&"demo.md".to_string()), "the file is no longer listed");
+            assert!(s.has("demo/child") && s.has("demo/keep") && s.has("demo/sub/deep"));
+            // a page with nothing under it goes as before
+            fs::remove_file(mnt.join("solo.md")).unwrap();
+            assert_eq!(deletes(&s), ["delete solo"]);
+            // pages under it go one by one, a deeper one with its folder, and the page waits for the last
+            fs::remove_file(mnt.join("demo/child.gmi")).unwrap();
+            fs::remove_file(mnt.join("demo/sub/deep.md")).unwrap();
+            fs::remove_dir(mnt.join("demo/sub")).unwrap();
+            assert!(s.has("demo") && s.has("demo/keep"), "{:?}", deletes(&s));
+            fs::remove_file(mnt.join("demo/keep.md")).unwrap();
+            assert_eq!(deletes(&s), ["delete solo", "delete demo/child", "delete demo/sub/deep", "delete demo/sub", "delete demo/keep", "delete demo"]);
+            assert!(!s.has("demo"));
+            // its folder went with it: nothing more is sent for it
+            fs::remove_dir(mnt.join("demo")).unwrap();
+            assert_eq!(deletes(&s).len(), 6);
+            // a held page's file written again is that page, written over and not deleted
+            fs::remove_file(mnt.join("again/again.md")).unwrap();
+            fs::write(mnt.join("again/again.md"), "written again\n").unwrap();
+            assert_eq!(s.body("again").as_deref(), Some(&b"written again\n"[..]));
+            fs::remove_file(mnt.join("again/kid.md")).unwrap();
+            assert!(s.has("again"), "a page written again is no longer held: {:?}", deletes(&s));
+        });
+    }
+}
+
+/// A held page whose pages under it are held too: the last unlink frees the
+/// deepest, whose delete frees the one above it, and so on up. Every page
+/// goes, whatever the order the files were removed in.
+#[test]
+fn held_pages_nested_in_held_pages_are_all_deleted() {
+    for older in [false, true] {
+        let ship = Ship::with(&[("demo", "md", "p\n"), ("demo/sub", "md", "s\n"), ("demo/sub/x", "md", "x\n"), ("demo/sub/y", "md", "y\n")], &[]);
+        ship.subtree.store(older, std::sync::atomic::Ordering::SeqCst);
+        let s = ship.clone();
+        with_mount(if older { "nested-held-older" } else { "nested-held" }, &ship, 30, move |mnt| {
+            fs::remove_file(mnt.join("demo/demo.md")).unwrap();
+            fs::remove_file(mnt.join("demo/sub/sub.md")).unwrap();
+            fs::remove_file(mnt.join("demo/sub/x.md")).unwrap();
+            assert_eq!(deletes(&s), ["delete demo/sub/x"]);
+            fs::remove_file(mnt.join("demo/sub/y.md")).unwrap();
+            assert_eq!(deletes(&s), ["delete demo/sub/x", "delete demo/sub/y", "delete demo/sub", "delete demo"]);
+            assert!(!s.has("demo") && !s.has("demo/sub"));
+            assert!(!names(mnt).contains(&"demo".to_string()), "{:?}", names(mnt));
+        });
+    }
+}
+
+/// An editor saves by writing `name~` and renaming it onto the file. When the
+/// file is a held page's own, the page is still on the ship: the rename writes
+/// over it, and the page is no longer held.
+#[test]
+fn an_atomic_save_onto_a_held_pages_file_writes_over_the_page() {
+    for older in [false, true] {
+        let ship = Ship::with(&[("demo", "md", "p\n"), ("demo/kid", "md", "k\n")], &[]);
+        ship.subtree.store(older, std::sync::atomic::Ordering::SeqCst);
+        let s = ship.clone();
+        with_mount(if older { "held-promote-older" } else { "held-promote" }, &ship, 30, move |mnt| {
+            fs::remove_file(mnt.join("demo/demo.md")).unwrap();
+            fs::write(mnt.join("demo/demo.md~"), "new text\n").unwrap();
+            fs::rename(mnt.join("demo/demo.md~"), mnt.join("demo/demo.md")).unwrap();
+            assert_eq!(s.body("demo").as_deref(), Some(&b"new text\n"[..]), "{:?}", s.log());
+            // the page is written again, so the last page under it going does not delete it
+            fs::remove_file(mnt.join("demo/kid.md")).unwrap();
+            assert!(s.has("demo") && deletes(&s) == ["delete demo/kid"], "{:?}", s.log());
+            assert_eq!(s.body("demo").as_deref(), Some(&b"new text\n"[..]));
+        });
+    }
+}
+
+/// A held page's delete goes at a later change. If another client made a page
+/// under it meanwhile, the delete is not sent, whichever kind of ship it is:
+/// a ship before the page-only delete would take that page with it.
+#[test]
+fn a_held_pages_delete_is_not_sent_while_another_client_has_a_page_under_it() {
+    for older in [false, true] {
+        let ship = Ship::with(&[("demo", "md", "p\n"), ("demo/kid", "md", "k\n")], &[]);
+        ship.subtree.store(older, std::sync::atomic::Ordering::SeqCst);
+        let s = ship.clone();
+        with_mount(if older { "held-late-older" } else { "held-late" }, &ship, 30, move |mnt| {
+            fs::remove_file(mnt.join("demo/demo.md")).unwrap();
+            // another client makes a page under it, and the mount has not heard
+            s.pages.lock().unwrap().insert("demo/late".into(), ("md".into(), b"precious\n".to_vec()));
+            fs::remove_file(mnt.join("demo/kid.md")).unwrap();
+            assert!(s.has("demo/late") && s.has("demo"), "older={older}: {:?}", s.log());
+            assert_eq!(deletes(&s), ["delete demo/kid"]);
+        });
+    }
+}
+
+/// `rm -r` and `remove_dir_all` of a page's folder, with pages under it that
+/// sort before its own file and after it: both work, and the page's delete
+/// goes only once nothing is under it, on either kind of ship.
+#[test]
+fn removing_a_page_folder_works_whichever_side_of_its_own_file_its_pages_sort() {
+    for (older, rm) in [(false, true), (true, true), (false, false), (true, false)] {
+        let ship = Ship::with(
+            &[
+                ("demo", "md", "the parent body\n"),
+                ("demo/alpha", "md", "sorts before the page's own file\n"),
+                ("demo/zeta", "md", "sorts after it\n"),
+                ("other", "md", "x\n"),
+            ],
+            &[],
+        );
+        ship.subtree.store(older, std::sync::atomic::Ordering::SeqCst);
+        let s = ship.clone();
+        with_mount(&format!("rm-r-{older}-{rm}"), &ship, 30, move |mnt| {
+            assert_eq!(names(&mnt.join("demo")), ["alpha.md", "demo.md", "zeta.md"]);
+            if rm {
+                let out = std::process::Command::new("rm").arg("-r").arg(mnt.join("demo")).output().unwrap();
+                assert!(out.status.success(), "rm -r: {}", String::from_utf8_lossy(&out.stderr));
+            } else {
+                fs::remove_dir_all(mnt.join("demo")).unwrap();
+            }
+            assert!(!s.has("demo") && !s.has("demo/alpha") && !s.has("demo/zeta") && s.has("other"));
+            let log = deletes(&s);
+            let at = log.iter().position(|l| l == "delete demo").expect("the page's delete was sent");
+            assert!(log[..at].contains(&"delete demo/alpha".to_string()) && log[..at].contains(&"delete demo/zeta".to_string()), "the page's delete went before the pages under it: {log:?}");
+            assert_eq!(log.len(), 3, "each once: {log:?}");
+            assert!(!names(mnt).contains(&"demo".to_string()));
+        });
+    }
+}
+
+/// The ship's move of a page carries every page under it (`+move-pages`), so
+/// a rename of the page's own file is refused while pages are under it, as
+/// an unlink of it is held. A folder and a page with nothing under it move as
+/// before.
+#[test]
+fn a_rename_of_a_pages_own_file_never_moves_the_pages_under_it() {
+    let ship = Ship::with(&[("demo", "md", "the parent body\n"), ("demo/zeta", "md", "z\n"), ("solo", "md", "s\n")], &[]);
+    let s = ship.clone();
+    with_mount("mv-parent", &ship, 30, move |mnt| {
+        let moves = |s: &Ship| s.log().into_iter().filter(|l| l.starts_with("mv")).collect::<Vec<_>>();
+        let e = fs::rename(mnt.join("demo/demo.md"), mnt.join("moved.md")).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::ENOTEMPTY));
+        let e = fs::rename(mnt.join("demo/demo.md"), mnt.join("demo/renamed.md")).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::ENOTEMPTY));
+        assert_eq!(moves(&s), Vec::<String>::new(), "no move may reach the ship");
+        assert!(names(&mnt.join("demo")).contains(&"demo.md".to_string()) && s.has("demo") && s.has("demo/zeta"));
+        fs::rename(mnt.join("solo.md"), mnt.join("alone.md")).unwrap();
+        fs::rename(mnt.join("demo"), mnt.join("moved")).unwrap();
+        assert_eq!(moves(&s), ["mv solo alone", "mv demo moved"]);
+    });
+}
+
 /// truncate(2), then the page moves on elsewhere, then something opens the
 /// file to read it: the read must never save the truncate over the newer
 /// page. Looped, because the old failure hung on which handle a lookup met
@@ -600,4 +839,73 @@ fn a_decomposed_name_finds_the_composed_page() {
         pages.sort();
         assert_eq!(pages, vec!["caf\u{e9}".to_string(), "ok".to_string()]);
     });
+}
+
+/// On a ship advertising `page_only_del: true`, unlinking a parent page's own
+/// file sends the delete right away, keeps descendants intact, leaves the dir
+/// as a pure folder, survives remount without resurrection, supports `rm -r`
+/// in any order, and allows recreating the page cleanly.
+#[test]
+fn page_only_del_ship_deletes_parent_immediately_and_supports_rm_r_and_recreate() {
+    // 1. Direct page-only delete, remount without resurrection, and recreate.
+    let ship = Ship::with(
+        &[
+            ("demo", "md", "parent\n"),
+            ("demo/child", "md", "child\n"),
+            ("again", "md", "old\n"),
+            ("again/kid", "md", "kid\n"),
+        ],
+        &[],
+    );
+    ship.page_only_del.store(true, std::sync::atomic::Ordering::SeqCst);
+    let s = ship.clone();
+    with_mount("pod-direct", &ship, 30, move |mnt| {
+        fs::remove_file(mnt.join("demo/demo.md")).unwrap();
+        assert_eq!(deletes(&s), ["delete demo"]);
+        assert!(!s.has("demo") && s.has("demo/child"));
+        assert_eq!(names(&mnt.join("demo")), ["child.md"]);
+
+        // Recreating a page-only-deleted file writes a fresh page with new=true.
+        fs::remove_file(mnt.join("again/again.md")).unwrap();
+        assert!(!s.has("again") && s.has("again/kid"));
+        fs::write(mnt.join("again/again.md"), "fresh\n").unwrap();
+        assert_eq!(s.body("again").as_deref(), Some(&b"fresh\n"[..]));
+        assert!(!s.has("again/again"));
+    });
+    // Remounting sees demo as a pure folder with child.md and no demo.md.
+    let s2 = ship.clone();
+    with_mount("pod-remount", &ship, 30, move |mnt| {
+        assert_eq!(names(&mnt.join("demo")), ["child.md"]);
+        assert!(!s2.has("demo") && s2.has("demo/child"));
+    });
+
+    // 2. `rm -r` and `remove_dir_all` clean up the folder and page-gone marker.
+    for rm in [true, false] {
+        let ship = Ship::with(
+            &[
+                ("demo", "md", "parent\n"),
+                ("demo/alpha", "md", "a\n"),
+                ("demo/zeta", "md", "z\n"),
+                ("other", "md", "o\n"),
+            ],
+            &[],
+        );
+        ship.page_only_del.store(true, std::sync::atomic::Ordering::SeqCst);
+        let s = ship.clone();
+        with_mount(&format!("pod-rm-r-{rm}"), &ship, 30, move |mnt| {
+            if rm {
+                let out = std::process::Command::new("rm")
+                    .arg("-r")
+                    .arg(mnt.join("demo"))
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "rm -r: {}", String::from_utf8_lossy(&out.stderr));
+            } else {
+                fs::remove_dir_all(mnt.join("demo")).unwrap();
+            }
+            assert!(!s.has("demo") && !s.has("demo/alpha") && !s.has("demo/zeta") && s.has("other"));
+            assert!(s.dirs.lock().unwrap().is_empty(), "empty pure folder removed on rmdir");
+            assert!(s.page_gone.lock().unwrap().is_empty(), "page-gone marker cleared");
+        });
+    }
 }
