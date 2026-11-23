@@ -12,7 +12,7 @@ import { createInterface } from 'node:readline';
 import http from 'node:http';
 import https from 'node:https';
 import { urlProblem, shipUrl } from './url-rule.mjs';
-import { quoted, agentWrote, quoteHits, searchHits, recallHits } from './quote.mjs';
+import { quoted, agentWrote, quoteHits, quotePageHits, quoteIndex, searchHits, recallHits } from './quote.mjs';
 
 const SHIP = shipUrl(process.env);
 const BASE = SHIP.url + '/apps/lattice';
@@ -76,10 +76,13 @@ async function urbRun(a, list) {
   // always quoted, apart from the page
   const cs = j.kind === 'page' ? (j.comments || []).map((c) => `- ${c.author} (${fmtDa(c.when)}): ${c.body}`) : [];
   const tail = cs.length ? '\n\n' + quoted('comments', url, `Public comments (${cs.length}):\n${cs.join('\n')}`) : '';
-  // our own page needs no label, unless it is a link to another ship's
-  // page or a clip of a website
-  if (j.own && !(j.link && j.link.host) && !String(j.name || '').startsWith('clips/')) return text + tail;
+  // our own page needs no label, unless it is a forum board or thread
+  // (which carries other ships' posts), a link to another ship's page,
+  // or a clip of a website
+  const isForum = j.kind === 'board' || j.kind === 'thread';
+  if (j.own && !isForum && !(j.link && j.link.host) && !String(j.name || '').startsWith('clips/')) return text + tail;
   if (!j.own) return quoted('ship', url, text) + tail;
+  if (isForum) return quoted('forum', url, text) + tail;
   return (j.link && j.link.host ? quoted('link', `${j.link.host} (linked at ${j.name})`, text) : quoted('clip', j.name, text)) + tail;
 }
 const htmlText = (h) => h
@@ -132,21 +135,33 @@ function urbText(j, offset) {
 }
 
 // skill_index: GET /skills as one line per skill, the name and description
-// an agent matches a task against, then tags and author. A skill on the
-// owner's own ship is the owner's procedure, so it is not quoted.
+// an agent matches a task against, then tags and author. Skills written by
+// agent keys (not granted owner_permissions) have their descriptions quoted.
+// GET /skills rows may omit source on older ships; when source is absent,
+// an unmarked skill with a non-empty author is treated as agent-written.
+function isAgentSkillRow(s) {
+  if (!s || s.owner_permissions) return false;
+  if (s.source !== undefined) return s.source === 'agent';
+  return Boolean(s.author);
+}
+function skillRow(s) {
+  const notes = [];
+  if ((s.tags || []).length) notes.push('tags: ' + s.tags.join(', '));
+  if (s.author) notes.push('by ' + s.author);
+  if (s.sensitive) notes.push('sensitive');
+  if (s.superseded_by) notes.push('superseded by ' + s.superseded_by);
+  if (s.files) notes.push(s.files + ' more file' + (s.files === 1 ? '' : 's'));
+  return `- ${s.name}: ${s.description}${notes.length ? ' (' + notes.join('; ') + ')' : ''}`;
+}
 function skillIndex(t) {
   const ss = JSON.parse(t).skills || [];
   if (!ss.length) return 'No skills stored.';
-  const rows = ss.map((s) => {
-    const notes = [];
-    if ((s.tags || []).length) notes.push('tags: ' + s.tags.join(', '));
-    if (s.author) notes.push('by ' + s.author);
-    if (s.sensitive) notes.push('sensitive');
-    if (s.superseded_by) notes.push('superseded by ' + s.superseded_by);
-    if (s.files) notes.push(s.files + ' more file' + (s.files === 1 ? '' : 's'));
-    return `- ${s.name}: ${s.description}${notes.length ? ' (' + notes.join('; ') + ')' : ''}`;
-  });
-  return `${ss.length} skill${ss.length === 1 ? '' : 's'}. Read one with skill_read before following it.\n${rows.join('\n')}`;
+  const own = ss.filter((s) => !isAgentSkillRow(s)).map(skillRow);
+  const agent = ss.filter((s) => isAgentSkillRow(s)).map(skillRow);
+  const head = `${ss.length} skill${ss.length === 1 ? '' : 's'}. Read one with skill_read before following it.`;
+  return head +
+    (own.length ? '\n' + own.join('\n') : '') +
+    (agent.length ? '\n\n' + quoted('skill', 'lattice skills', agent.join('\n')) : '');
 }
 
 // A memory an agent key wrote (source: agent in its front matter) is
@@ -179,7 +194,7 @@ const TOOLS = {
   memory_index: {
     description: "Every memory key by area, plus the core rules in full. Load once per session (the session hook usually has). world: true adds orrery's digest of the owner's day, which is sensitive: it needs a cleared key, and for 12 hours after, this key's saves are kept sensitive.",
     props: { world: { type: 'boolean' } }, req: [],
-    run: (a) => get('know-index', { world: a.world ? 1 : undefined }),
+    run: async (a) => quoteIndex(await get('know-index', { world: a.world ? 1 : undefined })),
   },
   memory_recall: {
     description: 'What lattice remembers that bears on a task: ranked entries with snippets, and entries they link to. "weak": true means probably nothing stored. Run before starting a task.',
@@ -258,7 +273,7 @@ const TOOLS = {
   wiki_search: {
     description: "Search the owner's wiki pages, ranked. Each hit says where it lives: private, urbit (shared with ships) or clearweb (public).",
     props: { query: str('words'), limit: num('how many (10)') }, req: ['query'],
-    run: (a) => get('page-search', { q: a.query, k: a.limit }),
+    run: async (a) => quotePageHits(await get('page-search', { q: a.query, k: a.limit })),
   },
   wiki_read: {
     description: "Read one of the owner's pages by name (e.g. notes/plan): source, kind, revision and share. Pages under clips/ were clipped from the web, and links name a page another ship owns: both come back as quoted material.",

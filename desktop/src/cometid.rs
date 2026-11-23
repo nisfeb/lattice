@@ -205,7 +205,7 @@ pub fn open(file: &[u8], pass: &str) -> Result<Identity, OpenError> {
     let meta: Meta = serde_json::from_slice(&rest[..n]).map_err(|_| OpenError::Damaged)?;
     let rest = &rest[n..];
     let (db_len, wal_len) = (meta.db_len as usize, meta.wal_len as usize);
-    if db_len.checked_add(wal_len) != Some(rest.len()) || !meta.ship.starts_with('~') || meta.keyfile.is_empty() {
+    if db_len.checked_add(wal_len) != Some(rest.len()) || !crate::urb::is_patp(&meta.ship) || meta.keyfile.is_empty() {
         return Err(OpenError::Damaged);
     }
     Ok(Identity {
@@ -266,6 +266,9 @@ pub fn install(dir: &Path, id: &Identity) -> Result<Option<PathBuf>, String> {
 
 fn install_locked(dir: &Path, id: &Identity) -> Result<Option<PathBuf>, String> {
     use std::os::unix::fs::DirBuilderExt;
+    if !crate::urb::is_patp(&id.ship) {
+        return Err(format!("invalid ship name in identity: {}", id.ship));
+    }
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -521,5 +524,18 @@ mod tests {
         assert_eq!(exported_at(&a), None);
         mark_exported(&a).unwrap();
         assert!(exported_at(&a).unwrap() >= now() - 5);
+    }
+
+    #[test]
+    fn invalid_ship_names_are_refused_on_open_and_install() {
+        for bad_ship in ["~../../evil", "~not-a-patp", "zod", "~"] {
+            let mut bad = id();
+            bad.ship = bad_ship.into();
+            let sealed = seal_with(&bad, "correct horse", T).unwrap();
+            assert_eq!(open(&sealed, "correct horse"), Err(OpenError::Damaged), "open must refuse {bad_ship}");
+            let dir = tmpdir("cometid-bad-ship");
+            assert!(install(&dir, &bad).is_err(), "install must refuse {bad_ship}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

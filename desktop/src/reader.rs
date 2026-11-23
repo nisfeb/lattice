@@ -162,6 +162,32 @@ pub fn boot_url(base: &str, to: &str) -> String {
     format!("{base}/boot?k={}&to={}", token(), render::enc(to))
 }
 
+/// Bound each per-ship / per-page cache map in `Ctx` so long-lived reader
+/// sessions cannot accumulate unbounded cache entries.
+const CACHE_CAP: usize = 256;
+
+fn cache_insert_cap<V>(
+    map: &mut HashMap<String, (Instant, Option<V>)>,
+    key: String,
+    val: Option<V>,
+    cap: usize,
+) {
+    map.insert(key, (Instant::now(), val));
+    if map.len() > cap {
+        map.retain(|_, (at, v)| at.elapsed() < if v.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL });
+        while map.len() > cap {
+            let Some(oldest) = map.iter().min_by_key(|(_, (at, _))| *at).map(|(k, _)| k.clone()) else {
+                break;
+            };
+            map.remove(&oldest);
+        }
+    }
+}
+
+fn cache_insert<V>(map: &mut HashMap<String, (Instant, Option<V>)>, key: String, val: Option<V>) {
+    cache_insert_cap(map, key, val, CACHE_CAP);
+}
+
 /// What a page needs: the engine (or a test's stand-in), the history, and
 /// the publisher HTML the last reads brought, by key.
 pub struct Ctx {
@@ -228,7 +254,7 @@ impl Ctx {
             Some((at, l)) if at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
             _ => {
                 let l = self.reads.threads(ship, left(until));
-                self.threads.lock().unwrap().insert(ship.to_string(), (Instant::now(), l.clone()));
+                cache_insert(&mut self.threads.lock().unwrap(), ship.to_string(), l.clone());
                 l
             }
         }
@@ -253,7 +279,7 @@ impl Ctx {
             Some((at, l)) if !waiting && at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
             _ => {
                 let l = self.reads.thread(ship, key, left(until));
-                self.lists.lock().unwrap().insert(url.to_string(), (Instant::now(), l.clone()));
+                cache_insert(&mut self.lists.lock().unwrap(), url.to_string(), l.clone());
                 l
             }
         };
@@ -303,7 +329,7 @@ impl Ctx {
             Some((at, l)) if !fresh && at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
             _ => {
                 let l = self.reads.forum_open(host, OPEN_BUDGET);
-                self.forums.lock().unwrap().insert(host.to_string(), (Instant::now(), l.clone()));
+                cache_insert(&mut self.forums.lock().unwrap(), host.to_string(), l.clone());
                 l
             }
         };
@@ -319,7 +345,7 @@ impl Ctx {
             Some((at, l)) if !fresh && at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
             _ => {
                 let l = self.reads.comments_open(ship, left(until));
-                self.opens.lock().unwrap().insert(ship.to_string(), (Instant::now(), l.clone()));
+                cache_insert(&mut self.opens.lock().unwrap(), ship.to_string(), l.clone());
                 l
             }
         };
@@ -345,7 +371,7 @@ impl Ctx {
             Some((at, l)) if at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
             _ => {
                 let l = self.reads.titles(ship, left(until));
-                self.titles.lock().unwrap().insert(ship.to_string(), (Instant::now(), l.clone()));
+                cache_insert(&mut self.titles.lock().unwrap(), ship.to_string(), l.clone());
                 l
             }
         }
@@ -2700,6 +2726,25 @@ mod tests {
         assert_eq!(unescape("100%"), "100%");
         assert_eq!(unescape("%zz%4"), "%zz%4");
         assert_eq!(unescape("%e2%9c%93"), "\u{2713}");
+    }
+
+    #[test]
+    fn ctx_cache_evicts_expired_and_oldest_entries_when_over_cap() {
+        let mut map: HashMap<String, (Instant, Option<u32>)> = HashMap::new();
+        let old_expired = Instant::now() - OPEN_TTL - Duration::from_secs(5);
+        map.insert("expired".into(), (old_expired, Some(1)));
+        let oldest_live = Instant::now() - Duration::from_secs(10);
+        map.insert("oldest".into(), (oldest_live, Some(2)));
+        let newer_live = Instant::now() - Duration::from_secs(5);
+        map.insert("newer".into(), (newer_live, Some(3)));
+
+        // Cap of 2: inserting "fresh" drops "expired" first, then "oldest"
+        cache_insert_cap(&mut map, "fresh".into(), Some(4), 2);
+        assert_eq!(map.len(), 2);
+        assert!(!map.contains_key("expired"), "expired entry should be evicted");
+        assert!(!map.contains_key("oldest"), "oldest entry should be evicted when over cap");
+        assert!(map.contains_key("newer"));
+        assert!(map.contains_key("fresh"));
     }
 
     /// On the fleet: two reader identities comment on a page that takes

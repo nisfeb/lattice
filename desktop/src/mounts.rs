@@ -169,14 +169,43 @@ pub async fn install_macfuse(app: AppHandle, webview: tauri::Webview) -> Result<
             ),
             "Download",
         )?;
-        tauri::async_runtime::spawn_blocking(fetch_and_open_macfuse)
+        use tauri::Manager;
+        let cache = app
+            .path()
+            .app_cache_dir()
+            .map_err(|e| format!("no app cache dir: {e}"))?;
+        tauri::async_runtime::spawn_blocking(move || fetch_and_open_macfuse(cache))
             .await
             .map_err(|e| e.to_string())?
     }
 }
 
+/// Create a private 0700 staging directory under `cache_dir` for the macFUSE
+/// disk image instead of using a predictable path in `/tmp`.
+#[cfg(any(target_os = "macos", test))]
+fn stage_macfuse_dir(cache_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    let dir = cache_dir.join("macfuse");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    let md = std::fs::symlink_metadata(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // SAFETY: geteuid has no preconditions and cannot fail
+    let me = unsafe { libc::geteuid() };
+    if !md.file_type().is_dir() || md.uid() != me {
+        return Err(format!("{}: not a private staging directory", dir.display()));
+    }
+    if md.permissions().mode() & 0o077 != 0 {
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    Ok(dir)
+}
+
 #[cfg(target_os = "macos")]
-fn fetch_and_open_macfuse() -> Result<(), String> {
+fn fetch_and_open_macfuse(cache_dir: std::path::PathBuf) -> Result<(), String> {
     use std::io::Read;
     use std::process::Command;
     let resp = ureq::get(MACFUSE_DMG)
@@ -194,10 +223,9 @@ fn fetch_and_open_macfuse() -> Result<(), String> {
             "the download is not macFUSE {MACFUSE_VERSION} (checksum mismatch), so nothing was opened"
         ));
     }
-    let dir = std::env::temp_dir().join("lattice-macfuse");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dir = stage_macfuse_dir(&cache_dir)?;
     let file = dir.join(format!("macfuse-{MACFUSE_VERSION}.dmg"));
-    std::fs::write(&file, &dmg).map_err(|e| e.to_string())?;
+    crate::session::write_private(&file, &dmg)?;
     let vol = dir.join("volume");
     // a volume left mounted by an earlier try would make attach fail
     let _ = Command::new("/usr/bin/hdiutil").arg("detach").arg(&vol).arg("-force").output();
@@ -301,10 +329,10 @@ pub async fn add_mount(
     sock: Option<String>,
     ship: Option<String>,
 ) -> Result<(), String> {
-    let mountpoint = expand_home(mountpoint.trim());
+    let raw_mountpoint = expand_home(mountpoint.trim());
     let sock = sock.unwrap_or_default();
     let ship = ship.unwrap_or_default();
-    validate_mountpoint(&mountpoint)?;
+    let mountpoint = validate_mountpoint(&raw_mountpoint)?;
     // before the confirm dialog: there is no point asking to mount what
     // cannot be mounted, and on macOS libfuse is weak-linked, so going on
     // without it would crash rather than fail
@@ -373,15 +401,26 @@ pub fn remove_mount(
     map: State<MountMap>,
     mountpoint: String,
 ) -> Result<(), String> {
-    let removed = map.0.lock().unwrap().remove(&mountpoint);
-    let Some(mount) = removed else {
-        return Err(format!("{mountpoint} is not mounted"));
+    let norm = normalize_mountpoint(&expand_home(mountpoint.trim()));
+    let (key, mount) = {
+        let mut m = map.0.lock().unwrap();
+        if let Some(got) = m.remove(&mountpoint) {
+            (mountpoint.clone(), got)
+        } else if let Some(got) = m.remove(&norm) {
+            (norm.clone(), got)
+        } else {
+            return Err(format!("{mountpoint} is not mounted"));
+        }
     };
     // quiesce the lick socket before the unmount, same as on exit: a bare drop
     // mid-write can crash the ship
     mount.teardown();
     config::update(&app, move |cfg| {
-        cfg.mounts.retain(|s| s.mountpoint != mountpoint);
+        cfg.mounts.retain(|s| {
+            s.mountpoint != key
+                && s.mountpoint != norm
+                && normalize_mountpoint(&expand_home(s.mountpoint.trim())) != norm
+        });
     })
     .map(|_| ())
 }
@@ -499,7 +538,36 @@ fn expand_home(p: &str) -> String {
 /// existing NON-EMPTY directory (mounting over content hides it for the life
 /// of the mount, which reads as lost files). A missing path is fine —
 /// heal_mountpoint creates it — and an existing EMPTY dir is the normal case.
-fn validate_mountpoint(mountpoint: &str) -> Result<(), String> {
+/// Canonicalize the longest existing ancestor of `mountpoint` and append any
+/// non-existing tail segments, returning a consistent normalized path without
+/// trailing slashes.
+fn normalize_mountpoint(mountpoint: &str) -> String {
+    let p = std::path::Path::new(mountpoint);
+    let mut ancestor = p;
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    let canon = loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(c) => break c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match (ancestor.parent(), ancestor.file_name()) {
+                    (Some(par), Some(name)) => {
+                        tail.push(name);
+                        ancestor = par;
+                    }
+                    _ => return mountpoint.trim_end_matches('/').to_string(),
+                }
+            }
+            Err(_) => return mountpoint.trim_end_matches('/').to_string(),
+        }
+    };
+    let mut resolved = canon;
+    for name in tail.iter().rev() {
+        resolved.push(name);
+    }
+    resolved.to_string_lossy().into_owned()
+}
+
+fn validate_mountpoint(mountpoint: &str) -> Result<String, String> {
     let p = std::path::Path::new(mountpoint);
     if mountpoint.trim().is_empty() {
         return Err("mountpoint is empty".into());
@@ -561,7 +629,7 @@ fn validate_mountpoint(mountpoint: &str) -> Result<(), String> {
             return Err(format!("{mountpoint}: exists and is not a directory"));
         }
     }
-    Ok(())
+    Ok(resolved.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -702,6 +770,43 @@ mod tests {
         assert!(e.contains("under $HOME"), "symlink escape must be caught: {e}");
         std::fs::remove_file(&link).ok();
         std::fs::remove_dir_all(&outside).ok();
+    }
+
+    #[test]
+    fn validate_mountpoint_returns_canonical_path_without_trailing_slash() {
+        let Some(home) = home_for_test() else { return };
+        let base = home.join(format!("lattice-norm-{}", std::process::id()));
+        let real_sub = base.join("real");
+        std::fs::create_dir_all(&real_sub).unwrap();
+        let link = base.join("sym");
+        std::fs::remove_file(&link).ok();
+        std::os::unix::fs::symlink(&real_sub, &link).unwrap();
+        let with_slash = format!("{}/sub/", link.display());
+        let got = validate_mountpoint(&with_slash).unwrap();
+        let want = real_sub.join("sub").to_string_lossy().into_owned();
+        assert_eq!(got, want);
+        assert_eq!(super::normalize_mountpoint(&with_slash), want);
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn stage_macfuse_dir_is_private_0700_and_refuses_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("lattice-macfuse-stage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = super::stage_macfuse_dir(&base).unwrap();
+        let mode = std::fs::symlink_metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "staging dir must be 0700");
+        let _ = std::fs::remove_dir_all(&base);
+
+        // A symlink planted at cache_dir/macfuse must be refused.
+        let target = std::env::temp_dir().join(format!("lattice-macfuse-sym-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, base.join("macfuse")).unwrap();
+        assert!(super::stage_macfuse_dir(&base).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&target);
     }
 
     proptest! {

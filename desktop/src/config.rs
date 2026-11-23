@@ -59,6 +59,10 @@ pub struct BackupSchedule {
     /// paused schedules stay configured but never come due
     #[serde(default)]
     pub enabled: bool,
+    /// ship @p this schedule belongs to. Empty on configs written before
+    /// per-ship scoping, which matches any connected ship.
+    #[serde(default)]
+    pub ship: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -192,6 +196,7 @@ mod tests {
                 dir: "/tmp/backups".into(),
                 last_run: 1_700_000_000,
                 enabled: true,
+                ship: "~zod".into(),
             }],
             mounts: vec![MountSpec {
                 mountpoint: "/tmp/l".into(),

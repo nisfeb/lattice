@@ -23,6 +23,7 @@ fs.mkdirSync(scratch, { recursive: true });
 const tmp = fs.mkdtempSync(path.join(scratch, 'plugin-hook-'));
 
 let index = '';
+let indexStatus = 200;
 let recall = {};
 let host = { code: 200, body: '~zod' };
 const hostAuth = [];
@@ -37,7 +38,7 @@ const fake = http.createServer((req, res) => {
   if (u.pathname === '/~/host') { hostAuth.push(req.headers.authorization || ''); return send(host.code, host.body); }
   if (req.headers.authorization !== 'Bearer k.s') return send(401, '{"error":"no"}');
   const r = u.pathname.replace('/apps/lattice/', '');
-  if (r === 'know-index') return send(200, index);
+  if (r === 'know-index') return send(indexStatus, indexStatus === 200 ? index : { error: 'boom' });
   if (r === 'know-recall') return send(200, recall);
   if (r === 'skills') return send(200, { skills: Object.keys(skills).map((name) => ({ name, description: 'd', updated: '~1', files: 0 })) });
   if (r === 'skill') return send(200, { name: u.searchParams.get('name'), updated: '~1', files: [], ...skills[u.searchParams.get('name')] });
@@ -133,6 +134,25 @@ try {
   host = { code: 200, body: '~zod' };
   t = await hook('skills');
   check('  ...and with it the gone skill is removed', !fs.existsSync(path.join(root, 'mine')) && /removed mine/.test(t), t);
+
+  //  broken symlink in skills dir is treated as user-owned and skipped, not an abort
+  skills.broken = { body: md('broken'), owner_permissions: true };
+  skills.healthy = { body: md('healthy'), owner_permissions: true };
+  fs.symlinkSync(path.join(tmp, 'does-not-exist'), path.join(root, 'broken'));
+  t = await hook('skills');
+  check('skills: broken symlink is skipped without aborting sync',
+    fs.lstatSync(path.join(root, 'broken')).isSymbolicLink() &&
+    fs.existsSync(path.join(root, 'healthy/SKILL.md')) &&
+    /Not mirrored, since a skill of your own has the name: broken/.test(t), t);
+
+  //  when hook 0 fails, it writes an empty sentinel so hook 1 exits immediately instead of stalling 20s
+  indexStatus = 500;
+  const t0 = Date.now();
+  const [failOne, failTwo] = await session('err-fast');
+  const elapsed = Date.now() - t0;
+  indexStatus = 200;
+  check('session error: hook 0 reports unreachable', failOne.includes('unreachable'), failOne);
+  check('  ...and hook 1 exits quickly on sentinel', failTwo === '' && elapsed < 3000, `elapsed=${elapsed}ms out=${JSON.stringify(failTwo)}`);
 } finally {
   fake.close();
   fs.rmSync(tmp, { recursive: true, force: true });

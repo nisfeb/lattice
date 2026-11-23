@@ -42,7 +42,36 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+const MAX_CONNS: usize = 64;
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+static ACTIVE_CONNS: AtomicUsize = AtomicUsize::new(0);
+
+struct BridgeSlot<'a>(&'a AtomicUsize);
+
+impl<'a> BridgeSlot<'a> {
+    fn acquire_from(counter: &'a AtomicUsize, max: usize) -> Option<Self> {
+        let prev = counter.fetch_add(1, Ordering::AcqRel);
+        if prev >= max {
+            counter.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(BridgeSlot(counter))
+    }
+
+    fn acquire() -> Option<Self> {
+        Self::acquire_from(&ACTIVE_CONNS, MAX_CONNS)
+    }
+}
+
+impl Drop for BridgeSlot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 
 /// the ship base the bridge currently relays to, and the port it listens on
@@ -136,9 +165,17 @@ pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
     let shared = Arc::new(Mutex::new(base.clone()));
     let ship = shared.clone();
     std::thread::spawn(move || {
-        for conn in listener.incoming().flatten() {
+        for mut conn in listener.incoming().flatten() {
+            let Some(slot) = BridgeSlot::acquire() else {
+                let _ = write!(
+                    conn,
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                continue;
+            };
             let ship = ship.lock().unwrap().clone();
             std::thread::spawn(move || {
+                let _slot = slot;
                 let _ = serve(conn, &ship, port);
             });
         }
@@ -302,10 +339,34 @@ fn has_token(cookie: Option<&str>) -> bool {
     })
 }
 
+fn percent_encoded_ok(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%' {
+            if i + 2 >= bytes.len()
+                || !bytes[i + 1].is_ascii_hexdigit()
+                || !bytes[i + 2].is_ascii_hexdigit()
+            {
+                return false;
+            }
+            i += 3;
+        } else if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            i += 1;
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
 /// A redirect target the bootstrap will accept: a plain path on the bridge,
-/// with at most one query, `?settings=<tab>` and the tab lowercase letters
-/// only. That one is the manager page's way back to a tab of the editor's
-/// Settings (go_home in commands.rs, 99-boot.js).
+/// with at most one query, `?settings=<tab>` (lowercase letters) or
+/// `?backup=<id>` (percent-encoded schedule id).
 fn plain_path(to: &str) -> bool {
     let (path, query) = match to.split_once('?') {
         Some((p, q)) => (p, Some(q)),
@@ -317,6 +378,7 @@ fn plain_path(to: &str) -> bool {
         && query.is_none_or(|q| {
             q.strip_prefix("settings=")
                 .is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_lowercase()))
+                || q.strip_prefix("backup=").is_some_and(percent_encoded_ok)
         })
 }
 
@@ -418,6 +480,15 @@ fn read_request(reader: &mut impl BufRead, port: u16) -> std::io::Result<Request
         (Some(m), Some(t)) => (m.to_string(), t.to_string()),
         _ => return Ok(Request::Drop),
     };
+    // Target must be an origin-form path starting with a single `/` and no
+    // ASCII control characters. Anything else (absolute URI, `//host`, `@host`,
+    // CR/LF) could redirect `format!("{ship}{target}")` off the ship.
+    let target_ok = target.starts_with('/')
+        && !target.starts_with("//")
+        && !target.bytes().any(|b| b < 0x20 || b == 0x7f);
+    if !target_ok {
+        return Ok(Request::Refuse("400 Bad Request"));
+    }
     // headers: keep what the page sent except hop-by-hop, host and cookies.
     // Accept-Encoding passes THROUGH. ureq (no gzip feature) hands us the
     // compressed body verbatim and Content-Encoding rides back with it, so
@@ -553,6 +624,7 @@ fn relay_response(c: &mut TcpStream, resp: ureq::Response) -> std::io::Result<()
 /// Relay one request from the bridge on `port` to `ship`.
 fn serve(client: TcpStream, ship: &str, port: u16) -> std::io::Result<()> {
     client.set_nodelay(true).ok();
+    client.set_read_timeout(Some(READ_TIMEOUT)).ok();
     let mut reader = BufReader::new(client.try_clone()?);
     let req = match read_request(&mut reader, port)? {
         Request::Relay(req) => req,
@@ -573,6 +645,7 @@ fn serve(client: TcpStream, ship: &str, port: u16) -> std::io::Result<()> {
             );
         }
     };
+    client.set_read_timeout(None).ok();
     // a map tile, with a Mapbox token on this computer: answered here, from
     // Mapbox, and the ship never sees it. Without a token it goes to the
     // ship's own tile route as any request does.
@@ -1225,5 +1298,47 @@ mod tests {
             "ship two",
             "the bridge kept relaying to the previous ship after a re-point"
         );
+    }
+
+    #[test]
+    fn bad_request_targets_are_refused_with_400() {
+        let ship = Stub::new(|_| (200, "ok".into()));
+        for target in [
+            "http://evil.example/steal",
+            "//evil.example/steal",
+            "@evil.example/steal",
+            "relative/path",
+            "/bad\x07ctrl",
+            "/bad\x7fdel",
+        ] {
+            let raw = format!(
+                "GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\r\n"
+            );
+            let out = String::from_utf8_lossy(&through_bridge(raw.as_bytes(), &ship.base)).into_owned();
+            assert!(out.starts_with("HTTP/1.1 400 Bad Request"), "target {target:?} got: {out}");
+        }
+        assert!(ship.requests().is_empty(), "bad targets must never reach the ship");
+    }
+
+    #[test]
+    fn bridge_slot_caps_concurrency_and_releases_on_drop() {
+        let counter = AtomicUsize::new(0);
+        let a = BridgeSlot::acquire_from(&counter, 2).expect("slot 1");
+        let b = BridgeSlot::acquire_from(&counter, 2).expect("slot 2");
+        assert!(BridgeSlot::acquire_from(&counter, 2).is_none(), "cap enforced");
+        drop(a);
+        let c = BridgeSlot::acquire_from(&counter, 2).expect("slot released on drop");
+        drop(b);
+        drop(c);
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn plain_path_allows_percent_encoded_backup_query() {
+        assert!(plain_path("/apps/lattice/app?backup=sched-1"));
+        assert!(plain_path("/apps/lattice/app?backup=a%26b%3Dc"));
+        assert!(!plain_path("/apps/lattice/app?backup="));
+        assert!(!plain_path("/apps/lattice/app?backup=a&other=1"));
+        assert!(!plain_path("/apps/lattice/app?backup=%ZZ"));
     }
 }

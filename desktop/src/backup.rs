@@ -88,31 +88,80 @@ pub fn stamp(secs: u64) -> String {
     )
 }
 
-/// The archive name for a schedule at a moment.
+/// Does this schedule belong to the active ship? A schedule with an empty
+/// `ship` (saved before per-ship scoping) matches any ship.
+pub fn for_ship(s: &BackupSchedule, active_ship: &str) -> bool {
+    s.ship.is_empty() || (!active_ship.is_empty() && s.ship == active_ship)
+}
+
+/// Filename-safe form of a schedule ID for disambiguating archives that share
+/// the same label.
+fn id_tag(id: &str) -> String {
+    id.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .take(16)
+        .collect()
+}
+
+fn valid_stamp(s: &str) -> bool {
+    let Some((d, t)) = s.split_once('-') else { return false };
+    d.len() == 8
+        && t.len() == 6
+        && d.bytes().all(|b| b.is_ascii_digit())
+        && t.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The archive name for a schedule at a moment. Includes the sanitized schedule
+/// ID when present so two schedules with the same label do not collide.
 pub fn archive_name(s: &BackupSchedule, at: u64) -> String {
-    format!("lattice-{}-{}.tar", slug(&s.label), stamp(at))
+    let tag = id_tag(&s.id);
+    if tag.is_empty() {
+        format!("lattice-{}-{}.tar", slug(&s.label), stamp(at))
+    } else {
+        format!("lattice-{}-{}-{}.tar", slug(&s.label), tag, stamp(at))
+    }
 }
 
 /// The name for an archive the page said is INCOMPLETE. The suffix keeps
 /// it out of is_ours, so retention never counts it as a good backup, never
 /// deletes it, and verify_newest never mistakes it for the newest one.
 pub fn incomplete_name(s: &BackupSchedule, at: u64) -> String {
-    format!("lattice-{}-{}-INCOMPLETE.tar", slug(&s.label), stamp(at))
+    let tag = id_tag(&s.id);
+    if tag.is_empty() {
+        format!("lattice-{}-{}-INCOMPLETE.tar", slug(&s.label), stamp(at))
+    } else {
+        format!("lattice-{}-{}-{}-INCOMPLETE.tar", slug(&s.label), tag, stamp(at))
+    }
+}
+
+/// Extract the timestamp (`YYYYMMDD-HHMMSS`) if `fname` belongs to `s`.
+/// Matches both the current ID-disambiguated format
+/// `lattice-<slug>-<id>-<stamp>.tar` and the pre-ID legacy format
+/// `lattice-<slug>-<stamp>.tar` so existing archives stay detected.
+fn stamp_of<'a>(s: &BackupSchedule, fname: &'a str) -> Option<&'a str> {
+    let prefix = format!("lattice-{}-", slug(&s.label));
+    let rest = fname.strip_prefix(&prefix)?.strip_suffix(".tar")?;
+    let tag = id_tag(&s.id);
+    if !tag.is_empty() {
+        let with_id = format!("{tag}-");
+        if let Some(st) = rest.strip_prefix(&with_id) {
+            return valid_stamp(st).then_some(st);
+        }
+    }
+    valid_stamp(rest).then_some(rest)
 }
 
 /// Does this filename belong to this schedule?
 ///
 /// Deliberately strict, because the answer decides what gets DELETED. Only
-/// `lattice-<slug>-<8 digits>-<6 digits>.tar` counts: not a rename, not a
-/// copy, not another schedule whose slug happens to share a prefix, and not
-/// anything the user put in the directory themselves. A backup directory is
-/// somewhere people also keep things by hand.
+/// `lattice-<slug>-<id>-<8 digits>-<6 digits>.tar` (or legacy
+/// `lattice-<slug>-<8 digits>-<6 digits>.tar`) counts: not a rename, not a
+/// copy, not another schedule whose slug happens to share a prefix or label,
+/// and not anything the user put in the directory themselves.
+#[cfg(test)]
 pub fn is_ours(s: &BackupSchedule, fname: &str) -> bool {
-    let prefix = format!("lattice-{}-", slug(&s.label));
-    let Some(rest) = fname.strip_prefix(&prefix) else { return false };
-    let Some(rest) = rest.strip_suffix(".tar") else { return false };
-    let Some((d, t)) = rest.split_once('-') else { return false };
-    d.len() == 8 && t.len() == 6 && d.bytes().all(|b| b.is_ascii_digit()) && t.bytes().all(|b| b.is_ascii_digit())
+    stamp_of(s, fname).is_some()
 }
 
 /// This schedule's archives in `dir`, oldest first.
@@ -133,23 +182,24 @@ pub fn existing(s: &BackupSchedule, dir: &Path) -> Vec<PathBuf> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // the stamp is fixed width, so comparing names compares times
-    let latest = format!("lattice-{}-{}.tar", slug(&s.label), stamp(now + 86_400));
-    let mut v: Vec<PathBuf> = rd
+    // the stamp is fixed width, so comparing stamps compares times across both
+    // legacy and ID-disambiguated filenames
+    let latest = stamp(now + 86_400);
+    let mut v: Vec<(String, PathBuf)> = rd
         .flatten()
-        .filter(|e| {
-            let Some(n) = e.file_name().to_str().map(str::to_string) else { return false };
-            let Ok(m) = std::fs::symlink_metadata(e.path()) else { return false };
-            is_ours(s, &n)
-                && n <= latest
-                && m.file_type().is_file()
-                && m.uid() == me
-                && m.nlink() == 1
+        .filter_map(|e| {
+            let n = e.file_name().to_str()?.to_string();
+            let st = stamp_of(s, &n)?;
+            if st > latest.as_str() {
+                return None;
+            }
+            let m = std::fs::symlink_metadata(e.path()).ok()?;
+            (m.file_type().is_file() && m.uid() == me && m.nlink() == 1)
+                .then(|| (st.to_string(), e.path()))
         })
-        .map(|e| e.path())
         .collect();
     v.sort();
-    v
+    v.into_iter().map(|(_, p)| p).collect()
 }
 
 /// Delete this schedule's oldest archives until `keep` remain.
@@ -215,11 +265,18 @@ pub fn record(
     at: u64,
     complete: bool,
 ) -> Result<PathBuf, String> {
+    let active_ship = cfg.ship.clone();
     let slot = cfg
         .backups
         .iter_mut()
         .find(|s| s.id == id)
         .ok_or_else(|| format!("no backup schedule {id}"))?;
+    if !for_ship(slot, &active_ship) {
+        return Err(format!(
+            "backup schedule {} belongs to {}, not {}",
+            slot.label, slot.ship, active_ship
+        ));
+    }
     let path = write_archive(slot, bytes, at, complete)?;
     if complete {
         slot.last_run = at;
@@ -429,6 +486,7 @@ mod tests {
             dir: dir.into(),
             last_run: 0,
             enabled: true,
+            ship: String::new(),
         }
     }
 
@@ -970,5 +1028,61 @@ mod tests {
         let r = verify_bytes("t.tar", &full_archive());
         assert!(!r.has_manifest);
         assert!(r.ok(), "{:?}", r.problems);
+    }
+
+    #[test]
+    fn schedules_with_same_label_and_different_ids_do_not_collide_and_legacy_stays_matched() {
+        let dir = tmpdir("id-disambig");
+        let mut a = sched("daily", 24, 2, dir.to_str().unwrap());
+        a.id = "sched-a".into();
+        let mut b = sched("daily", 24, 2, dir.to_str().unwrap());
+        b.id = "sched-b".into();
+
+        let na = archive_name(&a, 1_700_000_000);
+        let nb = archive_name(&b, 1_700_000_000);
+        assert_ne!(na, nb);
+        assert!(is_ours(&a, &na));
+        assert!(!is_ours(&a, &nb), "schedule A must not claim schedule B's archive");
+        assert!(is_ours(&b, &nb));
+        assert!(!is_ours(&b, &na), "schedule B must not claim schedule A's archive");
+        // Pre-ID legacy archive is still detected and sorted chronologically with new ones
+        let legacy = "lattice-daily-20231110-000000.tar";
+        assert!(is_ours(&a, legacy));
+        std::fs::write(dir.join(legacy), b"old").unwrap();
+        write_archive(&a, b"new-a", 1_700_000_000, true).unwrap();
+        write_archive(&b, b"new-b", 1_700_000_000, true).unwrap();
+        let have_a = existing(&a, &dir);
+        assert_eq!(have_a.len(), 2, "{have_a:?}");
+        assert_eq!(have_a[0].file_name().unwrap().to_str().unwrap(), legacy);
+        assert_eq!(have_a[1].file_name().unwrap().to_str().unwrap(), na);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ship_scoping_guards_ticks_and_writes_while_deserializing_legacy_configs() {
+        // Existing config JSON without `ship` deserializes with empty ship.
+        let legacy_json = r#"{"id":"b1","label":"daily","every_hours":24,"keep":7,"dir":"/tmp","last_run":0,"enabled":true}"#;
+        let legacy: BackupSchedule = serde_json::from_str(legacy_json).unwrap();
+        assert!(legacy.ship.is_empty());
+        assert!(for_ship(&legacy, "~zod"));
+        assert!(for_ship(&legacy, "~bus"));
+
+        let dir = tmpdir("ship-scope");
+        let mut scoped = sched("daily", 24, 2, dir.to_str().unwrap());
+        scoped.id = "s1".into();
+        scoped.ship = "~zod".into();
+        assert!(for_ship(&scoped, "~zod"));
+        assert!(!for_ship(&scoped, "~bus"));
+        assert!(!for_ship(&scoped, ""));
+
+        let mut cfg = crate::config::Config {
+            ship: "~bus".into(),
+            backups: vec![scoped],
+            ..Default::default()
+        };
+        assert!(record(&mut cfg, "s1", b"wrong-ship", 1_700_000_000, true).is_err());
+        cfg.ship = "~zod".into();
+        assert!(record(&mut cfg, "s1", b"right-ship", 1_700_000_000, true).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

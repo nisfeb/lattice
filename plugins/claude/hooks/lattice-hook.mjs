@@ -134,21 +134,31 @@ const shared = (sid) => {
   const d = handoffDir();
   return d && path.join(d, `index-${String(sid).replace(/[^\w-]/g, '')}.txt`);
 };
+function writeHandoff(sid, text) {
+  const f = sid && shared(sid);
+  if (!f) return;
+  const t = `${f}.${process.pid}.tmp`;
+  try {
+    // a fresh file only, never through a link
+    const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants;
+    const fd = fs.openSync(t, O_WRONLY | O_CREAT | O_EXCL | (O_NOFOLLOW ?? 0), 0o600);
+    try { fs.writeSync(fd, text); } finally { fs.closeSync(fd); }
+    fs.renameSync(t, f);
+  } catch {
+    try { fs.rmSync(t, { force: true }); } catch {}
+  }
+}
 async function indexFor(n, sid) {
   if (n === 0) {
-    const text = await get('know-index', { brief: '1', cap: '50000' });
-    const f = sid && shared(sid);
-    if (f) {
-      try {
-        // a fresh file only, never through a link
-        const t = `${f}.${process.pid}.tmp`;
-        const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants;
-        const fd = fs.openSync(t, O_WRONLY | O_CREAT | O_EXCL | (O_NOFOLLOW ?? 0), 0o600);
-        try { fs.writeSync(fd, text); } finally { fs.closeSync(fd); }
-        fs.renameSync(t, f);
-      } catch {}
+    try {
+      const text = await get('know-index', { brief: '1', cap: '50000' });
+      writeHandoff(sid, text);
+      return text;
+    } catch (e) {
+      // write an empty sentinel so hook 1 stops waiting immediately instead of stalling 20s
+      writeHandoff(sid, '');
+      throw e;
     }
-    return text;
   }
   const started = Date.now();
   const f = sid && shared(sid);
@@ -157,7 +167,7 @@ async function indexFor(n, sid) {
   while (f && Date.now() - started < 20000) {
     try {
       const st = fs.lstatSync(f);
-      if (st.isFile() && ownedBy(st) && st.mtimeMs >= started - 1000) {
+      if (st.isFile() && ownedBy(st) && st.mtimeMs >= started - 30000) {
         const text = fs.readFileSync(f, 'utf8');
         fs.rmSync(f, { force: true });
         return text;

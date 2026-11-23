@@ -356,6 +356,22 @@ struct Inner {
     /// an unclaimed comet is to go: the host's thread deletes it once its
     /// start is done, rather than reach the network with it
     discard: bool,
+    /// incremented on every start and close so a slow host_thread that finishes
+    /// after close() timed out sees it is stale and exits instead of marking
+    /// Status::Ready with run = None
+    gen: u64,
+    /// true while export_identity or import_identity is copying/replacing files
+    /// on disk, blocking concurrent start() calls from reopening SQLite mid-copy
+    moving: bool,
+}
+
+/// Clears Inner::moving on drop so every exit path from export/import releases it.
+struct MoveGuard<'a>(&'a Mutex<Inner>);
+
+impl Drop for MoveGuard<'_> {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().moving = false;
+    }
 }
 
 /// The engine, one per app (managed state). A clone is the same engine.
@@ -392,7 +408,15 @@ impl Engine {
         Engine {
             dir,
             fake,
-            inner: Arc::new(Mutex::new(Inner { status: Status::Off, failed_at: None, step: "", run: None, discard: false })),
+            inner: Arc::new(Mutex::new(Inner {
+                status: Status::Off,
+                failed_at: None,
+                step: "",
+                run: None,
+                discard: false,
+                gen: 0,
+                moving: false,
+            })),
         }
     }
 
@@ -421,13 +445,15 @@ impl Engine {
     /// the store) is tried again by the first read RETRY_AFTER after it.
     pub fn start(&self) {
         let mut g = self.inner.lock().unwrap();
-        if matches!(g.status, Status::Booting | Status::Ready { .. }) {
+        if g.moving || matches!(g.status, Status::Booting | Status::Ready { .. }) {
             return;
         }
         if matches!(g.status, Status::Failed(_)) && g.failed_at.is_some_and(|t| t.elapsed() < RETRY_AFTER) {
             return;
         }
         let (jobs_tx, jobs_rx) = channel::<Job>();
+        g.gen = g.gen.wrapping_add(1);
+        let gen = g.gen;
         g.status = Status::Booting;
         g.step = "Starting";
         g.run = Some(Running { jobs: jobs_tx, waker: None });
@@ -435,7 +461,7 @@ impl Engine {
         let (dir, fake, inner) = (self.dir.clone(), self.fake.clone(), self.inner.clone());
         std::thread::Builder::new()
             .name("urb-engine".into())
-            .spawn(move || host_thread(&dir, fake.as_deref(), &inner, jobs_rx))
+            .spawn(move || host_thread(&dir, fake.as_deref(), &inner, gen, jobs_rx))
             .expect("spawn the engine's thread");
     }
 
@@ -898,6 +924,7 @@ impl Engine {
         {
             let mut g = self.inner.lock().unwrap();
             let Some(run) = g.run.take() else { return true };
+            g.gen = g.gen.wrapping_add(1);
             g.status = Status::Off;
             if self.fake.is_none() {
                 crate::render::set_exported_running(None);
@@ -927,24 +954,33 @@ impl Engine {
         self.dir.join("comet.key").exists().then(|| crate::cometid::exported_at(&self.dir)).flatten()
     }
 
-    /// Closed for a move of the identity: refused while a start is in
-    /// progress (it may be mining or opening the store) and for a fake
-    /// ship. True when it was running, to start it again after.
-    fn close_for_move(&self) -> Result<bool, String> {
+    /// Closed for a move of the identity: refused while a start or another
+    /// move is in progress and for a fake ship. Returns a guard that keeps
+    /// `start()` from reopening SQLite mid-copy, and whether it was running.
+    fn close_for_move(&self) -> Result<(MoveGuard<'_>, bool), String> {
         if self.fake.is_some() {
             return Err("a fake test identity cannot be moved".into());
         }
-        let was = match self.status() {
-            Status::Booting => {
-                return Err("The anonymous identity is still starting. Try again in a moment.".into())
+        let was = {
+            let mut g = self.inner.lock().unwrap();
+            if g.moving {
+                return Err("An identity export or import is already in progress.".into());
             }
-            Status::Ready { .. } => true,
-            _ => false,
+            let was = match g.status {
+                Status::Booting => {
+                    return Err("The anonymous identity is still starting. Try again in a moment.".into())
+                }
+                Status::Ready { .. } => true,
+                _ => false,
+            };
+            g.moving = true;
+            was
         };
+        let guard = MoveGuard(&self.inner);
         if !self.close() {
             return Err("The anonymous identity did not stop in time. Try again in a moment.".into());
         }
-        Ok(was)
+        Ok((guard, was))
     }
 
     /// The identity, for an export file: the engine closed first, so the
@@ -953,11 +989,12 @@ impl Engine {
     /// marked exported, so the settings card can warn that it may now run
     /// elsewhere.
     pub fn export_identity(&self) -> Result<crate::cometid::Identity, String> {
-        let was = self.close_for_move()?;
+        let (guard, was) = self.close_for_move()?;
         let got = crate::cometid::read_dir(&self.dir, comet_of_keyfile);
         if got.is_ok() {
             self.claim();
         }
+        drop(guard);
         if was {
             self.start();
         }
@@ -972,7 +1009,7 @@ impl Engine {
         if comet_of_keyfile(&id.keyfile).as_deref() != Some(id.ship.as_str()) {
             return Err("That identity file does not hold an anonymous identity.".into());
         }
-        self.close_for_move()?;
+        let (guard, _) = self.close_for_move()?;
         let aside = crate::cometid::install(&self.dir, id)?;
         {
             let mut g = self.inner.lock().unwrap();
@@ -982,6 +1019,7 @@ impl Engine {
                 g.status = Status::Off;
             }
         }
+        drop(guard);
         if let Some(a) = &aside {
             log_line(&format!("identity replaced by {}, the old one kept in {}", id.ship, a.display()));
         }
@@ -1102,10 +1140,13 @@ const KEYS: &str = "keys";
 
 /// The host's thread: find or mine the identity, open it, then take jobs
 /// and turn the host until closed.
-fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: Receiver<Job>) {
+fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, gen: u64, jobs: Receiver<Job>) {
     let fail = |m: String| {
         log_line(&format!("start failed: {m}"));
         let mut g = inner.lock().unwrap();
+        if g.gen != gen {
+            return;
+        }
         g.status = Status::Failed(m);
         g.failed_at = Some(Instant::now());
         g.run = None;
@@ -1115,7 +1156,12 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     }
     let log: Log = Arc::new(log_line);
     libmesa_log(log.clone());
-    let step = |w: &'static str| inner.lock().unwrap().step = w;
+    let step = |w: &'static str| {
+        let mut g = inner.lock().unwrap();
+        if g.gen == gen {
+            g.step = w;
+        }
+    };
     if fake.is_none() && !dir.join("comet.key").exists() {
         step("Setting up this computer");
     }
@@ -1129,15 +1175,28 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         Err(e) => return fail(e),
     };
     // a ship was connected while the comet was made: no network with it
-    if inner.lock().unwrap().discard && dir.join(UNCLAIMED).exists() {
-        drop(found);
-        return discarded(dir, inner);
+    {
+        let g = inner.lock().unwrap();
+        if g.gen != gen {
+            return;
+        }
+        if g.discard && dir.join(UNCLAIMED).exists() {
+            drop(g);
+            drop(found);
+            return discarded(dir, inner, gen);
+        }
     }
     let udp = GatewayUdp { fake: fake.is_some(), port: found.port, log: log.clone(), udp: None };
     let io = NetIo::new(Box::new(udp), Box::new(found.store), log);
     let waker = io.waker();
-    if let Some(run) = &mut inner.lock().unwrap().run {
-        run.waker = Some(waker);
+    {
+        let mut g = inner.lock().unwrap();
+        if g.gen != gen {
+            return;
+        }
+        if let Some(run) = &mut g.run {
+            run.waker = Some(waker);
+        }
     }
     step("Joining the Urbit network");
     let mut host = Host::new(io, random);
@@ -1150,9 +1209,14 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     };
     log_line(&format!("running as {our}"));
     {
-        // one lock, so a drop_unclaimed that saw the start in progress is
-        // seen here
+        // one lock, so a close() or drop_unclaimed() that ran while
+        // host.open() was in progress is seen here
         let mut g = inner.lock().unwrap();
+        if g.gen != gen {
+            drop(g);
+            let _ = host.close();
+            return;
+        }
         if !(g.discard && dir.join(UNCLAIMED).exists()) {
             g.status = Status::Ready { our };
             // an exported identity still running here gets the reader's banner
@@ -1162,7 +1226,7 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         } else {
             drop(g);
             let _ = host.close();
-            return discarded(dir, inner);
+            return discarded(dir, inner, gen);
         }
     }
     let mut pending: Vec<(u64, Wait, Instant)> = Vec::new();
@@ -1248,12 +1312,14 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
 }
 
 /// The end of a start whose unclaimed comet is to go.
-fn discarded(dir: &Path, inner: &Arc<Mutex<Inner>>) {
+fn discarded(dir: &Path, inner: &Arc<Mutex<Inner>>, gen: u64) {
     log_line("deleting the unclaimed reader identity");
     discard_identity(dir);
     let mut g = inner.lock().unwrap();
-    g.status = Status::Off;
-    g.run = None;
+    if g.gen == gen {
+        g.status = Status::Off;
+        g.run = None;
+    }
     g.discard = false;
 }
 
@@ -2353,5 +2419,37 @@ mod tests {
         c.close();
         eprintln!("second comet {warm:?}, control {cold:?}");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn close_advances_generation_and_move_guard_blocks_start() {
+        let dir = std::env::temp_dir().join(format!("engine-gen-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let e = Engine::with(dir.clone(), None);
+        // Simulate an active running generation, then close() while nobody answers.
+        {
+            let (tx, _rx) = channel();
+            let mut g = e.inner.lock().unwrap();
+            g.gen = 1;
+            g.status = Status::Booting;
+            g.run = Some(Running { jobs: tx, waker: None });
+        }
+        // Dropping _rx makes send() fail immediately, returning true after bumping gen.
+        assert!(e.close());
+        {
+            let g = e.inner.lock().unwrap();
+            assert_eq!(g.status, Status::Off);
+            assert!(g.run.is_none());
+            assert_eq!(g.gen, 2, "close() must advance generation so a stale thread exits");
+        }
+        // Holding close_for_move's guard blocks concurrent start() and a second move.
+        let (guard, was) = e.close_for_move().expect("acquire move guard");
+        assert!(!was);
+        e.start();
+        assert_eq!(e.status(), Status::Off, "start() must not boot while moving");
+        assert!(e.close_for_move().is_err(), "concurrent move must be refused");
+        drop(guard);
+        assert!(!e.inner.lock().unwrap().moving, "dropping guard releases moving flag");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

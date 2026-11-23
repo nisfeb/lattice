@@ -11,6 +11,7 @@
 export const SOURCES = {
   ship: 'another ship',
   comments: 'the public comments on a page',
+  forum: 'a forum board or thread',
   link: "another ship's page, linked in the owner's wiki",
   clip: "a web page clipped to the owner's wiki",
   memory: 'a memory an agent key wrote',
@@ -112,6 +113,24 @@ export function quoteHits(text, hits) {
 }
 export const searchHits = (j) => [j && j.results];
 export const recallHits = (j) => [j && j.recall && j.recall.results, j && j.linked];
+
+// /page-search JSON with snippets from clipped web pages (clips/...) taken
+// out of the JSON and quoted after it.
+export function quotePageHits(text) {
+  let j;
+  try { j = JSON.parse(text); } catch { return text; }
+  if (!j || typeof j !== 'object') return text;
+  const rows = [];
+  for (const h of Array.isArray(j.results) ? j.results : []) {
+    if (!h || typeof h !== 'object') continue;
+    const name = String(h.name || '').replace(/^\/+/, '');
+    if (!name.startsWith('clips/')) continue;
+    rows.push(`- ${h.name}: ${h.snippet ?? ''}`);
+    h.snippet = '(clipped from the web: see the quoted block below)';
+  }
+  if (!rows.length) return text;
+  return JSON.stringify(j) + '\n\n' + quoted('clip', 'lattice wiki', rows.join('\n'));
+}
 
 // One index entry (the text after "\n## "), quoted when its heading says
 // an agent key wrote it. The ship starts each of its body lines with "> ",

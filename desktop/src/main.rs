@@ -138,7 +138,11 @@ fn spawn_backup_scheduler(h: tauri::AppHandle) {
         loop {
             let cfg = config::load(&h);
             let now = backup::now();
-            for s in cfg.backups.iter().filter(|s| backup::is_due(s, now)) {
+            for s in cfg
+                .backups
+                .iter()
+                .filter(|s| backup::for_ship(s, &cfg.ship) && backup::is_due(s, now))
+            {
                 // Fire ONE per tick. Several schedules coming due
                 // together (a fresh config, or a laptop opened
                 // after a fortnight) would otherwise build several

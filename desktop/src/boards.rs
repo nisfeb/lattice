@@ -676,14 +676,18 @@ pub fn read(ctx: &Ctx, url: &str, p: &Place) -> (u16, Shown) {
             .ok_or_else(|| ReadError::Failed("the thread couldn't be read".into())),
         (App::Furum, None) => {
             let mut posts = furum_posts(&v);
-            let counted: Vec<BoardAsk> = posts
+            let (indices, counted): (Vec<usize>, Vec<BoardAsk>) = posts
                 .iter()
+                .enumerate()
                 .take(COUNTED)
-                .filter_map(|q| q.id.parse().ok())
-                .map(|id| BoardAsk::FurumComments { host: p.host.clone(), board: p.board.clone(), post: id })
-                .collect();
-            for (q, c) in posts.iter_mut().zip(ctx.reads.boards(counted, BUDGET)) {
-                q.replies = c.ok().map(|c| furum_comments(&c).len());
+                .filter_map(|(i, q)| {
+                    q.id.parse::<u64>().ok().map(|id| {
+                        (i, BoardAsk::FurumComments { host: p.host.clone(), board: p.board.clone(), post: id })
+                    })
+                })
+                .unzip();
+            for (i, c) in indices.into_iter().zip(ctx.reads.boards(counted, BUDGET)) {
+                posts[i].replies = c.ok().map(|c| furum_comments(&c).len());
             }
             Ok(board_page(p, &Board { title: p.board.clone(), description: String::new(), posts }, &w))
         }
@@ -1090,5 +1094,51 @@ mod tests {
         let (status, s) = error_page("u", &p, &ReadError::Unreachable { later: true, words: "w".into() }, "");
         assert_eq!(status, 504);
         assert!(s.html.contains("didn't answer"));
+    }
+
+    #[test]
+    fn non_u64_furum_post_id_does_not_shift_reply_counts() {
+        struct MockReads;
+        impl crate::engine::Reads for MockReads {
+            fn read(&self, _: &str, _: Duration, _: bool) -> Result<crate::engine::NativePage, ReadError> {
+                Err(ReadError::Failed("unused".into()))
+            }
+            fn boards(&self, asks: Vec<BoardAsk>, _: Duration) -> Vec<Result<Js, ReadError>> {
+                asks.into_iter()
+                    .map(|a| match a {
+                        BoardAsk::FurumPosts { .. } => Ok(Js::Arr(vec![
+                            Js::obj([
+                                ("id", Js::Str("99999999999999999999999999999".into())),
+                                ("title", Js::Str("BadID".into())),
+                                ("author", Js::Str("~zod".into())),
+                            ]),
+                            Js::obj([
+                                ("id", Js::Num(42.0)),
+                                ("title", Js::Str("GoodID".into())),
+                                ("author", Js::Str("~bus".into())),
+                            ]),
+                        ])),
+                        BoardAsk::FurumComments { post: 42, .. } => Ok(Js::Arr(vec![
+                            Js::obj([("id", Js::Num(1.0)), ("author", Js::Str("~nec".into())), ("body", Js::Str("first".into()))]),
+                            Js::obj([("id", Js::Num(2.0)), ("author", Js::Str("~nec".into())), ("body", Js::Str("second".into()))]),
+                        ])),
+                        _ => Err(ReadError::Failed("unexpected".into())),
+                    })
+                    .collect()
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("lattice-boards-furum-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ctx = Ctx::new(Box::new(MockReads), crate::history::History::open(&dir), 26520);
+        let p = place_of("urb://~zod/furum/b");
+        let (status, page) = read(&ctx, "urb://~zod/furum/b", &p);
+        assert_eq!(status, 200);
+        // BadID (index 0) must NOT steal GoodID's "2 replies"
+        let bad_pos = page.html.find("BadID").expect("BadID rendered");
+        let good_pos = page.html.find("GoodID").expect("GoodID rendered");
+        let between = &page.html[bad_pos..good_pos];
+        assert!(!between.contains("2 replies"), "BadID stole GoodID's reply count: {between}");
+        assert!(page.html[good_pos..].contains("2 replies"), "GoodID missing its reply count: {}", &page.html[good_pos..]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
