@@ -22638,6 +22638,7 @@
     |=([p=path page=?] ?.(&(page !(~(has in sens) p)) ~ `[%& %& (at p) %code]))
   =/  idx=(set road:tarball)
     %-  silt
+    ^-  (list road:tarball)
     :-  [%& %& (at ~) %'dir-index']
     (turn ~(tap in (folder-subs:ls all)) |=(p=path `road:tarball`[%& %& (at p) %'dir-index']))
   ;<  ub=path  bind:m  ug-dir
@@ -22913,6 +22914,7 @@
       |=([p=path page=?] ?.(&(page !(~(has in fs) p)) ~ `[%& %& (at p) %code]))
     =/  idx=(set road:tarball)
       %-  silt
+      ^-  (list road:tarball)
       :-  [%& %& (at ~) %'dir-index']
       (turn ~(tap in (folder-subs:ls all)) |=(p=path `road:tarball`[%& %& (at p) %'dir-index']))
     ;<  *  bind:m  (ug-merge gname ~ (~(uni in codes) idx) ?.(ed.i.over ~ codes))
