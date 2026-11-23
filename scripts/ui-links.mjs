@@ -452,6 +452,9 @@ try {
   check('phone: the link row appears', await until(m, (s) => !!document.querySelector(s), LP('notes/doc')));
   await closeAll(m);
   await drawer(m, 'l');
+  //  the drawer lists the whole tree, so on a ship with many pages at the root
+  //  the row sits below the fold: bring it in before asking if it is reachable
+  await m.evaluate((s) => document.querySelector(s)?.scrollIntoView({ block: 'center' }), LP('notes/doc'));
   check('phone: the link row is in the drawer', await reach(m, LP('notes/doc')));
   await tapRow(m, LP('notes/doc'));
   check('phone: it opens', await until(m, () => document.getElementById('src').value === '# B again'));
