@@ -130,9 +130,15 @@ is "held: save again"      200 "$(sc -X POST "$B/know-save?key=$KT" --data-binar
 is "held: delete refused"  409 "$(sc -X POST "$B/know-delete?key=$KT")"
 has "held: new one stays"  'second' "$(G "$B/know-read?key=$KT")"
 has "held: trash copy kept" "$KT" "$(G "$B/know-trash")"
+is "held: restore refused" 409 "$(sc -X POST "$B/know-restore?key=$KT")"
+has "held: restore says why" 'holds that key' "$(G -X POST "$B/know-restore?key=$KT")"
+has "held: restore left it" 'second' "$(G "$B/know-read?key=$KT")"
+has "held: trash copy still kept" "$KT" "$(G "$B/know-trash")"
 is "held: move aside"      200 "$(sc -X POST "$B/know-move?from=$KT&to=$KT-aside")"
 is "held: restore"         200 "$(sc -X POST "$B/know-restore?key=$KT")"
 has "held: restored body"  'first' "$(G "$B/know-read?key=$KT")"
+is "restore twice: second refused" 409 "$(sc -X POST "$B/know-restore?key=$KT")"
+is "restore of a key never in the trash" 404 "$(sc -X POST "$B/know-restore?key=$KT-never")"
 for x in "$KT" "$KT-aside"; do sc -o /dev/null -X POST "$B/know-delete?key=$x" >/dev/null; done
 
 echo "==> batch save"

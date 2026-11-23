@@ -5755,7 +5755,18 @@
     ?~  k  (send-err eyre-id 400 'missing key')
     =/  ko=(unit path)  (know-key u.k)
     ?~  ko  (send-err eyre-id 400 'invalid key')
+    ::  the writer refuses a restore over a live memory (+apply %restore) and
+    ::  a key with nothing in the trash, and a refusal has no way back to a
+    ::  poke already acked. Say why here, then wait for the writer and answer
+    ::  for what it left: ok only when the memory is live again.
+    ;<  held=(unit know-entry:lk)  bind:m  (know-one u.ko)
+    ?^  held
+      (send-err eyre-id 409 'a memory holds that key: move or delete it first')
     ;<  ~  bind:m  (poke-know [%restore (spat u.ko)])
+    ;<  ~  bind:m  writer-sync
+    ;<  back=(unit know-entry:lk)  bind:m  (know-one u.ko)
+    ?~  back
+      (send-err eyre-id 404 'nothing was restored: no deleted memory with this key is in the trash')
     (send-ok eyre-id)
   ::
       [%'POST' %know-tag]
