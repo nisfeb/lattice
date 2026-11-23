@@ -1420,7 +1420,6 @@ pub(crate) fn random_hex(n: usize) -> Result<String, String> {
 }
 
 /// Creates a private temporary directory non-recursively with an unpredictable name (0700 on Unix).
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn make_temp_dir(prefix: &str) -> Result<std::path::PathBuf, String> {
     let base = std::env::temp_dir();
     for _ in 0..16 {
