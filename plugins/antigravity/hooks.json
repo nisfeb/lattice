@@ -1,0 +1,18 @@
+{
+  "lattice-memory": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "node ./hooks/lattice-hook.mjs session",
+        "timeout": 25
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node ./hooks/lattice-hook.mjs prompt",
+        "timeout": 12
+      }
+    ]
+  }
+}

@@ -116,6 +116,7 @@ _opener = urllib.request.build_opener(_NoRedirect)
 _SOURCES = {
     "ship": "another ship",
     "comments": "the public comments on a page",
+    "forum": "a forum board or thread",
     "link": "another ship's page, linked in the owner's wiki",
     "clip": "a web page clipped to the owner's wiki",
     "memory": "a memory an agent key wrote",
@@ -212,6 +213,29 @@ def _quote_hits(text: str, recall: bool) -> str:
     if not rows:
         return text
     return json.dumps(j, separators=(",", ":"), ensure_ascii=False) + "\n\n" + _quoted("hits", "lattice memory", "\n".join(rows))
+
+
+def _quote_page_hits(text: str) -> str:
+    """/page-search JSON with snippets from clipped web pages (clips/...)
+    taken out of the JSON and quoted after it, as quote.mjs quotePageHits."""
+    try:
+        j = json.loads(text)
+    except ValueError:
+        return text
+    if not isinstance(j, dict):
+        return text
+    rows = []
+    for h in j.get("results") if isinstance(j.get("results"), list) else []:
+        if not isinstance(h, dict):
+            continue
+        name = str(h.get("name") or "").lstrip("/")
+        if not name.startswith("clips/"):
+            continue
+        rows.append(f"- {h.get('name')}: {h.get('snippet') or ''}")
+        h["snippet"] = "(clipped from the web: see the quoted block below)"
+    if not rows:
+        return text
+    return json.dumps(j, separators=(",", ":"), ensure_ascii=False) + "\n\n" + _quoted("clip", "lattice wiki", "\n".join(rows))
 
 
 _AGENT_HEAD = re.compile(r"(\S+) \(written by an agent key\)(.*)")
@@ -356,28 +380,46 @@ def _urb_text(j: Dict[str, Any], offset: int) -> str:
         notes.append(f"the owner's page, {j['share']}")
     return f"{j['url']} ({', '.join(notes)})\n\n{_clip(body, offset)}"
 
-def _skill_index(text: str) -> str:
+def _agent_skill_row(s: Dict[str, Any]) -> bool:
+    """True when a GET /skills row came from an agent key without owner permissions."""
+    if not isinstance(s, dict) or s.get("owner_permissions"):
+        return False
+    if "source" in s and s["source"] is not None:
+        return s["source"] == "agent"
+    return bool(s.get("author"))
+
+
+def _skill_row(s: Dict[str, Any]) -> str:
+    notes = []
+    if s.get("tags"):
+        notes.append("tags: " + ", ".join(s["tags"]))
+    if s.get("author"):
+        notes.append(f"by {s['author']}")
+    if s.get("sensitive"):
+        notes.append("sensitive")
+    if s.get("superseded_by"):
+        notes.append(f"superseded by {s['superseded_by']}")
+    if s.get("files"):
+        notes.append(f"{s['files']} more file{'' if s['files'] == 1 else 's'}")
+    return f"- {s['name']}: {s.get('description', '')}" + (f" ({'; '.join(notes)})" if notes else "")
+
+
+def _skill_index(text: str, *, include_agent: bool = True) -> str:
     """GET /skills as one line per skill, as the Claude plugin's skill_index.
-    A skill on the owner's own ship is the owner's procedure: not quoted."""
+    Skills written by agent keys (without owner_permissions) have their
+    descriptions quoted, or are omitted when include_agent is False."""
     ss = json.loads(text).get("skills") or []
-    if not ss:
-        return "No skills stored."
-    rows = []
-    for s in ss:
-        notes = []
-        if s.get("tags"):
-            notes.append("tags: " + ", ".join(s["tags"]))
-        if s.get("author"):
-            notes.append(f"by {s['author']}")
-        if s.get("sensitive"):
-            notes.append("sensitive")
-        if s.get("superseded_by"):
-            notes.append(f"superseded by {s['superseded_by']}")
-        if s.get("files"):
-            notes.append(f"{s['files']} more file{'' if s['files'] == 1 else 's'}")
-        rows.append(f"- {s['name']}: {s.get('description', '')}" + (f" ({'; '.join(notes)})" if notes else ""))
-    n = len(ss)
-    return f"{n} skill{'' if n == 1 else 's'}. Read one with lattice_skill_read before following it.\n" + "\n".join(rows)
+    own = [_skill_row(s) for s in ss if not _agent_skill_row(s)]
+    agent = [_skill_row(s) for s in ss if _agent_skill_row(s)] if include_agent else []
+    n = len(own) + len(agent)
+    if not n:
+        return "No skills stored." if include_agent else ""
+    head = f"{n} skill{'' if n == 1 else 's'}. Read one with lattice_skill_read before following it."
+    return (
+        head
+        + ("\n" + "\n".join(own) if own else "")
+        + ("\n\n" + _quoted("skill", "lattice skills", "\n".join(agent)) if agent else "")
+    )
 
 
 PROMPT = (
@@ -473,7 +515,7 @@ class LatticeMemoryProvider(MemoryProvider):
         cfg = self._cfg or _config()
         if cfg["url_error"]:
             raise RuntimeError(cfg["url_error"])
-        args = {k: str(v) for k, v in (args or {}).items() if v not in (None, "", False)}
+        args = {k: str(v) for k, v in (args or {}).items() if v is not None and v != "" and v is not False}
         url = f"{cfg['url']}/apps/lattice/{route}" + (f"?{urllib.parse.urlencode(args)}" if args else "")
         headers = {"authorization": f"Bearer {cfg['token']}"}
         data = None
@@ -521,7 +563,8 @@ class LatticeMemoryProvider(MemoryProvider):
         if self._skills is None:
             try:
                 text = self._call("GET", "skills", timeout=20)
-                self._skills = _fit(SKILLS_PROMPT + _skill_index(text), SKILLS_CAP) if json.loads(text).get("skills") else ""
+                rendered = _skill_index(text, include_agent=False)
+                self._skills = _fit(SKILLS_PROMPT + rendered, SKILLS_CAP) if rendered else ""
             except Exception as e:  # noqa: BLE001 - the agent runs without the skill index
                 if str(e).startswith("403"):
                     self._skills = ""
@@ -587,7 +630,7 @@ class LatticeMemoryProvider(MemoryProvider):
                                                          "expected_updated": a.get("expected_updated"),
                                                          "sensitive": sens}, a["body"])
             if tool_name == "lattice_wiki_search":
-                return self._call("GET", "page-search", {"q": a["query"], "k": a.get("limit")})
+                return _quote_page_hits(self._call("GET", "page-search", {"q": a["query"], "k": a.get("limit")}))
             if tool_name == "lattice_wiki_read":
                 text = self._call("GET", "page-source", {"name": a["name"]})
                 # a link reads another ship's page through this one: its text is theirs
@@ -647,12 +690,16 @@ class LatticeMemoryProvider(MemoryProvider):
         return self._urb_label(j, url, text)
 
     def _urb_label(self, j: Dict[str, Any], url: str, text: str) -> str:
+        kind = j.get("kind")
         link = j.get("link") if isinstance(j.get("link"), dict) else None
         name = str(j.get("name") or "")
-        if j.get("own") and not (link and link.get("host")) and not name.startswith("clips/"):
+        is_forum = kind in ("board", "thread")
+        if j.get("own") and not is_forum and not (link and link.get("host")) and not name.startswith("clips/"):
             return text
         if not j.get("own"):
             return _quoted("ship", url, text)
+        if is_forum:
+            return _quoted("forum", url, text)
         if link and link.get("host"):
             return _quoted("link", f"{link['host']} (linked at {name})", text)
         return _quoted("clip", name, text)

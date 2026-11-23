@@ -271,10 +271,11 @@ export async function syncSkills({ get, root, ship, url = '' }) {
   for (const [name, s] of want) {
     const dir = path.join(root, name);
     let mark = null;
-    if (fs.existsSync(dir)) {
-      const st = fs.lstatSync(dir);
+    let st = null;
+    try { st = fs.lstatSync(dir); } catch (e) { if (e?.code !== 'ENOENT') throw e; }
+    if (st) {
       mark = st.isDirectory() && !st.isSymbolicLink() ? readMarker(dir) : null;
-      // the user's own skill, or another ship's: leave it be
+      // the user's own skill (including a symlink, broken or not), or another ship's: leave it be
       if (!ownMark(mark, name, ship, url)) { out.skipped.push(name); continue; }
       if (mark.updated === s.updated && mark.v === MARK_V && mark.ship === ship) continue;
     }
