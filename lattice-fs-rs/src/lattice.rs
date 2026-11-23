@@ -196,6 +196,14 @@ impl Projection for LatticeProjection {
         Ok((body.as_bytes().to_vec(), rev.filter(|_| !link)))
     }
 
+    fn needs_read_for_write(&self, rel: &str) -> bool {
+        // A link's page-dump entry carries the local cache rev, not the owner's
+        // rev. Always fetch links via page-source on writable open so `bases`
+        // holds the owner's rev matching the body the writer receives.
+        let name = self.full(rel);
+        self.links.lock().unwrap().contains(&name)
+    }
+
     fn dump(&self) -> Result<Dump, PErr> {
         Ok(self.dump_since(None)?.0)
     }
@@ -1204,5 +1212,18 @@ mod tests {
         }
         // more than three still parses the first three
         assert_eq!(da_to_unix("~2026.7.20.99"), da_to_unix("~2026.7.20"));
+    }
+
+    #[test]
+    fn link_pages_require_read_for_write_while_local_pages_do_not() {
+        let dump = r#"{"nodes":[
+            {"path":"n/l","page":true,"kind":"md","body":"x","rev":9,
+             "link":{"host":"~nec","path":"/apps/x/page/d/code","mode":"edit"}},
+            {"path":"n/local","page":true,"kind":"md","body":"y","rev":2}
+        ]}"#;
+        let (_, p) = lp("n", vec![ok(dump)]);
+        p.dump().unwrap();
+        assert!(p.needs_read_for_write("l"), "a link must fetch via page-source on writable open");
+        assert!(!p.needs_read_for_write("local"), "a local page can open from cache");
     }
 }

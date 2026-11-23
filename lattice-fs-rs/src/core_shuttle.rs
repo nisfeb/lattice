@@ -168,6 +168,7 @@ fn dirty_handle(rel: &str, body: &[u8]) -> Handle {
         dirty: true,
         gen: 0,
         new: false,
+        recreate: false,
         scratch: false,
         writable: true,
         flushed: false,

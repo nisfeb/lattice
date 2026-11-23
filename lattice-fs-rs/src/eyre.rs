@@ -6,8 +6,8 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use crate::transport::{TErr, Transport, MAX_BODY};
 
@@ -261,6 +261,9 @@ pub struct EyreTransport {
     origin: Result<Origin, String>,
     cookie: Mutex<Option<String>>,
     cookie_path: String,
+    // Set by quiesce() so the background watch loop stops on unmount.
+    stop: Arc<AtomicBool>,
+    stop_wake: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl EyreTransport {
@@ -272,7 +275,23 @@ impl EyreTransport {
             origin,
             cookie: Mutex::new(cookie),
             cookie_path: cookie_path.to_string(),
+            stop: Arc::new(AtomicBool::new(false)),
+            stop_wake: Arc::new((Mutex::new(false), Condvar::new())),
         }
+    }
+
+    /// Wait up to `dur` for `stop` to be set. Returns true if stopped.
+    fn wait_stop(&self, dur: std::time::Duration) -> bool {
+        if self.stop.load(Ordering::SeqCst) {
+            return true;
+        }
+        let (lock, cv) = &*self.stop_wake;
+        let g = lock.lock().unwrap();
+        if *g || self.stop.load(Ordering::SeqCst) {
+            return true;
+        }
+        let (g, _) = cv.wait_timeout(g, dur).unwrap();
+        *g || self.stop.load(Ordering::SeqCst)
     }
 
     fn checked(&self) -> Result<&Origin, TErr> {
@@ -302,13 +321,16 @@ impl EyreTransport {
             }
             Err(e) => return Err(TErr::new(0, format!("login error: {e}"))),
         };
-        let sc = resp
-            .header("set-cookie")
-            .ok_or_else(|| TErr::new(500, "login: no Set-Cookie"))?;
-        let ck = sc.split(';').next().unwrap_or("").to_string();
-        if !ck.starts_with("urbauth-") {
-            return Err(TErr::new(500, "login: no urbauth cookie"));
+        let cookies = resp.all("set-cookie");
+        if cookies.is_empty() {
+            return Err(TErr::new(500, "login: no Set-Cookie"));
         }
+        let ck = cookies
+            .into_iter()
+            .filter_map(|sc| sc.split(';').next().map(str::trim))
+            .find(|c| c.starts_with("urbauth-"))
+            .ok_or_else(|| TErr::new(500, "login: no urbauth cookie"))?
+            .to_string();
         self.store(&ck)
     }
 
@@ -362,9 +384,14 @@ impl EyreTransport {
         match resp {
             // the agent follows no redirects, so a 3xx lands here. Following
             // it by hand would send the cookie somewhere the URL rule never
-            // looked, so it is an error.
+            // looked, so it is an error. On Eyre's 307 login redirect, re-auth
+            // once directly against /~/login when LATTICE_CODE is configured.
             Ok(r) if (300..400).contains(&r.status()) => {
                 let code = r.status();
+                if code == 307 && retry && has_lattice_code() {
+                    self.login(None)?;
+                    return self.do_req(method, path, query, body, false);
+                }
                 let to = r.header("location").unwrap_or("").to_string();
                 Err(TErr::new(code, format!("http {code}: redirect to {to:?} not followed")))
             }
@@ -382,7 +409,7 @@ impl EyreTransport {
                 Ok(buf)
             }
             Err(ureq::Error::Status(code, resp)) => {
-                if (code == 401 || code == 403) && retry {
+                if code == 401 && retry && has_lattice_code() {
                     self.login(None)?; // cookie expired. Re-auth once
                     return self.do_req(method, path, query, body, false);
                 }
@@ -460,10 +487,10 @@ impl Transport for EyreTransport {
             "{}/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev",
             self.base
         );
-        // reconnect forever. The stream severs on ship restart, pier hiccup,
-        // or an idle proxy; each of those is transient, and the TTL poll
-        // covers the gap until we get back on — Down is what re-arms it.
-        loop {
+        // reconnect until stopped. The stream severs on ship restart, pier
+        // hiccup, or an idle proxy; each of those is transient, and the TTL
+        // poll covers the gap until we get back on. Down is what re-arms it.
+        while !self.stop.load(Ordering::SeqCst) {
             let cookie = self.cookie.lock().unwrap().clone().unwrap_or_default();
             // a dedicated agent, CONNECT timeout only, never a read timeout:
             // the beacon holds an idle connection open for hours between
@@ -481,13 +508,31 @@ impl Transport for EyreTransport {
             let resp = match req.call() {
                 Ok(r) => r,
                 Err(_) => {
-                    // ship down or stream refused. Back off, then retry — the
-                    // TTL poll is the floor meanwhile.
+                    // ship down or stream refused. Back off, then retry.
                     on_event(W::Down);
-                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    if self.wait_stop(std::time::Duration::from_secs(5)) {
+                        return;
+                    }
                     continue;
                 }
             };
+            // Require a real 200 SSE stream. With redirects(0), a 307 login
+            // redirect lands in Ok(r), and treating it as Up would silence the
+            // TTL poll while no events ever arrive.
+            let is_sse = resp.status() == 200
+                && resp
+                    .header("content-type")
+                    .is_some_and(|ct| ct.to_ascii_lowercase().starts_with("text/event-stream"));
+            if !is_sse {
+                on_event(W::Down);
+                if self.wait_stop(std::time::Duration::from_secs(5)) {
+                    return;
+                }
+                continue;
+            }
+            if self.stop.load(Ordering::SeqCst) {
+                return;
+            }
             // Up only once the stream is actually open. Anything that bumped
             // during the gap before it is unseen, which is why the core
             // treats Up itself as a change.
@@ -496,7 +541,7 @@ impl Transport for EyreTransport {
             let mut line = String::new();
             let mut dirty = false;
             let mut name: Option<String> = None;
-            loop {
+            while !self.stop.load(Ordering::SeqCst) {
                 line.clear();
                 match reader.read_line(&mut line) {
                     Ok(0) | Err(_) => break,   // stream closed: reconnect
@@ -519,13 +564,30 @@ impl Transport for EyreTransport {
                     }
                 }
             }
+            if self.stop.load(Ordering::SeqCst) {
+                return;
+            }
             if dirty && pages_changed(name.as_deref()) {
                 on_event(W::Changed); // stream ended mid-event: keep the nudge
             }
             on_event(W::Down);
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            if self.wait_stop(std::time::Duration::from_secs(2)) {
+                return;
+            }
         }
     }
+
+    fn quiesce(&self, _bound: std::time::Duration) {
+        self.stop.store(true, Ordering::SeqCst);
+        let (lock, cv) = &*self.stop_wake;
+        let mut g = lock.lock().unwrap();
+        *g = true;
+        cv.notify_all();
+    }
+}
+
+fn has_lattice_code() -> bool {
+    std::env::var("LATTICE_CODE").ok().is_some_and(|c| !c.trim().is_empty())
 }
 
 /// Percent-encode everything but the RFC 3986 unreserved set (matches the
@@ -720,8 +782,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn an_expired_cookie_re_authenticates_once_and_replays() {
+        let _g = ENV_LOCK.lock().unwrap();
         let s = stub(vec![
             (401, "", None),                                  // the cookie went stale
             (200, "", Some("urbauth-~tyr=0vfresh; Path=/")),   // the silent re-login
@@ -733,11 +798,145 @@ mod tests {
         std::env::set_var("LATTICE_CODE", "lidlut-tabwed-pillex-ridrup");
 
         assert_eq!(t.get_bytes("/x", &[]).unwrap(), b"payload");
+        std::env::remove_var("LATTICE_CODE");
         let seen = s.seen();
         assert_eq!(seen.len(), 3, "exactly one re-auth, then one replay");
         assert!(seen[1].starts_with("POST /~/login"), "a 401 must trigger a re-login");
         assert!(seen[2].starts_with("GET /x"), "and the original request must be replayed");
         assert_eq!(t.ship().unwrap(), "~tyr", "the fresh cookie is now in force");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn login_scans_all_set_cookie_headers_for_urbauth() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = l.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let resp = concat!(
+                    "HTTP/1.1 200 OK\r\n",
+                    "Set-Cookie: cf_proxy=abc; Path=/\r\n",
+                    "Set-Cookie: urbauth-~tyr=0vmulti; Path=/; HttpOnly\r\n",
+                    "Content-Length: 0\r\n",
+                    "Connection: close\r\n\r\n"
+                );
+                let _ = sock.write_all(resp.as_bytes());
+            }
+        });
+        let dir = tmpdir("multi-cookie");
+        let p = dir.join("cookie");
+        let t = EyreTransport::new(&base, p.to_str().unwrap());
+        t.login(Some("lidlut-tabwed".into())).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "urbauth-~tyr=0vmulti");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn do_req_preserves_403_body_and_only_reauths_401_or_307_with_lattice_code() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = tmpdir("auth-rules");
+
+        // 403 must never trigger login or swallow its body, even when LATTICE_CODE is set.
+        std::env::set_var("LATTICE_CODE", "lidlut-tabwed");
+        let s403 = stub(vec![(403, "read-only link", None)]);
+        let t403 = EyreTransport::new(&s403.base, dir.join("c403").to_str().unwrap());
+        t403.store("urbauth-~tyr=0v1").unwrap();
+        let e = t403.get_bytes("/x", &[]).unwrap_err();
+        assert_eq!(e.code, 403);
+        assert!(e.msg.contains("read-only link"), "{}", e.msg);
+        assert_eq!(s403.seen().len(), 1, "403 must not call /~/login");
+
+        // 307 with LATTICE_CODE set re-authenticates via /~/login and replays.
+        let s307 = stub(vec![
+            (307, "", Some("x=y\r\nLocation: /~/login")),
+            (200, "", Some("urbauth-~tyr=0v307; Path=/")),
+            (200, "after-307", None),
+        ]);
+        let t307 = EyreTransport::new(&s307.base, dir.join("c307").to_str().unwrap());
+        t307.store("urbauth-~tyr=0vold").unwrap();
+        assert_eq!(t307.get_bytes("/x", &[]).unwrap(), b"after-307");
+        assert_eq!(s307.seen().len(), 3);
+
+        // 401 without LATTICE_CODE returns the server's 401 without attempting login.
+        std::env::remove_var("LATTICE_CODE");
+        let s401 = stub(vec![(401, "session expired", None)]);
+        let t401 = EyreTransport::new(&s401.base, dir.join("c401").to_str().unwrap());
+        t401.store("urbauth-~tyr=0vold").unwrap();
+        let e = t401.get_bytes("/x", &[]).unwrap_err();
+        assert_eq!(e.code, 401);
+        assert!(e.msg.contains("session expired"), "{}", e.msg);
+        assert_eq!(s401.seen().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watch_rejects_non_sse_responses_and_stops_on_quiesce() {
+        use crate::transport::WatchEvent as W;
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let srv = std::thread::spawn(move || {
+            // 1) 307 redirect to login must be treated as Down, never Up.
+            if let Ok((mut sock, _)) = l.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let _ = sock.write_all(
+                    b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /~/login\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        let dir = tmpdir("watch-307");
+        let t = Arc::new(EyreTransport::new(&base, dir.join("c").to_str().unwrap()));
+        t.store("urbauth-~tyr=0v1").unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let evs = events.clone();
+        let t_stop = t.clone();
+        let t_run = t.clone();
+        let h = std::thread::spawn(move || {
+            t_run.watch(&move |ev| {
+                evs.lock().unwrap().push(ev);
+                if ev == W::Down {
+                    t_stop.quiesce(Duration::from_secs(1));
+                }
+            });
+        });
+        h.join().unwrap();
+        srv.join().unwrap();
+        assert_eq!(*events.lock().unwrap(), vec![W::Down], "307 must never emit Up");
+
+        // 2) A real 200 text/event-stream emits Up, Changed, and exits on quiesce.
+        let l2 = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base2 = format!("http://{}", l2.local_addr().unwrap());
+        let srv2 = std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = l2.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let body = "event: upd /rev\ndata: 2\n\n";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(resp.as_bytes());
+            }
+        });
+        let t2 = Arc::new(EyreTransport::new(&base2, dir.join("c2").to_str().unwrap()));
+        t2.store("urbauth-~tyr=0v1").unwrap();
+        let events2 = Arc::new(Mutex::new(Vec::new()));
+        let evs2 = events2.clone();
+        let t2_stop = t2.clone();
+        let t2_run = t2.clone();
+        let h2 = std::thread::spawn(move || {
+            t2_run.watch(&move |ev| {
+                evs2.lock().unwrap().push(ev);
+                if ev == W::Changed {
+                    t2_stop.quiesce(Duration::from_secs(1));
+                }
+            });
+        });
+        h2.join().unwrap();
+        srv2.join().unwrap();
+        assert_eq!(*events2.lock().unwrap(), vec![W::Up, W::Changed]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

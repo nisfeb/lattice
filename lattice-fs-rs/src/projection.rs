@@ -65,6 +65,13 @@ pub trait Projection: Send + Sync {
         Ok((self.read(rel)?, None))
     }
 
+    /// Whether a writable open of `rel` must fetch fresh bytes via `read_at`
+    /// instead of serving from the dump cache (for example a link page whose
+    /// owner revision comes only from `page-source`). Default: false.
+    fn needs_read_for_write(&self, _rel: &str) -> bool {
+        false
+    }
+
     /// Bulk warm: the whole tree AND every page body in one round-trip. The core
     /// calls this to fill the read cache so grep/cat run from RAM. lattice serves
     /// it from a single page-dump peek, falling back to list()+read() on an old

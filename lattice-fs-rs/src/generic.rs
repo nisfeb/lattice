@@ -47,10 +47,25 @@ impl GenericProjection {
     }
 
     fn file_path(&self, rel: &str) -> String {
-        if rel.is_empty() {
-            format!("/grubbery/api/file/{}", self.root)
+        let joined = match (self.root.is_empty(), rel.is_empty()) {
+            (true, true) => String::new(),
+            (true, false) => encode_path(rel),
+            (false, true) => encode_path(&self.root),
+            (false, false) => format!("{}/{}", encode_path(&self.root), encode_path(rel)),
+        };
+        if joined.is_empty() {
+            "/grubbery/api/file".to_string()
         } else {
-            format!("/grubbery/api/file/{}/{}", self.root, rel)
+            format!("/grubbery/api/file/{joined}")
+        }
+    }
+
+    fn tree_path(&self) -> String {
+        let root = encode_path(&self.root);
+        if root.is_empty() {
+            "/grubbery/api/tree".to_string()
+        } else {
+            format!("/grubbery/api/tree/{root}")
         }
     }
 
@@ -111,7 +126,7 @@ impl GenericProjection {
     }
 
     fn nodes(&self) -> Result<Vec<(String, bool)>, PErr> {
-        let v = self.t.get_json(&format!("/grubbery/api/tree/{}", self.root), &[])?;
+        let v = self.t.get_json(&self.tree_path(), &[])?;
         let mut out = Vec::new();
         Self::walk("", &v, &mut out);
         Ok(out)
@@ -246,7 +261,7 @@ impl Projection for GenericProjection {
         // even claims "Deleted"). Only empty dirs get here. The core's rmdir
         // returns ENOTEMPTY for populated ones.
         if self.nodes()?.iter().any(|(r, is_dir)| *is_dir && r == rel) {
-            return self.mcp("delete_folder", json!({"path": format!("/{}/{}", self.root, rel)}));
+            return self.mcp("delete_folder", json!({"path": join_ball_path(&self.root, rel)}));
         }
         let (path, name) = self.dir_and_name(rel);
         self.mcp("delete_grub", json!({"path": path, "name": name}))
@@ -272,14 +287,47 @@ impl Projection for GenericProjection {
 
 use crate::vfs::now_secs as now;
 
+/// Join a ball root and a relative path into a single absolute ball path
+/// without producing a double leading slash when `root` is empty.
+fn join_ball_path(root: &str, rel: &str) -> String {
+    match (root.is_empty(), rel.is_empty()) {
+        (true, true) => "/".to_string(),
+        (true, false) => format!("/{rel}"),
+        (false, true) => format!("/{root}"),
+        (false, false) => format!("/{root}/{rel}"),
+    }
+}
+
+/// Percent-encode one URL path segment (RFC 3986 unreserved bytes pass through).
+fn encode_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// Percent-encode each slash-separated path segment.
+fn encode_path(path: &str) -> String {
+    path.split('/')
+        .filter(|seg| !seg.is_empty())
+        .map(encode_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Absolute ball dir + grub name for a rel under `root`, as the MCP tools expect.
 fn split_rel(root: &str, rel: &str) -> (String, String) {
     let (dir, name) = match rel.rfind('/') {
         Some(i) => (&rel[..i], &rel[i + 1..]),
         None => ("", rel),
     };
-    let path = if dir.is_empty() { format!("/{root}") } else { format!("/{root}/{dir}") };
-    (path, name.to_string())
+    (join_ball_path(root, dir), name.to_string())
 }
 
 #[cfg(test)]
@@ -558,5 +606,40 @@ mod tests {
         // everything is presented as .txt so editors and grep treat it as text
         assert_eq!(p.ext_for_kind("anything"), "txt");
         assert_eq!(p.kind_for_ext("txt"), "");
+    }
+
+    #[test]
+    fn generic_encodes_path_segments_and_handles_empty_root() {
+        assert_eq!(split_rel("", "g"), ("/".into(), "g".into()));
+        assert_eq!(split_rel("", "sub/g"), ("/sub".into(), "g".into()));
+
+        let rec = Rec::default();
+        *rec.0.script.lock().unwrap() = vec![
+            ok(TREE),
+            ok("encoded"),
+            ok(TREE),
+            ok(MCP_OK),
+        ]
+        .into();
+        let p = GenericProjection::new(Box::new(rec.clone()), "").unwrap();
+        p.list().unwrap();
+        assert_eq!(p.read("a/b c?d#e").unwrap(), b"encoded");
+        p.delete("sub").unwrap();
+        let log = rec.log();
+        assert_eq!(log[0], "GET /grubbery/api/tree?");
+        assert_eq!(log[1], "GET /grubbery/api/file/a/b%20c%3Fd%23e?blot=/txt");
+        let v: Value = serde_json::from_str(log[3].splitn(3, ' ').nth(2).unwrap()).unwrap();
+        assert_eq!(v["params"]["name"], "delete_folder");
+        assert_eq!(v["params"]["arguments"]["path"], "/sub", "must not produce //sub");
+
+        // Non-empty root with special characters also encodes cleanly.
+        let rec2 = Rec::default();
+        *rec2.0.script.lock().unwrap() = vec![ok("ok")].into();
+        let p2 = GenericProjection::new(Box::new(rec2.clone()), "apps/my app").unwrap();
+        p2.read("dir/file #1").unwrap();
+        assert_eq!(
+            rec2.log(),
+            vec!["GET /grubbery/api/file/apps/my%20app/dir/file%20%231?blot=/txt"]
+        );
     }
 }

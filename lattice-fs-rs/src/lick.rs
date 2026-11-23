@@ -218,9 +218,18 @@ fn rub(r: &mut BitReader) -> Result<Vec<u8>, TErr> {
     r.atom(b)
 }
 
+/// Total decoded node budget for `cue()`. Bounds backref DAG expansion so a
+/// small cyclic or exponential backref frame cannot OOM-abort the mount.
+const MAX_CUE_NODES: usize = 2_000_000;
+
+/// Total decoded atom byte budget for `cue()`, matching the frame cap so
+/// backrefs to a large atom cannot multiply it past memory limits.
+const MAX_CUE_BYTES: usize = MAX_BODY + 64 * 1024;
+
 pub fn cue(data: &[u8]) -> Result<Noun, TErr> {
     let mut r = BitReader { data, pos: 0 };
-    let mut memo: HashMap<usize, Noun> = HashMap::new();
+    // bit offset -> (noun, subtree node count, subtree atom bytes)
+    let mut memo: HashMap<usize, (Noun, usize, usize)> = HashMap::new();
     // An explicit work stack instead of recursion: cells nest as deep as the
     // frame says, and recursing per cell overflowed the thread stack on a
     // deeply nested (or malicious) frame. Combine pops [tail, head] off `done`.
@@ -229,46 +238,69 @@ pub fn cue(data: &[u8]) -> Result<Noun, TErr> {
         Combine(usize),
     }
     let mut ops = vec![Op::Decode];
-    let mut done: Vec<Noun> = Vec::new();
+    let mut done: Vec<(Noun, usize, usize)> = Vec::new();
+    let mut total_nodes = 0usize;
+    let mut total_bytes = 0usize;
     while let Some(op) = ops.pop() {
         match op {
             Op::Decode => {
                 let at = r.pos;
                 if r.bit()? == 0 {
-                    let n = Noun::Atom(rub(&mut r)?);
-                    memo.insert(at, n.clone());
-                    done.push(n);
+                    let raw = rub(&mut r)?;
+                    let b_len = raw.len();
+                    total_nodes = total_nodes.saturating_add(1);
+                    total_bytes = total_bytes.saturating_add(b_len);
+                    if total_nodes > MAX_CUE_NODES || total_bytes > MAX_CUE_BYTES {
+                        return Err(TErr::new(500, "cue: decoded noun exceeds budget"));
+                    }
+                    let n = Noun::Atom(raw);
+                    memo.insert(at, (n.clone(), 1, b_len));
+                    done.push((n, 1, b_len));
                 } else if r.bit()? == 0 {
                     ops.push(Op::Combine(at));
                     ops.push(Op::Decode); // tail, decoded second (LIFO)
                     ops.push(Op::Decode); // head, decoded first
                 } else {
                     let k = rub(&mut r)?;
+                    if k.len() > 8 {
+                        return Err(TErr::new(500, "cue: bad backref"));
+                    }
                     let mut b = [0u8; 8];
-                    for (i, x) in k.iter().take(8).enumerate() {
+                    for (i, x) in k.iter().enumerate() {
                         b[i] = *x;
                     }
                     let idx = u64::from_le_bytes(b) as usize;
-                    let n = memo
+                    let (n, n_nodes, n_bytes) = memo
                         .get(&idx)
-                        .cloned()
                         .ok_or_else(|| TErr::new(500, "cue: bad backref"))?;
-                    done.push(n);
+                    // Check the expanded budget BEFORE cloning the subtree.
+                    total_nodes = total_nodes.saturating_add(*n_nodes);
+                    total_bytes = total_bytes.saturating_add(*n_bytes);
+                    if total_nodes > MAX_CUE_NODES || total_bytes > MAX_CUE_BYTES {
+                        return Err(TErr::new(500, "cue: decoded noun exceeds budget"));
+                    }
+                    done.push((n.clone(), *n_nodes, *n_bytes));
                 }
             }
             Op::Combine(at) => {
                 let t = done.pop();
                 let h = done.pop();
-                let (Some(h), Some(t)) = (h, t) else {
+                let (Some((h, h_nodes, h_bytes)), Some((t, t_nodes, t_bytes))) = (h, t) else {
                     return Err(TErr::new(500, "cue: bad stream"));
                 };
+                total_nodes = total_nodes.saturating_add(1);
+                if total_nodes > MAX_CUE_NODES {
+                    return Err(TErr::new(500, "cue: decoded noun exceeds budget"));
+                }
+                let sub_nodes = h_nodes.saturating_add(t_nodes).saturating_add(1);
+                let sub_bytes = h_bytes.saturating_add(t_bytes);
                 let n = cell(h, t);
-                memo.insert(at, n.clone());
-                done.push(n);
+                memo.insert(at, (n.clone(), sub_nodes, sub_bytes));
+                done.push((n, sub_nodes, sub_bytes));
             }
         }
     }
-    done.pop().ok_or_else(|| TErr::new(500, "cue: empty stream"))
+    done.pop().map(|(n, _, _)| n).ok_or_else(|| TErr::new(500, "cue: empty stream"))
 }
 
 // ---------- framing ----------
@@ -342,8 +374,11 @@ impl LickTransport {
         }
     }
 
-    /// One request/response round-trip. Reconnects once on a dropped socket.
-    fn call(&self, req: &Noun, retry: bool) -> Result<Noun, TErr> {
+    /// One request/response round-trip. Reconnects once on a dropped socket
+    /// for idempotent (GET) calls, or when sending on a stale pooled socket
+    /// fails with BrokenPipe/ConnectionReset before the server could see it.
+    /// Never retries a POST after `send_frame` succeeded.
+    fn call(&self, req: &Noun, idempotent: bool, can_retry: bool) -> Result<Noun, TErr> {
         //  Winding down: open no new socket and send no new request. The reply
         //  to whatever is already in flight is the last write we take from the
         //  ship; a fresh request here would be exactly the mid-write we are
@@ -352,6 +387,12 @@ impl LickTransport {
             return Err(TErr::new(0, "lick: transport is shutting down"));
         }
         let mut guard = self.conn.lock().unwrap();
+        //  Re-check after acquiring conn: quiesce() may have finished draining
+        //  and shut the socket while this caller was waiting on the lock.
+        if self.quiescing.load(Ordering::SeqCst) {
+            return Err(TErr::new(0, "lick: transport is shutting down"));
+        }
+        let reused = guard.is_some();
         if guard.is_none() {
             let s = UnixStream::connect(&self.sock_path)
                 .map_err(|e| TErr::new(0, format!("lick connect {}: {e}", self.sock_path)))?;
@@ -371,17 +412,27 @@ impl LickTransport {
             *guard = Some(s);
         }
         let sock = guard.as_mut().unwrap();
-        let r: Result<Noun, TErr> = (|| {
-            send_frame(sock, "req", req).map_err(|e| TErr::new(0, format!("lick send: {e}")))?;
-            recv_frame(sock)
-        })();
-        match r {
+        if let Err(e) = send_frame(sock, "req", req) {
+            let stale_pipe = reused
+                && matches!(
+                    e.kind(),
+                    std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                );
+            *guard = None;
+            *self.shut.lock().unwrap() = None;
+            drop(guard);
+            if can_retry && (idempotent || stale_pipe) {
+                return self.call(req, idempotent, false);
+            }
+            return Err(TErr::new(0, format!("lick send: {e}")));
+        }
+        match recv_frame(sock) {
             Ok(reply) => Ok(reply),
-            Err(_) if retry => {
+            Err(_) if can_retry && idempotent => {
                 *guard = None; // drop + reconnect once
                 *self.shut.lock().unwrap() = None;
                 drop(guard);
-                self.call(req, false)
+                self.call(req, idempotent, false)
             }
             Err(e) => {
                 // a failed read can leave half a frame on the wire. Start the
@@ -446,7 +497,7 @@ impl LickTransport {
             cord(verb),
             cell(cord(path), cell(cord(&qs), Noun::Atom(trim(body.to_vec())))),
         );
-        let reply = self.call(&req, true)?;
+        let reply = self.call(&req, verb == "GET", true)?;
         let status = reply.head().map(|h| h.as_u64()).unwrap_or(500);
         let rbody = reply.tail().map(|t| t.as_string()).unwrap_or_default();
         if (200..300).contains(&status) {
@@ -789,6 +840,105 @@ mod tests {
         // the side-handle shutdown unblocked the stuck read, so the caller
         // returns rather than sitting on the socket's 120s read timeout
         caller.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cue_rejects_backref_dag_bomb_before_oom() {
+        // Build a tiny jam frame with 25 nested doubling cells using backrefs:
+        // cell_0 = [0 0], cell_k = [backref(cell_{k-1}) backref(cell_{k-1})].
+        // Without a decoded node budget, this expands to 2^26 nodes and OOMs.
+        let mut w = BitWriter::new();
+        let depth = 25usize;
+        // Write `depth` cell tags (1, 0) for the spine: each cell's head is the
+        // next smaller cell (or base atom 0), and its tail is a backref to that
+        // head's bit offset.
+        let mut offsets = Vec::with_capacity(depth + 1);
+        for _ in 0..depth {
+            offsets.push(w.nbits);
+            w.bit(1);
+            w.bit(0);
+        }
+        // Base atom 0 at offsets[depth]
+        offsets.push(w.nbits);
+        w.bit(0);
+        mat(&mut w, &[]);
+        // Now emit the tail backref for each cell from innermost to outermost,
+        // pointing to the immediately preceding head offset (which is already
+        // memoized when Combine finishes it).
+        for i in (0..depth).rev() {
+            let target = offsets[i + 1] as u64;
+            w.bit(1);
+            w.bit(1);
+            mat(&mut w, &trim(target.to_le_bytes().to_vec()));
+        }
+        assert!(w.buf.len() < 200, "bomb frame must be tiny: {} bytes", w.buf.len());
+        let e = cue(&w.buf).unwrap_err();
+        assert!(e.msg.contains("budget"), "expected budget refusal, got: {}", e.msg);
+    }
+
+    #[test]
+    fn lick_never_retries_post_after_send_frame_succeeded() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("lattice-fs-post-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fs");
+        let l = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let received = Arc::new(AtomicUsize::new(0));
+        let rec = received.clone();
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { break };
+                s.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                if recv_frame(&mut s).is_ok() {
+                    rec.fetch_add(1, Ordering::SeqCst);
+                }
+                // Drop without replying after receiving the POST.
+            }
+        });
+
+        let t = LickTransport::new(path.to_str().unwrap(), "~zod");
+        assert!(t.post("/apps/lattice/page-save", &[("name", "n")], b"body").is_err());
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            received.load(Ordering::SeqCst),
+            1,
+            "a POST must never be retried after send_frame succeeded"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn call_rechecks_quiescing_after_acquiring_conn_lock() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("lattice-fs-q-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fs");
+        let l = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let acc = accepts.clone();
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                acc.fetch_add(1, Ordering::SeqCst);
+                drop(s);
+            }
+        });
+
+        let t = Arc::new(LickTransport::new(path.to_str().unwrap(), "~zod"));
+        let guard = t.conn.lock().unwrap();
+        let t2 = t.clone();
+        let waiter = std::thread::spawn(move || t2.get_bytes("/x", &[]));
+        // Give waiter time to pass the pre-lock check and block on conn.lock().
+        std::thread::sleep(Duration::from_millis(50));
+        t.quiescing.store(true, Ordering::SeqCst);
+        drop(guard);
+        let e = waiter.join().unwrap().unwrap_err();
+        assert!(e.msg.contains("shutting down"), "{}", e.msg);
+        assert_eq!(accepts.load(Ordering::SeqCst), 0, "must not connect after quiescing");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
