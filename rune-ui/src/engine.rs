@@ -80,6 +80,7 @@ pub enum Status {
     Off,
     Booting,
     Ready { our: String },
+    Closing,
     Failed(String),
 }
 
@@ -88,7 +89,7 @@ type Answer = Sender<Result<NativePage, ReadError>>;
 /// what callers hand the host's thread
 enum Job {
     Read(String, Answer),
-    Close(Sender<()>),
+    Close,
 }
 
 struct Running {
@@ -102,6 +103,27 @@ struct Inner {
     /// what a start is doing, in words
     step: &'static str,
     run: Option<Running>,
+    /// Waiters notified once the host thread has exited and closed its store.
+    close_waiters: Vec<Sender<()>>,
+}
+
+/// Ensures `Inner` leaves `Closing`/`Booting`/`Ready` for `Off` and notifies any
+/// close waiters when the host thread exits for any reason.
+struct ExitGuard {
+    inner: Arc<Mutex<Inner>>,
+}
+
+impl Drop for ExitGuard {
+    fn drop(&mut self) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(g.status, Status::Failed(_)) {
+            g.status = Status::Off;
+        }
+        g.run = None;
+        for tx in g.close_waiters.drain(..) {
+            let _ = tx.send(());
+        }
+    }
 }
 
 /// The engine, one for the app. A clone is the same engine.
@@ -123,7 +145,7 @@ impl Engine {
     /// own), so a check can read a fake ship. A release build does not read it.
     pub fn new(dir: PathBuf) -> Engine {
         let fake = cfg!(debug_assertions).then(|| std::env::var("LATTICE_ENGINE_FAKE").ok()).flatten().filter(|f| !f.is_empty());
-        Engine { dir, fake, inner: Arc::new(Mutex::new(Inner { status: Status::Off, failed_at: None, step: "", run: None })) }
+        Engine { dir, fake, inner: Arc::new(Mutex::new(Inner { status: Status::Off, failed_at: None, step: "", run: None, close_waiters: Vec::new() })) }
     }
 
     pub fn status(&self) -> Status {
@@ -144,10 +166,10 @@ impl Engine {
         }
     }
 
-    /// Starts the host's thread unless it runs or is starting.
+    /// Starts the host's thread unless it runs, is starting, or is still closing.
     pub fn start(&self) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if matches!(g.status, Status::Booting | Status::Ready { .. }) {
+        if matches!(g.status, Status::Booting | Status::Ready { .. } | Status::Closing) {
             return;
         }
         if matches!(g.status, Status::Failed(_)) && g.failed_at.is_some_and(|t| t.elapsed() < RETRY_AFTER) {
@@ -160,12 +182,15 @@ impl Engine {
         drop(g);
         let (dir, fake, inner) = (self.dir.clone(), self.fake.clone(), self.inner.clone());
         let spawned = std::thread::Builder::new().name("urb-engine".into()).spawn(move || {
+            let _exit = ExitGuard { inner: inner.clone() };
             // a panic in the engine is a failed start, said and tried again, not a reader that waits for ever
             let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host_thread(&dir, fake.as_deref(), &inner, jobs_rx)));
             if ran.is_err() {
                 let mut g = inner.lock().unwrap_or_else(|e| e.into_inner());
-                g.status = Status::Failed("the reader stopped unexpectedly".into());
-                g.failed_at = Some(Instant::now());
+                if g.status != Status::Closing {
+                    g.status = Status::Failed("the reader stopped unexpectedly".into());
+                    g.failed_at = Some(Instant::now());
+                }
                 g.run = None;
             }
         });
@@ -174,6 +199,9 @@ impl Engine {
             g.status = Status::Failed(format!("no thread for the reader: {e}"));
             g.failed_at = Some(Instant::now());
             g.run = None;
+            for tx in g.close_waiters.drain(..) {
+                let _ = tx.send(());
+            }
         }
     }
 
@@ -186,6 +214,9 @@ impl Engine {
             let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if let Status::Failed(m) = &g.status {
                 return Err(boot_error(m));
+            }
+            if g.status == Status::Closing {
+                return Err(ReadError::Failed("the reader is closing".into()));
             }
             let Some(run) = &g.run else { return Err(ReadError::Failed("the reader stopped".into())) };
             if run.jobs.send(Job::Read(url.to_string(), tx)).is_err() {
@@ -204,6 +235,7 @@ impl Engine {
                 Err(RecvTimeoutError::Timeout) => match self.status() {
                     Status::Booting if began.elapsed() > BOOT => return Err(ReadError::Failed("The reader is taking too long to start. Check your connection and try again.".into())),
                     Status::Booting => {}
+                    Status::Closing => return Err(ReadError::Failed("the reader is closing".into())),
                     _ if ready_at.get_or_insert_with(Instant::now).elapsed() > budget => {
                         return Err(ReadError::Unreachable(format!("No answer within {} seconds. The ship may be away: try again.", budget.as_secs())));
                     }
@@ -220,23 +252,57 @@ impl Engine {
         }
     }
 
-    /// Closes the store and ends the thread, waiting a moment for it. `false` when it did not
-    /// stop in that time.
-    pub fn close(&self) -> bool {
-        let run = {
+    fn begin_close(&self, waiter: Option<Sender<()>>) -> bool {
+        let (already_off, run) = {
             let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            g.status = Status::Off;
-            g.run.take()
+            match g.status {
+                Status::Off | Status::Failed(_) if g.run.is_none() => (true, None),
+                Status::Closing => {
+                    if let Some(tx) = waiter {
+                        g.close_waiters.push(tx);
+                    }
+                    (false, None)
+                }
+                _ => {
+                    let run = g.run.take();
+                    if run.is_none() {
+                        g.status = Status::Off;
+                        (true, None)
+                    } else {
+                        g.status = Status::Closing;
+                        if let Some(tx) = waiter {
+                            g.close_waiters.push(tx);
+                        }
+                        (false, run)
+                    }
+                }
+            }
         };
-        let Some(run) = run else { return true };
+        if let Some(run) = run {
+            let _ = run.jobs.send(Job::Close);
+            if let Some(w) = &run.waker {
+                let _ = w.send(Event::Wake);
+            }
+        }
+        already_off
+    }
+
+    /// Signals the host thread to close its store and exit without blocking the caller.
+    /// Returns `true` if the engine is already stopped, or `false` while it holds `Status::Closing`
+    /// until the host thread actually exits.
+    pub fn close(&self) -> bool {
+        self.begin_close(None)
+    }
+
+    /// Closes the store and waits up to `timeout` for the host thread to exit. Returns `false`
+    /// when it did not stop in that time; the engine stays in `Status::Closing` until the thread
+    /// exits so no concurrent `start()` can open the same store.
+    pub fn close_wait(&self, timeout: Duration) -> bool {
         let (tx, rx) = channel();
-        if run.jobs.send(Job::Close(tx)).is_err() {
+        if self.begin_close(Some(tx)) {
             return true;
         }
-        if let Some(w) = &run.waker {
-            let _ = w.send(Event::Wake);
-        }
-        rx.recv_timeout(Duration::from_secs(5)).is_ok()
+        rx.recv_timeout(timeout).is_ok()
     }
 
     /// The identity this computer has: the one running, or the one its keyfile names. `None` before
@@ -266,10 +332,11 @@ impl Engine {
         }
         let was = match self.status() {
             Status::Booting => return Err("The anonymous identity is still starting. Try again in a moment.".into()),
+            Status::Closing => return Err("The anonymous identity is still closing. Try again in a moment.".into()),
             Status::Ready { .. } => true,
             _ => false,
         };
-        if !self.close() {
+        if !self.close_wait(Duration::from_secs(5)) {
             return Err("The anonymous identity did not stop in time. Try again in a moment.".into());
         }
         Ok(was)
@@ -359,10 +426,16 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     let fail = |m: String| {
         log_line(&format!("start failed: {m}"));
         let mut g = inner.lock().unwrap_or_else(|e| e.into_inner());
-        g.status = Status::Failed(m);
-        g.failed_at = Some(Instant::now());
+        if g.status != Status::Closing {
+            g.status = Status::Failed(m);
+            g.failed_at = Some(Instant::now());
+        }
         g.run = None;
     };
+    let closing = || inner.lock().unwrap_or_else(|e| e.into_inner()).status == Status::Closing;
+    if closing() {
+        return;
+    }
     if let Err(e) = make_dir(dir) {
         return fail(e);
     }
@@ -377,12 +450,18 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         Err(e) => return fail(e),
     };
     let fake = fake.as_deref();
+    if closing() {
+        return;
+    }
     let found = match find_state(dir, fake.unwrap_or("")) {
         Ok(f) => f,
         // another copy holding the store is said as that. Anything else that could not be mended says where the files are
         Err(e) if e.ends_with("is in use by another process") => return fail(e),
         Err(e) => return fail(format!("{e}. Its files are in {}: move that folder aside to start again with a new identity", dir.display())),
     };
+    if closing() {
+        return;
+    }
     let udp = GatewayUdp { fake: fake.is_some(), port: found.port, log: log.clone(), udp: None };
     let io = NetIo::new(Box::new(udp), Box::new(found.store), log);
     let waker = io.waker();
@@ -403,7 +482,7 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     {
         let mut g = inner.lock().unwrap_or_else(|e| e.into_inner());
         // closed while it was starting: it does not come up as ready with nobody to hand it work
-        if g.run.is_none() {
+        if g.status == Status::Closing || g.run.is_none() {
             drop(g);
             let _ = host.close();
             return;
@@ -415,10 +494,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         loop {
             match jobs.try_recv() {
                 Ok(Job::Read(url, tx)) => pending.push((submit_read(&mut host, url.clone()), tx, url, Instant::now())),
-                Ok(Job::Close(done)) => {
+                Ok(Job::Close) => {
                     let _ = host.close();
                     drop(host);
-                    let _ = done.send(());
                     return;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -584,7 +662,7 @@ mod tests {
     }
 
     fn engine_at(dir: PathBuf, fake: Option<&str>, status: Status) -> Engine {
-        Engine { dir, fake: fake.map(str::to_string), inner: Arc::new(Mutex::new(Inner { status, failed_at: None, step: "", run: None })) }
+        Engine { dir, fake: fake.map(str::to_string), inner: Arc::new(Mutex::new(Inner { status, failed_at: None, step: "", run: None, close_waiters: Vec::new() })) }
     }
 
     #[test]
@@ -764,7 +842,7 @@ mod tests {
     #[test]
     fn an_engine_not_asked_makes_nothing() {
         let d = std::env::temp_dir().join(format!("lattice-rune-engine-{}", std::process::id()));
-        let e = Engine { dir: d.clone(), fake: None, inner: Arc::new(Mutex::new(Inner { status: Status::Off, failed_at: None, step: "", run: None })) };
+        let e = Engine { dir: d.clone(), fake: None, inner: Arc::new(Mutex::new(Inner { status: Status::Off, failed_at: None, step: "", run: None, close_waiters: Vec::new() })) };
         assert_eq!((e.status(), e.step(), e.our()), (Status::Off, "", None));
         e.close();
         assert!(!d.exists(), "no folder, no key and no thread until a read");
@@ -782,5 +860,55 @@ mod tests {
         assert_eq!(e.status(), Status::Off);
         assert_eq!(e.step(), "");
         assert!(e.close());
+    }
+
+    #[test]
+    fn close_while_booting_is_non_blocking_and_holds_closing_until_thread_exits() {
+        let d = temp("closing-boot");
+        let (jobs_tx, jobs_rx) = channel::<Job>();
+        let (release_tx, release_rx) = channel::<()>();
+        let inner = Arc::new(Mutex::new(Inner {
+            status: Status::Booting,
+            failed_at: None,
+            step: "Joining",
+            run: Some(Running { jobs: jobs_tx, waker: None }),
+            close_waiters: Vec::new(),
+        }));
+        let e = Engine { dir: d.clone(), fake: None, inner: inner.clone() };
+
+        // Simulate a host_thread blocked during boot that runs ExitGuard on exit.
+        let worker_inner = inner.clone();
+        let worker = std::thread::spawn(move || {
+            let _exit = ExitGuard { inner: worker_inner };
+            let _keep_rx = jobs_rx;
+            let _ = release_rx.recv();
+        });
+
+        // Calling close() while booting must return immediately (not stall 5s) and enter Closing.
+        let began = Instant::now();
+        assert!(!e.close(), "close returns false while host thread is still exiting");
+        assert!(began.elapsed() < Duration::from_millis(200), "close must not block while booting");
+        assert_eq!(e.status(), Status::Closing);
+
+        // Calling start() while Closing must be a no-op so no duplicate host_thread starts.
+        e.start();
+        assert_eq!(e.status(), Status::Closing);
+        assert!(e.inner.lock().unwrap().run.is_none(), "no second host_thread may be started during Closing");
+        assert!(e.export_identity().unwrap_err().contains("still closing"));
+
+        // close_wait with a short timeout returns false and keeps Status::Closing.
+        assert!(!e.close_wait(Duration::from_millis(20)));
+        assert_eq!(e.status(), Status::Closing);
+
+        // Releasing the exiting thread transitions Closing -> Off and notifies waiters.
+        let e_wait = e.clone();
+        let waiter = std::thread::spawn(move || e_wait.close_wait(Duration::from_secs(2)));
+        std::thread::sleep(Duration::from_millis(15));
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(waiter.join().unwrap(), "close_wait wakes once old thread exits");
+        assert_eq!(e.status(), Status::Off);
+        assert!(e.close(), "close on Off returns true immediately");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

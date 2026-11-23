@@ -703,27 +703,96 @@ fn nesting(xml: &[u8]) -> usize {
     deepest
 }
 
+/// Maximum number of queued SVG drawing jobs waiting behind the active render.
+pub const DRAW_QUEUE_CAP: usize = 64;
+
+/// Active generation for `draw_later`. Bumped when navigating away or switching ships
+/// so queued SVGs from earlier pages are skipped before rendering.
+static DRAW_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Advances the active drawing generation so queued SVGs from prior pages are skipped.
+pub fn draw_cancel() -> u64 {
+    DRAW_GEN.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1
+}
+
+#[derive(Clone)]
+enum DrawGen {
+    Global(&'static std::sync::atomic::AtomicU64),
+    #[cfg(test)]
+    Local(std::sync::Arc<std::sync::atomic::AtomicU64>),
+}
+
+impl DrawGen {
+    fn load(&self) -> u64 {
+        match self {
+            DrawGen::Global(a) => a.load(std::sync::atomic::Ordering::Acquire),
+            #[cfg(test)]
+            DrawGen::Local(a) => a.load(std::sync::atomic::Ordering::Acquire),
+        }
+    }
+
+    #[cfg(test)]
+    fn cancel(&self) -> u64 {
+        match self {
+            DrawGen::Global(a) => a.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1,
+            DrawGen::Local(a) => a.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1,
+        }
+    }
+}
+
+type DrawJob = (u64, Box<dyn FnOnce() + Send>);
+
+struct Drawer {
+    tx: std::sync::mpsc::SyncSender<DrawJob>,
+    epoch: DrawGen,
+}
+
+impl Drawer {
+    fn new_with_gen(cap: usize, stack: usize, epoch: DrawGen) -> Drawer {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<DrawJob>(cap);
+        let worker_gen = epoch.clone();
+        std::thread::Builder::new()
+            .name("drawings".into())
+            .stack_size(stack)
+            .spawn(move || {
+                for (job_gen, job) in rx {
+                    if worker_gen.load() != job_gen {
+                        continue;
+                    }
+                    job();
+                }
+            })
+            .expect("a thread to draw on");
+        Drawer { tx, epoch }
+    }
+
+    fn submit(&self, bytes: Vec<u8>, done: impl FnOnce(Result<(u32, u32, Vec<u8>), String>) + Send + 'static) -> bool {
+        if !is_drawing(&bytes) {
+            return false;
+        }
+        let job_gen = self.epoch.load();
+        let job: Box<dyn FnOnce() + Send> = Box::new(move || {
+            // the engine is a beta: a drawing that panics it is a drawing that failed
+            let out = std::panic::catch_unwind(|| drawing(&bytes)).ok().flatten().unwrap_or_else(|| Err("the drawing could not be drawn".to_owned()));
+            done(out);
+        });
+        self.tx.try_send((job_gen, job)).is_ok()
+    }
+}
+
 /// Draws drawings on one thread of its own, with a stack made for `DRAWING_DEPTH`, and hands each result to
 /// `done` there. The caller is not held for the drawing: a drawing that is costly holds only the drawings after it.
-/// `done` is not called for bytes that are no drawing (`is_drawing`), which the caller decodes as before: `false` then.
+/// `done` is not called for bytes that are no drawing (`is_drawing`), or when the bounded queue is full, which
+/// returns `false` immediately without blocking the caller. Queued jobs from an earlier generation (`draw_cancel`)
+/// are skipped before rendering.
 pub fn draw_later(bytes: Vec<u8>, done: impl FnOnce(Result<(u32, u32, Vec<u8>), String>) + Send + 'static) -> bool {
-    use std::sync::{mpsc, OnceLock};
-    type Job = Box<dyn FnOnce() + Send>;
-    static DRAWER: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
+    use std::sync::OnceLock;
+    static DRAWER: OnceLock<Drawer> = OnceLock::new();
     if !is_drawing(&bytes) {
         return false;
     }
-    let job: Job = Box::new(move || {
-        // the engine is a beta: a drawing that panics it is a drawing that failed
-        let out = std::panic::catch_unwind(|| drawing(&bytes)).ok().flatten().unwrap_or_else(|| Err("the drawing could not be drawn".to_owned()));
-        done(out);
-    });
-    let tx = DRAWER.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<Job>();
-        std::thread::Builder::new().name("drawings".into()).stack_size(DRAWER_STACK).spawn(move || rx.into_iter().for_each(|job| job())).expect("a thread to draw on");
-        tx
-    });
-    tx.send(job).is_ok()
+    let drawer = DRAWER.get_or_init(|| Drawer::new_with_gen(DRAW_QUEUE_CAP, DRAWER_STACK, DrawGen::Global(&DRAW_GEN)));
+    drawer.submit(bytes, done)
 }
 
 /// Maximum nesting depth for sub-SVGs embedded via `data:image/svg+xml`.
@@ -1475,6 +1544,91 @@ mod tests {
         assert!(!fetched_ok(&make_png(8192, 8192)));
         assert!(!raster_ok(&make_png(0, 100)));
         assert!(!raster_ok(b"II*\0\x08\0\0\0"), "unrecognized raster format (TIFF) is rejected by raster_ok");
+    }
+
+    #[test]
+    fn stale_generation_drawing_jobs_are_skipped_without_rendering() {
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+        use std::sync::{Arc, mpsc};
+        let epoch = Arc::new(AtomicU64::new(0));
+        let drawer = Drawer::new_with_gen(DRAW_QUEUE_CAP, 8 << 20, DrawGen::Local(epoch));
+        let svg_bytes = format!("<svg xmlns='{SVG}' width='10' height='10'><rect width='10' height='10' fill='#0f0'/></svg>").into_bytes();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        // Hold the worker thread inside an active job so subsequent jobs sit queued.
+        assert!(drawer.submit(svg_bytes.clone(), move |_| {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        }));
+        started_rx.recv().unwrap();
+
+        let stale_ran = Arc::new(AtomicUsize::new(0));
+        for _ in 0..5 {
+            let ran = stale_ran.clone();
+            assert!(drawer.submit(svg_bytes.clone(), move |_| {
+                ran.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+
+        // Advance generation while those 5 jobs are still queued.
+        assert_eq!(drawer.epoch.cancel(), 1);
+
+        // Queue a fresh current-generation job behind the stale ones.
+        let (fresh_tx, fresh_rx) = mpsc::channel();
+        assert!(drawer.submit(svg_bytes, move |out| {
+            let _ = fresh_tx.send(out);
+        }));
+
+        // Release the blocker: stale jobs must be skipped and only the fresh job runs.
+        release_tx.send(()).unwrap();
+        let res = fresh_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("fresh job completed");
+        assert!(res.is_ok());
+        assert_eq!(stale_ran.load(Ordering::SeqCst), 0, "stale-generation jobs must be skipped without rendering");
+    }
+
+    #[test]
+    fn drawing_queue_cap_drops_excess_jobs_without_blocking() {
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+        use std::sync::{Arc, mpsc};
+        const CAP: usize = 4;
+        let epoch = Arc::new(AtomicU64::new(0));
+        let drawer = Drawer::new_with_gen(CAP, 8 << 20, DrawGen::Local(epoch));
+        let svg_bytes = format!("<svg xmlns='{SVG}' width='10' height='10'><rect width='10' height='10' fill='#00f'/></svg>").into_bytes();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        assert!(drawer.submit(svg_bytes.clone(), move |_| {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        }));
+        started_rx.recv().unwrap();
+
+        let ran = Arc::new(AtomicUsize::new(0));
+        for _ in 0..CAP {
+            let r = ran.clone();
+            assert!(drawer.submit(svg_bytes.clone(), move |_| {
+                r.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+
+        // Submissions past the queue cap must drop immediately without blocking.
+        let began = std::time::Instant::now();
+        let dropped_ran = Arc::new(AtomicUsize::new(0));
+        for _ in 0..10 {
+            let dr = dropped_ran.clone();
+            assert!(!drawer.submit(svg_bytes.clone(), move |_| {
+                dr.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        assert!(began.elapsed() < std::time::Duration::from_millis(200), "queue overflow must not block caller");
+
+        release_tx.send(()).unwrap();
+        // Wait for the CAP accepted jobs by draining a sentinel after the queue has space.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ran.load(Ordering::SeqCst) < CAP {
+            assert!(std::time::Instant::now() < deadline, "queued jobs did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(dropped_ran.load(Ordering::SeqCst), 0, "dropped jobs must never run");
     }
 
 }

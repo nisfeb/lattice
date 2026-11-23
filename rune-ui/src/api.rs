@@ -613,6 +613,36 @@ pub struct Asks {
     pub sent: Vec<Ask>,
 }
 
+/// Shared HTTP agent for authenticated ship requests. Redirects are disabled
+/// structurally so session cookies are never forwarded to another host.
+/// Callers set per-request overall timeouts on each `ureq::Request`.
+#[cfg(not(target_arch = "wasm32"))]
+fn ship_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| ureq::AgentBuilder::new().redirects(0).build())
+}
+
+/// Shared HTTP agent for unauthenticated external fetches where redirects are allowed.
+/// Callers set per-request overall timeouts on each `ureq::Request`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn public_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| ureq::AgentBuilder::new().build())
+}
+
+/// Shared HTTP agent for long-lived authenticated SSE streams with per-read
+/// silence timeout `quiet` seconds and no overall request deadline.
+#[cfg(not(target_arch = "wasm32"))]
+fn sse_agent(quiet: u64) -> ureq::Agent {
+    static AGENTS: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<u64, ureq::Agent>>> = std::sync::OnceLock::new();
+    let map = AGENTS.get_or_init(Default::default);
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .entry(quiet)
+        .or_insert_with(|| ureq::AgentBuilder::new().redirects(0).timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(quiet)).build())
+        .clone()
+}
+
 /// The most an image may weigh, fetched.
 const IMAGE_MAX: u64 = 8 * 1024 * 1024;
 
@@ -630,11 +660,8 @@ pub fn fetch_bytes(url: &str, cookie: Option<&str>) -> Result<Vec<u8>, String> {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err("not a web address".into());
         }
-        let mut builder = ureq::AgentBuilder::new().timeout(Duration::from_secs(20));
-        if cookie.is_some() {
-            builder = builder.redirects(0);
-        }
-        let mut req = builder.build().get(url);
+        let agent = if cookie.is_some() { ship_agent() } else { public_agent() };
+        let mut req = agent.get(url).timeout(Duration::from_secs(20));
         if let Some(c) = cookie {
             req = req.set("cookie", c);
         }
@@ -1072,8 +1099,7 @@ fn end_session(url: String, cookie: String) {
         if let Some(kept) = kept_after {
             let _ = std::fs::remove_file(kept);
         }
-        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(10)).build();
-        let _ = agent.post(&format!("{url}/~/logout")).set("cookie", &cookie).set("origin", &url).send_string("");
+        let _ = ship_agent().post(&format!("{url}/~/logout")).timeout(Duration::from_secs(10)).set("cookie", &cookie).set("origin", &url).send_string("");
     });
     if spawned.is_err()
         && let Some(kept) = kept
@@ -2830,8 +2856,7 @@ impl Conn {
         let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string();
         #[cfg(not(target_arch = "wasm32"))]
         let text = {
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(120)).build();
-            match agent.post(&format!("{}/mcp", self.url)).set("cookie", &self.cookie).set("content-type", "application/json").set("accept", "application/json, text/event-stream").send_string(&body) {
+            match ship_agent().post(&format!("{}/mcp", self.url)).timeout(Duration::from_secs(120)).set("cookie", &self.cookie).set("content-type", "application/json").set("accept", "application/json, text/event-stream").send_string(&body) {
                 Ok(r) if r.status() == 200 => r.into_string().map_err(|e| e.to_string())?,
                 Ok(r) => return Err(format!("{}: this ship has no %mcp", r.status())),
                 Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: %mcp did not take that")),
@@ -2854,9 +2879,7 @@ impl Conn {
     /// What of lattice's software the ship has. An error when the ship could not be asked at all, which is not the same as having nothing.
     pub fn stack(&self) -> Result<Stack, String> {
         #[cfg(not(target_arch = "wasm32"))]
-        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(20)).build();
-        #[cfg(not(target_arch = "wasm32"))]
-        let status = |path: &str| match agent.get(&format!("{}{path}", self.url)).set("cookie", &self.cookie).call() {
+        let status = |path: &str| match ship_agent().get(&format!("{}{path}", self.url)).timeout(Duration::from_secs(20)).set("cookie", &self.cookie).call() {
             Ok(r) => Ok(r.status()),
             Err(ureq::Error::Status(code, _)) => Ok(code),
             Err(e) => Err(e.to_string()),
@@ -2904,8 +2927,7 @@ impl Conn {
     fn sse(&self, url: &str, quiet: u64, mut on: impl FnMut(&str, &str) -> bool) -> Result<(), String> {
         use std::io::Read;
         // no limit on the whole request: the stream is held open. Redirects are never followed so expired 307 redirects to /~/login are caught
-        let agent = ureq::AgentBuilder::new().redirects(0).timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(quiet)).build();
-        let resp = match agent.get(url).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
+        let resp = match sse_agent(quiet).get(url).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
             Ok(r) if (300..400).contains(&r.status()) => {
                 let loc = r.header("location").unwrap_or("");
                 return Err(format!("{}: redirect{}", r.status(), if loc.is_empty() { String::new() } else { format!(" to {loc}") }));
@@ -3010,8 +3032,7 @@ impl Conn {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
-            let req = agent.post(&format!("{}/apps/lattice/key-mint", self.url)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/json");
+            let req = ship_agent().post(&format!("{}/apps/lattice/key-mint", self.url)).timeout(Duration::from_secs(30)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/json");
             let text = match req.send_string(&ask.to_string()) {
                 Ok(r) if (300..400).contains(&r.status()) => return Err(format!("{}: redirect", r.status())),
                 Ok(r) => read_text(r, ANSWER_LIMIT)?,
@@ -3218,9 +3239,9 @@ impl Conn {
         {
             let url = base_url(typed_url);
             // the cookie comes on the redirect itself, so it is not followed
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(20)).build();
-            let res = agent
+            let res = ship_agent()
                 .post(&format!("{url}/~/login"))
+                .timeout(Duration::from_secs(20))
                 .set("content-type", "application/x-www-form-urlencoded")
                 .send_string(&format!("password={}", enc(code.trim())));
             let res = match res {
@@ -3267,9 +3288,7 @@ impl Conn {
         #[cfg(not(target_arch = "wasm32"))]
         {
             // a redirect is not followed. The ship answers one for an address nothing is bound to, as while lattice is being put in or started: followed, a write would be taken as done and a read would be the sign-in page
-            let req = ureq::AgentBuilder::new()
-                .redirects(0)
-                .build()
+            let req = ship_agent()
                 .request(method, url)
                 .timeout(Duration::from_secs(secs))
                 .set("cookie", &self.cookie)
@@ -3320,8 +3339,7 @@ impl Conn {
         #[cfg(not(target_arch = "wasm32"))]
         {
             use std::io::Read;
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(5)).build();
-            let req = agent.get(url).set("cookie", &self.cookie).set("accept", "text/event-stream");
+            let req = ship_agent().get(url).timeout(Duration::from_secs(5)).set("cookie", &self.cookie).set("accept", "text/event-stream");
             if let Ok(r) = req.call()
                 && !(300..400).contains(&r.status())
             {
@@ -3606,10 +3624,9 @@ impl Conn {
         {
             let body = fields.iter().map(|(k, v)| format!("{k}={}", enc(v))).collect::<Vec<_>>().join("&");
             // the ship waits on another ship before it answers for a board there: about 30 s when that ship is not reachable
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(90)).build();
             // a board on another ship (`~ship/board`) has the same forms under its own route, which the ship sends on to that ship
             let root = if path.starts_with('~') { "forum-remote" } else { "forum" };
-            let res = agent.post(&format!("{}/apps/lattice/{root}/{path}", self.url)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&body);
+            let res = ship_agent().post(&format!("{}/apps/lattice/{root}/{path}", self.url)).timeout(Duration::from_secs(90)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&body);
             self.form_answer(res).map(drop)
         }
     }
@@ -3656,8 +3673,7 @@ impl Conn {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
-            self.form_answer(agent.post(&format!("{}/apps/lattice/forum-notes/clear", self.url)).set("cookie", &self.cookie).set("origin", &self.url).send_string("")).map(drop)
+            self.form_answer(ship_agent().post(&format!("{}/apps/lattice/forum-notes/clear", self.url)).timeout(Duration::from_secs(30)).set("cookie", &self.cookie).set("origin", &self.url).send_string("")).map(drop)
         }
     }
 
@@ -4033,8 +4049,7 @@ impl Conn {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(40)).build();
-            let res = self.form_answer(agent.post(&url).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&form))?;
+            let res = self.form_answer(ship_agent().post(&url).timeout(Duration::from_secs(40)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&form))?;
             Ok(res.header("location").is_some_and(|l| l.contains("&sent=")))
         }
     }
@@ -4074,9 +4089,9 @@ impl Conn {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
-            let res = agent
+            let res = ship_agent()
                 .post(&format!("{}/apps/lattice/comment?page={}", self.url, enc(page)))
+                .timeout(Duration::from_secs(30))
                 .set("cookie", &self.cookie)
                 .set("origin", &self.url)
                 .set("content-type", "application/x-www-form-urlencoded")
@@ -6289,5 +6304,68 @@ mod tests {
         let c = conn(url, ship);
         assert_eq!(c.queue().get("note").map(|x| x.body.as_str()), Some("late"));
         assert_eq!(c.ops(), vec![QueuedOp::Del("gone".into())]);
+    }
+
+    #[test]
+    fn shared_agents_reuse_instances_and_enforce_redirects_zero() {
+        assert!(std::ptr::eq(ship_agent(), ship_agent()));
+        assert!(std::ptr::eq(public_agent(), public_agent()));
+        assert!(!std::ptr::eq(ship_agent(), public_agent()));
+
+        // Verify HTTP keep-alive connection reuse on the shared ship_agent across two calls.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let accepts_srv = accepts.clone();
+        let handle = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            accepts_srv.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            for _ in 0..2 {
+                let mut buf = [0u8; 4096];
+                let mut got = Vec::new();
+                loop {
+                    let n = stream.read(&mut buf).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&buf[..n]);
+                    if got.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let body = br#"{"base":"/b"}"#;
+                let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n", body.len());
+                stream.write_all(resp.as_bytes()).unwrap();
+                stream.write_all(body).unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        let c = conn(&format!("http://{addr}"), "~zod");
+        assert_eq!(c.lat_base().unwrap(), "/b");
+        assert_eq!(c.lat_base().unwrap(), "/b");
+        handle.join().unwrap();
+        assert_eq!(accepts.load(std::sync::atomic::Ordering::SeqCst), 1, "ship_agent should reuse keep-alive TCP connection");
+
+        // Verify ship_agent and sse_agent enforce redirects(0), while public_agent follows redirects.
+        let (url, log) = serve(|r| {
+            if r.path == "/bounce" {
+                answer("302 Found", "location: /landed\r\n", b"")
+            } else {
+                answer("200 OK", "", b"landed-body")
+            }
+        });
+        let c = conn(&url, "~zod");
+        let call_err = c.call_url(10, "GET", &format!("{url}/bounce"), None).unwrap_err();
+        assert!(call_err.starts_with("302"), "{call_err}");
+        let fetch_err = fetch_bytes(&format!("{url}/bounce"), Some(&c.cookie)).unwrap_err();
+        assert_eq!(fetch_err, "302");
+        let sse_err = c.sse(&format!("{url}/bounce"), 5, |_, _| false).unwrap_err();
+        assert!(sse_err.starts_with("302"), "{sse_err}");
+        assert!(!log.lock().unwrap().iter().any(|r| r.path == "/landed"), "authenticated agents must never follow redirects");
+        let pub_body = fetch_bytes(&format!("{url}/bounce"), None).unwrap();
+        assert_eq!(pub_body, b"landed-body");
+        assert!(log.lock().unwrap().iter().any(|r| r.path == "/landed"), "public_agent follows redirects");
     }
 }

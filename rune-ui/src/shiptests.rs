@@ -422,7 +422,7 @@ impl Run {
     /// One look, with someone at the window.
     fn tick(&mut self) {
         let c = self.clock();
-        self.s.touched = true;
+        self.s.global.touched = true;
         poll(&mut self.s, c, &mut Tx::default());
     }
 
@@ -1449,10 +1449,10 @@ fn a_schedule_from_before_is_not_given_a_ship_another_schedule_names_its_archive
     let c = ship.conn();
     let dir = ship.dir().display().to_string();
     let sched = |id: &str, ship: &str, url: &str| backups::Schedule { id: id.into(), label: "daily".into(), every_hours: 24, keep: 1, dir: dir.clone(), last_run: 0, enabled: true, ship: ship.into(), url: url.into() };
-    r.s.backups = vec![sched("new", c.ship(), &c.url), sched("old", "", "")];
+    r.s.global.backups = vec![sched("new", c.ship(), &c.url), sched("old", "", "")];
     backup_run(&mut r.s, "old");
-    assert!(r.s.backups[1].ship.is_empty() && !r.s.bk_req.is_pending(), "it was given the ship, and its run would prune the other's archives");
-    assert!(r.s.bk_said.contains("daily"), "and that is said: {:?}", r.s.bk_said);
+    assert!(r.s.global.backups[1].ship.is_empty() && !r.s.global.bk_req.is_pending(), "it was given the ship, and its run would prune the other's archives");
+    assert!(r.s.global.bk_said.contains("daily"), "and that is said: {:?}", r.s.global.bk_said);
 }
 
 #[test]

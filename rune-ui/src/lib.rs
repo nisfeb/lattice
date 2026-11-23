@@ -499,27 +499,11 @@ enum Op {
     Grouped(String),
 }
 
-struct App {
-    conn: Option<Conn>,
-    /// Browsing the built-in pages with no ship.
-    sample: bool,
-    /// The save now being sent was made by a press of Read, with the ship answering: it is said as "saved".
-    read_save: bool,
-    /// Using the app with no ship: other ships' published pages are read by the urb engine, as a comet.
-    /// It stands on `sample` for everything a ship would be asked, with no pages of its own.
-    anon: bool,
+/// App-wide services and window state that survive ship switches and sign-out.
+struct AppGlobal {
     /// The urb engine, made the first time the app is used with no ship.
     #[cfg(unix)]
     engine: Option<engine::Engine>,
-    /// The address the engine is reading, and which asking of it this is. A read has a thread of its
-    /// own: on the workers every request shares, four slow ones held them all and nothing else was answered.
-    anon_reading: Option<String>,
-    anon_seq: u64,
-    /// What was in front when the read of another ship's page on its way was asked for: it lands only there.
-    remote_from: Option<Front>,
-    /// When the engine's start is next looked at (app clock): one wake at a time.
-    anon_tick: f64,
-    anon_got: std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<(String, api::Urb), String>)>>>,
     /// What a move of the anonymous identity came to. Sealing a file takes seconds and the engine
     /// closes for the copy, so each step has a thread of its own and an answer no other request drops.
     #[cfg(unix)]
@@ -530,6 +514,102 @@ struct App {
     /// The identity this computer has, and whether an export of it was made, as last read from its files.
     #[cfg(unix)]
     id_known: (Option<String>, bool),
+    sidebar: PaneState,
+    /// The window's title as it was last set.
+    titled: String,
+    /// The folders ships are mounted at, as kept between runs, and a mount or an unmount on its way: the list after it, and what to say.
+    mounts: Vec<mounts::MountSpec>,
+    /// The backup schedules, the one being written, what was last said of them, and when they are next looked at (app clock).
+    backups: Vec<backups::Schedule>,
+    bk_req: Latest<BkDone>,
+    bk_said: String,
+    bk_next: f64,
+    mount_req: Latest<(Vec<mounts::MountSpec>, String)>,
+    /// Images in pages: the decoder, the pictures had so far by their
+    /// source as written, the sources asked for (so none is asked twice),
+    /// what the fetching threads bring back, and the page they are for.
+    image_cache: Option<std::rc::Rc<rune::ImageCache>>,
+    /// True once startup has resumed kept FUSE mounts so ship switches do not re-spawn them.
+    mounts_resumed: bool,
+    waker: Option<Waker>,
+    /// Files from another app are being held over the window.
+    dropping: bool,
+    /// This run's id among the ship's windows, and who it is in a page's table.
+    client_id: String,
+    /// Whether anyone is at the window (`sync_away`): a key or the pointer moved since the last look, when one last did, since when the window has not been in front, and when it is looked at again.
+    touched: bool,
+    touched_at: f64,
+    behind: Option<f64>,
+    in_front: bool,
+    away: bool,
+    away_look: f64,
+    /// The app's own updates: what is asked, what was offered, and how far along it is.
+    #[cfg(not(target_arch = "wasm32"))]
+    upd: Updater,
+    /// The families the window's text was last set in, to set them again only when the theme's font changes.
+    font_set: String,
+    /// When each backup schedule was last tried by the clock, in seconds since 1970.
+    bk_tried: HashMap<String, u64>,
+}
+
+impl Default for AppGlobal {
+    fn default() -> AppGlobal {
+        AppGlobal {
+            #[cfg(unix)]
+            engine: None,
+            #[cfg(unix)]
+            id_got: Default::default(),
+            #[cfg(unix)]
+            id_busy: "",
+            #[cfg(unix)]
+            id_known: (None, false),
+            sidebar: PaneState::new(264.0).range(160.0, 520.0),
+            titled: "lattice".into(),
+            mounts: Vec::new(),
+            backups: Vec::new(),
+            bk_req: Latest::default(),
+            bk_said: String::new(),
+            bk_next: 0.0,
+            mount_req: Latest::default(),
+            image_cache: None,
+            mounts_resumed: false,
+            waker: None,
+            dropping: false,
+            client_id: here::client_id(),
+            // a window is in front and in use when it opens
+            touched: true,
+            touched_at: 0.0,
+            behind: None,
+            in_front: true,
+            away: false,
+            away_look: 0.0,
+            font_set: APP_FONT.to_owned(),
+            #[cfg(not(target_arch = "wasm32"))]
+            upd: Updater::new(),
+            bk_tried: HashMap::new(),
+        }
+    }
+}
+
+/// Per-ship session state, cleanly cancelled and replaced on ship switch or sign-out.
+struct ShipSession {
+    conn: Option<Conn>,
+    /// Browsing the built-in pages with no ship.
+    sample: bool,
+    /// The save now being sent was made by a press of Read, with the ship answering: it is said as "saved".
+    read_save: bool,
+    /// Using the app with no ship: other ships' published pages are read by the urb engine, as a comet.
+    /// It stands on `sample` for everything a ship would be asked, with no pages of its own.
+    anon: bool,
+    /// The address the engine is reading, and which asking of it this is. A read has a thread of its
+    /// own: on the workers every request shares, four slow ones held them all and nothing else was answered.
+    anon_reading: Option<String>,
+    anon_seq: u64,
+    /// What was in front when the read of another ship's page on its way was asked for: it lands only there.
+    remote_from: Option<Front>,
+    /// When the engine's start is next looked at (app clock): one wake at a time.
+    anon_tick: f64,
+    anon_got: std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<(String, api::Urb), String>)>>>,
     url: TextEdit,
     code: TextEdit,
     login_err: String,
@@ -541,7 +621,6 @@ struct App {
     op_req: inturn::InTurn<Result<Op, String>>,
     /// The rendered page beside the source while editing.
     preview: bool,
-    sidebar: PaneState,
     files: Files,
     query: TextEdit,
     /// The page on screen, and the text being edited when `editing`.
@@ -589,8 +668,6 @@ struct App {
     watch_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Another ship is being signed in to, with the one in front left as it is until that is done.
     adding: bool,
-    /// The window's title as it was last set.
-    titled: String,
     restored: bool,
     /// The page asked for whose text has not come yet: a page just made,
     /// or one opened before the first tree arrived. Its answer is shown.
@@ -750,14 +827,6 @@ struct App {
     set_req: Latest<Result<SetGot, String>>,
     stack_req: Latest<Result<api::Stack, String>>,
     local_req: Latest<Vec<local::LocalShip>>,
-    /// The folders ships are mounted at, as kept between runs, and a mount or an unmount on its way: the list after it, and what to say.
-    mounts: Vec<mounts::MountSpec>,
-    /// The backup schedules, the one being written, what was last said of them, and when they are next looked at (app clock).
-    backups: Vec<backups::Schedule>,
-    bk_req: Latest<BkDone>,
-    bk_said: String,
-    bk_next: f64,
-    mount_req: Latest<(Vec<mounts::MountSpec>, String)>,
     /// A vault export being written, and what was last said of one.
     /// With whether the tree is to be read again.
     vault_req: Latest<(String, bool)>,
@@ -806,18 +875,12 @@ struct App {
     /// Find in the page being read: what is typed, and which match is the current one.
     find: Option<TextEdit>,
     find_at: usize,
-    /// Images in pages: the decoder, the pictures had so far by their
-    /// source as written, the sources asked for (so none is asked twice),
-    /// what the fetching threads bring back, and the page they are for.
-    image_cache: Option<std::rc::Rc<rune::ImageCache>>,
     pics: HashMap<String, rune::Image>,
     /// Insertion order of non-tile page images in `pics`, used to cap cached textures.
     pics_order: std::collections::VecDeque<String>,
     /// Pictures asked for that did not come.
     pics_failed: std::collections::HashSet<String>,
     pics_asked: std::collections::HashSet<String>,
-    /// True once startup has resumed kept FUSE mounts so ship switches do not re-spawn them.
-    mounts_resumed: bool,
     pics_in: std::sync::Arc<std::sync::Mutex<Vec<(String, Result<Vec<u8>, String>)>>>,
     /// Drawings drawn on the drawing thread (`html::draw_later`), waiting for the window to take them into the cache.
     drawn_in: std::sync::Arc<std::sync::Mutex<Vec<(String, Result<(u32, u32, Vec<u8>), String>)>>>,
@@ -830,9 +893,6 @@ struct App {
     tile_status_req: Latest<Result<api::TileStatus, String>>,
     tiles_flying: usize,
     tiles_off: Option<String>,
-    waker: Option<Waker>,
-    /// Files from another app are being held over the window.
-    dropping: bool,
     /// Pages already read this session, so a second visit draws at once.
     cache: HashMap<String, Page>,
     note: String,
@@ -860,8 +920,6 @@ struct App {
     tree_menu: Option<(String, rune::PointerPress)>,
     /// The link in a page a right-click was on, and where: its menu is open.
     link_menu: Option<(String, rune::PointerPress)>,
-    /// This run's id among the ship's windows, and who it is in a page's table.
-    client_id: String,
     /// What the thread listening to who is on a page heard, the page it listens on, and how it is told to stop.
     here: std::sync::Arc<std::sync::Mutex<HereHeard>>,
     here_for: Option<String>,
@@ -906,13 +964,6 @@ struct App {
     unclaimed: Option<String>,
     /// When the ship last heard from this window.
     here_beat: f64,
-    /// Whether anyone is at the window (`sync_away`): a key or the pointer moved since the last look, when one last did, since when the window has not been in front, and when it is looked at again.
-    touched: bool,
-    touched_at: f64,
-    behind: Option<f64>,
-    in_front: bool,
-    away: bool,
-    away_look: f64,
     /// How many parts a merge of the other's text would find changed by both, said in the banner, and what it was worked out for.
     merge_said: Option<usize>,
     merge_key: (usize, usize, u64),
@@ -937,17 +988,12 @@ struct App {
     /// An HTML page drawn as a browser shows it: the thread that lays it out, and what it has sent.
     #[cfg(not(target_arch = "wasm32"))]
     web: WebShow,
-    /// The app's own updates: what is asked, what was offered, and how far along it is.
-    #[cfg(not(target_arch = "wasm32"))]
-    upd: Updater,
     /// The link of the rich editor that is open to its Markdown, while the caret is in it.
     link_open: Option<linkedit::Open>,
     /// A theme being made or changed in the settings: its id, light or dark, and its name, five colours and six more as typed.
     theme_draft: Option<(String, bool, Box<[TextEdit; 12]>)>,
     /// The accent's colour as typed in the settings.
     accent_hex: TextEdit,
-    /// The families the window's text was last set in, to set them again only when the theme's font changes.
-    font_set: String,
     /// The shares a notification was raised for, so that one told twice is said once.
     noted: Vec<String>,
     noted_at: f64,
@@ -988,12 +1034,396 @@ struct App {
     /// The deletes and moves made with the ship away, waiting in the order they were made.
     ops: Vec<api::QueuedOp>,
     next_sync: f64,
-    /// When each backup schedule was last tried by the clock, in seconds since 1970.
-    bk_tried: HashMap<String, u64>,
     page_req: Latest<Result<Page, String>>,
     save_req: Latest<Result<Page, String>>,
     /// The read of a moved page's revision, when the tree has not said it in time (`poll`).
     rev_req: Latest<Result<Page, String>>,
+    /// A vault archive being read from disk off the window's thread before asking to restore it.
+    vault_read_req: Latest<Result<vault::Archive, String>>,
+    /// True once an SVG drawing was queued in `html::draw_later` for the current view.
+    draw_queued: bool,
+}
+
+impl Default for ShipSession {
+    fn default() -> ShipSession {
+        let mut url = TextEdit::new("");
+        url.focused = true;
+        ShipSession {
+            sample: false,
+            anon: false,
+            read_save: false,
+            anon_reading: None,
+            anon_seq: 0,
+            remote_from: None,
+            anon_tick: 0.0,
+            anon_got: Default::default(),
+            url,
+            code: TextEdit::new(""),
+            login_err: String::new(),
+            lapsed: false,
+            login_req: Latest::default(),
+            prompt: None,
+            op_req: inturn::InTurn::default(),
+            preview: true,
+            files: Files::default(),
+            query: TextEdit::new(""),
+            open: None,
+            editing: false,
+            edit: TextEdit::new(""),
+            rich: false,
+            seps: md::Seps::default(),
+            // open from the start, as the web client's is
+            inspector: PaneState::new(280.0).range(200.0, 420.0),
+            revs: None,
+            old: None,
+            hist_req: Latest::default(),
+            old_req: Latest::default(),
+            stale: false,
+            capture: false,
+            kept: None,
+            kept_req: Latest::default(),
+            next_auto: 0.0,
+            auto_seen: None,
+            autosaving: false,
+            save_again: false,
+            auto_held: false,
+            prefs: Prefs::default(),
+            ships: Vec::new(),
+            ships_open: false,
+            seen: Default::default(),
+            watch_stop: Default::default(),
+            adding: false,
+            restored: false,
+            want: None,
+            folder: None,
+            dnames: HashMap::new(),
+            shares: HashMap::new(),
+            dshares: HashMap::new(),
+            sharing: false,
+            // the pane opens on the page's outgoing links, which cost no request
+            pane: rpane::Tab::Out,
+            outline_at: None,
+            back: None,
+            back_req: Latest::default(),
+            tex_req: Latest::default(),
+            scad_req: Latest::default(),
+            scad_for: None,
+            scad: None,
+            scad_ok: None,
+            part: None,
+            part_req: Latest::default(),
+            tex_for: None,
+            tex_why: None,
+            comments: Vec::new(),
+            comments_req: Latest::default(),
+            comments_on: HashMap::new(),
+            comments_on_req: Latest::default(),
+            comment: TextEdit::new(""),
+            comments_total: 0,
+            comment_sending: false,
+            comment_undo: None,
+            page_held: HashMap::new(),
+            thread: None,
+            thread_req: Latest::default(),
+            comment_req: Latest::default(),
+            switch_req: Latest::default(),
+            comment_for: String::new(),
+            drafts: HashMap::new(),
+            asks: Asks::default(),
+            asks_req: Latest::default(),
+            notices: Vec::new(),
+            notices_req: Latest::default(),
+            waiting: Waiting::default(),
+            waiting_req: Latest::default(),
+            held: Vec::new(),
+            held_req: Latest::default(),
+            comets: HashMap::new(),
+            comets_req: Latest::default(),
+            sens: HashMap::new(),
+            sens_req: Latest::default(),
+            groups: Vec::new(),
+            groups_req: Latest::default(),
+            old_groups: Vec::new(),
+            old_groups_req: Latest::default(),
+            old_groups_asked: false,
+            grant_to: TextEdit::new(""),
+            base: String::new(),
+            base_req: Latest::default(),
+            access: false,
+            group_name: TextEdit::new(""),
+            group_ships: TextEdit::new(""),
+            shared: Vec::new(),
+            shared_req: Latest::default(),
+            urb: TextEdit::new(""),
+            urb_req: Latest::default(),
+            urb_folder: None,
+            nav: browse::Nav::default(),
+            sugg: Vec::new(),
+            sugg_at: None,
+            sugg_req: Latest::default(),
+            visits: Vec::new(),
+            visits_req: Latest::default(),
+            shared_open: false,
+            inbox: false,
+            remote: None,
+            remote_req: Latest::default(),
+            bans: Vec::new(),
+            bans_req: Latest::default(),
+            ban_who: TextEdit::new(""),
+            group_edit: None,
+            memory: false,
+            other: Default::default(),
+            know_meta: HashMap::new(),
+            know_tag: None,
+            core_agents: Vec::new(),
+            core_req: Latest::default(),
+            trash: None,
+            trash_req: Latest::default(),
+            know_req: Latest::default(),
+            read_as: None,
+            forum: None,
+            settings: None,
+            beacon: Default::default(),
+            beacon_state: api::BeaconState::default(),
+            beacon_stop: Default::default(),
+            vim: vim::Vim::default(),
+            keys_req: inturn::InTurn::default(),
+            set_req: Latest::default(),
+            stack_req: Latest::default(),
+            local_req: Latest::default(),
+            vault_req: Latest::default(),
+            vault_said: String::new(),
+            forum_req: Latest::default(),
+            board_theme: None,
+            board_theme_req: Latest::default(),
+            notes_req: Latest::default(),
+
+            sheet: None,
+            map: None,
+            trail: Vec::new(),
+            trail_at: 0,
+            tabs: vec![Tab::default()],
+            tab: 0,
+            tgroups: Vec::new(),
+            front_at: 0,
+            group_share: Vec::new(),
+            group_rects: Vec::new(),
+            tab_rects: Vec::new(),
+            front_rect: [0.0; 4],
+            group_drag: std::array::from_fn(|_| rune_kit::shell::TabDragState::new()),
+            share_base: None,
+            edit_room: 0.0,
+            edit_wide: 0.0,
+            split_down: false,
+            groups_room: (0.0, 0.0),
+            resync: false,
+            find: None,
+            find_at: 0,
+            pics: HashMap::new(),
+            pics_order: std::collections::VecDeque::new(),
+            pics_failed: std::collections::HashSet::new(),
+            pics_asked: std::collections::HashSet::new(),
+            pics_in: Default::default(),
+            drawn_in: Default::default(),
+            pics_for: None,
+            pics_ready: 0,
+            tile_status: None,
+            tile_status_req: Latest::default(),
+            tiles_flying: 0,
+            tiles_off: None,
+            cache: HashMap::new(),
+            note: String::new(),
+            names: Vec::new(),
+            jump: None,
+            jump_at: 0,
+            dirs: Vec::new(),
+            over: None,
+            squery: TextEdit::new(""),
+            shits: Vec::new(),
+            sfound: 0,
+            sskipped: 0,
+            search_at: None,
+            page_menu: false,
+            tree_menu: None,
+            link_menu: None,
+            here: Default::default(),
+            here_for: None,
+            here_stop: Default::default(),
+            here_shown: None,
+            here_now: None,
+            here_moved: 0.0,
+            here_at: 0.0,
+            here_tries: 0,
+            here_req: Latest::default(),
+            here_off_until: 0.0,
+            here_mine: String::new(),
+            here_tints: Vec::new(),
+            here_key: (0, 0, 0),
+            here_heard: 0,
+            vim_seen: (0, 0),
+            typed_seen: 0,
+            moved_at: 0.0,
+            moved_save: false,
+            moved_changed: false,
+            save_for: None,
+            save_half: None,
+            tree_behind: None,
+            no_drain: false,
+            moved_wait: None,
+            unclaimed: None,
+            here_beat: 0.0,
+            merge_said: None,
+            merge_key: (0, 0, 0),
+            scrub: None,
+            tab_drag: rune_kit::shell::TabDragState::new(),
+            marks: None,
+            marks_req: Latest::default(),
+            links: HashMap::new(),
+            folds: HashMap::new(),
+            folds_req: Latest::default(),
+            theme_req: Latest::default(),
+            next_theme: 0.0,
+            noted: Vec::new(),
+            noted_at: -5.0,
+            font_req: Latest::default(),
+            theme_put: Latest::default(),
+            accent_hex: TextEdit::new(""),
+            theme_draft: None,
+            link_open: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            web: WebShow::default(),
+            marks_bad: false,
+            marks_q: TextEdit::new(""),
+            palette: None,
+            templates: Vec::new(),
+            templates_req: Latest::default(),
+            tmpl: None,
+            land: None,
+            ac_at: 0,
+            ac_off: None,
+            palette_at: 0,
+            tree_req: Latest::default(),
+            since: String::new(),
+            offline: None,
+            queue: api::Queue::new(),
+            save_sent: None,
+            unwritten: Vec::new(),
+            drain_req: inturn::InTurn::default(),
+            ops: Vec::new(),
+            next_sync: 0.0,
+            page_req: Latest::default(),
+            save_req: Latest::default(),
+            rev_req: Latest::default(),
+            conn: None,
+            vault_read_req: Latest::default(),
+            draw_queued: false,
+        }
+    }
+}
+
+impl ShipSession {
+    fn for_conn(conn: Option<Conn>) -> ShipSession {
+        ShipSession {
+            prefs: conn.as_ref().map_or_else(Prefs::load, |c| Prefs::load_for(&c.url, c.ship())),
+            ships: api::ships(),
+            queue: conn.as_ref().map(Conn::queue).unwrap_or_default(),
+            ops: conn.as_ref().map(Conn::ops).unwrap_or_default(),
+            conn,
+            ..ShipSession::default()
+        }
+    }
+
+    /// Cancels any queued SVG drawings for this session so the worker skips them.
+    fn cancel_drawings(&mut self) {
+        if self.draw_queued {
+            html::draw_cancel();
+            self.draw_queued = false;
+        }
+        if let Ok(mut list) = self.drawn_in.lock() {
+            list.clear();
+        }
+        self.pics_asked.retain(|k| self.pics.contains_key(k) || self.pics_failed.contains(k));
+    }
+
+    /// Cancels every per-ship request and stops background streams before replacing the session.
+    fn cancel_all(&mut self) {
+        self.login_req.cancel();
+        self.op_req.cancel();
+        self.hist_req.cancel();
+        self.old_req.cancel();
+        self.kept_req.cancel();
+        self.back_req.cancel();
+        self.scad_req.cancel();
+        self.part_req.cancel();
+        self.tex_req.cancel();
+        self.comments_req.cancel();
+        self.comments_on_req.cancel();
+        self.thread_req.cancel();
+        self.comment_req.cancel();
+        self.switch_req.cancel();
+        self.asks_req.cancel();
+        self.notices_req.cancel();
+        self.waiting_req.cancel();
+        self.held_req.cancel();
+        self.comets_req.cancel();
+        self.sens_req.cancel();
+        self.groups_req.cancel();
+        self.old_groups_req.cancel();
+        self.base_req.cancel();
+        self.shared_req.cancel();
+        self.urb_req.cancel();
+        self.sugg_req.cancel();
+        self.visits_req.cancel();
+        self.remote_req.cancel();
+        self.bans_req.cancel();
+        self.trash_req.cancel();
+        self.core_req.cancel();
+        self.know_req.cancel();
+        self.forum_req.cancel();
+        self.board_theme_req.cancel();
+        self.keys_req.cancel();
+        self.set_req.cancel();
+        self.stack_req.cancel();
+        self.local_req.cancel();
+        self.vault_req.cancel();
+        self.notes_req.cancel();
+        self.tile_status_req.cancel();
+        self.here_req.cancel();
+        self.marks_req.cancel();
+        self.folds_req.cancel();
+        self.theme_req.cancel();
+        self.theme_put.cancel();
+        self.font_req.cancel();
+        self.templates_req.cancel();
+        self.tree_req.cancel();
+        self.drain_req.cancel();
+        self.page_req.cancel();
+        self.save_req.cancel();
+        self.rev_req.cancel();
+        self.vault_read_req.cancel();
+        self.beacon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.here_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.cancel_drawings();
+    }
+}
+
+struct App {
+    global: AppGlobal,
+    session: ShipSession,
+}
+
+impl std::ops::Deref for App {
+    type Target = ShipSession;
+    fn deref(&self) -> &ShipSession {
+        &self.session
+    }
+}
+
+impl std::ops::DerefMut for App {
+    fn deref_mut(&mut self) -> &mut ShipSession {
+        &mut self.session
+    }
 }
 
 const SAMPLE: &[(&str, &str)] = &[
@@ -1045,7 +1475,7 @@ fn graft_shared(s: &mut App, was: &[(String, bool)]) {
     if s.memory || s.files.contains(swm::ROOT) || s.shared.is_empty() {
         return;
     }
-    let (list, folds, m) = (&s.shared, &s.folds, &mut s.files);
+    let (list, folds, m) = (&s.session.shared, &s.session.folds, &mut s.session.files);
     let open = |id: &str, unless: bool| was.iter().find(|(x, _)| x == id).map_or(unless, |(_, o)| *o);
     let node = |name: &str, path: &str, dir: bool| FileNode { name: name.to_owned(), path: path.to_owned(), dir, data: None };
     m.insert(None, swm::ROOT, node(swm::LABEL, swm::ROOT, true));
@@ -1147,309 +1577,7 @@ fn files_of(nodes: Vec<Node>, keep: &Files, desc: bool) -> Files {
 }
 
 fn init() -> App {
-    let conn = Conn::load();
-    let mut url = TextEdit::new("");
-    url.focused = true;
-    App {
-        sample: false,
-        anon: false,
-        read_save: false,
-        #[cfg(unix)]
-        engine: None,
-        anon_reading: None,
-        anon_seq: 0,
-        remote_from: None,
-        anon_tick: 0.0,
-        anon_got: Default::default(),
-        #[cfg(unix)]
-        id_got: Default::default(),
-        #[cfg(unix)]
-        id_busy: "",
-        #[cfg(unix)]
-        id_known: (None, false),
-        url,
-        code: TextEdit::new(""),
-        login_err: String::new(),
-        lapsed: false,
-        login_req: Latest::default(),
-        prompt: None,
-        op_req: inturn::InTurn::default(),
-        preview: true,
-        sidebar: PaneState::new(264.0).range(160.0, 520.0),
-        files: Files::default(),
-        query: TextEdit::new(""),
-        open: None,
-        editing: false,
-        edit: TextEdit::new(""),
-        rich: false,
-        seps: md::Seps::default(),
-        // open from the start, as the web client's is
-        inspector: PaneState::new(280.0).range(200.0, 420.0),
-        revs: None,
-        old: None,
-        hist_req: Latest::default(),
-        old_req: Latest::default(),
-        stale: false,
-        capture: false,
-        kept: None,
-        kept_req: Latest::default(),
-        next_auto: 0.0,
-        auto_seen: None,
-        autosaving: false,
-        save_again: false,
-        auto_held: false,
-        prefs: conn.as_ref().map_or_else(Prefs::load, |c| Prefs::load_for(&c.url, c.ship())),
-        ships: api::ships(),
-        ships_open: false,
-        seen: Default::default(),
-        watch_stop: Default::default(),
-        adding: false,
-        titled: "lattice".into(),
-        restored: false,
-        want: None,
-        folder: None,
-        dnames: HashMap::new(),
-        shares: HashMap::new(),
-        dshares: HashMap::new(),
-        sharing: false,
-        // the pane opens on the page's outgoing links, which cost no request
-        pane: rpane::Tab::Out,
-        outline_at: None,
-        back: None,
-        back_req: Latest::default(),
-        tex_req: Latest::default(),
-        scad_req: Latest::default(),
-        scad_for: None,
-        scad: None,
-        scad_ok: None,
-        part: None,
-        part_req: Latest::default(),
-        tex_for: None,
-        tex_why: None,
-        comments: Vec::new(),
-        comments_req: Latest::default(),
-        comments_on: HashMap::new(),
-        comments_on_req: Latest::default(),
-        comment: TextEdit::new(""),
-        comments_total: 0,
-        comment_sending: false,
-        comment_undo: None,
-        page_held: HashMap::new(),
-        thread: None,
-        thread_req: Latest::default(),
-        comment_req: Latest::default(),
-        switch_req: Latest::default(),
-        comment_for: String::new(),
-        drafts: HashMap::new(),
-        asks: Asks::default(),
-        asks_req: Latest::default(),
-        notices: Vec::new(),
-        notices_req: Latest::default(),
-        waiting: Waiting::default(),
-        waiting_req: Latest::default(),
-        held: Vec::new(),
-        held_req: Latest::default(),
-        comets: HashMap::new(),
-        comets_req: Latest::default(),
-        sens: HashMap::new(),
-        sens_req: Latest::default(),
-        groups: Vec::new(),
-        groups_req: Latest::default(),
-        old_groups: Vec::new(),
-        old_groups_req: Latest::default(),
-        old_groups_asked: false,
-        grant_to: TextEdit::new(""),
-        base: String::new(),
-        base_req: Latest::default(),
-        access: false,
-        group_name: TextEdit::new(""),
-        group_ships: TextEdit::new(""),
-        shared: Vec::new(),
-        shared_req: Latest::default(),
-        urb: TextEdit::new(""),
-        urb_req: Latest::default(),
-        urb_folder: None,
-        nav: browse::Nav::default(),
-        sugg: Vec::new(),
-        sugg_at: None,
-        sugg_req: Latest::default(),
-        visits: Vec::new(),
-        visits_req: Latest::default(),
-        shared_open: false,
-        inbox: false,
-        remote: None,
-        remote_req: Latest::default(),
-        bans: Vec::new(),
-        bans_req: Latest::default(),
-        ban_who: TextEdit::new(""),
-        group_edit: None,
-        memory: false,
-        other: Default::default(),
-        know_meta: HashMap::new(),
-        know_tag: None,
-        core_agents: Vec::new(),
-        core_req: Latest::default(),
-        trash: None,
-        trash_req: Latest::default(),
-        know_req: Latest::default(),
-        read_as: None,
-        forum: None,
-        settings: None,
-        beacon: Default::default(),
-        beacon_state: api::BeaconState::default(),
-        beacon_stop: Default::default(),
-        vim: vim::Vim::default(),
-        keys_req: inturn::InTurn::default(),
-        set_req: Latest::default(),
-        stack_req: Latest::default(),
-        local_req: Latest::default(),
-        mounts: Vec::new(),
-        backups: Vec::new(),
-        bk_req: Latest::default(),
-        bk_said: String::new(),
-        bk_next: 0.0,
-        mount_req: Latest::default(),
-        vault_req: Latest::default(),
-        vault_said: String::new(),
-        forum_req: Latest::default(),
-        board_theme: None,
-        board_theme_req: Latest::default(),
-        notes_req: Latest::default(),
-
-        sheet: None,
-        map: None,
-        trail: Vec::new(),
-        trail_at: 0,
-        tabs: vec![Tab::default()],
-        tab: 0,
-        tgroups: Vec::new(),
-        front_at: 0,
-        group_share: Vec::new(),
-        group_rects: Vec::new(),
-        tab_rects: Vec::new(),
-        front_rect: [0.0; 4],
-        group_drag: std::array::from_fn(|_| rune_kit::shell::TabDragState::new()),
-        share_base: None,
-        edit_room: 0.0,
-        edit_wide: 0.0,
-        split_down: false,
-        groups_room: (0.0, 0.0),
-        resync: false,
-        find: None,
-        find_at: 0,
-        image_cache: None,
-        pics: HashMap::new(),
-        pics_order: std::collections::VecDeque::new(),
-        pics_failed: std::collections::HashSet::new(),
-        pics_asked: std::collections::HashSet::new(),
-        mounts_resumed: false,
-        pics_in: Default::default(),
-        drawn_in: Default::default(),
-        pics_for: None,
-        pics_ready: 0,
-        tile_status: None,
-        tile_status_req: Latest::default(),
-        tiles_flying: 0,
-        tiles_off: None,
-        waker: None,
-        dropping: false,
-        cache: HashMap::new(),
-        note: String::new(),
-        names: Vec::new(),
-        jump: None,
-        jump_at: 0,
-        dirs: Vec::new(),
-        over: None,
-        squery: TextEdit::new(""),
-        shits: Vec::new(),
-        sfound: 0,
-        sskipped: 0,
-        search_at: None,
-        page_menu: false,
-        tree_menu: None,
-        link_menu: None,
-        client_id: here::client_id(),
-        here: Default::default(),
-        here_for: None,
-        here_stop: Default::default(),
-        here_shown: None,
-        here_now: None,
-        here_moved: 0.0,
-        here_at: 0.0,
-        here_tries: 0,
-        here_req: Latest::default(),
-        here_off_until: 0.0,
-        here_mine: String::new(),
-        here_tints: Vec::new(),
-        here_key: (0, 0, 0),
-        here_heard: 0,
-        vim_seen: (0, 0),
-        typed_seen: 0,
-        moved_at: 0.0,
-        moved_save: false,
-        moved_changed: false,
-        save_for: None,
-        save_half: None,
-        tree_behind: None,
-        no_drain: false,
-        moved_wait: None,
-        unclaimed: None,
-        here_beat: 0.0,
-        // a window is in front and in use when it opens
-        touched: true,
-        touched_at: 0.0,
-        behind: None,
-        in_front: true,
-        away: false,
-        away_look: 0.0,
-        merge_said: None,
-        merge_key: (0, 0, 0),
-        scrub: None,
-        tab_drag: rune_kit::shell::TabDragState::new(),
-        marks: None,
-        marks_req: Latest::default(),
-        links: HashMap::new(),
-        folds: HashMap::new(),
-        folds_req: Latest::default(),
-        theme_req: Latest::default(),
-        next_theme: 0.0,
-        font_set: APP_FONT.to_owned(),
-        noted: Vec::new(),
-        noted_at: -5.0,
-        font_req: Latest::default(),
-        theme_put: Latest::default(),
-        accent_hex: TextEdit::new(""),
-        theme_draft: None,
-        link_open: None,
-        #[cfg(not(target_arch = "wasm32"))]
-        web: WebShow::default(),
-        #[cfg(not(target_arch = "wasm32"))]
-        upd: Updater::new(),
-        marks_bad: false,
-        marks_q: TextEdit::new(""),
-        palette: None,
-        templates: Vec::new(),
-        templates_req: Latest::default(),
-        tmpl: None,
-        land: None,
-        ac_at: 0,
-        ac_off: None,
-        palette_at: 0,
-        tree_req: Latest::default(),
-        since: String::new(),
-        offline: None,
-        queue: conn.as_ref().map(Conn::queue).unwrap_or_default(),
-        save_sent: None,
-        unwritten: Vec::new(),
-        drain_req: inturn::InTurn::default(),
-        ops: conn.as_ref().map(Conn::ops).unwrap_or_default(),
-        next_sync: 0.0,
-        bk_tried: HashMap::new(),
-        page_req: Latest::default(),
-        save_req: Latest::default(),
-        rev_req: Latest::default(),
-        conn,
-    }
+    App { global: AppGlobal::default(), session: ShipSession::for_conn(Conn::load()) }
 }
 
 /// Opens the built-in pages, with no ship.
@@ -1492,6 +1620,7 @@ fn flip(s: &mut App) {
         return;
     }
     remote_cancel(s);
+    s.session.cancel_drawings();
     flip_quiet(s);
     s.open = None;
     s.want = None;
@@ -1508,10 +1637,11 @@ fn flip(s: &mut App) {
 
 /// The swap alone, for work on the half that is not showing.
 fn flip_quiet(s: &mut App) {
-    std::mem::swap(&mut s.files, &mut s.other.0);
-    std::mem::swap(&mut s.names, &mut s.other.1);
-    std::mem::swap(&mut s.cache, &mut s.other.2);
-    s.memory = !s.memory;
+    let sess = &mut s.session;
+    std::mem::swap(&mut sess.files, &mut sess.other.0);
+    std::mem::swap(&mut sess.names, &mut sess.other.1);
+    std::mem::swap(&mut sess.cache, &mut sess.other.2);
+    sess.memory = !sess.memory;
 }
 
 /// Puts a tag on the memory in front, or takes one off.
@@ -1637,7 +1767,7 @@ fn watch_ships(s: &mut App) {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let Some(waker) = s.waker.clone() else { return };
+        let Some(waker) = s.global.waker.clone() else { return };
         let front = s.conn.as_ref().map(|c| c.url.clone());
         let others: Vec<(String, String)> = api::ship_sessions().into_iter().filter(|(u, _)| Some(u) != front.as_ref()).collect();
         if others.is_empty() {
@@ -1731,7 +1861,7 @@ fn ship_news(seen: Option<&api::ShipSeen>) -> String {
 /// A ship mounted by its own socket on this computer needs no session, and is not among them.
 fn ship_mounts(s: &App, all: bool) -> Vec<mounts::MountSpec> {
     let front = s.conn.as_ref().map(|c| c.url.as_str());
-    s.mounts.iter().filter(|m| !m.url.is_empty() && (all || Some(m.url.as_str()) == front)).cloned().collect()
+    s.global.mounts.iter().filter(|m| !m.url.is_empty() && (all || Some(m.url.as_str()) == front)).cloned().collect()
 }
 
 /// Sign out, asked for: at once when nothing of the ship's is mounted, and after a question when
@@ -1792,91 +1922,16 @@ fn switch_ship(s: &mut App, url: &str) {
     }
 }
 
-/// Builds the window's state again from what is kept: for the ship now in front when `signed`,
-/// or for no ship. Everything the window held of the ship before is let go.
+/// Builds the window's per-ship session state again from what is kept: for the ship now in front when `signed`,
+/// or for no ship. App-wide state in `AppGlobal` (backups, self-updater, mounts, engine, waker) is preserved.
 fn reset(s: &mut App, signed: bool) {
     // this window leaves the table it was on, on the ship that was in front
     here_leave(s);
-    let mut fresh = init();
-    if !signed {
-        fresh.conn = None;
-        fresh.prefs = Prefs::load();
-    }
-    // the window's title is as it was set: what it should say now is worked out against that
-    fresh.titled = s.titled.clone();
-    // the wakers were set once, on the requests this window keeps. What each was asked is let go first: an answer from the ship that was in front must not land in the window of the one that is now
-    s.tree_req.cancel();
-    fresh.tree_req = std::mem::take(&mut s.tree_req);
-    s.page_req.cancel();
-    fresh.page_req = std::mem::take(&mut s.page_req);
-    s.save_req.cancel();
-    fresh.save_req = std::mem::take(&mut s.save_req);
-    s.rev_req.cancel();
-    s.login_req.cancel();
-    fresh.login_req = std::mem::take(&mut s.login_req);
-    s.op_req.cancel();
-    fresh.op_req = std::mem::take(&mut s.op_req);
-    s.hist_req.cancel();
-    fresh.hist_req = std::mem::take(&mut s.hist_req);
-    s.know_req.cancel();
-    fresh.know_req = std::mem::take(&mut s.know_req);
-    s.groups_req.cancel();
-    fresh.groups_req = std::mem::take(&mut s.groups_req);
-    s.base_req.cancel();
-    fresh.base_req = std::mem::take(&mut s.base_req);
-    s.bans_req.cancel();
-    fresh.bans_req = std::mem::take(&mut s.bans_req);
-    s.sens_req.cancel();
-    fresh.sens_req = std::mem::take(&mut s.sens_req);
-    s.comments_req.cancel();
-    fresh.comments_req = std::mem::take(&mut s.comments_req);
-    s.comments_on_req.cancel();
-    fresh.comments_on_req = std::mem::take(&mut s.comments_on_req);
-    s.held_req.cancel();
-    fresh.held_req = std::mem::take(&mut s.held_req);
-    s.notices_req.cancel();
-    fresh.notices_req = std::mem::take(&mut s.notices_req);
-    s.tile_status_req.cancel();
-    fresh.tile_status_req = std::mem::take(&mut s.tile_status_req);
-    s.kept_req.cancel();
-    fresh.kept_req = std::mem::take(&mut s.kept_req);
-    s.templates_req.cancel();
-    fresh.templates_req = std::mem::take(&mut s.templates_req);
-    s.back_req.cancel();
-    fresh.back_req = std::mem::take(&mut s.back_req);
-    s.asks_req.cancel();
-    fresh.asks_req = std::mem::take(&mut s.asks_req);
-    s.waiting_req.cancel();
-    fresh.waiting_req = std::mem::take(&mut s.waiting_req);
-    s.comets_req.cancel();
-    fresh.comets_req = std::mem::take(&mut s.comets_req);
-    s.thread_req.cancel();
-    fresh.thread_req = std::mem::take(&mut s.thread_req);
-    s.comment_req.cancel();
-    fresh.comment_req = std::mem::take(&mut s.comment_req);
-    s.switch_req.cancel();
-    fresh.switch_req = std::mem::take(&mut s.switch_req);
-    s.shared_req.cancel();
-    fresh.shared_req = std::mem::take(&mut s.shared_req);
-    s.remote_req.cancel();
-    fresh.remote_req = std::mem::take(&mut s.remote_req);
-    s.old_req.cancel();
-    fresh.old_req = std::mem::take(&mut s.old_req);
-    fresh.sidebar = s.sidebar.clone();
-    fresh.mounts_resumed = s.mounts_resumed;
-    // the reader's comet is this computer's, not a session's: its thread and its store stay as they are
-    #[cfg(unix)]
-    {
-        fresh.engine = s.engine.take();
-        (fresh.id_got, fresh.id_busy) = (s.id_got.clone(), s.id_busy);
-    }
-    // the listener of the session that ended stops, and every request this window keeps is woken as before
-    s.beacon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    s.watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let waker = s.waker.clone();
-    *s = fresh;
-    if let Some(w) = waker {
-        setup(s, w);
+    s.session.cancel_all();
+    let conn = if signed { Conn::load() } else { None };
+    s.session = ShipSession::for_conn(conn);
+    if let Some(w) = s.global.waker.clone() {
+        setup_session(s, w);
     }
 }
 
@@ -2012,7 +2067,7 @@ fn confirm(s: &mut App) {
         let all = *all;
         // the folders are let go of first, so the next start finds none to make again with a session that is gone
         let gone = ship_mounts(s, all);
-        let rest: Vec<mounts::MountSpec> = s.mounts.iter().filter(|m| !gone.contains(m)).cloned().collect();
+        let rest: Vec<mounts::MountSpec> = s.global.mounts.iter().filter(|m| !gone.contains(m)).cloned().collect();
         let _ = mounts::save(&rest);
         spawn(move || {
             for m in gone {
@@ -2283,7 +2338,8 @@ fn applied(s: &mut App, op: Op) {
             }
             // every tab that held one of them holds it still, by its new name
             let moved = |name: &str| is_under(name, &a).then(|| format!("{b}{}", &name[a.len()..]));
-            for name in s.trail.iter_mut().chain(s.tabs.iter_mut().flat_map(|t| t.trail.iter_mut())).chain(s.tgroups.iter_mut().flat_map(|g| g.tabs.iter_mut()).flat_map(|t| t.trail.iter_mut())) {
+            let sess = &mut s.session;
+            for name in sess.trail.iter_mut().chain(sess.tabs.iter_mut().flat_map(|t| t.trail.iter_mut())).chain(sess.tgroups.iter_mut().flat_map(|g| g.tabs.iter_mut()).flat_map(|t| t.trail.iter_mut())) {
                 if let Some(new) = moved(name) {
                     *name = new;
                 }
@@ -2476,11 +2532,12 @@ fn applied(s: &mut App, op: Op) {
         Op::SentRemote(url, body, told) => {
             sent_draft(s, &url, &body);
             let ours = s.conn.as_ref().map(|c| c.ship().to_owned()).unwrap_or_default();
-            let Some(t) = s.thread.as_mut().filter(|t| t.url == url) else {
-                s.note = "comment sent".into();
+            let sess = &mut s.session;
+            let Some(t) = sess.thread.as_mut().filter(|t| t.url == url) else {
+                sess.note = "comment sent".into();
                 return;
             };
-            s.note = if told { format!("sent to {}", t.ship) } else { format!("{} has not said it took the comment yet", t.ship) };
+            sess.note = if told { format!("sent to {}", t.ship) } else { format!("{} has not said it took the comment yet", t.ship) };
             // how many like it were there already: it has shown when there is one more
             let had = like_ours(&t.list, &ours, &body);
             t.sent = Some((body, told, had));
@@ -2574,8 +2631,8 @@ fn redraw_tree(s: &mut App, all: bool) {
         s.files.expand_all();
     }
     graft_shared(s, &shut);
-    if let Some(p) = &s.open {
-        s.files.select(&p.name);
+    if let Some(p) = &s.session.open {
+        s.session.files.select(&p.name);
     }
     if !s.query.text.trim().is_empty() {
         refilter(s);
@@ -2602,14 +2659,46 @@ fn refresh_tree(s: &mut App) {
 }
 
 fn setup(s: &mut App, waker: Waker) {
-    s.image_cache = Some(std::rc::Rc::new(rune::ImageCache::new(waker.clone())));
+    s.global.image_cache = Some(std::rc::Rc::new(rune::ImageCache::new(waker.clone())));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        s.global.upd.check_req.set_waker(waker.clone());
+        s.global.upd.get_req.set_waker(waker.clone());
+    }
+    s.global.waker = Some(waker.clone());
+    s.global.mount_req.set_waker(waker.clone());
+    s.global.bk_req.set_waker(waker.clone());
+    s.global.backups = backups::load();
+    setup_session(s, waker);
+    // the mounts kept from the run before: still there, or made again. Only once at startup, and not on sample pages
+    if !s.global.mounts_resumed && !s.sample {
+        s.global.mounts_resumed = true;
+        let kept = mounts::load();
+        if !kept.is_empty() {
+            s.global.mount_req.request((kept, s.conn.clone()), |(kept, conn)| {
+                let (mut list, mut said) = (Vec::new(), Vec::new());
+                // a ship over HTTP is mounted again with its own session, whichever ship is in front: any
+                // ship signed in on this computer, and the one this window was started on
+                let signed = api::ship_sessions();
+                let session = |url: &str| conn.as_ref().filter(|c| c.url == url).map(|c| c.cookie.clone()).or_else(|| signed.iter().find(|(u, _)| u == url).map(|(_, c)| c.clone()));
+                for (m, r) in mounts::resume(kept, session) {
+                    if let Err(e) = r {
+                        said.push(format!("{} was not mounted again: {e}", m.mountpoint));
+                    }
+                    list.push(m);
+                }
+                let _ = mounts::save(&list);
+                (list, said.join(". "))
+            });
+        }
+    }
+}
+
+fn setup_session(s: &mut App, waker: Waker) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         s.web.html = Some(htmlview::Html::start(waker.clone()));
-        s.upd.check_req.set_waker(waker.clone());
-        s.upd.get_req.set_waker(waker.clone());
     }
-    s.waker = Some(waker.clone());
     s.tree_req.set_waker(waker.clone());
     s.page_req.set_waker(waker.clone());
     s.save_req.set_waker(waker.clone());
@@ -2638,10 +2727,8 @@ fn setup(s: &mut App, waker: Waker) {
     s.set_req.set_waker(waker.clone());
     s.stack_req.set_waker(waker.clone());
     s.local_req.set_waker(waker.clone());
-    s.mount_req.set_waker(waker.clone());
     s.vault_req.set_waker(waker.clone());
-    s.bk_req.set_waker(waker.clone());
-    s.backups = backups::load();
+    s.vault_read_req.set_waker(waker.clone());
     s.notes_req.set_waker(waker.clone());
     s.core_req.set_waker(waker.clone());
     s.trash_req.set_waker(waker.clone());
@@ -2683,28 +2770,6 @@ fn setup(s: &mut App, waker: Waker) {
     load_shared(s);
     listen(s);
     watch_ships(s);
-    // the mounts kept from the run before: still there, or made again. Only once at startup, and not on sample pages
-    if !s.mounts_resumed && !s.sample {
-        s.mounts_resumed = true;
-        let kept = mounts::load();
-        if !kept.is_empty() {
-            s.mount_req.request((kept, s.conn.clone()), |(kept, conn)| {
-                let (mut list, mut said) = (Vec::new(), Vec::new());
-                // a ship over HTTP is mounted again with its own session, whichever ship is in front: any
-                // ship signed in on this computer, and the one this window was started on
-                let signed = api::ship_sessions();
-                let session = |url: &str| conn.as_ref().filter(|c| c.url == url).map(|c| c.cookie.clone()).or_else(|| signed.iter().find(|(u, _)| u == url).map(|(_, c)| c.clone()));
-                for (m, r) in mounts::resume(kept, session) {
-                    if let Err(e) = r {
-                        said.push(format!("{} was not mounted again: {e}", m.mountpoint));
-                    }
-                    list.push(m);
-                }
-                let _ = mounts::save(&list);
-                (list, said.join(". "))
-            });
-        }
-    }
 }
 
 /// Starts listening to the ship's change stream, in place of asking it
@@ -2728,7 +2793,7 @@ fn listen(s: &mut App) {
     }
     // a listener for a session before this one stops at its next event
     s.beacon_stop.store(true, Ordering::Relaxed);
-    let (Some(c), Some(waker)) = (s.conn.clone(), s.waker.clone()) else { return };
+    let (Some(c), Some(waker)) = (s.conn.clone(), s.global.waker.clone()) else { return };
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     s.beacon_stop = stop.clone();
     s.beacon_state = api::BeaconState::default();
@@ -2793,7 +2858,8 @@ fn open_page(s: &mut App, name: &str) {
     }
     // a new visit drops what was ahead of it, as a browser does
     if s.trail.get(s.trail_at).map(String::as_str) != Some(name) {
-        s.trail.truncate(s.trail_at + 1);
+        let keep = s.trail_at + 1;
+        s.trail.truncate(keep);
         s.trail.push(name.to_owned());
         s.trail_at = s.trail.len() - 1;
     }
@@ -2878,23 +2944,24 @@ fn remote_link(host: &str, page: &str, url: &str) -> Option<String> {
 /// or its text moves, dropped for any other page. The camera is kept
 /// across a new revision of the same page.
 fn sync_map(s: &mut App) {
-    let Some(p) = s.open.as_ref().filter(|p| p.kind == "geojson") else {
-        s.map = None;
+    let sess = &mut s.session;
+    let Some(p) = sess.open.as_ref().filter(|p| p.kind == "geojson") else {
+        sess.map = None;
         return;
     };
-    if s.map.as_ref().is_some_and(|m| m.name == p.name && m.rev == p.rev) {
+    if sess.map.as_ref().is_some_and(|m| m.name == p.name && m.rev == p.rev) {
         return;
     }
-    let old = s.map.take().filter(|m| m.name == p.name);
+    let old = sess.map.take().filter(|m| m.name == p.name);
     // a layer's own layers are not followed, so there is no cycle
-    let under: Vec<_> = map::layers(&p.body).into_iter().map(|n| (n.clone(), s.cache.get(&n).filter(|l| l.kind == "geojson").and_then(|l| map::parse(&l.body)))).collect();
+    let under: Vec<_> = map::layers(&p.body).into_iter().map(|n| (n.clone(), sess.cache.get(&n).filter(|l| l.kind == "geojson").and_then(|l| map::parse(&l.body)))).collect();
     // a page too large to draw in full is cut short, and says so once as it opens
     if p.body.len() > 100_000 {
         if let Some(said) = map::parse_cut(&p.body).and_then(|(_, cut)| cut.notice()) {
-            s.note = said;
+            sess.note = said;
         }
     }
-    s.map = map::parse(&p.body).map(|feats| {
+    sess.map = map::parse(&p.body).map(|feats| {
         let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
         let pick_new = old.as_ref().is_some_and(|m| m.pick_new);
         MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, tool: old.as_ref().and_then(|m| m.tool), verts: old.as_ref().map_or(Vec::new(), |m| m.verts.clone()), moving: None, grip: None, pick_new: false, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: if pick_new { last_added(&feats) } else { old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()) }, feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
@@ -2904,28 +2971,29 @@ fn sync_map(s: &mut App) {
 /// Keeps `s.read_as` in step with the open page: an HTML or a gemtext
 /// page is read as a document, turned to Markdown once and not on every frame.
 fn sync_read(s: &mut App) {
+    let sess = &mut s.session;
     // away from a LaTeX page and back, it is read again: what was read went with the page
-    if !s.open.as_ref().is_some_and(|p| p.kind == "tex") {
-        s.tex_for = None;
+    if !sess.open.as_ref().is_some_and(|p| p.kind == "tex") {
+        sess.tex_for = None;
     }
-    let Some(p) = s.open.as_ref().filter(|p| matches!(p.kind.as_str(), "html" | "gmi" | "tex")) else {
-        s.read_as = None;
+    let Some(p) = sess.open.as_ref().filter(|p| matches!(p.kind.as_str(), "html" | "gmi" | "tex")) else {
+        sess.read_as = None;
         return;
     };
     if p.kind == "tex" {
         // pandoc reads it on a thread of its own, once for each revision. Until it answers, and when
         // it cannot, the page shows as its source
         let now = (p.name.clone(), p.rev);
-        if s.tex_for.as_ref() != Some(&now) {
-            s.tex_for = Some(now.clone());
-            s.tex_why = None;
-            s.read_as = None;
-            s.tex_req.request((now, p.body.clone()), |((name, rev), src)| (name, rev, tex::read(&src)));
+        if sess.tex_for.as_ref() != Some(&now) {
+            sess.tex_for = Some(now.clone());
+            sess.tex_why = None;
+            sess.read_as = None;
+            sess.tex_req.request((now, p.body.clone()), |((name, rev), src)| (name, rev, tex::read(&src)));
         }
         return;
     }
-    if !s.read_as.as_ref().is_some_and(|(n, rev, _)| *n == p.name && *rev == p.rev) {
-        s.read_as = Some((p.name.clone(), p.rev, if p.kind == "gmi" { html::gemtext(&p.body) } else { html::to_markdown(&p.body) }));
+    if !sess.read_as.as_ref().is_some_and(|(n, rev, _)| *n == p.name && *rev == p.rev) {
+        sess.read_as = Some((p.name.clone(), p.rev, if p.kind == "gmi" { html::gemtext(&p.body) } else { html::to_markdown(&p.body) }));
     }
 }
 
@@ -3019,13 +3087,12 @@ fn scad_draws(s: &App, p: &Page) -> bool {
 /// thread of its own, once for each revision. The pages it includes
 /// are read from the ship there, or from the sample pages.
 fn sync_scad(s: &mut App) {
-    let Some(p) = s.open.as_ref().filter(|p| scad_draws(s, p)) else {
+    let Some((now, body)) = s.open.as_ref().filter(|p| scad_draws(s, p)).map(|p| ((p.name.clone(), p.rev), p.body.clone())) else {
         if !s.open.as_ref().is_some_and(|p| p.kind == "scad") {
             (s.scad_for, s.scad, s.part) = (None, None, None);
         }
         return;
     };
-    let now = (p.name.clone(), p.rev);
     if s.scad_for.as_ref() == Some(&now) {
         return;
     }
@@ -3033,7 +3100,7 @@ fn sync_scad(s: &mut App) {
     // with no ship the pages in hand are all there are: the OpenSCAD ones go with the request
     let conn = s.conn.clone();
     let local: HashMap<String, String> = if conn.is_some() { HashMap::new() } else { s.cache.values().filter(|x| x.kind == "scad").map(|x| (x.name.clone(), x.body.clone())).collect() };
-    s.scad_req.request((now, p.body.clone(), conn, local), |((name, rev), text, conn, local)| {
+    s.scad_req.request((now, body, conn, local), |((name, rev), text, conn, local)| {
         let read = |page: &str| match &conn {
             Some(c) => c.page(page).ok().filter(|p| p.kind == "scad").map(|p| p.body),
             None => local.get(page).cloned(),
@@ -3047,17 +3114,18 @@ fn sync_scad(s: &mut App) {
 /// shows: a sheet as its grid, a map as its shapes, an HTML or gemtext
 /// page as it is read.
 fn sync_beside(s: &mut App) {
-    for d in 0..s.tgroups.len() {
-        let page = s.tgroups[d].page().filter(|_| d != s.front_at).and_then(|n| s.cache.get(n));
+    let sess = &mut s.session;
+    for d in 0..sess.tgroups.len() {
+        let page = sess.tgroups[d].page().filter(|_| d != sess.front_at).and_then(|n| sess.cache.get(n));
         let Some(p) = page else {
-            s.tgroups[d].view = None;
+            sess.tgroups[d].view = None;
             continue;
         };
-        if s.tgroups[d].view.as_ref().is_some_and(|(n, rev, _)| *n == p.name && *rev == p.rev) {
+        if sess.tgroups[d].view.as_ref().is_some_and(|(n, rev, _)| *n == p.name && *rev == p.rev) {
             continue;
         }
         // the sheet that was showing stays the one showing through a change
-        let old = s.tgroups[d].view.take().filter(|(n, ..)| *n == p.name);
+        let old = sess.tgroups[d].view.take().filter(|(n, ..)| *n == p.name);
         let view = match p.kind.as_str() {
             "fods" => Some(sheet::parse(&p.body)).filter(|sheets| !sheets.is_empty()).map(|sheets| {
                 let (at, table) = match old {
@@ -3071,7 +3139,7 @@ fn sync_beside(s: &mut App) {
             "gmi" => Some(Beside::Read(html::gemtext(&p.body))),
             _ => None,
         };
-        s.tgroups[d].view = view.map(|v| (p.name.clone(), p.rev, v));
+        sess.tgroups[d].view = view.map(|v| (p.name.clone(), p.rev, v));
     }
 }
 
@@ -3080,17 +3148,18 @@ fn sync_sheet(s: &mut App) {
     sync_read(s);
     sync_scad(s);
     sync_beside(s);
-    let Some(p) = s.open.as_ref().filter(|p| p.kind == "fods") else {
-        s.sheet = None;
+    let sess = &mut s.session;
+    let Some(p) = sess.open.as_ref().filter(|p| p.kind == "fods") else {
+        sess.sheet = None;
         return;
     };
-    if s.sheet.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
+    if sess.sheet.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
         return;
     }
     let sheets = sheet::parse(&p.body);
-    let old = s.sheet.take().filter(|v| v.name == p.name);
+    let old = sess.sheet.take().filter(|v| v.name == p.name);
     if sheets.is_empty() {
-        s.sheet = None;
+        sess.sheet = None;
         return;
     }
     // a sheet just added is the one shown, with no cell of the old one picked
@@ -3104,7 +3173,7 @@ fn sync_sheet(s: &mut App) {
         let styles = styles::Styles::read(&p.body, b.null_date);
         (b, styles)
     });
-    s.sheet = Some(SheetView { name: p.name.clone(), rev: p.rev, at, sheets, looks, want: None, repick: false, cursor, entry_was, stale, table, entry });
+    sess.sheet = Some(SheetView { name: p.name.clone(), rev: p.rev, at, sheets, looks, want: None, repick: false, cursor, entry_was, stale, table, entry });
     if let (true, Some((r, c))) = (repick, cursor) {
         pick_cell(s, r, c);
     }
@@ -3131,10 +3200,11 @@ fn page_changes(s: &App) -> bool {
 
 /// Picks a cell of the sheet showing, with its text ready to be typed over.
 fn pick_cell(s: &mut App, r: usize, c: usize) {
-    let Some(v) = &mut s.sheet else { return };
+    let sess = &mut s.session;
+    let Some(v) = &mut sess.sheet else { return };
     v.cursor = Some((r, c));
     // a cell with a formula shows the formula, as it is typed, and not what it came to
-    let formula = s.open.as_ref().and_then(|p| sheet::formula_at(&p.body, v.at, r, c)).map(|f| formula::to_user(&f));
+    let formula = sess.open.as_ref().and_then(|p| sheet::formula_at(&p.body, v.at, r, c)).map(|f| formula::to_user(&f));
     v.entry_was = formula.unwrap_or_else(|| v.sheets[v.at].rows.get(r).and_then(|row| row.get(c)).cloned().unwrap_or_default());
     v.entry = TextEdit::new(v.entry_was.as_str());
     v.entry.focused = true;
@@ -4150,15 +4220,24 @@ fn held_back(s: &App) -> usize {
 /// let to load outside content, since that site then learns the reader's
 /// address. One on the ship is fetched with the session, and nowhere else is.
 fn sync_pics(s: &mut App) {
-    let Some(p) = s.open.as_ref().filter(|p| !s.memory && read_md(s, p).is_some()) else { return };
-    let now = (p.name.clone(), p.rev);
+    let Some((now, imgs)) = s.open.as_ref().filter(|_| !s.memory).and_then(|p| read_md(s, p).map(|md| ((p.name.clone(), p.rev), md::images(md)))) else {
+        if s.pics_for.is_some() {
+            s.pics_for = None;
+            s.session.cancel_drawings();
+        }
+        return;
+    };
     let ok = outside_ok(s);
-    if s.pics_for.as_ref() == Some(&now) && !ok {
+    let same = s.pics_for.as_ref() == Some(&now);
+    if same && !ok {
         return;
     }
+    if !same {
+        s.session.cancel_drawings();
+    }
     s.pics_for = Some(now);
-    let Some(waker) = s.waker.clone() else { return };
-    for src in md::images(read_md(s, p).unwrap_or_default()).into_iter().take(20) {
+    let Some(waker) = s.global.waker.clone() else { return };
+    for src in imgs.into_iter().take(20) {
         let (url, cookie) = if md::remote(&src) {
             if !ok {
                 continue;
@@ -4369,9 +4448,10 @@ fn sync_tiles(s: &mut App) {
     if s.tiles_off.is_some() || !m.fitted {
         return;
     }
-    let Some(waker) = s.waker.clone() else { return };
-    let want = map::tiles(&m.cam, m.size.0, m.size.1, status.max);
-    let keys: std::collections::HashSet<String> = want.iter().map(|t| tile_key(m.style, t)).collect();
+    let Some(waker) = s.global.waker.clone() else { return };
+    let (cam, size, style, max) = (m.cam, m.size, m.style, status.max);
+    let want = map::tiles(&cam, size.0, size.1, max);
+    let keys: std::collections::HashSet<String> = want.iter().map(|t| tile_key(style, t)).collect();
     if s.pics.len() > 160 {
         s.pics.retain(|k, _| !k.starts_with("tile:") || keys.contains(k));
         s.pics_asked.retain(|k| !k.starts_with("tile:") || keys.contains(k));
@@ -4380,12 +4460,12 @@ fn sync_tiles(s: &mut App) {
         if s.tiles_flying >= 8 {
             break;
         }
-        let key = tile_key(m.style, &t);
+        let key = tile_key(style, &t);
         if !s.pics_asked.insert(key.clone()) {
             continue;
         }
         s.tiles_flying += 1;
-        let (url, cookie, back, waker) = (c.tile_url(m.style, t.z, t.x, t.y), c.cookie().to_owned(), s.pics_in.clone(), waker.clone());
+        let (url, cookie, back, waker) = (c.tile_url(style, t.z, t.x, t.y), c.cookie().to_owned(), s.pics_in.clone(), waker.clone());
         spawn(move || {
             let got = api::fetch_bytes(&url, Some(&cookie));
             if let Ok(mut list) = back.lock() {
@@ -4424,7 +4504,7 @@ fn take_pics(s: &mut App) -> bool {
     let drawn: Vec<_> = s.drawn_in.lock().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default();
     any |= !drawn.is_empty();
     for (src, out) in drawn {
-        match (out, &s.image_cache) {
+        match (out, &s.global.image_cache) {
             (Ok((w, h, px)), Some(cache)) => {
                 let img = cache.rgba(w, h, px);
                 insert_pic(s, src, img);
@@ -4454,22 +4534,27 @@ fn take_pics(s: &mut App) -> bool {
                 continue;
             }
         }
-        match (res, &s.image_cache) {
+        match (res, &s.global.image_cache) {
             // a drawing that would read a file from this computer, or a picture that says it is vast, is not decoded
             (Ok(bytes), _) if !html::fetched_ok(&bytes) => {
                 s.pics_failed.insert(src);
             }
             // a drawing is drawn by a reader that resolves no file (the cache's own would read any file the drawing names), and on a thread of its own: a costly one must not hold the window
             (Ok(bytes), Some(_)) if html::is_drawing(&bytes) => {
-                let (back, waker) = (s.drawn_in.clone(), s.waker.clone());
-                html::draw_later(bytes, move |out| {
+                let (back, waker) = (s.drawn_in.clone(), s.global.waker.clone());
+                let src_fail = src.clone();
+                if html::draw_later(bytes, move |out| {
                     if let Ok(mut list) = back.lock() {
                         list.push((src, out));
                     }
                     if let Some(w) = waker {
                         w();
                     }
-                });
+                }) {
+                    s.session.draw_queued = true;
+                } else {
+                    s.session.pics_failed.insert(src_fail);
+                }
             }
             (Ok(bytes), Some(cache)) if html::raster_ok(&bytes) => {
                 let img = cache.load(bytes);
@@ -5250,7 +5335,7 @@ fn start_edit(s: &mut App) {
         s.note = "orrery keeps this map, so it is read-only here. Draw on orrery/map-notes".into();
         return;
     }
-    let Some(p) = &s.open else { return };
+    let Some(p) = s.open.clone() else { return };
     // a change made where this page is read (a sheet's cell, a map's feature, the page's kind) is being saved: the editor would be filled with the text from before it, and saving that would take the change out again
     if !s.editing && s.save_for.as_deref() == Some(p.name.as_str()) {
         s.note = "A save is on its way. Try again in a moment".into();
@@ -5262,8 +5347,9 @@ fn start_edit(s: &mut App) {
     // rich only when the page comes back from it unchanged (md::exact)
     match (p.kind == "md").then(|| md::exact(&p.body)).flatten() {
         Some(d) => {
-            s.edit = rich_edit(d, &mut s.seps);
-            s.rich = true;
+            let sess = &mut s.session;
+            sess.edit = rich_edit(d, &mut sess.seps);
+            sess.rich = true;
         }
         None => {
             s.edit = TextEdit::new(p.body.clone());
@@ -5887,7 +5973,8 @@ fn drained(s: &mut App, (did, out, unwritten): Drained) {
                     if s.unclaimed.as_deref() == Some(name.as_str()) {
                         s.unclaimed = None;
                     }
-                    if let Some(p) = s.open.as_mut().filter(|p| !s.memory && s.remote.is_none() && p.name == name) {
+                    let sess = &mut s.session;
+                    if let Some(p) = sess.open.as_mut().filter(|p| !sess.memory && sess.remote.is_none() && p.name == name) {
                         p.rev = rev;
                         // the ship has a new revision of the page in front: its history is read again
                         hist = true;
@@ -6111,7 +6198,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         moved_read(s, read, clock, tx);
     }
-    let was_away = s.away;
+    let was_away = s.global.away;
     changed |= sync_away(s, clock, tx);
     sync_idle(s, was_away, clock, tx);
     changed |= sync_here(s, clock, tx);
@@ -6188,7 +6275,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     // a window nobody is at asks the ship nothing by the clock (`sync_idle`)
     // unless something waits to be sent: that is work asked for, and the read is what sends it
-    if s.conn.is_some() && clock >= s.next_sync && (!s.away || !s.queue.is_empty() || !s.ops.is_empty()) {
+    if s.conn.is_some() && clock >= s.next_sync && (!s.global.away || !s.queue.is_empty() || !s.ops.is_empty()) {
         if s.next_sync > 0.0 {
             load_tree(s);
         }
@@ -6215,9 +6302,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     // the theme's font, behind the app's own text: set when it changes, and at the first look from what was kept
     let font = font_of(&s.prefs.worn);
-    if s.font_set != font {
+    if s.global.font_set != font {
         tx.set_font_families(font.clone(), APP_FONT);
-        s.font_set = font;
+        s.global.font_set = font;
         changed = true;
         // a family Talon installed that this computer has not: its files are on the ship
         #[cfg(not(target_arch = "wasm32"))]
@@ -6333,7 +6420,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     if let Some((name, w, h, px)) = s.part_req.take() {
         changed = true;
-        if let (Some(v), Some(cache)) = (s.part.as_mut().filter(|v| v.name == name), &s.image_cache) {
+        if let (Some(v), Some(cache)) = (s.session.part.as_mut().filter(|v| v.name == name), &s.global.image_cache) {
             // the one showing stays until the new one can be shown
             if let Some(ready) = v.pic.take().filter(|i| i.is_ready() && i.error().is_none()) {
                 v.was = Some(ready);
@@ -6465,7 +6552,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             forum_notes(s);
         }
         // an answer that lands after the forum was left is dropped
-        match (r, &mut s.forum) {
+        match (r, &mut s.session.forum) {
             // a list read took the place of whatever was being sent: nothing is on its way any more
             (Ok(ForumGot::Boards(b)), Some(f)) => (f.boards, f.sending) = (Some(b), false),
             (Ok(ForumGot::More(more)), Some(f)) => {
@@ -6482,14 +6569,14 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
             (Ok(ForumGot::Board(b)), Some(f)) => {
                 (f.board, f.thread) = (Some(b), None);
-                if s.note.starts_with("reading ") {
-                    s.note.clear();
+                if s.session.note.starts_with("reading ") {
+                    s.session.note.clear();
                 }
                 // what was being sent landed: the thread written is let go
                 if std::mem::take(&mut f.sending) {
                     // a thread written, or the board's own title and description changed
                     let away = f.board.as_ref().is_some_and(|b| b.board.starts_with('~'));
-                    s.note = if f.editing.is_some() { "changed".into() } else if away { SENT_AWAY.into() } else { "posted".into() };
+                    s.session.note = if f.editing.is_some() { "changed".into() } else if away { SENT_AWAY.into() } else { "posted".into() };
                     (f.draft, f.editing) = (None, None);
                 }
             }
@@ -6621,15 +6708,16 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 // a page moved while it was being edited takes the revision the ship now has it at, and is not said to have changed elsewhere. A read that does not bring it leaves it with none, and its saves claim none (`claim`), which the ship takes as no check
                 // That holds only if its text there is still the text this edit began from. If it is not, someone wrote it before the move, and the move must not hide that: it is said to have changed, as it would have been. The same for any page being edited whose revision is not known, as one opened just after a move
                 let waited = s.moved_wait.take();
-                if let Some(p) = s.open.as_mut().filter(|_| s.editing && !s.memory && !away) {
-                    if waited.as_deref() == Some(p.name.as_str()) || (p.rev == 0 && s.names.contains(&p.name)) {
-                        match s.cache.get(&p.name) {
+                let sess = &mut s.session;
+                if let Some(p) = sess.open.as_mut().filter(|_| sess.editing && !sess.memory && !away) {
+                    if waited.as_deref() == Some(p.name.as_str()) || (p.rev == 0 && sess.names.contains(&p.name)) {
+                        match sess.cache.get(&p.name) {
                             Some(c) if c.body == p.body => p.rev = c.rev,
                             // one behind theirs, so theirs can be merged in. At revision 0 there is no one behind: it is kept in mind
-                            Some(c) => (p.rev, s.moved_changed) = (c.rev.saturating_sub(1), c.rev == 0),
+                            Some(c) => (p.rev, sess.moved_changed) = (c.rev.saturating_sub(1), c.rev == 0),
                             None => p.rev = 0,
                         }
-                        s.unclaimed = s.cache.get(&p.name).is_none().then(|| p.name.clone());
+                        sess.unclaimed = sess.cache.get(&p.name).is_none().then(|| p.name.clone());
                     }
                 }
                 // a page being edited that was written elsewhere: say so, since its save would be refused
@@ -6689,11 +6777,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 }
                 // a page just made or moved is shown where it now is. One that was there already is
                 // only marked: a folder the reader folded stays folded through every read of the tree
-                if let Some(p) = s.open.as_ref().filter(|_| !away) {
+                let sess = &mut s.session;
+                if let Some(p) = sess.open.as_ref().filter(|_| !away) {
                     if !had {
-                        s.files.expand_to(&p.name);
+                        sess.files.expand_to(&p.name);
                     }
-                    s.files.select(&p.name);
+                    sess.files.select(&p.name);
                 }
             }
             // a ship that stops answering while its pages show: said once, and saves wait from here on
@@ -6853,32 +6942,36 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(std::time::Duration::from_secs(6));
         settings_do(s, SetAct::Read);
     }
-    if let Some(done) = s.bk_req.take() {
+    if let Some(done) = s.global.bk_req.take() {
         // only a whole archive counts as a run: an incomplete one leaves the schedule due
-        if let Some(b) = s.backups.iter_mut().find(|b| b.id == done.id).filter(|_| done.complete) {
+        if let Some(b) = s.global.backups.iter_mut().find(|b| b.id == done.id).filter(|_| done.complete) {
             b.last_run = done.at;
-            if let Err(e) = backups::save(&s.backups) {
+            if let Err(e) = backups::save(&s.global.backups) {
                 s.note = format!("the backup's time was not kept: {e}");
             }
         }
-        s.bk_said = done.said;
+        s.global.bk_said = done.said;
     }
     // the schedules are looked at once a minute, and at launch: one that came due while the app was closed runs then
-    if clock >= s.bk_next {
-        s.bk_next = clock + 60.0;
-        if !s.backups.is_empty() {
+    if clock >= s.global.bk_next {
+        s.global.bk_next = clock + 60.0;
+        if !s.global.backups.is_empty() {
             tx.wake_after(std::time::Duration::from_secs(60));
         }
         let now = backups::now();
         // one that failed, or came out incomplete, stays due: it is tried again in an hour, not at the next minute. Each try reads the whole store from the ship and writes it all to disk
-        let rested = |id: &str| s.bk_tried.get(id).is_none_or(|t| now.saturating_sub(*t) >= 3600);
+        let rested = |id: &str| s.global.bk_tried.get(id).is_none_or(|t| now.saturating_sub(*t) >= 3600);
         // a schedule runs against its own ship, when that ship is the one in front. One made before schedules named a ship is given this one only when it is the only ship signed in
         let (front, alone) = (s.conn.as_ref().map(|c| (c.url.clone(), c.ship().to_owned())), s.ships.len() <= 1);
         let mine = |b: &backups::Schedule| front.as_ref().is_some_and(|(url, ship)| backups::runs_for(b, url, ship, alone));
-        if let Some(id) = s.backups.iter().find(|b| backups::is_due(b, now) && rested(&b.id) && mine(b)).map(|b| b.id.clone()).filter(|_| !s.bk_req.is_pending()) {
-            s.bk_tried.insert(id.clone(), now);
+        if let Some(id) = s.global.backups.iter().find(|b| backups::is_due(b, now) && rested(&b.id) && mine(b)).map(|b| b.id.clone()).filter(|_| !s.global.bk_req.is_pending()) {
+            s.global.bk_tried.insert(id.clone(), now);
             backup_run(s, &id);
         }
+    }
+    if let Some(res) = s.vault_read_req.take() {
+        changed = true;
+        apply_vault_read(s, res);
     }
     if let Some((said, changed)) = s.vault_req.take() {
         s.note = said.clone();
@@ -6887,9 +6980,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             refresh_tree(s);
         }
     }
-    if let Some((list, said)) = s.mount_req.take() {
+    if let Some((list, said)) = s.global.mount_req.take() {
         changed = true;
-        s.mounts = list;
+        s.global.mounts = list;
         if !said.is_empty() {
             s.note = said;
         }
@@ -6942,9 +7035,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     // the window says which ship it is on, so two windows or a glance at the task bar tell them apart
     let titled = s.conn.as_ref().map_or_else(|| "lattice".to_owned(), |c| format!("lattice \u{b7} {}", s.ships.iter().find(|x| x.front && !x.label.is_empty()).map_or(c.ship(), |x| x.label.as_str())));
-    if s.titled != titled {
+    if s.global.titled != titled {
         tx.set_title(titled.clone());
-        s.titled = titled;
+        s.global.titled = titled;
     }
     #[cfg(unix)]
     if id_drained(s) {
@@ -6953,7 +7046,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     // while the reader starts for a first read, what it is doing is said, and then that it reads
     #[cfg(unix)]
     if let Some(url) = &s.anon_reading {
-        let step = s.engine.as_ref().map(engine::Engine::step).unwrap_or_default();
+        let step = s.global.engine.as_ref().map(engine::Engine::step).unwrap_or_default();
         let say = if step.is_empty() { format!("reading {url}\u{2026}") } else { format!("{step}\u{2026}") };
         if s.note != say {
             s.note = say;
@@ -6966,12 +7059,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     if let Some(r) = s.keys_req.take() {
         changed = true;
-        match (r, &mut s.settings) {
+        match (r, &mut s.session.settings) {
             (Ok((keys, token)), Some(st)) => {
                 if token.is_some() {
                     // made: the form is cleared for the next one, and the secret shows
                     *st = Settings { token, ..Settings::new() };
-                    s.note = "the key is made".into();
+                    s.session.note = "the key is made".into();
                 }
                 st.keys = Some(keys);
                 st.sending = false;
@@ -7386,7 +7479,7 @@ fn upload(s: &mut App, paths: Vec<std::path::PathBuf>) {
         flip(s);
     }
     let dir = upload_dir(s);
-    s.dropping = false;
+    s.global.dropping = false;
     s.note = match paths.as_slice() {
         [one] => format!("reading {}", one.display()),
         many => format!("reading {} files", many.len()),
@@ -7551,7 +7644,8 @@ fn add_group(s: &mut App) {
     } else {
         fix_shares(s);
         s.group_share = splits::share_added(&s.group_share, s.front_at);
-        s.tgroups.insert(s.front_at + 1, made);
+        let at = s.front_at + 1;
+        s.tgroups.insert(at, made);
     }
     sync_groups(s);
 }
@@ -7639,7 +7733,8 @@ fn sync_groups(s: &mut App) {
         d += 1;
     }
     // where a group stands is noted as it is laid out, and only when it moves: what is noted is kept, cut to the groups there are
-    s.group_rects.truncate(s.tgroups.len());
+    let n = s.tgroups.len();
+    s.group_rects.truncate(n);
     if s.tgroups.len() < 2 {
         s.tgroups.clear();
         s.front_at = 0;
@@ -7706,7 +7801,8 @@ fn focus_group(s: &mut App, d: usize, i: usize) {
             going.tabs.push(tab);
         }
     }
-    s.tgroups[s.front_at] = going;
+    let front = s.front_at;
+    s.tgroups[front] = going;
     s.front_at = d;
     load_tab(s, i);
     sync_groups(s);
@@ -7725,10 +7821,10 @@ fn turn_group(s: &mut App, forward: bool) {
 
 /// Closes one tab of a group that is not in front. Its last tab closed, the group is gone.
 fn close_group_tab(s: &mut App, d: usize, i: usize) {
-    let Some(g) = s.tgroups.get_mut(d).filter(|g| i < g.tabs.len()) else { return };
     if d == s.front_at {
         return;
     }
+    let Some(g) = s.tgroups.get_mut(d).filter(|g| i < g.tabs.len()) else { return };
     g.tabs.remove(i);
     if g.at > i {
         g.at -= 1;
@@ -7957,7 +8053,8 @@ fn restore_tabs(s: &mut App) -> bool {
     }
     s.tabs = s.prefs.tabs.iter().map(|n| if s.names.contains(n) { Tab { trail: vec![n.clone()], at: 0 } } else { Tab::default() }).collect();
     s.tab = s.prefs.tab.min(s.tabs.len() - 1);
-    let Tab { trail, at } = std::mem::take(&mut s.tabs[s.tab]);
+    let tab = s.tab;
+    let Tab { trail, at } = std::mem::take(&mut s.tabs[tab]);
     (s.trail, s.trail_at) = (trail, at);
     if let Some(name) = s.trail.first().cloned() {
         s.files.expand_to(&name);
@@ -7990,7 +8087,8 @@ fn open_in_tab(s: &mut App, name: &str) {
 fn park_tab(s: &mut App) {
     // a tab on a folder or a screen has no page of its own to come back to
     let on_page = s.open.is_some() && s.remote.is_none() && !s.capture;
-    s.tabs[s.tab] = if on_page { Tab { trail: std::mem::take(&mut s.trail), at: s.trail_at } } else { Tab::default() };
+    let sess = &mut s.session;
+    sess.tabs[sess.tab] = if on_page { Tab { trail: std::mem::take(&mut sess.trail), at: sess.trail_at } } else { Tab::default() };
 }
 
 /// Brings a tab forward. A page it held that is gone leaves it empty.
@@ -8262,7 +8360,7 @@ fn go_shared(s: &mut App) {
     if s.memory {
         flip(s);
     }
-    s.sidebar.set_open(true);
+    s.global.sidebar.set_open(true);
     s.over = None;
     load_shared(s);
     if s.files.contains(swm::ROOT) {
@@ -8445,10 +8543,11 @@ const SENT_AWAY: &str = "sent to the board's ship. It shows here once that ship 
 
 /// Opens the board whose address is typed, or the thread when the address names one.
 fn forum_go(s: &mut App) {
-    let Some((c, f)) = s.conn.as_ref().zip(s.forum.as_mut()) else { return };
+    let sess = &mut s.session;
+    let Some((c, f)) = sess.conn.as_ref().zip(sess.forum.as_mut()) else { return };
     match api::board_key(&f.address.text, c.ship()) {
         Ok((board, post)) => {
-            s.note = format!("reading {board}\u{2026}");
+            sess.note = format!("reading {board}\u{2026}");
             forum_open(s, board, post);
         }
         Err(why) => s.note = why,
@@ -8625,7 +8724,7 @@ fn forum_image(s: &mut App, url: String) {
     if !s.pics_asked.insert(url.clone()) {
         return;
     }
-    let (Some(waker), back) = (s.waker.clone(), s.pics_in.clone()) else { return };
+    let (Some(waker), back) = (s.global.waker.clone(), s.pics_in.clone()) else { return };
     spawn(move || {
         let got = api::fetch_bytes(&url, None);
         if let Ok(mut list) = back.lock() {
@@ -8737,32 +8836,33 @@ fn forum_board_tags(posts: &[api::ForumPost]) -> Vec<(String, usize)> {
 /// form it refuses as it answers one it takes, so the board is read
 /// again, and a board no longer than it was says the thread was not taken.
 fn forum_submit(s: &mut App) {
-    let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+    let sess = &mut s.session;
+    let Some(f) = sess.forum.as_mut().filter(|f| !f.sending) else { return };
     let (Some(b), Some(d)) = (&f.board, &f.draft) else { return };
     let [title, link, body, tags] = [d[0].text.trim().to_owned(), d[1].text.trim().to_owned(), d[2].text.trim_end().to_owned(), d[3].text.clone()];
     if title.is_empty() {
-        s.note = "a thread needs a title".into();
+        sess.note = "a thread needs a title".into();
         return;
     }
     let tags = match api::forum_tags(&tags) {
         Ok(t) => t,
         Err(why) => {
-            s.note = why;
+            sess.note = why;
             return;
         }
     };
-    let Some(c) = s.conn.clone() else { return };
+    let Some(c) = sess.conn.clone() else { return };
     // the ship's forms cap these, and say nothing when they cut one off
     if body.len() > 40_000 || title.len() > 300 || link.len() > 2048 {
-        s.note = "that is too long for the board to take: a title may be 300 bytes, a link 2,048 and a thread's text 40,000".into();
+        sess.note = "that is too long for the board to take: a title may be 300 bytes, a link 2,048 and a thread's text 40,000".into();
         return;
     }
     let (board, had): (String, Vec<u64>) = (b.board.clone(), b.posts.iter().map(|p| p.id).collect());
     // said to be on its way only now that it is: a post refused here for its length sends nothing
-    if let Some(f) = &mut s.forum {
+    if let Some(f) = &mut sess.forum {
         f.sending = true;
     }
-    s.forum_req.request((c, board), move |(c, board)| {
+    sess.forum_req.request((c, board), move |(c, board)| {
         c.forum_submit(&board, &title, &link, &body, &tags)?;
         let now = c.forum_board(&board)?;
         // another ship takes a thread in its own time: it is not yet there to look for.
@@ -8774,24 +8874,25 @@ fn forum_submit(s: &mut App) {
 
 /// Sends the comment written on the thread showing, under the comment it answers when it answers one.
 fn forum_comment(s: &mut App) {
-    let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+    let sess = &mut s.session;
+    let Some(f) = sess.forum.as_mut().filter(|f| !f.sending) else { return };
     let Some(th) = &f.thread else { return };
     let body = f.comment.text.trim_end().to_owned();
     if body.trim().is_empty() {
-        s.note = "there is nothing written to send".into();
+        sess.note = "there is nothing written to send".into();
         return;
     }
-    let Some(c) = s.conn.clone() else { return };
+    let Some(c) = sess.conn.clone() else { return };
     if body.len() > FORUM_MOST {
-        s.note = "that is too long for the board to take: a comment may be 10,000 bytes".into();
+        sess.note = "that is too long for the board to take: a comment may be 10,000 bytes".into();
         return;
     }
     let (board, post, parent, had): (String, u64, Option<u64>, Vec<u64>) = (th.board.clone(), th.post.id, f.reply, th.comments.iter().map(|c| c.id).collect());
     // said to be on its way only now that it is: a post refused here for its length sends nothing
-    if let Some(f) = &mut s.forum {
+    if let Some(f) = &mut sess.forum {
         f.sending = true;
     }
-    s.forum_req.request((c, board), move |(c, board)| {
+    sess.forum_req.request((c, board), move |(c, board)| {
         c.forum_comment(&board, post, parent, &body)?;
         let now = c.forum_thread(&board, post)?;
         // it took if there is a comment of this ship's that was not there before, as with a thread
@@ -8810,7 +8911,8 @@ fn draft_field(s: &mut App, i: usize) -> &mut TextEdit {
 
 /// Makes the board being written, when its name is one a board may have and no board has yet.
 fn forum_make(s: &mut App) {
-    let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+    let sess = &mut s.session;
+    let Some(f) = sess.forum.as_mut().filter(|f| !f.sending) else { return };
     let Some((d, role)) = &f.making else { return };
     let [name, title, description] = [d[0].text.trim().to_owned(), d[1].text.trim().to_owned(), d[2].text.trim().to_owned()];
     let term = name.starts_with(|c: char| c.is_ascii_lowercase()) && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
@@ -8824,12 +8926,12 @@ fn forum_make(s: &mut App) {
         ""
     };
     if !why.is_empty() {
-        s.note = why.into();
+        sess.note = why.into();
         return;
     }
-    let (role, Some(c)) = (*role, s.conn.clone()) else { return };
+    let (role, Some(c)) = (*role, sess.conn.clone()) else { return };
     f.sending = true;
-    s.forum_req.request((c, name), move |(c, name)| {
+    sess.forum_req.request((c, name), move |(c, name)| {
         c.forum_new(&name, &title, &description, role)?;
         let boards = c.forum_boards()?;
         if boards.iter().any(|b| b.board == name) { Ok(ForumGot::Changed(boards)) } else { Err("the ship did not make that board".into()) }
@@ -8838,22 +8940,23 @@ fn forum_make(s: &mut App) {
 
 /// Sends the board's title and description as changed, or flips it between public and private, then reads it again.
 fn forum_change(s: &mut App, flip: bool) {
+    let sess = &mut s.session;
     // a flip is a flip of whatever the board is when it lands: a second one sent before the first is answered would put it back
-    let Some(f) = s.forum.as_mut().filter(|f| !f.sending && !(flip && f.acting)) else { return };
+    let Some(f) = sess.forum.as_mut().filter(|f| !f.sending && !(flip && f.acting)) else { return };
     let Some(b) = &f.board else { return };
     let texts = f.editing.as_ref().map(|e| (e[0].text.trim().to_owned(), e[1].text.trim().to_owned()));
     if !flip && texts.as_ref().is_none_or(|(title, _)| title.is_empty()) {
-        s.note = "a board needs a title".into();
+        sess.note = "a board needs a title".into();
         return;
     }
-    let Some(c) = s.conn.clone() else { return };
+    let Some(c) = sess.conn.clone() else { return };
     f.sending = !flip;
     if flip {
         f.acting = true;
         // what the moderation showed of comets and invitations is no longer so
         f.moding = None;
     }
-    s.forum_req.request((c, b.board.clone()), move |(c, board)| {
+    sess.forum_req.request((c, b.board.clone()), move |(c, board)| {
         match (&texts, flip) {
             (_, true) => c.forum_flip_public(&board)?,
             (Some((title, description)), false) => c.forum_edit(&board, title, description)?,
@@ -8874,7 +8977,8 @@ fn forum_mod(s: &mut App, act: ModAct) {
         Comets,
         Invite(String, bool),
     }
-    let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+    let sess = &mut s.session;
+    let Some(f) = sess.forum.as_mut().filter(|f| !f.sending) else { return };
     let Some(board) = f.board.as_ref().map(|b| b.board.clone()) else { return };
     let m = f.moding.as_ref();
     let field = |i: usize| m.map(|m| m.fields[i].text.trim().to_owned()).unwrap_or_default();
@@ -8892,13 +8996,13 @@ fn forum_mod(s: &mut App, act: ModAct) {
     let send = match send {
         Ok(x) => x,
         Err(e) => {
-            s.note = e;
+            sess.note = e;
             return;
         }
     };
-    let Some(c) = s.conn.clone() else { return };
+    let Some(c) = sess.conn.clone() else { return };
     f.sending = !matches!(send, Send::Open);
-    s.forum_req.request((c, board), move |(c, board)| {
+    sess.forum_req.request((c, board), move |(c, board)| {
         let said = match &send {
             Send::Open => String::new(),
             Send::Role(w, Some(r)) => c.forum_role(&board, w, Some(r)).map(|()| format!("{w} has a role"))?,
@@ -9730,7 +9834,7 @@ fn mount_conn(s: &mut App) {
 
 fn mount_start(s: &mut App, spec: mounts::MountSpec, session: Option<String>) {
     s.note = format!("mounting {} at {}\u{2026}", if spec.ship.is_empty() { "the ship" } else { spec.ship.as_str() }, spec.mountpoint);
-    s.mount_req.request((s.mounts.clone(), spec, session), |(mut list, mut spec, session)| match mounts::start(&spec, session.as_deref()) {
+    s.global.mount_req.request((s.global.mounts.clone(), spec, session), |(mut list, mut spec, session)| match mounts::start(&spec, session.as_deref()) {
         Ok(pid) => {
             spec.pid = pid;
             let said = format!("{} is mounted at {}", spec.ship, spec.mountpoint);
@@ -9745,9 +9849,9 @@ fn mount_start(s: &mut App, spec: mounts::MountSpec, session: Option<String>) {
 
 /// Unmounts the folder at `i` and lets go of it.
 fn unmount(s: &mut App, i: usize) {
-    let Some(spec) = s.mounts.get(i).cloned() else { return };
+    let Some(spec) = s.global.mounts.get(i).cloned() else { return };
     s.note = format!("unmounting {}\u{2026}", spec.mountpoint);
-    s.mount_req.request((s.mounts.clone(), spec), |(mut list, spec)| match mounts::stop(&spec) {
+    s.global.mount_req.request((s.global.mounts.clone(), spec), |(mut list, spec)| match mounts::stop(&spec) {
         Ok(()) => {
             list.retain(|m| m.mountpoint != spec.mountpoint);
             let _ = mounts::save(&list);
@@ -9793,41 +9897,41 @@ struct BkDone {
 
 /// Writes one schedule's archive now, whatever its period says.
 fn backup_run(s: &mut App, id: &str) {
-    let Some(mut b) = s.backups.iter().find(|b| b.id == id).cloned() else { return };
+    let Some(mut b) = s.global.backups.iter().find(|b| b.id == id).cloned() else { return };
     let Some(c) = s.conn.clone() else {
-        s.bk_said = "a backup reads the whole store, so it needs the ship".into();
+        s.global.bk_said = "a backup reads the whole store, so it needs the ship".into();
         return;
     };
-    if s.bk_req.is_pending() {
-        s.bk_said = "a backup is being written. Try again when it is done".into();
+    if s.global.bk_req.is_pending() {
+        s.global.bk_said = "a backup is being written. Try again when it is done".into();
         return;
     }
     if b.ship.is_empty() {
         // made before schedules named a ship: from this run on it is the ship in front's. The archives it wrote before keep their names, and are no longer counted or pruned as its own
         (b.ship, b.url) = (c.ship().to_owned(), c.url.clone());
         // unless a schedule made since for that ship has its label: the two would prune each other's archives
-        if backups::clashes(&s.backups, &b) {
-            s.bk_said = format!("{} was made before schedules named a ship, and another schedule called {} already backs up {}. Remove one of them, and add it again under another name, to run it", b.label, b.label, b.ship);
+        if backups::clashes(&s.global.backups, &b) {
+            s.global.bk_said = format!("{} was made before schedules named a ship, and another schedule called {} already backs up {}. Remove one of them, and add it again under another name, to run it", b.label, b.label, b.ship);
             return;
         }
-        if let Some(kept) = s.backups.iter_mut().find(|x| x.id == b.id) {
+        if let Some(kept) = s.global.backups.iter_mut().find(|x| x.id == b.id) {
             (kept.ship, kept.url) = (b.ship.clone(), b.url.clone());
         }
-        if let Err(e) = backups::save(&s.backups) {
-            s.bk_said = format!("the schedules were not kept: {e}");
+        if let Err(e) = backups::save(&s.global.backups) {
+            s.global.bk_said = format!("the schedules were not kept: {e}");
             return;
         }
     } else if !backups::runs_for(&b, &c.url, c.ship(), false) {
         // never another ship's store under this schedule's name
-        s.bk_said = format!("{} backs up {} at {}. Bring that ship to the front to run it", b.label, b.ship, b.url);
+        s.global.bk_said = format!("{} backs up {} at {}. Bring that ship to the front to run it", b.label, b.ship, b.url);
         return;
-    } else if backups::clashes(&s.backups, &b) {
+    } else if backups::clashes(&s.global.backups, &b) {
         // two that name their archives alike (a list edited by hand) would prune each other's
-        s.bk_said = format!("another schedule names its archives as {} does. Remove one of them, and add it again under another name, to run it", b.label);
+        s.global.bk_said = format!("another schedule names its archives as {} does. Remove one of them, and add it again under another name, to run it", b.label);
         return;
     }
-    s.bk_said = format!("{}: reading the store\u{2026}", b.label);
-    s.bk_req.request((c, b), |(c, b)| {
+    s.global.bk_said = format!("{}: reading the store\u{2026}", b.label);
+    s.global.bk_req.request((c, b), |(c, b)| {
         let at = backups::now();
         let done = |complete, said| BkDone { id: b.id.clone(), at, complete, said };
         let built = match c.vault(at) {
@@ -9854,42 +9958,42 @@ enum BkAct {
 }
 
 fn backup_do(s: &mut App, act: BkAct) {
-    s.bk_said.clear();
+    s.global.bk_said.clear();
     match act {
         BkAct::Now(id) => return backup_run(s, &id),
         BkAct::Verify(id) => {
-            let Some(b) = s.backups.iter().find(|b| b.id == id) else { return };
+            let Some(b) = s.global.backups.iter().find(|b| b.id == id) else { return };
             // read here, not on a thread: one file from this computer's disk
-            s.bk_said = format!("{}: {}", b.label, backups::verify_newest(b).map_or_else(|e| e, |r| r.says()));
+            s.global.bk_said = format!("{}: {}", b.label, backups::verify_newest(b).map_or_else(|e| e, |r| r.says()));
             return;
         }
         BkAct::Pause(id) => {
-            if let Some(b) = s.backups.iter_mut().find(|b| b.id == id) {
+            if let Some(b) = s.global.backups.iter_mut().find(|b| b.id == id) {
                 b.enabled = !b.enabled;
             }
         }
-        BkAct::Remove(id) => s.backups.retain(|b| b.id != id),
+        BkAct::Remove(id) => s.global.backups.retain(|b| b.id != id),
         BkAct::Add => {
-            let Some(st) = s.settings.as_mut() else { return };
+            let (ship, url) = s.conn.as_ref().map(|c| (c.ship().to_owned(), c.url.clone())).unwrap_or_default();
+            let Some(st) = s.session.settings.as_mut() else { return };
             let dir = mounts::expand(&st.bk_dir.text, &std::env::var("HOME").unwrap_or_default());
             let id = format!("bk{:x}", crate::api::since_epoch().map_or(0, |d| d.as_nanos()));
-            let (ship, url) = s.conn.as_ref().map(|c| (c.ship().to_owned(), c.url.clone())).unwrap_or_default();
-            match backups::new_schedule(&s.backups, &st.bk_label.text, &dir, st.bk_every, &st.bk_keep.text, id, &ship, &url) {
+            match backups::new_schedule(&s.global.backups, &st.bk_label.text, &dir, st.bk_every, &st.bk_keep.text, id, &ship, &url) {
                 Ok(b) => {
-                    s.backups.push(b);
+                    s.global.backups.push(b);
                     st.bk_label = TextEdit::new("");
                     // it is due at once: the next look is now
-                    s.bk_next = 0.0;
+                    s.global.bk_next = 0.0;
                 }
                 Err(e) => {
-                    s.bk_said = e;
+                    s.global.bk_said = e;
                     return;
                 }
             }
         }
     }
-    if let Err(e) = backups::save(&s.backups) {
-        s.bk_said = format!("the schedules were not kept: {e}");
+    if let Err(e) = backups::save(&s.global.backups) {
+        s.global.bk_said = format!("the schedules were not kept: {e}");
     }
 }
 
@@ -9968,8 +10072,24 @@ fn read_vault_file(at: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// Reads the archive named and asks before putting it back. Nothing is
-/// written until the answer.
+/// Reads and parses a vault archive from disk off the window's thread.
+fn load_vault_archive(at: &str) -> Result<vault::Archive, String> {
+    read_vault_file(at).and_then(|b| vault::read(&b))
+}
+
+/// Applies the result of a background vault archive read.
+fn apply_vault_read(s: &mut App, res: Result<vault::Archive, String>) {
+    match res {
+        Ok(a) => {
+            s.vault_said.clear();
+            s.prompt = Some(Prompt::Restore(Box::new(a)));
+        }
+        Err(e) => s.vault_said = e,
+    }
+}
+
+/// Reads the archive named off the window's thread and asks before putting it back.
+/// Nothing is written until the answer.
 fn vault_restore(s: &mut App) {
     let Some(st) = s.settings.as_ref() else { return };
     if s.conn.is_none() {
@@ -9982,13 +10102,8 @@ fn vault_restore(s: &mut App) {
         return;
     }
     let at = mounts::expand(typed, &std::env::var("HOME").unwrap_or_default());
-    match read_vault_file(&at).and_then(|b| vault::read(&b)) {
-        Ok(a) => {
-            s.vault_said.clear();
-            s.prompt = Some(Prompt::Restore(Box::new(a)));
-        }
-        Err(e) => s.vault_said = e,
-    }
+    s.vault_said = "reading the archive\u{2026}".into();
+    s.vault_read_req.request(at, |at| load_vault_archive(&at));
 }
 
 fn vault_view(st: &Settings, said: &str, busy: bool, k: &Kit) -> El {
@@ -10295,7 +10410,7 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
         }).build(k).key("publish-ask")));
     }
     let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
-    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(local_view(st, &s.mounts, s.conn.is_some(), s.mount_req.is_pending(), s.local_req.is_pending(), k)).child(vault_view(st, &s.vault_said, s.vault_req.is_pending(), k)).child(backups_view(st, &s.backups, &s.bk_said, s.bk_req.is_pending(), k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
+    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(local_view(st, &s.global.mounts, s.conn.is_some(), s.global.mount_req.is_pending(), s.local_req.is_pending(), k)).child(vault_view(st, &s.vault_said, s.vault_req.is_pending() || s.vault_read_req.is_pending(), k)).child(backups_view(st, &s.global.backups, &s.global.bk_said, s.global.bk_req.is_pending(), k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
         "A key lets an agent, such as the lattice plugin for Claude Code or Hermes, use your memory and pages without your login. Everything a key saves is signed with the name it writes as, and its scope says what it may touch. Publishing, sharing and settings stay yours whatever the scope.",
     ));
     if let Some(token) = &st.token {
@@ -10581,7 +10696,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "access" => go_access(s),
         "half" => flip(s),
         "theme" => next_theme(s),
-        "sidebar" => s.sidebar.toggle(),
+        "sidebar" => s.global.sidebar.toggle(),
         "reload" => {
             load_know(s);
             load_tree(s);
@@ -11028,8 +11143,8 @@ fn browse_anon(s: &mut App) {
     // what was starred and what was read with no ship are kept on this computer
     s.marks = Some(anon_marks_load());
     s.visits = anon_visits_load();
-    if s.engine.is_none() {
-        s.engine = api::config_dir().map(|d| engine::Engine::new(d.join("urb")));
+    if s.global.engine.is_none() {
+        s.global.engine = api::config_dir().map(|d| engine::Engine::new(d.join("urb")));
     }
     #[cfg(unix)]
     id_refresh(s);
@@ -11048,7 +11163,7 @@ fn urb_go_anon(s: &mut App, to: Option<String>) {
         s.note = "A forum needs a node to read for now.".into();
         return;
     }
-    let Some(e) = s.engine.clone() else {
+    let Some(e) = s.global.engine.clone() else {
         s.note = "the reader has nowhere to keep its files: no home folder".into();
         return;
     };
@@ -11056,7 +11171,7 @@ fn urb_go_anon(s: &mut App, to: Option<String>) {
     s.anon_seq += 1;
     s.anon_reading = Some(url.clone());
     s.remote_from = Some(front(s));
-    let (seq, got, waker) = (s.anon_seq, s.anon_got.clone(), s.waker.clone());
+    let (seq, got, waker) = (s.anon_seq, s.anon_got.clone(), s.global.waker.clone());
     spawn(move || {
         let read = || {
             let (ship, path) = engine::place(&url).ok_or_else(|| "an address is urb://~ship/path".to_owned())?;
@@ -11110,7 +11225,7 @@ fn id_question(old: Option<&str>, new: &str) -> [String; 2] {
 /// Reads again which identity this computer has, and whether it was exported.
 #[cfg(unix)]
 fn id_refresh(s: &mut App) {
-    s.id_known = s.engine.as_ref().map_or((None, false), |e| (e.identity(), e.exported()));
+    s.global.id_known = s.global.engine.as_ref().map_or((None, false), |e| (e.identity(), e.exported()));
 }
 
 /// The field being typed in of the identity prompt that is open.
@@ -11126,9 +11241,9 @@ fn id_field(s: &mut App, i: usize) -> &mut TextEdit {
 /// Runs one step of an identity's move on a thread of its own, and wakes the window with its answer.
 #[cfg(unix)]
 fn id_run(s: &mut App, said: &'static str, f: impl FnOnce() -> IdDone + Send + 'static) {
-    s.id_busy = said;
+    s.global.id_busy = said;
     s.note = format!("{said}\u{2026}");
-    let (got, waker) = (s.id_got.clone(), s.waker.clone());
+    let (got, waker) = (s.global.id_got.clone(), s.global.waker.clone());
     spawn(move || {
         let r = f();
         got.lock().unwrap_or_else(|e| e.into_inner()).push(r);
@@ -11141,11 +11256,11 @@ fn id_run(s: &mut App, said: &'static str, f: impl FnOnce() -> IdDone + Send + '
 /// Export: the file is named first, in the save dialog, and then the passphrase is asked for.
 #[cfg(unix)]
 fn id_export_ask(s: &mut App, tx: &mut Tx) {
-    if !s.id_busy.is_empty() {
+    if !s.global.id_busy.is_empty() {
         return;
     }
     id_refresh(s);
-    let Some(ship) = s.id_known.0.clone() else {
+    let Some(ship) = s.global.id_known.0.clone() else {
         s.note = "There is no anonymous identity on this computer yet. Read an address once to make one.".into();
         return;
     };
@@ -11164,7 +11279,7 @@ fn id_export_ask(s: &mut App, tx: &mut Tx) {
 /// Import: the file is picked first, and then its passphrase is asked for.
 #[cfg(unix)]
 fn id_import_ask(s: &mut App, tx: &mut Tx) {
-    if !s.id_busy.is_empty() {
+    if !s.global.id_busy.is_empty() {
         return;
     }
     let options = rune::FileDialogOptions { title: "Use an existing anonymous identity".into(), ..Default::default() };
@@ -11182,7 +11297,7 @@ fn id_import_ask(s: &mut App, tx: &mut Tx) {
 /// An identity prompt said yes to. Any other prompt is handed back.
 #[cfg(unix)]
 fn id_confirm(s: &mut App, p: Prompt) -> Option<Prompt> {
-    let Some(e) = s.engine.clone() else { return Some(p) };
+    let Some(e) = s.global.engine.clone() else { return Some(p) };
     match p {
         Prompt::IdOut(path, t) => {
             if let Err(why) = id_pass_ok(&t[0].text, &t[1].text, cometid::MIN_PASSPHRASE) {
@@ -11227,15 +11342,15 @@ fn id_confirm(s: &mut App, p: Prompt) -> Option<Prompt> {
 /// Takes what the identity's threads answered. True when something changed.
 #[cfg(unix)]
 fn id_drained(s: &mut App) -> bool {
-    let got: Vec<_> = std::mem::take(&mut *s.id_got.lock().unwrap_or_else(|e| e.into_inner()));
+    let got: Vec<_> = std::mem::take(&mut *s.global.id_got.lock().unwrap_or_else(|e| e.into_inner()));
     let any = !got.is_empty();
     for r in got {
-        s.id_busy = "";
+        s.global.id_busy = "";
         match r {
             IdDone::Out(Ok(path)) => s.note = format!("The identity is exported to {path}. Keep the file and its passphrase: one is no use without the other."),
             IdDone::Opened(Ok(id)) => {
                 id_refresh(s);
-                let old = s.id_known.0.clone();
+                let old = s.global.id_known.0.clone();
                 if old.as_deref() == Some(id.ship.as_str()) {
                     s.note = format!("This computer already uses {}. Nothing changed.", id.ship);
                 } else {
@@ -11265,10 +11380,10 @@ fn id_drained(s: &mut App) -> bool {
 #[cfg(unix)]
 fn id_section(s: &App, k: &Kit) -> El {
     let c = &k.c;
-    let ship = s.engine.as_ref().and_then(engine::Engine::our).or_else(|| s.id_known.0.clone());
-    let busy = !s.id_busy.is_empty();
-    let said = match (&ship, s.id_known.1) {
-        _ if busy => format!("{}\u{2026}", s.id_busy),
+    let ship = s.global.engine.as_ref().and_then(engine::Engine::our).or_else(|| s.global.id_known.0.clone());
+    let busy = !s.global.id_busy.is_empty();
+    let said = match (&ship, s.global.id_known.1) {
+        _ if busy => format!("{}\u{2026}", s.global.id_busy),
         (None, _) => "None yet. One is made the first time you read an address, and other ships see it as the reader.".to_owned(),
         (Some(_), true) => "An export of it has been made. Export again after using it, so the file is fresh.".to_owned(),
         (Some(_), false) => "It lives on this computer only. Export it to keep it, or to use it on another computer.".to_owned(),
@@ -11604,7 +11719,7 @@ fn post_remote_comment(s: &mut App) {
 
 /// Posts the comment typed in the pane on the open page.
 fn post_comment(s: &mut App) {
-    let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else {
+    let (Some(c), Some(page)) = (s.conn.clone(), s.open.as_ref().map(|p| p.name.clone())) else {
         s.note = "sample pages take no comments".into();
         return;
     };
@@ -11614,7 +11729,7 @@ fn post_comment(s: &mut App) {
     }
     // the text stays in the field until the ship has it: a post that fails loses nothing
     s.comment_sending = true;
-    s.comment_req.request((c, p.name.clone(), body), |(c, page, body)| {
+    s.comment_req.request((c, page, body), |(c, page, body)| {
         c.comment(&page, &body)?;
         // the ship writes it in a step of its own behind the answer
         api::pause(std::time::Duration::from_millis(1500));
@@ -12668,17 +12783,18 @@ fn ask_delete(s: &mut App) {
 /// Searches what is held for what is typed in the Search tab: every
 /// page's text and every memory's, whichever half is showing.
 fn run_search(s: &mut App) {
-    s.search_at = None;
-    s.shits.clear();
-    (s.sfound, s.sskipped) = (0, 0);
-    let Some(q) = search::query(&s.squery.text) else { return };
-    let (pages, names, knows) = if s.memory { (&s.other.2, &s.other.1, &s.cache) } else { (&s.cache, &s.names, &s.other.2) };
+    let sess = &mut s.session;
+    sess.search_at = None;
+    sess.shits.clear();
+    (sess.sfound, sess.sskipped) = (0, 0);
+    let Some(q) = search::query(&sess.squery.text) else { return };
+    let (pages, names, knows) = if sess.memory { (&sess.other.2, &sess.other.1, &sess.cache) } else { (&sess.cache, &sess.names, &sess.other.2) };
     let mut out = Vec::new();
     for name in names {
         match pages.get(name) {
-            Some(p) => out.extend(search::hit(name, &search::text_of(&p.kind, &p.body), &q, search::scope(s.shares.get(name).map(String::as_str)), false)),
+            Some(p) => out.extend(search::hit(name, &search::text_of(&p.kind, &p.body), &q, search::scope(sess.shares.get(name).map(String::as_str)), false)),
             // its text was not carried: said, so no result is not read as no match
-            None => s.sskipped += 1,
+            None => sess.sskipped += 1,
         }
     }
     for (name, p) in knows {
@@ -12692,7 +12808,7 @@ fn run_search(s: &mut App) {
 
 /// Shows the Search tab with its field ready to type in.
 fn open_search(s: &mut App) {
-    s.sidebar.set_open(true);
+    s.global.sidebar.set_open(true);
     s.over = Some(Over::Search);
     s.squery.focused = true;
     // what is held may have changed since it was last shown
@@ -12705,7 +12821,7 @@ const SAMPLE_MARKS: &[(&str, &str, &str)] = &[("urb://~sampel-palnet/notes", "Sa
 /// Shows the Bookmarks tab and reads the bookmarks again: the reader
 /// keeps and drops them elsewhere, and this is one small request.
 fn open_marks(s: &mut App) {
-    s.sidebar.set_open(true);
+    s.global.sidebar.set_open(true);
     s.over = Some(Over::Marks);
     match s.conn.clone() {
         Some(c) => s.marks_req.request(c, |c| c.bookmarks()),
@@ -12966,7 +13082,8 @@ fn head_go(s: &mut App, act: head::Do, tx: &mut Tx) {
             save_prefs(s);
             // both halves, so the one not showing is in the same order when it is turned to
             let desc = s.prefs.sort_desc;
-            for m in [&mut s.files, &mut s.other.0] {
+            let sess = &mut s.session;
+            for m in [&mut sess.files, &mut sess.other.0] {
                 sort_files(m, desc);
             }
         }
@@ -13029,9 +13146,9 @@ fn ribbon_view(s: &App, k: &Kit, top: f32) -> El {
     let mut head = col().gap(4.0).items_center().child(
         IconButton::new(&topbar::PANE_LEFT)
             .control_size(ControlSize::Large)
-            .variant(if s.sidebar.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted })
+            .variant(if s.global.sidebar.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted })
             .help("Left pane")
-            .on_press(|s: &mut App| s.sidebar.toggle())
+            .on_press(|s: &mut App| s.global.sidebar.toggle())
             .build(k)
             .key("pane-left"),
     );
@@ -13326,21 +13443,21 @@ fn sync_away(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     // typing in a field is being at the window, and the app's own key handler is only given the keys a field did not take: the text and the caret are looked at too
     let typed = typed_sum(s);
     if std::mem::replace(&mut s.typed_seen, typed) != typed {
-        s.touched = true;
+        s.global.touched = true;
     }
-    if std::mem::take(&mut s.touched) || s.touched_at == 0.0 {
-        s.touched_at = clock;
+    if std::mem::take(&mut s.global.touched) || s.global.touched_at == 0.0 {
+        s.global.touched_at = clock;
     }
-    s.behind = if s.in_front { None } else { s.behind.or(Some(clock)) };
-    let was = std::mem::replace(&mut s.away, away::left(clock, s.touched_at, s.behind));
-    let again = clock + away::left_in(clock, s.touched_at, s.behind) + 0.5;
+    s.global.behind = if s.global.in_front { None } else { s.global.behind.or(Some(clock)) };
+    let was = std::mem::replace(&mut s.global.away, away::left(clock, s.global.touched_at, s.global.behind));
+    let again = clock + away::left_in(clock, s.global.touched_at, s.global.behind) + 0.5;
     // asked for once for each time it moves, not at every look
     // a look that has come and gone is asked for again, however near the new one is to it
-    if !s.away && ((again - s.away_look).abs() > 1.0 || s.away_look <= clock) {
-        s.away_look = again;
+    if !s.global.away && ((again - s.global.away_look).abs() > 1.0 || s.global.away_look <= clock) {
+        s.global.away_look = again;
         tx.wake_after(std::time::Duration::from_secs_f64(again - clock));
     }
-    was != s.away
+    was != s.global.away
 }
 
 /// A sum of the fields that are typed in: any change to it is someone
@@ -13381,10 +13498,10 @@ fn typed_sum(s: &App) -> u64 {
 /// that is due, an update of the app.
 fn sync_idle(s: &mut App, was_away: bool, clock: f64, tx: &mut Tx) {
     use std::sync::atomic::Ordering;
-    if was_away == s.away || s.conn.is_none() {
+    if was_away == s.global.away || s.conn.is_none() {
         return;
     }
-    if s.away {
+    if s.global.away {
         s.beacon_stop.store(true, Ordering::Relaxed);
         s.watch_stop.store(true, Ordering::Relaxed);
     } else {
@@ -13402,7 +13519,7 @@ fn sync_idle(s: &mut App, was_away: bool, clock: f64, tx: &mut Tx) {
 /// said of where one is in those.
 // ponytail: only this ship's published pages, and not in the browser build. A page granted to named ships, or one another ship shared with this one, has no table here. The ship saying which pages have readers is the fix
 fn here_page(s: &App) -> Option<String> {
-    if s.away || s.memory || s.anon || s.sample || s.remote.is_some() || s.conn.is_none() || cfg!(target_arch = "wasm32") {
+    if s.global.away || s.memory || s.anon || s.sample || s.remote.is_some() || s.conn.is_none() || cfg!(target_arch = "wasm32") {
         return None;
     }
     let p = s.open.as_ref()?;
@@ -13412,7 +13529,7 @@ fn here_page(s: &App) -> Option<String> {
 
 /// Who this window is in a page's table.
 fn here_me(s: &App) -> String {
-    format!("{}/{}", our(s), s.client_id)
+    format!("{}/{}", our(s), s.global.client_id)
 }
 
 /// The other windows on the page showing.
@@ -13462,7 +13579,7 @@ fn here_work(s: &mut App) {
 fn here_leave(s: &mut App) {
     s.here_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     if let (Some(c), Some(old)) = (s.conn.clone(), s.here_for.take()) {
-        let id = s.client_id.clone();
+        let id = s.global.client_id.clone();
         spawn(move || drop(c.here_say(&old, &id, "", "gone")));
     }
     (s.here_shown, s.here_now, s.here_tries) = (None, None, 0);
@@ -13474,11 +13591,11 @@ fn here_leave(s: &mut App) {
 /// thread: it says so and ends.
 fn here_listen(s: &mut App, page: String) {
     use std::sync::atomic::Ordering;
-    let (Some(c), Some(waker)) = (s.conn.clone(), s.waker.clone()) else { return };
+    let (Some(c), Some(waker)) = (s.conn.clone(), s.global.waker.clone()) else { return };
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let heard = std::sync::Arc::new(std::sync::Mutex::new(HereHeard::default()));
     (s.here_stop, s.here) = (stop.clone(), heard.clone());
-    let id = s.client_id.clone();
+    let id = s.global.client_id.clone();
     std::thread::spawn(move || {
         let (mut fail, mut barren) = (0u32, 0u32);
         while !stop.load(Ordering::Relaxed) {
@@ -13528,15 +13645,15 @@ fn here_tell(s: &mut App, clock: f64, tx: &mut Tx) {
         (s.here_now, s.here_moved, s.here_tries) = (Some(now.clone()), clock, 0);
     }
     let me = here_me(s);
-    let Some(row) = s.here_shown.as_ref().and_then(|t| t.here.iter().find(|r| r.who == me)) else { return };
-    if row.block == now.1 && row.mode == now.2 {
+    let Some((r_block, r_mode)) = s.here_shown.as_ref().and_then(|t| t.here.iter().find(|r| r.who == me)).map(|r| (r.block.clone(), r.mode.clone())) else { return };
+    if r_block == now.1 && r_mode == now.2 {
         // it took: a ship that loses the row later is told again from the start
         s.here_tries = 0;
     }
     // said again once a minute, moved or not, since the ship drops a window it has not heard from in two and a half (`BEAT`). Also when the ship has not taken the place after three tellings: the window is still there. This is only reached with someone at the window
-    if row.block == now.1 && row.mode == now.2 || s.here_tries >= 3 {
+    if r_block == now.1 && r_mode == now.2 || s.here_tries >= 3 {
         if clock >= s.here_beat + BEAT {
-            let id = s.client_id.clone();
+            let id = s.global.client_id.clone();
             s.here_req.request((c, now, id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
             s.here_beat = clock;
             tx.wake_after(std::time::Duration::from_secs_f64(BEAT + 0.5));
@@ -13549,7 +13666,7 @@ fn here_tell(s: &mut App, clock: f64, tx: &mut Tx) {
         tx.wake_after(std::time::Duration::from_secs_f64((due - clock).max(0.05)));
         return;
     }
-    let id = s.client_id.clone();
+    let id = s.global.client_id.clone();
     s.here_req.request((c, now, id), |(c, (page, block, mode), id)| c.here_say(&page, &id, &block, &mode));
     (s.here_at, s.here_beat, s.here_tries) = (clock, clock, s.here_tries + 1);
     tx.wake_after(std::time::Duration::from_secs(3));
@@ -13573,26 +13690,27 @@ fn sync_here(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
         (s.here_for, changed) = (want, true);
     }
-    if let Ok(mut h) = s.here.lock() {
+    let sess = &mut s.session;
+    if let Ok(mut h) = sess.here.lock() {
         if std::mem::take(&mut h.off) {
             // the page is left without a word: a ship that refused the stream has no row to take away
-            (s.here_off_until, s.here_for, s.here_now) = (clock + 600.0, None, None);
+            (sess.here_off_until, sess.here_for, sess.here_now) = (clock + 600.0, None, None);
         }
         // nobody is shown from a stream that has ended: they may have gone since. The ship has lost this window's place with it, so it is told again
         if std::mem::take(&mut h.down) {
-            s.here_tries = 0;
-            if s.here_shown.take().is_some() {
-                (s.here_heard, changed) = (s.here_heard + 1, true);
+            sess.here_tries = 0;
+            if sess.here_shown.take().is_some() {
+                (sess.here_heard, changed) = (sess.here_heard + 1, true);
             }
         }
         // a table for a page since left is not this page's
-        if let Some(t) = h.table.take().filter(|t| Some(&t.page) == s.here_for.as_ref()) {
+        if let Some(t) = h.table.take().filter(|t| Some(&t.page) == sess.here_for.as_ref()) {
             // the first table of a stream: the ship heard from this window when the stream opened
-            if s.here_shown.is_none() {
-                s.here_beat = clock;
+            if sess.here_shown.is_none() {
+                sess.here_beat = clock;
                 tx.wake_after(std::time::Duration::from_secs_f64(BEAT + 0.5));
             }
-            (s.here_shown, s.here_heard, changed) = (Some(t), s.here_heard + 1, true);
+            (sess.here_shown, sess.here_heard, changed) = (Some(t), sess.here_heard + 1, true);
         }
     }
     // an answer to what was said is not waited on: the table says whether it took
@@ -13781,7 +13899,7 @@ fn start_scrub(s: &mut App) {
     s.old = None;
     let load = std::sync::Arc::new(std::sync::Mutex::new(ScrubLoad::default()));
     s.scrub = Some(Scrub { name: name.clone(), film: None, at: 0, playing: false, next: 0.0, load: load.clone() });
-    let (names, other, waker) = (s.names.clone(), s.other.1.clone(), s.waker.clone());
+    let (names, other, waker) = (s.names.clone(), s.other.1.clone(), s.global.waker.clone());
     spawn(move || {
         let wake = || {
             if let Some(w) = &waker {
@@ -14369,32 +14487,32 @@ impl Updater {
 /// answer and the fetched file as they come. Nothing here waits on the network.
 #[cfg(not(target_arch = "wasm32"))]
 fn sync_update(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
-    if !s.upd.on {
+    if !s.global.upd.on {
         return false;
     }
     let mut changed = false;
-    if clock >= s.upd.next {
-        s.upd.next = clock + update::PERIOD;
-        s.upd.armed = false;
-        let (endpoint, flavor, anywhere) = (s.upd.endpoint.clone(), s.upd.flavor.clone(), s.upd.anywhere);
-        s.upd.check_req.request((endpoint, flavor), move |(e, f)| update::check(&e, &f, anywhere));
+    if clock >= s.global.upd.next {
+        s.global.upd.next = clock + update::PERIOD;
+        s.global.upd.armed = false;
+        let (endpoint, flavor, anywhere) = (s.global.upd.endpoint.clone(), s.global.upd.flavor.clone(), s.global.upd.anywhere);
+        s.global.upd.check_req.request((endpoint, flavor), move |(e, f)| update::check(&e, &f, anywhere));
     }
-    if !s.upd.armed {
-        s.upd.armed = true;
-        tx.wake_after(std::time::Duration::from_secs_f64((s.upd.next - clock).max(0.1)));
+    if !s.global.upd.armed {
+        s.global.upd.armed = true;
+        tx.wake_after(std::time::Duration::from_secs_f64((s.global.upd.next - clock).max(0.1)));
     }
     // offline, GitHub away, no release yet: asked again next time, and nothing said
-    if let Some(Ok(Some(o))) = s.upd.check_req.take() {
-        changed |= update_offered(&mut s.upd, o);
+    if let Some(Ok(Some(o))) = s.global.upd.check_req.take() {
+        changed |= update_offered(&mut s.global.upd, o);
     }
-    if let Some(got) = s.upd.get_req.take() {
+    if let Some(got) = s.global.upd.get_req.take() {
         changed = true;
-        update_fetched(&mut s.upd, got);
+        update_fetched(&mut s.global.upd, got);
     }
-    if s.upd.stage == UpdStage::Fetching && clock >= s.upd.tick {
+    if s.global.upd.stage == UpdStage::Fetching && clock >= s.global.upd.tick {
         // the count moves as the file comes. One wake stands at a time: a wake set on every pass made a chain for each
         changed = true;
-        s.upd.tick = clock + 0.25;
+        s.global.upd.tick = clock + 0.25;
         tx.wake_after(std::time::Duration::from_millis(250));
     }
     changed
@@ -14428,14 +14546,14 @@ fn update_fetched(u: &mut Updater, got: Result<(), String>) {
 /// Fetches the offered file. It is checked against its signature before anything is written.
 #[cfg(not(target_arch = "wasm32"))]
 fn update_now(s: &mut App) {
-    let Some((url, sig, named)) = s.upd.offer.as_ref().and_then(|o| o.file.clone()) else { return };
-    let update::Flavor::AppImage(at) = s.upd.flavor.clone() else { return };
-    let (key, pct) = (s.upd.key.clone(), s.upd.pct.clone());
+    let Some((url, sig, named)) = s.global.upd.offer.as_ref().and_then(|o| o.file.clone()) else { return };
+    let update::Flavor::AppImage(at) = s.global.upd.flavor.clone() else { return };
+    let (key, pct) = (s.global.upd.key.clone(), s.global.upd.pct.clone());
     // how far is not known until the first of it comes
     pct.store(UNKNOWN, std::sync::atomic::Ordering::Relaxed);
-    (s.upd.stage, s.upd.tick) = (UpdStage::Fetching, 0.0);
+    (s.global.upd.stage, s.global.upd.tick) = (UpdStage::Fetching, 0.0);
     // fetched, checked and written on the worker's thread: the window does not wait on the disk
-    s.upd.get_req.request((url, sig, key, named, at), move |(url, sig, key, named, at)| {
+    s.global.upd.get_req.request((url, sig, key, named, at), move |(url, sig, key, named, at)| {
         let bytes = update::fetch(&url, &sig, &key, named.as_deref(), &|p| pct.store(p, std::sync::atomic::Ordering::Relaxed))?;
         update::install(&at, &bytes)
     });
@@ -14448,12 +14566,12 @@ const UNKNOWN: u8 = u8::MAX;
 /// Puts the offer off for this run.
 #[cfg(not(target_arch = "wasm32"))]
 fn update_later(s: &mut App) {
-    match s.upd.stage {
+    match s.global.upd.stage {
         // the new version still starts next time, and is not offered again. A failure put aside leaves its offer, to be tried again
-        UpdStage::Installed(_) | UpdStage::Failed(_) => s.upd.stage = UpdStage::Idle,
+        UpdStage::Installed(_) | UpdStage::Failed(_) => s.global.upd.stage = UpdStage::Idle,
         UpdStage::Idle => {
-            if let Some(o) = s.upd.offer.take() {
-                s.upd.later.push(o.version);
+            if let Some(o) = s.global.upd.offer.take() {
+                s.global.upd.later.push(o.version);
             }
         }
         UpdStage::Fetching => {}
@@ -14463,7 +14581,7 @@ fn update_later(s: &mut App) {
 /// Starts the new version in this one's place, once what is being written has been sent.
 #[cfg(not(target_arch = "wasm32"))]
 fn update_restart(s: &mut App) {
-    let update::Flavor::AppImage(at) = s.upd.flavor.clone() else { return };
+    let update::Flavor::AppImage(at) = s.global.upd.flavor.clone() else { return };
     if !leave_edit(s) {
         return;
     }
@@ -14495,8 +14613,12 @@ fn closing(s: &mut App) {
         }
     }
     #[cfg(unix)]
-    if let Some(e) = s.engine.take() {
-        e.close();
+    if let Some(e) = s.global.engine.take() {
+        if matches!(e.status(), engine::Status::Ready { .. }) {
+            e.close_wait(std::time::Duration::from_millis(250));
+        } else {
+            e.close();
+        }
     }
     let _ = s;
 }
@@ -14508,9 +14630,9 @@ fn update_banner(s: &App, k: &Kit) -> Option<El> {
     let small = |label: &str| Button::new(label.to_owned()).control_size(ControlSize::Small);
     let later = |label: &str| small(label).variant(ButtonVariant::Ghost).on_press(update_later).build(k).key("update-later");
     let line = |say: String| row().key("update-banner").role("status").w_full().px(16.0).py(8.0).gap(12.0).center_y().fill(k.c.layer_01).child(text(say).key("update-said").font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0));
-    match (&s.upd.stage, &s.upd.offer) {
+    match (&s.global.upd.stage, &s.global.upd.offer) {
         (UpdStage::Fetching, o) => {
-            let pct = s.upd.pct.load(std::sync::atomic::Ordering::Relaxed);
+            let pct = s.global.upd.pct.load(std::sync::atomic::Ordering::Relaxed);
             let v = o.as_ref().map(|o| o.version.as_str()).unwrap_or_default();
             Some(line(match pct {
                 UNKNOWN => format!("Downloading lattice-rune {v}\u{2026}"),
@@ -14585,19 +14707,19 @@ fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
     let mut changed = false;
     let (scale, dark) = s.web.env.get();
     let ask = web_page(s).filter(|_| s.web.room > 0.0).map(|p| htmlview::Ask { key: htmlview::Key { name: p.name.clone(), rev: p.rev, text: s.web.text }, width: htmlview::width_for(s.web.room), scale: scale.clamp(1.0, 3.0), dark, outside: s.prefs.outside.contains(&p.name) });
-    if let (Some(ask), Some(html)) = (&ask, &s.web.html) {
-        if s.web.asked.as_ref() != Some(ask) {
+    if let (Some(ask), Some(html)) = (&ask, &s.session.web.html) {
+        if s.session.web.asked.as_ref() != Some(ask) {
             // a page let to load outside content is read afresh: what it held back is fetched as it is parsed
-            let new = s.web.asked.as_ref().is_none_or(|a| a.key != ask.key || a.outside != ask.outside);
-            let body = new.then(|| s.open.as_ref().map(|p| p.body.clone())).flatten();
+            let new = s.session.web.asked.as_ref().is_none_or(|a| a.key != ask.key || a.outside != ask.outside);
+            let body = new.then(|| s.session.open.as_ref().map(|p| p.body.clone())).flatten();
             if new {
-                s.web.laid = None;
-                s.web.bands.clear();
-                s.web.was.clear();
-                (s.web.hot, s.web.held) = (false, 0);
+                s.session.web.laid = None;
+                s.session.web.bands.clear();
+                s.session.web.was.clear();
+                (s.session.web.hot, s.session.web.held) = (false, 0);
             }
             html.show(ask.clone(), body);
-            s.web.asked = Some(ask.clone());
+            s.session.web.asked = Some(ask.clone());
         }
     }
     // no HTML page is in front: the pictures of the last one are let go, not held under every other page
@@ -14620,22 +14742,22 @@ fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
                 s.web.laid = Some((ask, turn, height));
             }
             htmlview::Out::Band { turn, index, w, h, px } => {
-                if let (true, Some(cache)) = (s.web.laid.as_ref().is_some_and(|l| l.1 == turn), &s.image_cache) {
-                    s.web.bands.insert(index, cache.rgba(w, h, px));
+                if let (true, Some(cache)) = (s.session.web.laid.as_ref().is_some_and(|l| l.1 == turn), &s.global.image_cache) {
+                    s.session.web.bands.insert(index, cache.rgba(w, h, px));
                 }
             }
             htmlview::Out::Forget { turn, index } => {
-                if s.web.laid.as_ref().is_some_and(|l| l.1 == turn) {
-                    s.web.bands.remove(&index);
+                if s.session.web.laid.as_ref().is_some_and(|l| l.1 == turn) {
+                    s.session.web.bands.remove(&index);
                 }
             }
-            htmlview::Out::Hot(on) => s.web.hot = on,
+            htmlview::Out::Hot(on) => s.session.web.hot = on,
             htmlview::Out::Rest(rest) => {
-                s.web.painting = !rest;
+                s.session.web.painting = !rest;
                 if rest {
                     // the turn before's bands that this turn has no band for are of a page that was taller
-                    let bands = &s.web.bands;
-                    s.web.was.retain(|i, _| bands.contains_key(i));
+                    let bands = &s.session.web.bands;
+                    s.session.web.was.retain(|i, _| bands.contains_key(i));
                 }
             }
             htmlview::Out::Failed => {
@@ -14650,9 +14772,9 @@ fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
         }
     }
     // a band of the turn before stays until the one that takes its place can be shown
-    if !s.web.was.is_empty() {
-        let bands = &s.web.bands;
-        s.web.was.retain(|i, _| !bands.get(i).is_some_and(|b| b.is_ready()));
+    if !s.session.web.was.is_empty() {
+        let bands = &s.session.web.bands;
+        s.session.web.was.retain(|i, _| !bands.get(i).is_some_and(|b| b.is_ready()));
     }
     // what was sent is for the page asked for: one left behind says nothing
     if s.web.laid.as_ref().is_some_and(|l| s.web.asked.as_ref().is_none_or(|a| a.key != l.0.key)) {
@@ -15379,7 +15501,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let inset = cx.titlebar_inset();
     let right = IconButton::new(&topbar::PANE_RIGHT).variant(if s.inspector.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help("Right pane").on_press(toggle_right).build(&k).key("pane-right");
     let shell = SplitView::new(main)
-        .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, tree_menu_view(s, &k, sidebar(s, &k), &mut layer))
+        .sidebar(&s.global.sidebar, |s: &mut App| &mut s.global.sidebar, tree_menu_view(s, &k, sidebar(s, &k), &mut layer))
         .inspector(&s.inspector, |s: &mut App| &mut s.inspector, right_pane(s, &k))
         .toolbar(Toolbar::new().leading(tab_strip(s, &k)).trailing(right))
         // the left pane's toggle is the ribbon's first icon, as on the web
@@ -15390,7 +15512,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         .toolbar_in_panel()
         .reduced_motion(cx.is_reduced_motion())
         .build(&k);
-    if s.dropping && !s.editing {
+    if s.global.dropping && !s.editing {
         // said in the middle of the window, over whatever is there
         layer.push(col().key("drop-hint").absolute(0.0, 0.0).w_full().h_full().center().child(text("Drop to upload as pages").font(k.ty.body_medium).color(k.c.text_base).padding(16.0).radius(k.radius.md).fill(k.c.layer_01)));
     }
@@ -15402,13 +15524,13 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     layer.push(hung);
     rune_kit::root(shell, layer)
         .on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec()))
-        .on_drop_hover(|s: &mut App, over, _| s.dropping = over)
+        .on_drop_hover(|s: &mut App, over, _| s.global.dropping = over)
         // whether anyone is at the window, for what is only worth the ship's while when someone is
-        .on_window_focus(|s: &mut App, front, _| (s.in_front, s.touched) = (front, true))
+        .on_window_focus(|s: &mut App, front, _| (s.global.in_front, s.global.touched) = (front, true))
         .on_pointer_move_local(|s: &mut App, _, tx| {
-            s.touched = true;
+            s.global.touched = true;
             // a pointer moving over a window in use changes nothing drawn: one coming back to a window that was left does
-            if !s.away {
+            if !s.global.away {
                 tx.live_only();
             }
         })
@@ -15495,7 +15617,7 @@ fn chord(s: &App, ev: &KeyEvent) -> Option<Chord> {
 }
 
 fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
-    s.touched = true;
+    s.global.touched = true;
     if s.conn.is_none() && !s.sample {
         return false;
     }
@@ -15531,7 +15653,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
             }
             Chord::Read => to_read(s),
             Chord::Files => {
-                s.sidebar.set_open(true);
+                s.global.sidebar.set_open(true);
                 tx.focus_when_shown("filter", false);
             }
             Chord::Split => split_press(s, false),
@@ -15562,7 +15684,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     if shell::is_sidebar_toggle(ev) {
-        s.sidebar.toggle();
+        s.global.sidebar.toggle();
         return true;
     }
     if ev.is_command('f') {
@@ -15912,13 +16034,13 @@ mod tests {
         let mut s = sample("welcome");
         s.conn = Some(Conn { url: "https://zod.test".into(), cookie: "urbauth-~zod=0v1".into() });
         let at = |folder: &str, url: &str, sock: &str| mounts::MountSpec { mountpoint: folder.into(), url: url.into(), sock: sock.into(), ..mounts::MountSpec::default() };
-        s.mounts = vec![at("/m/zod", "https://zod.test", ""), at("/m/bus", "https://bus.test", ""), at("/m/local", "", "/pier/.urb/dev/lattice")];
+        s.global.mounts = vec![at("/m/zod", "https://zod.test", ""), at("/m/bus", "https://bus.test", ""), at("/m/local", "", "/pier/.urb/dev/lattice")];
         assert_eq!(ship_mounts(&s, false).iter().map(|m| m.mountpoint.as_str()).collect::<Vec<_>>(), ["/m/zod"], "this ship's, and not one mounted by a socket");
         assert_eq!(ship_mounts(&s, true).len(), 2, "every ship's over HTTP");
         sign_out_asked(&mut s, false);
         assert!(matches!(s.prompt, Some(Prompt::ShipOut(false))) && s.conn.is_some(), "asked first, and still signed in");
         s.prompt = None;
-        s.mounts.remove(0);
+        s.global.mounts.remove(0);
         sign_out_asked(&mut s, true);
         assert!(matches!(s.prompt, Some(Prompt::ShipOut(true))), "another ship's folder is asked about when every ship is signed out of");
     }
@@ -17710,28 +17832,28 @@ mod tests {
     fn an_update_is_offered_once_tried_again_after_a_failure_and_not_offered_once_installed() {
         let offer = |v: &str| update::Offer { version: v.into(), notes: String::new(), file: Some(("u".into(), "s".into(), None)) };
         let mut s = sample("welcome");
-        assert!(update_offered(&mut s.upd, offer("2.0.0")));
-        assert!(!update_offered(&mut s.upd, offer("2.0.0")), "the same one again changes nothing");
+        assert!(update_offered(&mut s.global.upd, offer("2.0.0")));
+        assert!(!update_offered(&mut s.global.upd, offer("2.0.0")), "the same one again changes nothing");
         // a download that fails keeps the offer: Try again has something to try, and Dismiss does not put the version off
-        s.upd.stage = UpdStage::Fetching;
-        assert!(!update_offered(&mut s.upd, offer("2.0.1")), "not over a download");
-        update_fetched(&mut s.upd, Err("the signature does not hold".into()));
-        assert!(matches!(&s.upd.stage, UpdStage::Failed(e) if e.contains("2.0.0") && e.contains("does not hold")));
-        assert_eq!(s.upd.offer, Some(offer("2.0.0")));
+        s.global.upd.stage = UpdStage::Fetching;
+        assert!(!update_offered(&mut s.global.upd, offer("2.0.1")), "not over a download");
+        update_fetched(&mut s.global.upd, Err("the signature does not hold".into()));
+        assert!(matches!(&s.global.upd.stage, UpdStage::Failed(e) if e.contains("2.0.0") && e.contains("does not hold")));
+        assert_eq!(s.global.upd.offer, Some(offer("2.0.0")));
         update_later(&mut s);
-        assert_eq!((&s.upd.stage, s.upd.offer.is_some(), s.upd.later.is_empty()), (&UpdStage::Idle, true, true));
+        assert_eq!((&s.global.upd.stage, s.global.upd.offer.is_some(), s.global.upd.later.is_empty()), (&UpdStage::Idle, true, true));
         // installed: Later leaves it installed, and the next check does not offer it again
-        s.upd.stage = UpdStage::Fetching;
-        update_fetched(&mut s.upd, Ok(()));
-        assert_eq!((&s.upd.stage, &s.upd.offer, s.upd.installed.as_deref()), (&UpdStage::Installed("2.0.0".into()), &None, Some("2.0.0")));
-        assert!(!update_offered(&mut s.upd, offer("2.0.1")), "not over the word that one is installed");
+        s.global.upd.stage = UpdStage::Fetching;
+        update_fetched(&mut s.global.upd, Ok(()));
+        assert_eq!((&s.global.upd.stage, &s.global.upd.offer, s.global.upd.installed.as_deref()), (&UpdStage::Installed("2.0.0".into()), &None, Some("2.0.0")));
+        assert!(!update_offered(&mut s.global.upd, offer("2.0.1")), "not over the word that one is installed");
         update_later(&mut s);
-        assert_eq!(s.upd.stage, UpdStage::Idle);
-        assert!(!update_offered(&mut s.upd, offer("2.0.0")), "what is installed is not offered");
-        assert!(update_offered(&mut s.upd, offer("2.0.1")), "a later one is");
+        assert_eq!(s.global.upd.stage, UpdStage::Idle);
+        assert!(!update_offered(&mut s.global.upd, offer("2.0.0")), "what is installed is not offered");
+        assert!(update_offered(&mut s.global.upd, offer("2.0.1")), "a later one is");
         // Later puts that version off for the run
         update_later(&mut s);
-        assert!(!update_offered(&mut s.upd, offer("2.0.1")) && update_offered(&mut s.upd, offer("2.0.2")));
+        assert!(!update_offered(&mut s.global.upd, offer("2.0.1")) && update_offered(&mut s.global.upd, offer("2.0.2")));
     }
 
     #[test]
@@ -17832,11 +17954,13 @@ mod tests {
         let at = s.edit.text.find("short").unwrap();
         s.edit.set_selection(at, at + 5);
         s.edit.toggle_mark(Mark::Bold);
-        s.edit.set_caret(s.edit.text.len());
+        let end = s.edit.text.len();
+        s.edit.set_caret(end);
         heading(&mut s.edit, 2);
         assert_eq!(edited(&s), "# Today\n\n## A **short** note with a [link](https://urbit.org).\n");
         heading(&mut s.edit, 2);
-        s.edit.set_caret(s.edit.text.len());
+        let end = s.edit.text.len();
+        s.edit.set_caret(end);
         s.edit.toggle_block(Block::Bullet(0));
         save(&mut s);
         assert_eq!(s.cache["notes/today"].body, "# Today\n\n- A **short** note with a [link](https://urbit.org).\n");
@@ -17907,9 +18031,140 @@ mod tests {
     #[test]
     fn reset_preserves_mounts_resumed_so_ship_switch_does_not_respawn_mounts() {
         let mut s = sample("welcome");
-        s.mounts_resumed = true;
+        s.global.mounts_resumed = true;
         reset(&mut s, false);
-        assert!(s.mounts_resumed);
+        assert!(s.global.mounts_resumed);
+    }
+
+    #[test]
+    fn reset_preserves_app_global_and_resets_ship_session() {
+        let mut s = sample("welcome");
+        s.global.mounts_resumed = true;
+        s.global.titled = "custom title".into();
+        s.global.bk_said = "backup running".into();
+        s.global.mounts = vec![mounts::MountSpec { mountpoint: "/tmp/mnt".into(), ..mounts::MountSpec::default() }];
+
+        // Start a pending backup request in AppGlobal that stays in-flight across reset().
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        s.global.bk_req.request(rx, |rx| {
+            let _ = rx.recv();
+            BkDone { id: "bk1".into(), at: 42, complete: true, said: "backup finished".into() }
+        });
+        assert!(s.global.bk_req.is_pending());
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            s.global.upd.stage = UpdStage::Installed("9.9.9".into());
+        }
+        #[cfg(unix)]
+        let eng_dir = api::make_temp_dir("lattice-reset-eng").unwrap();
+        #[cfg(unix)]
+        {
+            s.global.engine = Some(engine::Engine::new(eng_dir.clone()));
+        }
+
+        // Populate ShipSession state and capture stop flags before reset.
+        s.note = "old ship note".into();
+        s.editing = true;
+        let old_beacon_stop = s.beacon_stop.clone();
+        let old_watch_stop = s.watch_stop.clone();
+        assert!(s.open.is_some() && !s.names.is_empty());
+
+        reset(&mut s, false);
+
+        // AppGlobal survives untouched.
+        assert!(s.global.mounts_resumed);
+        assert_eq!(s.global.titled, "custom title");
+        assert_eq!(s.global.bk_said, "backup running");
+        assert_eq!(s.global.mounts.len(), 1);
+        assert!(s.global.bk_req.is_pending(), "in-flight backup survives ship switch");
+        #[cfg(not(target_arch = "wasm32"))]
+        assert_eq!(s.global.upd.stage, UpdStage::Installed("9.9.9".into()));
+        #[cfg(unix)]
+        assert_eq!(s.global.engine.as_ref().map(|e| e.dir()), Some(eng_dir.as_path()));
+
+        // ShipSession is cleanly replaced and old listeners are stopped.
+        assert!(old_beacon_stop.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(old_watch_stop.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(s.open.is_none());
+        assert!(!s.editing);
+        assert!(s.note.is_empty());
+        assert!(s.names.is_empty());
+        assert!(s.cache.is_empty());
+
+        // Release the in-flight backup and confirm its answer lands in AppGlobal.
+        tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let done = loop {
+            if let Some(d) = s.global.bk_req.take() {
+                break d;
+            }
+            assert!(std::time::Instant::now() < deadline, "bk_req did not complete");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(done.id, "bk1");
+        assert_eq!(done.said, "backup finished");
+        #[cfg(unix)]
+        let _ = std::fs::remove_dir_all(&eng_dir);
+    }
+
+    #[test]
+    fn background_vault_restore_handles_valid_invalid_and_oversized_files() {
+        let dir = api::make_temp_dir("lattice-vault-bg").unwrap();
+        let valid = dir.join("valid.tar");
+        let tar_bytes = vault::tar(&[vault::File { name: "pages/hello.md".into(), body: b"# Hello\n".to_vec(), mtime: 1 }]);
+        std::fs::write(&valid, tar_bytes).unwrap();
+
+        let invalid = dir.join("invalid.tar");
+        std::fs::write(&invalid, b"not a valid tar archive").unwrap();
+
+        let run_restore = |path: &std::path::Path| -> App {
+            let mut s = init();
+            s.conn = Some(Conn { url: "http://127.0.0.1:9".into(), cookie: "urbauth-~zod=0v1".into() });
+            let mut st = Settings::new();
+            st.vault_file = TextEdit::new(path.to_str().unwrap());
+            s.settings = Some(st);
+            vault_restore(&mut s);
+            assert!(s.prompt.is_none(), "vault_restore must not parse synchronously on UI thread");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let res = loop {
+                if let Some(r) = s.vault_read_req.take() {
+                    break r;
+                }
+                assert!(std::time::Instant::now() < deadline, "vault_read_req did not complete");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            apply_vault_read(&mut s, res);
+            s
+        };
+
+        // Valid archive opens the Restore confirmation prompt.
+        let s_ok = run_restore(&valid);
+        assert!(s_ok.vault_said.is_empty(), "valid archive clears status: {}", s_ok.vault_said);
+        assert!(matches!(s_ok.prompt, Some(Prompt::Restore(ref a)) if a.pages.len() == 1 && a.pages[0].name == "hello"));
+
+        // Invalid archive reports error without opening prompt.
+        let s_bad = run_restore(&invalid);
+        assert!(s_bad.prompt.is_none());
+        assert!(!s_bad.vault_said.is_empty());
+
+        // Directory is rejected by is_file().
+        let s_dir = run_restore(&dir);
+        assert!(s_dir.prompt.is_none());
+        assert!(s_dir.vault_said.contains("not a regular file"), "{}", s_dir.vault_said);
+
+        // Oversized archive is rejected by MAX_VAULT_BYTES.
+        #[cfg(unix)]
+        {
+            let big = dir.join("huge.tar");
+            let f = std::fs::File::create(&big).unwrap();
+            f.set_len(MAX_VAULT_BYTES + 1).unwrap();
+            let s_big = run_restore(&big);
+            assert!(s_big.prompt.is_none());
+            assert!(s_big.vault_said.contains("too large"), "{}", s_big.vault_said);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

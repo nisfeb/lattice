@@ -202,8 +202,7 @@ impl NetProvider for Net {
                 }
                 let _ = std::thread::Builder::new().name("html-fetch".to_owned()).spawn(move || {
                     use std::io::Read;
-                    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)).build();
-                    let Ok(res) = agent.get(url.as_str()).call() else { return };
+                    let Ok(res) = crate::api::public_agent().get(url.as_str()).timeout(std::time::Duration::from_secs(15)).call() else { return };
                     let mut bytes = Vec::new();
                     if res.into_reader().take(FETCH_BYTES as u64 + 1).read_to_end(&mut bytes).is_ok() && bytes.len() <= FETCH_BYTES {
                         done(bytes, url.to_string());
