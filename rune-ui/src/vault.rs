@@ -74,9 +74,9 @@ pub fn untar(u: &[u8]) -> Result<Vec<(String, String)>, String> {
 pub fn untar_end(u: &[u8]) -> Result<(Vec<(String, String)>, bool), String> {
     let text = |b: &[u8]| String::from_utf8_lossy(&b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]).into_owned();
     let octal = |b: &[u8]| u64::from_str_radix(&text(b).chars().filter(|c| ('0'..='7').contains(c)).collect::<String>(), 8).ok();
-    let (mut out, mut off, mut long, mut end) = (Vec::new(), 0, None::<String>, false);
-    while off + 512 <= u.len() {
-        let h = &u[off..off + 512];
+    let (mut out, mut off, mut long, mut end) = (Vec::new(), 0usize, None::<String>, false);
+    while let Some(head_end) = off.checked_add(512).filter(|&e| e <= u.len()) {
+        let h = &u[off..head_end];
         if h.iter().all(|&b| b == 0) {
             end = true;
             break;
@@ -85,14 +85,13 @@ pub fn untar_end(u: &[u8]) -> Result<(Vec<(String, String)>, bool), String> {
         if octal(&h[148..156]) != Some(sum) {
             return Err(format!("checksum mismatch at byte {off}"));
         }
-        let size = octal(&h[124..136]).unwrap_or(0) as usize;
         let (kind, name, prefix) = (h[156], text(&h[..100]), text(&h[345..500]));
-        off += 512;
-        if off + size > u.len() {
-            return Err(format!("truncated entry \"{name}\" at byte {off}"));
-        }
-        let data = &u[off..off + size];
-        off += size.div_ceil(512) * 512;
+        let raw_size = octal(&h[124..136]).unwrap_or(0);
+        off = head_end;
+        let size = usize::try_from(raw_size).map_err(|_| format!("truncated entry \"{name}\" at byte {off}"))?;
+        let data_end = off.checked_add(size).filter(|&e| e <= u.len()).ok_or_else(|| format!("truncated entry \"{name}\" at byte {off}"))?;
+        let data = &u[off..data_end];
+        off = size.div_ceil(512).checked_mul(512).and_then(|p| off.checked_add(p)).ok_or_else(|| format!("truncated entry \"{name}\" at byte {off}"))?;
         match kind {
             b'L' => long = Some(String::from_utf8_lossy(data).trim_end_matches('\0').to_owned()),
             b'0' | 0 => out.push((long.take().unwrap_or(if prefix.is_empty() { name } else { format!("{prefix}/{name}") }), String::from_utf8_lossy(data).into_owned())),
@@ -392,6 +391,29 @@ mod tests {
         bent[3] ^= 1;
         assert!(untar(&bent).unwrap_err().contains("checksum"));
         assert!(untar(&t[..514]).unwrap_err().contains("truncated"));
+    }
+
+    #[test]
+    fn untar_end_rejects_huge_tar_entry_sizes_without_overflow() {
+        // Construct a valid checksummed header claiming an 8 GiB - 1 entry (exceeds 32-bit usize and buffer length).
+        let mut h = [0u8; 512];
+        h[..9].copy_from_slice(b"pages/a.m");
+        h[100..108].copy_from_slice(b"0000644\0");
+        h[124..136].copy_from_slice(b"77777777777\0");
+        h[148..156].copy_from_slice(b"        ");
+        h[156] = b'0';
+        h[257..263].copy_from_slice(b"ustar\0");
+        h[263..265].copy_from_slice(b"00");
+        let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+        h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        assert!(untar_end(&h).unwrap_err().contains("truncated"));
+
+        // Also test 4 GiB (0o40000000000), which would truncate to 0 on 32-bit `as usize`.
+        h[124..136].copy_from_slice(b"40000000000\0");
+        h[148..156].copy_from_slice(b"        ");
+        let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+        h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        assert!(untar_end(&h).unwrap_err().contains("truncated"));
     }
 
     #[test]

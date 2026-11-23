@@ -630,7 +630,11 @@ pub fn fetch_bytes(url: &str, cookie: Option<&str>) -> Result<Vec<u8>, String> {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err("not a web address".into());
         }
-        let mut req = ureq::get(url).timeout(Duration::from_secs(20));
+        let mut builder = ureq::AgentBuilder::new().timeout(Duration::from_secs(20));
+        if cookie.is_some() {
+            builder = builder.redirects(0);
+        }
+        let mut req = builder.build().get(url);
         if let Some(c) = cookie {
             req = req.set("cookie", c);
         }
@@ -638,6 +642,9 @@ pub fn fetch_bytes(url: &str, cookie: Option<&str>) -> Result<Vec<u8>, String> {
             ureq::Error::Status(code, _) => format!("{code}"),
             e => e.to_string(),
         })?;
+        if cookie.is_some() && (300..400).contains(&res.status()) {
+            return Err(format!("{}", res.status()));
+        }
         let mut out = Vec::new();
         std::io::Read::read_to_end(&mut std::io::Read::take(res.into_reader(), IMAGE_MAX + 1), &mut out).map_err(|e| e.to_string())?;
         if out.len() as u64 > IMAGE_MAX {
@@ -881,8 +888,11 @@ pub fn ship_dress(url: &str, label: &str, colour: &str) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     if !cfg!(test) {
         if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
-            let mut all = crate::accounts::load_at(dir, now_secs());
-            return all.dress(url, label, colour) && crate::accounts::store_at(dir, &all).is_ok();
+            return crate::accounts::update_at(dir, now_secs(), |all| {
+                let ok = all.dress(url, label, colour);
+                (ok, ok)
+            })
+            .unwrap_or(false);
         }
     }
     let _ = (url, label, colour);
@@ -931,28 +941,28 @@ pub enum BgSent {
 /// Held while anything that waited is being sent to a ship, by the window or by the watcher of the
 /// ships not in front: one sender at a time, so nothing is ever sent by both.
 static SENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-/// What the watcher sent, by the ship's address, until the window has taken it out of its own list.
-static BG_SENT: std::sync::Mutex<Vec<(String, BgSent)>> = std::sync::Mutex::new(Vec::new());
+/// What the watcher sent, by `(url, ship)`, until the window has taken it out of its own list.
+static BG_SENT: std::sync::Mutex<Vec<(String, String, BgSent)>> = std::sync::Mutex::new(Vec::new());
 
 /// The lock every sender of waiting saves holds.
 pub fn send_lock() -> std::sync::MutexGuard<'static, ()> {
     SENDING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// What the watcher has sent to the ship at `url` that the window has not yet been told of.
-pub fn bg_sent(url: &str, take: bool) -> Vec<BgSent> {
+/// What the watcher has sent to `(url, ship)` that the window has not yet been told of.
+pub fn bg_sent(url: &str, ship: &str, take: bool) -> Vec<BgSent> {
     let mut all = BG_SENT.lock().unwrap_or_else(|e| e.into_inner());
-    let mine: Vec<BgSent> = all.iter().filter(|(u, _)| u == url).map(|(_, x)| x.clone()).collect();
+    let mine: Vec<BgSent> = all.iter().filter(|(u, s, _)| u == url && s == ship).map(|(_, _, x)| x.clone()).collect();
     if take {
-        all.retain(|(u, _)| u != url);
+        all.retain(|(u, s, _)| !(u == url && s == ship));
     }
     mine
 }
 
 /// Notes a thing as sent by the watcher, for a test of how the window takes it.
 #[cfg(test)]
-pub fn bg_note_for_test(url: &str, x: BgSent) {
-    BG_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((url.to_owned(), x));
+pub fn bg_note_for_test(url: &str, ship: &str, x: BgSent) {
+    BG_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((url.to_owned(), ship.to_owned(), x));
 }
 
 /// What is known of a ship signed in that is not in front, from one look at it.
@@ -993,12 +1003,15 @@ pub fn ship_look(url: &str, cookie: &str, stop: &std::sync::atomic::AtomicBool) 
     }
     if seen.expired && !cfg!(test) {
         if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
-            let mut all = crate::accounts::load_at(dir, now_secs());
-            // only the session that was turned away is marked: one signed in again since holds another cookie, and is good
-            if all.get(url).is_some_and(|a| a.cookie == cookie) {
-                all.expire(url);
-                let _ = crate::accounts::store_at(dir, &all);
-            }
+            let _ = crate::accounts::update_at(dir, now_secs(), |all| {
+                // only the session that was turned away is marked: one signed in again since holds another cookie, and is good
+                if all.get(url).is_some_and(|a| a.cookie == cookie) {
+                    all.expire(url);
+                    (true, ())
+                } else {
+                    (false, ())
+                }
+            });
         }
     }
     seen
@@ -1009,8 +1022,11 @@ pub fn ship_bring(url: &str) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     if !cfg!(test) {
         if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
-            let mut all = crate::accounts::load_at(dir, now_secs());
-            return all.bring(url, now_secs()) && crate::accounts::store_at(dir, &all).is_ok();
+            return crate::accounts::update_at(dir, now_secs(), |all| {
+                let ok = all.bring(url, now_secs());
+                (ok, ok)
+            })
+            .unwrap_or(false);
         }
     }
     let _ = url;
@@ -1020,12 +1036,16 @@ pub fn ship_bring(url: &str) -> bool {
 /// Signs out of every ship.
 pub fn ships_forget() {
     #[cfg(not(target_arch = "wasm32"))]
-    if !cfg!(test) {
-        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
-            for a in crate::accounts::load_at(dir, now_secs()).list {
-                end_session(a.url, a.cookie);
-            }
-            let _ = crate::accounts::store_at(dir, &crate::accounts::Accounts::default());
+    if !cfg!(test)
+        && let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent)
+        && let Ok(list) = crate::accounts::update_at(dir, now_secs(), |all| {
+            let list = std::mem::take(&mut all.list);
+            all.front = None;
+            (true, list)
+        })
+    {
+        for a in list {
+            end_session(a.url, a.cookie);
         }
     }
 }
@@ -1038,21 +1058,28 @@ pub fn ships_forget() {
 /// be sent to the ship is left: it is work not yet saved there.
 #[cfg(not(target_arch = "wasm32"))]
 fn end_session(url: String, cookie: String) {
-    if let Some(kept) = kept_path(&url, (Conn { url: url.clone(), cookie: cookie.clone() }).ship()) {
-        let _ = std::fs::remove_file(kept);
-    }
+    let kept = kept_path(&url, (Conn { url: url.clone(), cookie: cookie.clone() }).ship());
     // and the copy of the session a mount of this ship was started with: a ship that is away now never ends it, and it would stay good on disk
     crate::mounts::forget_session(&url);
+    let kept_after = kept.clone();
     // asked once and not waited for: a ship that is away keeps the session until it lapses
-    let _ = std::thread::Builder::new().name("sign-out".to_owned()).spawn(move || {
-        // what still waits is sent first, while the session is good: the edit being typed when Sign out was pressed is kept there a moment before, and would else reach the ship with a cookie it had just ended
+    let spawned = std::thread::Builder::new().name("sign-out".to_owned()).spawn(move || {
+        // what still waits is sent first, while the session is good and the kept tree is still on disk for `kept_link`
         let c = Conn { url: url.clone(), cookie: cookie.clone() };
         if !c.queue().is_empty() || !c.ops().is_empty() {
-            let _ = c.send_waiting(&std::sync::atomic::AtomicBool::new(false));
+            let _ = c.send_waiting_inner(&std::sync::atomic::AtomicBool::new(false), false);
+        }
+        if let Some(kept) = kept_after {
+            let _ = std::fs::remove_file(kept);
         }
         let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(10)).build();
         let _ = agent.post(&format!("{url}/~/logout")).set("cookie", &cookie).set("origin", &url).send_string("");
     });
+    if spawned.is_err()
+        && let Some(kept) = kept
+    {
+        let _ = std::fs::remove_file(kept);
+    }
 }
 
 /// Where a signed-in session is kept between runs: the app's own file,
@@ -1198,8 +1225,17 @@ pub fn adopt_late() -> Vec<std::path::PathBuf> {
         if read::<Queue>(&qp).is_none_or(|q| !q.is_empty()) || read::<Vec<QueuedOp>>(&op).is_none_or(|o| !o.is_empty()) {
             continue;
         }
-        // written whole, and only then the old names go: a write that fails leaves them as they were
-        let wrote = serde_json::to_vec(&o).map_err(|e| e.to_string()).and_then(|b| write_private(&op, &b)).and_then(|()| serde_json::to_vec(&q).map_err(|e| e.to_string())).and_then(|b| write_private(&qp, &b));
+        // serialize both before touching disk, write queue first, and roll it back if ops fails so neither file is left non-empty on partial failure
+        let wrote = (|| -> Result<(), String> {
+            let qb = serde_json::to_vec(&q).map_err(|e| e.to_string())?;
+            let ob = serde_json::to_vec(&o).map_err(|e| e.to_string())?;
+            write_private(&qp, &qb)?;
+            if let Err(e) = write_private(&op, &ob) {
+                let _ = std::fs::remove_file(&qp);
+                return Err(e);
+            }
+            Ok(())
+        })();
         if wrote.is_ok() {
             let _ = std::fs::remove_file(&oq);
             let _ = std::fs::remove_file(&oo);
@@ -1333,29 +1369,84 @@ pub mod web {
     }
 }
 
+/// Random hex bytes for unpredictable temporary file and folder names.
+pub(crate) fn random_hex(n: usize) -> Result<String, String> {
+    let mut buf = vec![0u8; n];
+    #[cfg(unix)]
+    {
+        use ring::rand::{SecureRandom, SystemRandom};
+        SystemRandom::new().fill(&mut buf).map_err(|_| "could not draw random bytes".to_owned())?;
+    }
+    #[cfg(not(unix))]
+    {
+        use std::collections::hash_map::RandomState;
+        use std::hash::{BuildHasher, Hasher};
+        static STEP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        for chunk in buf.chunks_mut(8) {
+            let mut h = RandomState::new().build_hasher();
+            h.write_u64(STEP.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+            h.write_u128(since_epoch().map_or(0, |d| d.as_nanos()));
+            let v = h.finish().to_le_bytes();
+            chunk.copy_from_slice(&v[..chunk.len()]);
+        }
+    }
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Creates a private temporary directory non-recursively with an unpredictable name (0700 on Unix).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn make_temp_dir(prefix: &str) -> Result<std::path::PathBuf, String> {
+    let base = std::env::temp_dir();
+    for _ in 0..16 {
+        let suffix = random_hex(12)?;
+        let dir = base.join(format!("{prefix}-{}-{suffix}", std::process::id()));
+        let mut b = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            b.mode(0o700);
+        }
+        match b.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("could not create a temporary folder".into())
+}
+
 /// Writes a file only its owner reads, whole or not at all: beside it first, then moved into place.
 pub fn write_private(p: &std::path::Path, body: &[u8]) -> Result<(), String> {
-    std::fs::create_dir_all(p.parent().ok_or("no parent")?).map_err(|e| e.to_string())?;
-    // a name of its own for each write: two writes of one file at once, each to the same name beside it, could leave the file with one's start and the other's end
-    static TURN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let turn = TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = p.with_extension(format!("{}-{turn}.part", std::process::id()));
-    #[cfg(unix)]
-    let wrote = {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        // made new, never opened: a link planted at this name in a folder others write to would else be written through, into a file of theirs. What is there is taken away first, and one put back in that instant fails the write
-        let _ = std::fs::remove_file(&tmp);
-        std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(body).and_then(|()| f.sync_all())).map_err(|e| e.to_string())
-    };
-    #[cfg(not(unix))]
-    let wrote = std::fs::write(&tmp, body).map_err(|e| e.to_string());
-    // a write that failed leaves nothing beside the file: each has a name of its own, so a full disk would else gather a part for every try
-    let done = wrote.and_then(|()| std::fs::rename(&tmp, p).map_err(|e| e.to_string()));
-    if done.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    use std::io::Write;
+    let parent = p.parent().ok_or("no parent")?;
+    if !parent.as_os_str().is_empty() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    done
+    let base = p.file_name().and_then(|n| n.to_str()).unwrap_or("tmp");
+    for _ in 0..16 {
+        let suffix = random_hex(12)?;
+        let tmp = parent.join(format!(".{base}.{}.{suffix}.part", std::process::id()));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = match opts.open(&tmp) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        };
+        let wrote = f.write_all(body).and_then(|()| f.sync_all()).map_err(|e| e.to_string());
+        drop(f);
+        let done = wrote.and_then(|()| std::fs::rename(&tmp, p).map_err(|e| e.to_string()));
+        if done.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        return done;
+    }
+    Err("could not create a temporary file".into())
 }
 
 /// The most of one answer that is read: a whole store comes as one answer, with every page's
@@ -1419,16 +1510,20 @@ const SSE_MOST: usize = 1 << 20;
 /// The whole events in what has come of a stream so far, each its name
 /// and its data. What follows the last blank line stays, to be added to.
 pub fn sse_events(buf: &mut String) -> Vec<(String, String)> {
+    if buf.contains("\r\n") {
+        *buf = buf.replace("\r\n", "\n");
+    }
     let mut out = Vec::new();
     while let Some(end) = buf.find("\n\n") {
-        let (mut name, mut data) = (String::new(), String::new());
+        let (mut name, mut data) = (String::new(), Vec::new());
         for ln in buf[..end].split('\n') {
-            if let Some(n) = ln.strip_prefix("event: ") {
+            if let Some(n) = ln.strip_prefix("event:") {
                 name = n.trim().to_owned();
-            } else if let Some(d) = ln.strip_prefix("data: ") {
-                data = d.trim().to_owned();
+            } else if let Some(d) = ln.strip_prefix("data:") {
+                data.push(d.strip_prefix(' ').unwrap_or(d).trim_end_matches('\r'));
             }
         }
+        let data = data.join("\n");
         buf.drain(..end + 2);
         if !name.is_empty() {
             out.push((name, data));
@@ -1580,7 +1675,7 @@ pub fn link(offline: bool, lapsed: bool) -> Link {
 
 /// Whether an error is the ship saying this session is not signed in.
 pub fn lapsed(error: &str) -> bool {
-    error.starts_with("401") || error.starts_with("403")
+    error.starts_with("401") || error.starts_with("403") || (error.starts_with("30") && error.contains("/~/login"))
 }
 
 /// What stands at a `urb://` address, as the ship reads it (`GET /urb-read`).
@@ -2027,7 +2122,7 @@ fn stops_all(why: &str) -> bool {
 /// program or in another window's, waits until then. `None` where
 /// it cannot be made or locked (a folder that cannot be written, a file system with no locks): the
 /// caller goes on without it, as it did before there was one.
-fn file_lock(p: &std::path::Path) -> Option<std::fs::File> {
+pub(crate) fn file_lock(p: &std::path::Path) -> Option<std::fs::File> {
     std::fs::create_dir_all(p.parent()?).ok()?;
     let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(p).ok()?;
     f.lock().ok()?;
@@ -2808,9 +2903,13 @@ impl Conn {
     #[cfg(not(target_arch = "wasm32"))]
     fn sse(&self, url: &str, quiet: u64, mut on: impl FnMut(&str, &str) -> bool) -> Result<(), String> {
         use std::io::Read;
-        // no limit on the whole request: the stream is held open
-        let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(quiet)).build();
+        // no limit on the whole request: the stream is held open. Redirects are never followed so expired 307 redirects to /~/login are caught
+        let agent = ureq::AgentBuilder::new().redirects(0).timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(quiet)).build();
         let resp = match agent.get(url).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
+            Ok(r) if (300..400).contains(&r.status()) => {
+                let loc = r.header("location").unwrap_or("");
+                return Err(format!("{}: redirect{}", r.status(), if loc.is_empty() { String::new() } else { format!(" to {loc}") }));
+            }
             Ok(r) => r,
             Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: no stream")),
             Err(e) => return Err(e.to_string()),
@@ -2911,9 +3010,11 @@ impl Conn {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let req = ureq::post(&format!("{}/apps/lattice/key-mint", self.url)).timeout(Duration::from_secs(30)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/json");
+            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
+            let req = agent.post(&format!("{}/apps/lattice/key-mint", self.url)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/json");
             let text = match req.send_string(&ask.to_string()) {
-                Ok(r) => r.into_string().map_err(|e| e.to_string())?,
+                Ok(r) if (300..400).contains(&r.status()) => return Err(format!("{}: redirect", r.status())),
+                Ok(r) => read_text(r, ANSWER_LIMIT)?,
                 Err(ureq::Error::Status(code, r)) => return Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
                 Err(e) => return Err(e.to_string()),
             };
@@ -2941,8 +3042,17 @@ impl Conn {
     /// ends it between two sends. The number the ship refused for good and kept as pages of their own.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn send_waiting(&self, stop: &std::sync::atomic::AtomicBool) -> usize {
+        self.send_waiting_inner(stop, true)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn send_waiting_inner(&self, stop: &std::sync::atomic::AtomicBool, note_bg: bool) -> usize {
         use std::sync::atomic::Ordering;
-        let note = |x: BgSent| BG_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((self.url.clone(), x));
+        let note = |x: BgSent| {
+            if note_bg {
+                BG_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((self.url.clone(), self.ship().to_owned(), x));
+            }
+        };
         loop {
             if stop.load(Ordering::Relaxed) {
                 return 0;
@@ -3004,11 +3114,17 @@ impl Conn {
         let (was_ops, was) = (self.ops(), self.queue());
         let (mut ops, mut q) = (was_ops.clone(), was.clone());
         change(&mut ops, &mut q);
-        if ops != was_ops {
+        let ops_changed = ops != was_ops;
+        if ops_changed {
             self.store_ops(&ops)?;
         }
-        if q != was {
-            self.store_queue(&q)?;
+        if q != was
+            && let Err(e) = self.store_queue(&q)
+        {
+            if ops_changed {
+                let _ = self.store_ops(&was_ops);
+            }
+            return Err(e);
         }
         Ok((ops, q))
     }
@@ -3044,9 +3160,10 @@ impl Conn {
         }
         let p = session_path().ok_or("no home directory")?;
         let dir = p.parent().ok_or("no parent")?;
-        let mut all = crate::accounts::load_at(dir, now_secs());
-        all.put(&self.url, &self.cookie, now_secs());
-        crate::accounts::store_at(dir, &all)
+        crate::accounts::update_at(dir, now_secs(), |all| {
+            all.put(&self.url, &self.cookie, now_secs());
+            (true, ())
+        })
     }
 
     /// In a browser the session is the browser's own.
@@ -3061,12 +3178,13 @@ impl Conn {
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
-            let mut all = crate::accounts::load_at(dir, now_secs());
-            if let Some(gone) = all.remove(url) {
-                end_session(gone.url, gone.cookie);
-            }
-            let _ = crate::accounts::store_at(dir, &all);
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent)
+            && let Ok(Some(gone)) = crate::accounts::update_at(dir, now_secs(), |all| {
+                let gone = all.remove(url);
+                (gone.is_some(), gone)
+            })
+        {
+            end_session(gone.url, gone.cookie);
         }
         #[cfg(target_arch = "wasm32")]
         let _ = url;
@@ -3078,14 +3196,13 @@ impl Conn {
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent) {
-            let mut all = crate::accounts::load_at(dir, now_secs());
-            if let Some(front) = all.front.clone() {
-                if let Some(gone) = all.remove(&front) {
-                    end_session(gone.url, gone.cookie);
-                }
-                let _ = crate::accounts::store_at(dir, &all);
-            }
+        if let Some(dir) = session_path().as_deref().and_then(std::path::Path::parent)
+            && let Ok(Some(gone)) = crate::accounts::update_at(dir, now_secs(), |all| {
+                let gone = all.front.clone().and_then(|front| all.remove(&front));
+                (gone.is_some(), gone)
+            })
+        {
+            end_session(gone.url, gone.cookie);
         }
     }
 
@@ -3203,8 +3320,11 @@ impl Conn {
         #[cfg(not(target_arch = "wasm32"))]
         {
             use std::io::Read;
-            let req = ureq::get(url).timeout(Duration::from_secs(5)).set("cookie", &self.cookie).set("accept", "text/event-stream");
-            if let Ok(r) = req.call() {
+            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(5)).build();
+            let req = agent.get(url).set("cookie", &self.cookie).set("accept", "text/event-stream");
+            if let Ok(r) = req.call()
+                && !(300..400).contains(&r.status())
+            {
                 let _ = r.into_reader().read(&mut [0u8; 64]);
             }
         }
@@ -4280,7 +4400,7 @@ mod tests {
         assert!(sent.iter().any(|r| r.path.contains("page-del?name=drafts")) && sent.iter().any(|r| r.path.contains("page-save?name=diary") && r.body == "what ~zod wrote with the ship away"), "{sent:?}");
         assert!(sent.iter().all(|r| r.cookie() == zod.cookie), "{sent:?}");
         assert!(zod.queue().is_empty() && zod.ops().is_empty());
-        let _ = bg_sent(&url, true);
+        let _ = bg_sent(&url, zod.ship(), true);
     }
 
     #[test]
@@ -6042,5 +6162,132 @@ mod tests {
         let c = Conn::login(&url, &std::env::var("LATTICE_CODE").unwrap()).unwrap();
         assert!(c.ship().starts_with('~') && c.tree().is_ok(), "the session opens the ship");
         assert!(Conn::login(&url, "ridlur-figbud-capmut-bidrup").is_err(), "a wrong code is refused");
+    }
+
+    #[test]
+    fn sse_events_handles_crlf_and_multiline_data() {
+        let mut buf = String::from("event: old /rev\r\ndata: 41\r\n\r\nevent: here\r\ndata: line1\r\ndata: line2\r\n\r\nevent: upd /rev\r\ndata: 42\r\n\r");
+        assert_eq!(
+            sse_events(&mut buf),
+            vec![
+                ("old /rev".to_owned(), "41".to_owned()),
+                ("here".to_owned(), "line1\nline2".to_owned()),
+            ]
+        );
+        // The trailing `\r` from a split `\r\n` delimiter is preserved until `\n` arrives.
+        buf.push('\n');
+        assert_eq!(sse_events(&mut buf), vec![("upd /rev".to_owned(), "42".to_owned())]);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn authenticated_routes_reject_307_redirects_and_sse_detects_lapsed_login_redirect() {
+        let (url, log) = serve(|r| {
+            if r.path == "/final" {
+                ok("public-ok")
+            } else if r.path == "/public-redir" {
+                answer("307 Temporary Redirect", "location: /final\r\n", b"")
+            } else {
+                answer("307 Temporary Redirect", "location: /~/login?redirect=/apps/lattice\r\n", b"")
+            }
+        });
+        let c = conn(&url, "~zod");
+
+        // SSE rejects 307 and `lapsed` recognizes the /~/login target so the listener stops.
+        let sse_err = c.beacon_stream("/base", |_| true).unwrap_err();
+        assert!(sse_err.starts_with("307"), "{sse_err}");
+        assert!(lapsed(&sse_err), "307 to /~/login must be detected as lapsed: {sse_err}");
+
+        // key_mint rejects 307 without following.
+        let mint_err = c.key_mint(&serde_json::json!({"name": "a"})).unwrap_err();
+        assert!(mint_err.starts_with("307"), "{mint_err}");
+
+        // Authenticated fetch_bytes rejects 307 without following or leaking cookie.
+        let auth_err = fetch_bytes(&format!("{url}/public-redir"), Some(&c.cookie)).unwrap_err();
+        assert_eq!(auth_err, "307");
+
+        // channel_answer does not follow redirects.
+        c.channel_answer(&format!("{url}/public-redir"));
+        assert!(!log.lock().unwrap().iter().any(|r| r.path == "/final"), "authenticated requests must not follow redirects");
+
+        // Unauthenticated fetch_bytes still follows public redirects.
+        let pub_bytes = fetch_bytes(&format!("{url}/public-redir"), None).unwrap();
+        assert_eq!(pub_bytes, b"public-ok");
+    }
+
+    #[test]
+    fn bg_sent_is_keyed_by_url_and_ship_and_skipped_on_signout_flush() {
+        let _home = Home::new("bg-sent-keyed");
+        let (url, _) = serve(|_| ok(r#"{"rev":1}"#));
+        let zod = conn(&url, "~zod");
+        let bus = conn(&url, "~bus");
+        let _ = bg_sent(&url, "~zod", true);
+        let _ = bg_sent(&url, "~bus", true);
+        bg_note_for_test(&url, "~zod", BgSent::Op(QueuedOp::Del("a".into())));
+        bg_note_for_test(&url, "~bus", BgSent::Op(QueuedOp::Del("b".into())));
+        assert_eq!(bg_sent(&url, "~zod", true), vec![BgSent::Op(QueuedOp::Del("a".into()))]);
+        assert_eq!(bg_sent(&url, "~bus", true), vec![BgSent::Op(QueuedOp::Del("b".into()))]);
+
+        // Sign-out flush (`note_bg = false`) sends queued items without polluting `BG_SENT`.
+        zod.store_ops(&[QueuedOp::Del("gone".into())]).unwrap();
+        zod.send_waiting_inner(&std::sync::atomic::AtomicBool::new(false), false);
+        assert!(zod.ops().is_empty());
+        assert!(bg_sent(&url, "~zod", false).is_empty());
+        let _ = bus;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn change_waiting_rolls_back_ops_when_queue_write_fails() {
+        let _home = Home::new("change-waiting-rollback");
+        let c = conn("https://rollback.test", "~zod");
+        let qp = queue_path(&c.url, c.ship()).unwrap();
+        // Make `qp` a non-empty directory so `rename(&tmp, &qp)` fails after `store_ops` succeeds.
+        std::fs::create_dir_all(&qp).unwrap();
+        std::fs::write(qp.join("blocker"), b"x").unwrap();
+        let res = c.change_waiting(|ops, q| {
+            ops.push(QueuedOp::Del("a".into()));
+            q.insert("b".into(), Queued { kind: "md".into(), body: "x".into(), ..Queued::default() });
+        });
+        assert!(res.is_err(), "queue write into a directory must fail");
+        assert!(c.ops().is_empty(), "ops must be rolled back when store_queue fails");
+        let _ = std::fs::remove_dir_all(&qp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn adopt_late_rolls_back_queue_when_ops_write_fails() {
+        let home = Home::new("adopt-late-rollback");
+        let dir = home.0.clone();
+        let url = "https://adopt-rb.test";
+        let ship = "~zod";
+        let mut all = crate::accounts::Accounts::default();
+        all.put(url, "urbauth-~zod=0v1", 10);
+        crate::accounts::store_at(&dir, &all).unwrap();
+        // Establish the named-by-ship marker first, then write late legacy files newer than it.
+        let _ = adopt_late();
+        std::thread::sleep(Duration::from_millis(20));
+        let old = old_key(url);
+        let (oq, oo) = (dir.join(format!("waiting-{old}.json")), dir.join(format!("ops-{old}.json")));
+        let mut q = Queue::new();
+        q.insert("note".into(), Queued { kind: "md".into(), body: "late".into(), ..Queued::default() });
+        write_private(&oq, &serde_json::to_vec(&q).unwrap()).unwrap();
+        write_private(&oo, &serde_json::to_vec(&vec![QueuedOp::Del("gone".into())]).unwrap()).unwrap();
+        // Make target `op` a non-empty directory so writing ops fails after writing `qp`.
+        let op = ops_path(url, ship).unwrap();
+        let qp = queue_path(url, ship).unwrap();
+        std::fs::create_dir_all(&op).unwrap();
+        std::fs::write(op.join("blocker"), b"x").unwrap();
+        let left = adopt_late();
+        assert!(!left.is_empty(), "legacy files stay reported when adoption fails");
+        assert!(!qp.exists(), "qp must be rolled back when writing op fails");
+        assert!(oq.exists() && oo.exists(), "legacy files must not be deleted on partial failure");
+        // Removing the blocker allows a subsequent adopt_late call to succeed completely.
+        std::fs::remove_dir_all(&op).unwrap();
+        let left_after = adopt_late();
+        assert!(left_after.is_empty(), "after clearing blocker, adoption succeeds: {left_after:?}");
+        let c = conn(url, ship);
+        assert_eq!(c.queue().get("note").map(|x| x.body.as_str()), Some("late"));
+        assert_eq!(c.ops(), vec![QueuedOp::Del("gone".into())]);
     }
 }

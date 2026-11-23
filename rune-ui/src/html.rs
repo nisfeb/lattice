@@ -527,42 +527,33 @@ thread_local! {
 
 /// The widest and tallest a picture may say it is and still be decoded.
 const PICTURE_SIDE: u64 = 8192;
+/// The most pixels a raster picture may allocate (16M pixels = 64 MiB RGBA).
+const PICTURE_PIXELS: u64 = 16_777_216;
 
-/// Whether bytes fetched for a page may be handed on to be decoded. A
-/// picture says how large it is in its first bytes, and a few thousand
-/// bytes can say gigabytes: one past `PICTURE_SIDE` either way is not
-/// decoded. A drawing (SVG) that draws other files in is refused too.
-/// That is a second guard, and it reads the text only as it is plainly
-/// written: a drawing that is zipped, or spelt with a prefix, passes
-/// it. What holds is that nothing that reads drawings resolves an
-/// address to a file: `vendor/usvg` for an HTML page's, and `drawing`
-/// for the pictures a Markdown page shows.
-/// What is not a picture this knows (a style sheet, a font) passes.
-// ponytail: PNG, GIF, JPEG, WebP and BMP are measured. A bomb in another format the decoder knows is not caught here. A size limit in the decoder itself is the fix
-pub fn fetched_ok(b: &[u8]) -> bool {
-    let be = |at: usize, n: usize| b.get(at..at + n).map(|x| x.iter().fold(0u64, |a, c| a << 8 | u64::from(*c)));
-    let le = |at: usize, n: usize| b.get(at..at + n).map(|x| x.iter().rev().fold(0u64, |a, c| a << 8 | u64::from(*c)));
-    let fits = |w: Option<u64>, h: Option<u64>| matches!((w, h), (Some(w), Some(h)) if w <= PICTURE_SIDE && h <= PICTURE_SIDE);
+fn raster_dims(b: &[u8]) -> Option<Option<(u64, u64)>> {
+    let be = |at: usize, n: usize| b.get(at..at.checked_add(n)?).map(|x| x.iter().fold(0u64, |a, c| a << 8 | u64::from(*c)));
+    let le = |at: usize, n: usize| b.get(at..at.checked_add(n)?).map(|x| x.iter().rev().fold(0u64, |a, c| a << 8 | u64::from(*c)));
+    let pair = |w: Option<u64>, h: Option<u64>| Some(w.zip(h));
     if b.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return fits(be(16, 4), be(20, 4));
+        return pair(be(16, 4), be(20, 4));
     }
     if b.starts_with(b"GIF8") {
-        return fits(le(6, 2), le(8, 2));
+        return pair(le(6, 2), le(8, 2));
     }
     if b.starts_with(b"BM") {
-        return fits(le(18, 4).map(|w| w.min(u64::from(u32::MAX))), le(22, 4).map(|h| (h as u32 as i32).unsigned_abs().into()));
+        return pair(le(18, 4).map(|w| w.min(u64::from(u32::MAX))), le(22, 4).map(|h| (h as u32 as i32).unsigned_abs().into()));
     }
     if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"WEBP") {
         return match b.get(12..16) {
-            Some(b"VP8X") => fits(le(24, 3).map(|w| w + 1), le(27, 3).map(|h| h + 1)),
-            Some(b"VP8 ") => fits(le(26, 2).map(|w| w & 0x3fff), le(28, 2).map(|h| h & 0x3fff)),
-            Some(b"VP8L") => le(21, 4).is_some_and(|v| fits(Some((v & 0x3fff) + 1), Some(((v >> 14) & 0x3fff) + 1))),
-            _ => false,
+            Some(b"VP8X") => pair(le(24, 3).map(|w| w + 1), le(27, 3).map(|h| h + 1)),
+            Some(b"VP8 ") => pair(le(26, 2).map(|w| w & 0x3fff), le(28, 2).map(|h| h & 0x3fff)),
+            Some(b"VP8L") => Some(le(21, 4).map(|v| ((v & 0x3fff) + 1, ((v >> 14) & 0x3fff) + 1))),
+            _ => Some(None),
         };
     }
     if b.starts_with(&[0xff, 0xd8]) {
         // the frame header, among the segments before the picture's data
-        let mut at = 2;
+        let mut at = 2usize;
         while let (Some(0xff), Some(kind)) = (b.get(at).copied(), b.get(at + 1).copied()) {
             // a marker may be led by any number of fill bytes
             if kind == 0xff {
@@ -570,12 +561,39 @@ pub fn fetched_ok(b: &[u8]) -> bool {
                 continue;
             }
             if matches!(kind, 0xc0..=0xcf) && !matches!(kind, 0xc4 | 0xc8 | 0xcc) {
-                return fits(be(at + 7, 2), be(at + 5, 2));
+                return pair(be(at + 7, 2), be(at + 5, 2));
             }
-            let Some(len) = be(at + 2, 2) else { return false };
-            at += 2 + len as usize;
+            let Some(len) = be(at + 2, 2).and_then(|n| usize::try_from(n).ok()) else { return Some(None) };
+            let Some(next) = at.checked_add(2).and_then(|n| n.checked_add(len)) else { return Some(None) };
+            at = next;
         }
-        return false;
+        return Some(None);
+    }
+    None
+}
+
+fn dims_fit((w, h): (u64, u64)) -> bool {
+    w > 0 && h > 0 && w <= PICTURE_SIDE && h <= PICTURE_SIDE && w.checked_mul(h).is_some_and(|p| p <= PICTURE_PIXELS)
+}
+
+/// Whether bytes are a supported raster picture whose stated dimensions fit within `PICTURE_SIDE` and `PICTURE_PIXELS`.
+pub fn raster_ok(b: &[u8]) -> bool {
+    matches!(raster_dims(b), Some(Some(dims)) if dims_fit(dims))
+}
+
+/// Whether bytes fetched for a page may be handed on to be decoded. A
+/// picture says how large it is in its first bytes, and a few thousand
+/// bytes can say gigabytes: one past `PICTURE_SIDE` or `PICTURE_PIXELS` is not
+/// decoded. A drawing (SVG) that draws other files in is refused too.
+/// That is a second guard, and it reads the text only as it is plainly
+/// written: a drawing that is zipped, or spelt with a prefix, passes
+/// it. What holds is that nothing that reads drawings resolves an
+/// address to a file: `vendor/usvg` for an HTML page's, and `drawing`
+/// for the pictures a Markdown page shows.
+/// What is not a picture this knows (a style sheet, a font) passes.
+pub fn fetched_ok(b: &[u8]) -> bool {
+    if let Some(dims) = raster_dims(b) {
+        return dims.is_some_and(dims_fit);
     }
     // a drawing: its text is looked through for what would read a file
     let head = &b[..b.len().min(4096)];
@@ -708,6 +726,73 @@ pub fn draw_later(bytes: Vec<u8>, done: impl FnOnce(Result<(u32, u32, Vec<u8>), 
     tx.send(job).is_ok()
 }
 
+/// Maximum nesting depth for sub-SVGs embedded via `data:image/svg+xml`.
+const DRAWING_SUB_DEPTH: usize = 4;
+
+fn resolve_drawing_data(mime: &str, data: std::sync::Arc<Vec<u8>>, opts: &resvg::usvg::Options) -> Option<resvg::usvg::ImageKind> {
+    use resvg::usvg;
+    let load_sub = |bytes: &[u8]| -> Option<usvg::ImageKind> {
+        if bytes.len() > DRAWING_TEXT {
+            return None;
+        }
+        let plain = inflated(bytes, DRAWING_TEXT).ok()?;
+        if plain.len() > DRAWING_TEXT || nesting(&plain) > DRAWING_DEPTH {
+            return None;
+        }
+        thread_local! {
+            static SUB_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        }
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                SUB_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+            }
+        }
+        let entered = SUB_DEPTH.with(|d| {
+            let cur = d.get();
+            if cur >= DRAWING_SUB_DEPTH {
+                false
+            } else {
+                d.set(cur + 1);
+                true
+            }
+        });
+        if !entered {
+            return None;
+        }
+        let _guard = Guard;
+        usvg::Tree::from_data(&plain, opts).ok().map(usvg::ImageKind::SVG)
+    };
+    let raster = |data: std::sync::Arc<Vec<u8>>, kind: fn(std::sync::Arc<Vec<u8>>) -> usvg::ImageKind| {
+        if data.len() <= DRAWING_TEXT && raster_ok(&data) {
+            Some(kind(data))
+        } else {
+            None
+        }
+    };
+    match mime {
+        "image/jpg" | "image/jpeg" => raster(data, usvg::ImageKind::JPEG),
+        "image/png" => raster(data, usvg::ImageKind::PNG),
+        "image/gif" => raster(data, usvg::ImageKind::GIF),
+        "image/webp" => raster(data, usvg::ImageKind::WEBP),
+        "image/svg+xml" => load_sub(&data),
+        "text/plain" => {
+            if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+                raster(data, usvg::ImageKind::PNG)
+            } else if data.starts_with(&[0xff, 0xd8]) {
+                raster(data, usvg::ImageKind::JPEG)
+            } else if data.starts_with(b"GIF8") {
+                raster(data, usvg::ImageKind::GIF)
+            } else if data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP") {
+                raster(data, usvg::ImageKind::WEBP)
+            } else {
+                load_sub(&data)
+            }
+        }
+        _ => None,
+    }
+}
+
 /// A drawing a page shows, drawn as straight RGBA at twice its own size, as Rune's picture cache draws one but
 /// with a reader that resolves no address to a file: a drawing may hold only the pictures written out in it
 /// (`data:`). `None` when the bytes are no drawing by `is_drawing`, which are for the cache to decode. Every
@@ -728,7 +813,13 @@ pub fn drawing(bytes: &[u8]) -> Option<Result<(u32, u32, Vec<u8>), String>> {
         if nesting(bytes) > DRAWING_DEPTH {
             return Err("the drawing is nested too deeply".to_owned());
         }
-        let options = usvg::Options { image_href_resolver: usvg::ImageHrefResolver { resolve_string: Box::new(|_, _| None), ..Default::default() }, ..Default::default() };
+        let options = usvg::Options {
+            image_href_resolver: usvg::ImageHrefResolver {
+                resolve_data: Box::new(resolve_drawing_data),
+                resolve_string: Box::new(|_, _| None),
+            },
+            ..Default::default()
+        };
         let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| format!("drawing: {e}"))?;
         let size = tree.size();
         let side = size.width().max(size.height());
@@ -1325,6 +1416,65 @@ mod tests {
         assert!(matches!(drawing(&gzip(&svg(1 << 20))), Some(Ok(_))));
         // a gzip that is cut short is an error, not a hang
         assert!(matches!(drawing(&bomb[..bomb.len() / 2]), Some(Err(_))));
+    }
+
+    #[test]
+    fn nested_svg_data_uri_enforces_depth_and_gzip_limits() {
+        use base64::Engine as _;
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let wrap = |data: &[u8]| {
+            format!(
+                "<svg xmlns='{SVG}' width='20' height='20'><image href='data:image/svg+xml;base64,{}' width='20' height='20'/></svg>",
+                b64(data)
+            )
+            .into_bytes()
+        };
+        // A nested SVG with deep XML nesting is skipped safely (does not crash or paint red).
+        let deep_inner = format!(
+            "<svg xmlns='{SVG}' width='20' height='20'>{}<rect width='20' height='20' fill='#ff0000'/>{}</svg>",
+            "<g>".repeat(DRAWING_DEPTH + 100),
+            "</g>".repeat(DRAWING_DEPTH + 100)
+        );
+        let got = middle(&wrap(deep_inner.as_bytes())).unwrap();
+        assert_eq!(got[3], 0, "deeply nested sub-SVG must be rejected: {got:?}");
+
+        // A nested SVGZ gzip bomb over 32 MiB is skipped safely without OOM.
+        let huge = format!(
+            "<svg xmlns='{SVG}' width='20' height='20'><rect width='20' height='20' fill='#ff0000'/>{}</svg>",
+            " ".repeat(DRAWING_TEXT + 1)
+        );
+        let bomb = gzip(huge.as_bytes());
+        assert!(bomb.len() < 1 << 20);
+        let got = middle(&wrap(&bomb)).unwrap();
+        assert_eq!(got[3], 0, "gzip bomb inside data:image/svg+xml must be rejected: {got:?}");
+
+        // Sub-SVG recursion past DRAWING_SUB_DEPTH is skipped safely.
+        let red = format!("<svg xmlns='{SVG}' width='20' height='20'><rect width='20' height='20' fill='#ff0000'/></svg>").into_bytes();
+        let mut shallow = red.clone();
+        for _ in 0..DRAWING_SUB_DEPTH {
+            shallow = wrap(&shallow);
+        }
+        let got_ok = middle(&shallow).unwrap();
+        assert!(got_ok[0] > 200 && got_ok[3] > 200, "sub-SVG at depth {DRAWING_SUB_DEPTH} still draws: {got_ok:?}");
+        let too_deep = wrap(&shallow);
+        let got_drop = middle(&too_deep).unwrap();
+        assert_eq!(got_drop[3], 0, "sub-SVG past depth {DRAWING_SUB_DEPTH} must be dropped: {got_drop:?}");
+    }
+
+    #[test]
+    fn raster_dimensions_enforce_pixel_cap_and_format_check() {
+        let make_png = |w: u32, h: u32| {
+            let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\0\0\0\0\0".to_vec();
+            b[16..20].copy_from_slice(&w.to_be_bytes());
+            b[20..24].copy_from_slice(&h.to_be_bytes());
+            b
+        };
+        assert!(raster_ok(&make_png(4096, 4096)));
+        assert!(raster_ok(&make_png(8192, 2048)));
+        assert!(!raster_ok(&make_png(8192, 8192)), "67M pixels exceeds 16M pixel cap");
+        assert!(!fetched_ok(&make_png(8192, 8192)));
+        assert!(!raster_ok(&make_png(0, 100)));
+        assert!(!raster_ok(b"II*\0\x08\0\0\0"), "unrecognized raster format (TIFF) is rejected by raster_ok");
     }
 
 }

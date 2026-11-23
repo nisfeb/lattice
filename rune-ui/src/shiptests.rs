@@ -1132,7 +1132,7 @@ fn a_move_the_ship_refuses_for_now_holds_back_only_what_is_under_it_for_the_watc
     c.send_waiting(&go);
     assert_eq!(ship.body("b/one"), "a more\n");
     assert!(c.ops().is_empty() && c.queue().is_empty());
-    let _ = api::bg_sent(&c.url, true);
+    let _ = api::bg_sent(&c.url, c.ship(), true);
 }
 
 #[test]

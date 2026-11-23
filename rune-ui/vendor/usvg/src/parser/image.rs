@@ -262,7 +262,13 @@ pub(crate) fn convert_inner(
 
 pub(crate) fn get_href_data(href: &str, state: &converter::State) -> Option<ImageKind> {
     if let Ok(url) = data_url::DataUrl::process(href) {
+        if href.len() > super::MAX_SVGZ_BYTES.saturating_mul(2) {
+            return None;
+        }
         let (data, _) = url.decode_to_vec().ok()?;
+        if data.len() > super::MAX_SVGZ_BYTES {
+            return None;
+        }
 
         let mime = format!(
             "{}/{}",

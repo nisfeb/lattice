@@ -127,12 +127,12 @@ impl Engine {
     }
 
     pub fn status(&self) -> Status {
-        self.inner.lock().unwrap().status.clone()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).status.clone()
     }
 
     /// What a start in progress is doing. Empty when not starting.
     pub fn step(&self) -> &'static str {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if g.status == Status::Booting { g.step } else { "" }
     }
 
@@ -146,7 +146,7 @@ impl Engine {
 
     /// Starts the host's thread unless it runs or is starting.
     pub fn start(&self) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if matches!(g.status, Status::Booting | Status::Ready { .. }) {
             return;
         }
@@ -170,7 +170,7 @@ impl Engine {
             }
         });
         if let Err(e) = spawned {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             g.status = Status::Failed(format!("no thread for the reader: {e}"));
             g.failed_at = Some(Instant::now());
             g.run = None;
@@ -183,7 +183,7 @@ impl Engine {
         self.start();
         let (tx, rx) = channel();
         {
-            let g = self.inner.lock().unwrap();
+            let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if let Status::Failed(m) = &g.status {
                 return Err(boot_error(m));
             }
@@ -224,7 +224,7 @@ impl Engine {
     /// stop in that time.
     pub fn close(&self) -> bool {
         let run = {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             g.status = Status::Off;
             g.run.take()
         };
@@ -297,7 +297,7 @@ impl Engine {
         let was = self.close_for_move()?;
         let aside = crate::cometid::install(&self.dir, id)?;
         {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             g.failed_at = None;
             if matches!(g.status, Status::Failed(_)) {
                 g.status = Status::Off;
@@ -358,7 +358,7 @@ fn fake_name(dir: &Path, fake: &str) -> Result<String, String> {
 fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: Receiver<Job>) {
     let fail = |m: String| {
         log_line(&format!("start failed: {m}"));
-        let mut g = inner.lock().unwrap();
+        let mut g = inner.lock().unwrap_or_else(|e| e.into_inner());
         g.status = Status::Failed(m);
         g.failed_at = Some(Instant::now());
         g.run = None;
@@ -368,7 +368,7 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     }
     let log: Log = Arc::new(log_line);
     libmesa_log(log.clone());
-    let step = |w: &'static str| inner.lock().unwrap().step = w;
+    let step = |w: &'static str| inner.lock().unwrap_or_else(|e| e.into_inner()).step = w;
     if fake.is_none() && !dir.join("comet.key").exists() {
         step("Setting up this computer");
     }
@@ -386,7 +386,7 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     let udp = GatewayUdp { fake: fake.is_some(), port: found.port, log: log.clone(), udp: None };
     let io = NetIo::new(Box::new(udp), Box::new(found.store), log);
     let waker = io.waker();
-    if let Some(run) = &mut inner.lock().unwrap().run {
+    if let Some(run) = &mut inner.lock().unwrap_or_else(|e| e.into_inner()).run {
         run.waker = Some(waker);
     }
     step("Joining the Urbit network");
@@ -401,7 +401,7 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     };
     log_line(&format!("running as {our}"));
     {
-        let mut g = inner.lock().unwrap();
+        let mut g = inner.lock().unwrap_or_else(|e| e.into_inner());
         // closed while it was starting: it does not come up as ready with nobody to hand it work
         if g.run.is_none() {
             drop(g);
@@ -768,5 +768,19 @@ mod tests {
         assert_eq!((e.status(), e.step(), e.our()), (Status::Off, "", None));
         e.close();
         assert!(!d.exists(), "no folder, no key and no thread until a read");
+    }
+
+    #[test]
+    fn poisoned_inner_mutex_is_recovered() {
+        let e = engine_at(std::env::temp_dir().join("lattice-rune-engine-poison"), None, Status::Off);
+        let inner = e.inner.clone();
+        let _ = std::thread::spawn(move || {
+            let _g = inner.lock().unwrap();
+            panic!("poison");
+        })
+        .join();
+        assert_eq!(e.status(), Status::Off);
+        assert_eq!(e.step(), "");
+        assert!(e.close());
     }
 }

@@ -98,6 +98,88 @@ impl<T> OptionLog for Option<T> {
     }
 }
 
+/// Maximum bytes allowed for an SVG or decompressed SVGZ payload.
+pub(crate) const MAX_SVGZ_BYTES: usize = 32 << 20;
+/// Maximum XML element nesting depth allowed in an SVG document.
+const MAX_XML_DEPTH: usize = 1024;
+/// Maximum nesting depth for sub-SVGs loaded through `data:image/svg+xml`.
+const MAX_SUB_SVG_DEPTH: usize = 4;
+
+thread_local! {
+    static SUB_SVG_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct SubSvgDepthGuard;
+
+impl Drop for SubSvgDepthGuard {
+    fn drop(&mut self) {
+        SUB_SVG_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// Counts maximum open XML element depth in a single pass without recursion.
+fn xml_nesting(xml: &[u8]) -> usize {
+    let (mut depth, mut deepest, mut i) = (0usize, 0usize, 0usize);
+    let find = |from: usize, pat: &[u8]| {
+        xml[from.min(xml.len())..]
+            .windows(pat.len())
+            .position(|w| w == pat)
+            .map_or(xml.len(), |p| from + p + pat.len())
+    };
+    while let Some(at) = xml[i..].iter().position(|c| *c == b'<') {
+        i += at;
+        let rest = &xml[i..];
+        if rest.starts_with(b"<!--") {
+            i = find(i + 4, b"-->");
+        } else if rest.starts_with(b"<![CDATA[") {
+            i = find(i + 9, b"]]>");
+        } else if rest.starts_with(b"<?") {
+            i = find(i + 2, b"?>");
+        } else if rest.starts_with(b"<!") {
+            let (mut j, mut inner) = (i + 2, false);
+            while let Some(&c) = xml.get(j) {
+                match c {
+                    b'[' => inner = true,
+                    b']' => inner = false,
+                    b'>' if !inner => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            i = j.saturating_add(1);
+        } else {
+            let end_tag = rest.get(1) == Some(&b'/');
+            let (mut j, mut quote) = (i + 1, 0u8);
+            while let Some(&c) = xml.get(j) {
+                match (quote, c) {
+                    (0, b'>') => break,
+                    (0, b'"' | b'\'') => quote = c,
+                    (q, c) if q == c => quote = 0,
+                    _ => {}
+                }
+                j += 1;
+            }
+            if xml.get(j).is_none() {
+                break;
+            }
+            let selfclosed = j > i + 1 && xml.get(j - 1) == Some(&b'/');
+            if end_tag {
+                depth = depth.saturating_sub(1);
+            } else if !selfclosed {
+                depth += 1;
+                deepest = deepest.max(depth);
+            } else {
+                deepest = deepest.max(depth + 1);
+            }
+            i = j + 1;
+        }
+        if i >= xml.len() {
+            break;
+        }
+    }
+    deepest
+}
+
 impl crate::Tree {
     /// Parses `Tree` from an SVG data.
     ///
@@ -114,6 +196,9 @@ impl crate::Tree {
             #[cfg(not(feature = "svgz"))]
             Err(Error::SvgzFeatureNotEnabled)
         } else {
+            if data.len() > MAX_SVGZ_BYTES {
+                return Err(Error::ElementsLimitReached);
+            }
             let text = std::str::from_utf8(data).map_err(|_| Error::NotAnUtf8Str)?;
             Self::from_str(text, opt)
         }
@@ -123,6 +208,20 @@ impl crate::Tree {
     /// external files, as required by the SVG specification when SVG files are loaded
     /// for `<image href="..." />` tags.
     pub fn from_data_nested(data: &[u8], opt: &Options) -> Result<Self, Error> {
+        let entered = SUB_SVG_DEPTH.with(|d| {
+            let cur = d.get();
+            if cur >= MAX_SUB_SVG_DEPTH {
+                false
+            } else {
+                d.set(cur + 1);
+                true
+            }
+        });
+        if !entered {
+            return Err(Error::ElementsLimitReached);
+        }
+        let _guard = SubSvgDepthGuard;
+
         let nested_opt = Options {
             resources_dir: None,
             dpi: opt.dpi,
@@ -157,6 +256,10 @@ impl crate::Tree {
 
     /// Parses `Tree` from an SVG string.
     pub fn from_str(text: &str, opt: &Options) -> Result<Self, Error> {
+        if text.len() > MAX_SVGZ_BYTES || xml_nesting(text.as_bytes()) > MAX_XML_DEPTH {
+            return Err(Error::ElementsLimitReached);
+        }
+
         let xml_opt = roxmltree::ParsingOptions {
             allow_dtd: true,
             ..Default::default()
@@ -175,16 +278,20 @@ impl crate::Tree {
     }
 }
 
-/// Decompresses an SVGZ file.
+/// Decompresses an SVGZ file up to `MAX_SVGZ_BYTES`.
 #[cfg(feature = "svgz")]
 pub fn decompress_svgz(data: &[u8]) -> Result<Vec<u8>, Error> {
     use std::io::Read;
 
-    let mut decoder = flate2::read::GzDecoder::new(data);
-    let mut decoded = Vec::with_capacity(data.len() * 2);
+    let decoder = flate2::read::GzDecoder::new(data);
+    let mut decoded = Vec::with_capacity(data.len().saturating_mul(2).min(MAX_SVGZ_BYTES));
     decoder
+        .take(MAX_SVGZ_BYTES as u64 + 1)
         .read_to_end(&mut decoded)
         .map_err(|_| Error::MalformedGZip)?;
+    if decoded.len() > MAX_SVGZ_BYTES {
+        return Err(Error::MalformedGZip);
+    }
     Ok(decoded)
 }
 

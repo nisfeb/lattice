@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 pub const TIMEOUT: Duration = Duration::from_secs(60);
 /// Past this many triangles a part is not drawn, as on the web.
 pub const MAX_TRIS: usize = 1_000_000;
+/// Maximum size in bytes of an exported STL or 3MF file read back from OpenSCAD.
+const MAX_OUT: u64 = 64 << 20;
 
 /// An openscad that runs: the one `LATTICE_OPENSCAD` names, then on the path, then where installs put it.
 pub fn locate() -> Option<PathBuf> {
@@ -54,8 +56,10 @@ impl Drop for Scratch {
 pub fn run(exe: &Path, files: &[(String, String)], main: &str, defs: &[String], ext: &str, timeout: Duration) -> Ran {
     let t0 = Instant::now();
     let fail = |why: String| Ran { log: vec![format!("ERROR: {why}")], data: None, ms: t0.elapsed().as_millis(), timed_out: false, ok: false };
-    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let dir = Scratch(std::env::temp_dir().join(format!("lattice-scad-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))));
+    let dir = match crate::api::make_temp_dir("lattice-scad") {
+        Ok(d) => Scratch(d),
+        Err(e) => return fail(format!("could not make a temporary folder: {e}")),
+    };
     for (name, text) in files {
         // a name is one this code made, from /w/ down: anything else is not written
         let rel = name.trim_start_matches('/');
@@ -112,7 +116,19 @@ pub fn run(exe: &Path, files: &[(String, String)], main: &str, defs: &[String], 
     if timed_out {
         log.push(format!("stopped after {} s", timeout.as_secs()));
     }
-    let data = if ok && !timed_out { std::fs::read(&out).ok() } else { None };
+    let data = if ok && !timed_out {
+        match std::fs::metadata(&out) {
+            Ok(m) if m.len() > MAX_OUT => {
+                log.push(format!("ERROR: the part file is over {} MB and was not read", MAX_OUT >> 20));
+                ok = false;
+                None
+            }
+            Ok(_) => std::fs::read(&out).ok(),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
     Ran { log, data, ms: t0.elapsed().as_millis(), timed_out, ok }
 }
 
@@ -353,5 +369,28 @@ mod tests {
         // nothing is left behind
         let left = std::fs::read_dir(std::env::temp_dir()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(&format!("lattice-scad-{}-", std::process::id()))).count();
         assert_eq!(left, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_uses_private_temp_dir_and_caps_output_size() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = crate::api::make_temp_dir("lattice-scad-test").unwrap();
+        assert_eq!(std::fs::metadata(&tmp).unwrap().permissions().mode() & 0o777, 0o700);
+        let _ = std::fs::remove_dir_all(&tmp);
+        // Put the fake executable beside the test binary so it runs even if TMPDIR is noexec.
+        let dir = std::env::current_exe().unwrap().parent().unwrap().join(format!("lattice-scad-exe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("fake-openscad");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\nperm=$(stat -c '%a' . 2>/dev/null || stat -f '%Lp' .)\n[ \"$perm\" = \"700\" ] || { echo \"ERROR: bad perm $perm\"; exit 1; }\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"-o\" ]; then out=\"$2\"; shift 2; else shift; fi\ndone\ndd if=/dev/zero of=\"$out\" bs=1 count=1 seek=68000000 2>/dev/null\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ran = run(&exe, &[("/w/a.scad".into(), "cube(1);".into())], "/w/a.scad", &[], "stl", Duration::from_secs(10));
+        assert!(!ran.ok && ran.data.is_none(), "output over 64 MiB must be refused: {:?}", ran.log);
+        assert!(ran.log.iter().any(|l| l.contains("over 64 MB")), "{:?}", ran.log);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

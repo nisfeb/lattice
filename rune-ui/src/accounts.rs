@@ -134,10 +134,16 @@ impl Accounts {
     }
 }
 
-/// The accounts kept in `dir`. With no accounts file yet, the one session of before is taken in:
-/// it becomes the first account and the front, the new file is written, and only then is the old
-/// one removed.
-pub fn load_at(dir: &Path, now: u64) -> Accounts {
+/// Process and advisory file lock guarding read-modify-write updates to `accounts.json`.
+#[cfg(not(target_arch = "wasm32"))]
+fn accounts_lock(dir: &Path) -> (std::sync::MutexGuard<'static, ()>, Option<std::fs::File>) {
+    static HERE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let here = HERE.lock().unwrap_or_else(|e| e.into_inner());
+    let lock = crate::api::file_lock(&dir.join("accounts.lock"));
+    (here, lock)
+}
+
+fn load_at_unlocked(dir: &Path, now: u64) -> Accounts {
     let file = dir.join("accounts.json");
     if let Ok(text) = std::fs::read_to_string(&file) {
         return Accounts::parse(&text);
@@ -149,6 +155,32 @@ pub fn load_at(dir: &Path, now: u64) -> Accounts {
         let _ = std::fs::remove_file(old);
     }
     all
+}
+
+/// The accounts kept in `dir`. With no accounts file yet, the one session of before is taken in:
+/// it becomes the first account and the front, the new file is written, and only then is the old
+/// one removed.
+pub fn load_at(dir: &Path, now: u64) -> Accounts {
+    let file = dir.join("accounts.json");
+    if let Ok(text) = std::fs::read_to_string(&file) {
+        return Accounts::parse(&text);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _held = accounts_lock(dir);
+    load_at_unlocked(dir, now)
+}
+
+/// Loads `accounts.json`, applies `change`, and writes it back if modified, under a process mutex
+/// and advisory file lock so concurrent updates never clobber one another.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn update_at<T>(dir: &Path, now: u64, change: impl FnOnce(&mut Accounts) -> (bool, T)) -> Result<T, String> {
+    let _held = accounts_lock(dir);
+    let mut all = load_at_unlocked(dir, now);
+    let (dirty, out) = change(&mut all);
+    if dirty {
+        store_at(dir, &all)?;
+    }
+    Ok(out)
 }
 
 /// Keeps the accounts, in a file only its owner reads, written whole or not at all.
@@ -253,6 +285,35 @@ mod tests {
         a.put("https://zod.test", "urbauth-~zod=0v1", 1);
         store_at(&d, &a).unwrap();
         assert_eq!(std::fs::metadata(d.join("accounts.json")).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn concurrent_updates_do_not_lose_accounts() {
+        let d = temp("concurrent");
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let dir = d.clone();
+                std::thread::spawn(move || {
+                    let ship = format!("~ship-{}", (b'a' + i) as char);
+                    let url = format!("https://s{i}.test");
+                    let cookie = format!("urbauth-{ship}=0v{i}");
+                    update_at(&dir, 100 + u64::from(i), |all| {
+                        all.put(&url, &cookie, 100 + u64::from(i));
+                        (true, ())
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let all = load_at(&d, 200);
+        assert_eq!(all.list.len(), 8, "all 8 concurrent updates must be preserved");
+        for i in 0..8 {
+            assert!(all.get(&format!("https://s{i}.test")).is_some());
+        }
         let _ = std::fs::remove_dir_all(d);
     }
 }

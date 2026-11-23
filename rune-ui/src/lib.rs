@@ -811,9 +811,13 @@ struct App {
     /// what the fetching threads bring back, and the page they are for.
     image_cache: Option<std::rc::Rc<rune::ImageCache>>,
     pics: HashMap<String, rune::Image>,
+    /// Insertion order of non-tile page images in `pics`, used to cap cached textures.
+    pics_order: std::collections::VecDeque<String>,
     /// Pictures asked for that did not come.
     pics_failed: std::collections::HashSet<String>,
     pics_asked: std::collections::HashSet<String>,
+    /// True once startup has resumed kept FUSE mounts so ship switches do not re-spawn them.
+    mounts_resumed: bool,
     pics_in: std::sync::Arc<std::sync::Mutex<Vec<(String, Result<Vec<u8>, String>)>>>,
     /// Drawings drawn on the drawing thread (`html::draw_later`), waiting for the window to take them into the cache.
     drawn_in: std::sync::Arc<std::sync::Mutex<Vec<(String, Result<(u32, u32, Vec<u8>), String>)>>>,
@@ -1335,8 +1339,10 @@ fn init() -> App {
         find_at: 0,
         image_cache: None,
         pics: HashMap::new(),
+        pics_order: std::collections::VecDeque::new(),
         pics_failed: std::collections::HashSet::new(),
         pics_asked: std::collections::HashSet::new(),
+        mounts_resumed: false,
         pics_in: Default::default(),
         drawn_in: Default::default(),
         pics_for: None,
@@ -1857,6 +1863,7 @@ fn reset(s: &mut App, signed: bool) {
     s.old_req.cancel();
     fresh.old_req = std::mem::take(&mut s.old_req);
     fresh.sidebar = s.sidebar.clone();
+    fresh.mounts_resumed = s.mounts_resumed;
     // the reader's comet is this computer's, not a session's: its thread and its store stay as they are
     #[cfg(unix)]
     {
@@ -2676,24 +2683,27 @@ fn setup(s: &mut App, waker: Waker) {
     load_shared(s);
     listen(s);
     watch_ships(s);
-    // the mounts kept from the run before: still there, or made again. Not on sample pages, which keep nothing
-    let kept = mounts::load();
-    if !kept.is_empty() && !s.sample {
-        s.mount_req.request((kept, s.conn.clone()), |(kept, conn)| {
-            let (mut list, mut said) = (Vec::new(), Vec::new());
-            // a ship over HTTP is mounted again with its own session, whichever ship is in front: any
-            // ship signed in on this computer, and the one this window was started on
-            let signed = api::ship_sessions();
-            let session = |url: &str| conn.as_ref().filter(|c| c.url == url).map(|c| c.cookie.clone()).or_else(|| signed.iter().find(|(u, _)| u == url).map(|(_, c)| c.clone()));
-            for (m, r) in mounts::resume(kept, session) {
-                if let Err(e) = r {
-                    said.push(format!("{} was not mounted again: {e}", m.mountpoint));
+    // the mounts kept from the run before: still there, or made again. Only once at startup, and not on sample pages
+    if !s.mounts_resumed && !s.sample {
+        s.mounts_resumed = true;
+        let kept = mounts::load();
+        if !kept.is_empty() {
+            s.mount_req.request((kept, s.conn.clone()), |(kept, conn)| {
+                let (mut list, mut said) = (Vec::new(), Vec::new());
+                // a ship over HTTP is mounted again with its own session, whichever ship is in front: any
+                // ship signed in on this computer, and the one this window was started on
+                let signed = api::ship_sessions();
+                let session = |url: &str| conn.as_ref().filter(|c| c.url == url).map(|c| c.cookie.clone()).or_else(|| signed.iter().find(|(u, _)| u == url).map(|(_, c)| c.clone()));
+                for (m, r) in mounts::resume(kept, session) {
+                    if let Err(e) = r {
+                        said.push(format!("{} was not mounted again: {e}", m.mountpoint));
+                    }
+                    list.push(m);
                 }
-                list.push(m);
-            }
-            let _ = mounts::save(&list);
-            (list, said.join(". "))
-        });
+                let _ = mounts::save(&list);
+                (list, said.join(". "))
+            });
+        }
     }
 }
 
@@ -2732,7 +2742,7 @@ fn listen(s: &mut App) {
             }
             let got = match &base {
                 Some(b) => c.beacon_stream_while(b, || !stop.load(Ordering::Relaxed), |ev| {
-                    heard.lock().unwrap().push(ev);
+                    heard.lock().unwrap_or_else(|e| e.into_inner()).push(ev);
                     waker();
                     !stop.load(Ordering::Relaxed)
                 }),
@@ -2747,7 +2757,7 @@ fn listen(s: &mut App) {
             let (registered, bumped) = got.unwrap_or((false, false));
             // a stream that was registered and ran its time has only ended as the ship ends each one, and the next is opened in a moment: nothing is down. Said only of one that never registered, or the tree would be read every half minute for good
             if !registered {
-                heard.lock().unwrap().push(api::Beacon::Down);
+                heard.lock().unwrap_or_else(|e| e.into_inner()).push(api::Beacon::Down);
                 waker();
             }
             if refused {
@@ -4386,6 +4396,26 @@ fn sync_tiles(s: &mut App) {
     }
 }
 
+/// Maximum number of non-tile page images kept in `s.pics` at once.
+const MAX_PAGE_PICS: usize = 64;
+
+fn insert_pic(s: &mut App, src: String, img: rune::Image) {
+    if !src.starts_with("tile:") {
+        if let Some(pos) = s.pics_order.iter().position(|k| k == &src) {
+            s.pics_order.remove(pos);
+        }
+        s.pics_order.push_back(src.clone());
+        while s.pics_order.len() > MAX_PAGE_PICS {
+            if let Some(old) = s.pics_order.pop_front() {
+                s.pics.remove(&old);
+                s.pics_asked.remove(&old);
+                s.pics_failed.remove(&old);
+            }
+        }
+    }
+    s.pics.insert(src, img);
+}
+
 /// Takes in what the fetching threads brought back. `true` when something came.
 fn take_pics(s: &mut App) -> bool {
     let got: Vec<_> = s.pics_in.lock().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default();
@@ -4396,7 +4426,8 @@ fn take_pics(s: &mut App) -> bool {
     for (src, out) in drawn {
         match (out, &s.image_cache) {
             (Ok((w, h, px)), Some(cache)) => {
-                s.pics.insert(src, cache.rgba(w, h, px));
+                let img = cache.rgba(w, h, px);
+                insert_pic(s, src, img);
             }
             (Err(e), _) => {
                 s.note = format!("an image did not load: {e}");
@@ -4440,8 +4471,12 @@ fn take_pics(s: &mut App) -> bool {
                     }
                 });
             }
-            (Ok(bytes), Some(cache)) => {
-                s.pics.insert(src, cache.load(bytes));
+            (Ok(bytes), Some(cache)) if html::raster_ok(&bytes) => {
+                let img = cache.load(bytes);
+                insert_pic(s, src, img);
+            }
+            (Ok(_), Some(_)) => {
+                s.pics_failed.insert(src);
             }
             (Err(e), _) => {
                 s.note = format!("an image did not load: {e}");
@@ -5760,7 +5795,7 @@ fn drain(s: &mut App) {
 /// them went. Each is taken only where the window still holds that very save.
 fn bg_taken(s: &mut App) {
     let Some(c) = s.conn.clone() else { return };
-    let sent = api::bg_sent(&c.url, true);
+    let sent = api::bg_sent(&c.url, c.ship(), true);
     if sent.is_empty() {
         return;
     }
@@ -6115,7 +6150,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(std::time::Duration::from_secs(2));
     }
     // what the change stream said since the last look
-    let heard = std::mem::take(&mut *s.beacon.lock().unwrap());
+    let heard = std::mem::take(&mut *s.beacon.lock().unwrap_or_else(|e| e.into_inner()));
     for ev in heard {
         let down = ev == api::Beacon::Down;
         // a page or folder newly shared with this ship: said here and by the system, once
@@ -9912,6 +9947,27 @@ fn backups_view(st: &Settings, list: &[backups::Schedule], said: &str, busy: boo
         .child(text(said.to_owned()).key("bk-said").font(k.ty.small).color(c.text_base).wrap())
 }
 
+/// Maximum vault archive size read from disk for restore.
+const MAX_VAULT_BYTES: u64 = 256 << 20;
+
+fn read_vault_file(at: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let meta = std::fs::metadata(at).map_err(|e| format!("could not read {at}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("{at} is not a regular file"));
+    }
+    if meta.len() > MAX_VAULT_BYTES {
+        return Err(format!("{at} is over {} MB, which is too large to restore", MAX_VAULT_BYTES >> 20));
+    }
+    let f = std::fs::File::open(at).map_err(|e| format!("could not read {at}: {e}"))?;
+    let mut bytes = Vec::new();
+    f.take(MAX_VAULT_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("could not read {at}: {e}"))?;
+    if bytes.len() as u64 > MAX_VAULT_BYTES {
+        return Err(format!("{at} is over {} MB, which is too large to restore", MAX_VAULT_BYTES >> 20));
+    }
+    Ok(bytes)
+}
+
 /// Reads the archive named and asks before putting it back. Nothing is
 /// written until the answer.
 fn vault_restore(s: &mut App) {
@@ -9926,7 +9982,7 @@ fn vault_restore(s: &mut App) {
         return;
     }
     let at = mounts::expand(typed, &std::env::var("HOME").unwrap_or_default());
-    match std::fs::read(&at).map_err(|e| format!("could not read {at}: {e}")).and_then(|b| vault::read(&b)) {
+    match read_vault_file(&at).and_then(|b| vault::read(&b)) {
         Ok(a) => {
             s.vault_said.clear();
             s.prompt = Some(Prompt::Restore(Box::new(a)));
@@ -11286,24 +11342,8 @@ fn anon_visits_store(list: &[api::Visit]) {
         return;
     }
     let Some(p) = anon_visits_path() else { return };
-    let _ = p.parent().map(std::fs::create_dir_all);
-    // readable by its owner alone: it is where someone has been
-    let mut open = std::fs::OpenOptions::new();
-    open.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        open.mode(0o600);
-    }
-    if let (Ok(mut f), Ok(bytes)) = (open.open(&p), serde_json::to_vec(list)) {
-        use std::io::Write;
-        // one that was there already and looser is tightened
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
-        }
-        let _ = f.write_all(&bytes);
+    if let Ok(bytes) = serde_json::to_vec(list) {
+        let _ = api::write_private(&p, &bytes);
     }
 }
 
@@ -15833,17 +15873,20 @@ mod tests {
         // nothing noted, nothing taken
         bg_taken(&mut s);
         assert_eq!((s.queue.len(), s.ops.len()), (2, 2));
-        assert!(api::bg_sent("https://bg-test.invalid", false).is_empty());
-        api::bg_note_for_test("https://bg-test.invalid", api::BgSent::Op(api::QueuedOp::Del("old".into())));
-        api::bg_note_for_test("https://bg-test.invalid", api::BgSent::Save("notes/a".into(), save("sent by the watcher")));
+        assert!(api::bg_sent("https://bg-test.invalid", "~zod", false).is_empty());
+        api::bg_note_for_test("https://bg-test.invalid", "~zod", api::BgSent::Op(api::QueuedOp::Del("old".into())));
+        api::bg_note_for_test("https://bg-test.invalid", "~zod", api::BgSent::Save("notes/a".into(), save("sent by the watcher")));
         // a save the window has changed since is another save: it stays
-        api::bg_note_for_test("https://bg-test.invalid", api::BgSent::Save("notes/b".into(), save("an older text")));
-        api::bg_note_for_test("https://elsewhere.invalid", api::BgSent::Op(api::QueuedOp::Del("other".into())));
+        api::bg_note_for_test("https://bg-test.invalid", "~zod", api::BgSent::Save("notes/b".into(), save("an older text")));
+        // another ship at the same URL and a ship at another URL are both kept apart
+        api::bg_note_for_test("https://bg-test.invalid", "~bus", api::BgSent::Op(api::QueuedOp::Del("other".into())));
+        api::bg_note_for_test("https://elsewhere.invalid", "~zod", api::BgSent::Op(api::QueuedOp::Del("other".into())));
         bg_taken(&mut s);
         assert_eq!(s.queue.keys().cloned().collect::<Vec<_>>(), ["notes/b"]);
         assert_eq!(s.ops, vec![api::QueuedOp::Del("other".into())], "another ship's is not this one's");
-        assert!(api::bg_sent("https://bg-test.invalid", false).is_empty(), "taken once");
-        assert_eq!(api::bg_sent("https://elsewhere.invalid", true).len(), 1);
+        assert!(api::bg_sent("https://bg-test.invalid", "~zod", false).is_empty(), "taken once");
+        assert_eq!(api::bg_sent("https://bg-test.invalid", "~bus", true).len(), 1);
+        assert_eq!(api::bg_sent("https://elsewhere.invalid", "~zod", true).len(), 1);
     }
 
     #[test]
@@ -17823,6 +17866,50 @@ mod tests {
         flip_mode(&mut s);
         assert!(!s.rich, "and stays source when asked to go rich");
         assert_eq!(edited(&s), odd);
+    }
+
+    #[test]
+    fn non_tile_page_images_are_bounded_in_pics() {
+        let mut s = sample("welcome");
+        let cache = rune::ImageCache::new(std::sync::Arc::new(|| {}));
+        // Add a map tile and more than MAX_PAGE_PICS page images; tile stays and page images cap at MAX_PAGE_PICS.
+        insert_pic(&mut s, "tile:0/0/0".into(), cache.rgba(1, 1, vec![0, 0, 0, 255]));
+        for i in 0..(MAX_PAGE_PICS + 10) {
+            let key = format!("https://example.test/{i}.png");
+            s.pics_asked.insert(key.clone());
+            insert_pic(&mut s, key, cache.rgba(1, 1, vec![255, 0, 0, 255]));
+        }
+        assert!(s.pics.contains_key("tile:0/0/0"), "tile entries are not evicted by the page-image cap");
+        let non_tiles = s.pics.keys().filter(|k| !k.starts_with("tile:")).count();
+        assert_eq!(non_tiles, MAX_PAGE_PICS);
+        assert!(!s.pics.contains_key("https://example.test/0.png"));
+        assert!(!s.pics_asked.contains("https://example.test/0.png"));
+        assert!(s.pics.contains_key(&format!("https://example.test/{}.png", MAX_PAGE_PICS + 9)));
+    }
+
+    #[test]
+    fn vault_restore_rejects_directories_and_oversized_files() {
+        let dir = api::make_temp_dir("lattice-vault-test").unwrap();
+        assert!(read_vault_file(dir.to_str().unwrap()).unwrap_err().contains("not a regular file"));
+        #[cfg(unix)]
+        {
+            let big = dir.join("huge.tar");
+            let f = std::fs::File::create(&big).unwrap();
+            f.set_len(MAX_VAULT_BYTES + 1).unwrap();
+            assert!(read_vault_file(big.to_str().unwrap()).unwrap_err().contains("too large"));
+        }
+        let small = dir.join("ok.tar");
+        std::fs::write(&small, b"hello").unwrap();
+        assert_eq!(read_vault_file(small.to_str().unwrap()).unwrap(), b"hello");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_preserves_mounts_resumed_so_ship_switch_does_not_respawn_mounts() {
+        let mut s = sample("welcome");
+        s.mounts_resumed = true;
+        reset(&mut s, false);
+        assert!(s.mounts_resumed);
     }
 }
 

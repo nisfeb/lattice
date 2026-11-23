@@ -272,6 +272,8 @@ fn nests_within(html: &str, limit: usize) -> bool {
         "optgroup", "tr", "td", "th", "thead", "tbody", "tfoot", "colgroup", "caption", "head", "body", "html", "rb", "rt", "rp",
     ];
     const RAW: [&str; 7] = ["script", "style", "textarea", "title", "xmp", "iframe", "noembed"];
+    const SCOPE: [&str; 9] = ["table", "td", "th", "caption", "template", "svg", "math", "object", "button"];
+    const HTML_INTEGRATION: [&str; 4] = ["foreignobject", "desc", "title", "annotation-xml"];
     let b = html.as_bytes();
     let mut open: Vec<&str> = Vec::new();
     let mut i = 0;
@@ -304,11 +306,40 @@ fn nests_within(html: &str, limit: usize) -> bool {
         let selfclosed = j > 0 && b.get(j - 1) == Some(&b'/');
         i = j.min(b.len());
         let lower = name.to_ascii_lowercase();
+        let in_foreign = lower == "svg"
+            || lower == "math"
+            || open
+                .iter()
+                .rev()
+                .find_map(|o| {
+                    if o.eq_ignore_ascii_case("svg") || o.eq_ignore_ascii_case("math") {
+                        Some(true)
+                    } else if HTML_INTEGRATION.iter().any(|h| o.eq_ignore_ascii_case(h)) {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(false);
         if end_tag {
-            if let Some(at) = open.iter().rposition(|o| o.eq_ignore_ascii_case(&lower)) {
+            let found = open
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(idx, o)| {
+                    if o.eq_ignore_ascii_case(&lower) {
+                        Some(Some(idx))
+                    } else if SCOPE.iter().any(|s| o.eq_ignore_ascii_case(s)) {
+                        Some(None)
+                    } else {
+                        None
+                    }
+                })
+                .flatten();
+            if let Some(at) = found {
                 open.truncate(at);
             }
-        } else if RAW.contains(&lower.as_str()) {
+        } else if RAW.contains(&lower.as_str()) && !(selfclosed && in_foreign) {
             // its text is no markup: on to its end tag
             let mut k = i.min(html.len());
             i = loop {
@@ -319,7 +350,7 @@ fn nests_within(html: &str, limit: usize) -> bool {
                 }
                 k += at + 2;
             };
-        } else if !selfclosed && !SELF_CLOSING.contains(&lower.as_str()) {
+        } else if !(selfclosed && in_foreign) && !SELF_CLOSING.contains(&lower.as_str()) {
             open.push(name);
             if open.len() > limit {
                 return false;
@@ -893,5 +924,64 @@ mod tests {
         got.sort();
         let g = [0x10, 0x20, 0x30];
         assert_eq!(got, [(0, 600, 1024, g, g), (1, 600, 1024, g, g), (2, 600, 552, g, g)]);
+    }
+
+    #[test]
+    fn nests_within_rejects_html_self_closing_and_scope_boundary_bypasses() {
+        let n = 2 * DEEPEST;
+        // HTML elements do not self-close on `/>`, so `<div/>` repeated nests deeply.
+        assert!(!nests_within(&"<div/>".repeat(5000), n));
+        // Foreign content elements inside `<svg>` and `<math>` still self-close.
+        assert!(nests_within(&format!("<svg>{}</svg>", "<path d='M0 0'/>".repeat(5000)), n));
+        assert!(nests_within(&format!("<math>{}</math>", "<mspace/>".repeat(5000)), n));
+        // Inside an HTML integration point like `<foreignObject>`, `<div/>` does not self-close.
+        assert!(!nests_within(&format!("<svg><foreignObject>{}</foreignObject></svg>", "<div/>".repeat(5000)), n));
+        // End tags cannot cross HTML5 scope boundaries like `table` or `template`.
+        assert!(!nests_within(&"<div><table><tr><td></div>".repeat(5000), n));
+        assert!(!nests_within(&"<div><template></div>".repeat(5000), n));
+        assert!(!nests_within(&"<div><button></div>".repeat(5000), n));
+        // Properly closed scope boundaries do not accumulate.
+        assert!(nests_within(&"<div><table><tr><td></table></div>".repeat(5000), n));
+    }
+
+    #[test]
+    fn htmlview_nested_svg_data_uri_enforces_depth_and_gzip_limits() {
+        use base64::Engine as _;
+        use std::io::Write;
+        const SVG: &str = "http://www.w3.org/2000/svg";
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let gz = |b: &[u8]| {
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            e.write_all(b).unwrap();
+            e.finish().unwrap()
+        };
+        let wrap_svg = |data: &[u8]| {
+            format!(
+                "<svg xmlns='{SVG}' width='100' height='100'><image href='data:image/svg+xml;base64,{}' width='100' height='100'/></svg>",
+                b64(data)
+            )
+            .into_bytes()
+        };
+        let page_of = |svg: &[u8]| format!("<html><body style='margin:0'><img width='100' height='100' src='data:image/svg+xml;base64,{}'></body></html>", b64(svg));
+
+        // Nested SVGZ gzip bomb (> 32 MiB inflated) is rejected safely by vendored usvg.
+        let huge = format!("<svg xmlns='{SVG}' width='100' height='100'><rect width='100' height='100' fill='#ff0000'/>{}</svg>", " ".repeat((32 << 20) + 1));
+        let bomb = gz(huge.as_bytes());
+        assert!(bomb.len() < 1 << 20);
+        let got = middle_of(&page_of(&wrap_svg(&bomb)));
+        assert!(got[0] > 200 && got[1] > 200 && got[2] > 200, "gzip bomb must not paint red: {got:?}");
+
+        // Nested SVG with deep XML nesting (> 1024) is rejected safely.
+        let deep = format!("<svg xmlns='{SVG}' width='100' height='100'>{}<rect width='100' height='100' fill='#ff0000'/>{}</svg>", "<g>".repeat(1200), "</g>".repeat(1200));
+        let got = middle_of(&page_of(&wrap_svg(deep.as_bytes())));
+        assert!(got[0] > 200 && got[1] > 200 && got[2] > 200, "deep sub-SVG must not paint red: {got:?}");
+
+        // Sub-SVG nested more than 4 levels deep is rejected safely.
+        let mut chain = format!("<svg xmlns='{SVG}' width='100' height='100'><rect width='100' height='100' fill='#ff0000'/></svg>").into_bytes();
+        for _ in 0..5 {
+            chain = wrap_svg(&chain);
+        }
+        let got = middle_of(&page_of(&chain));
+        assert!(got[0] > 200 && got[1] > 200 && got[2] > 200, "5-deep sub-SVG chain must be stopped: {got:?}");
     }
 }
