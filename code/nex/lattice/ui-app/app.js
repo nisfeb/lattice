@@ -6264,6 +6264,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     selectFolder(path);
   }
   function selectFolder(path) {
+    openNext();
     curFolder = path;
     curKind = null;
     exitGrub();
