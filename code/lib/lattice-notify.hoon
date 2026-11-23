@@ -10,6 +10,7 @@
 ::
 /<  lc  /lib/lattice-comment.hoon
 /<  ft  /lib/lattice-forum-types.hoon
+/<  ls  /lib/lattice-share.hoon
 |%
 ::  +$  kind: what an item is about
 ::    %comment  a comment from another ship on one of our pages
@@ -63,8 +64,7 @@
 ++  clip
   |=  t=@t
   ^-  @t
-  ?:  (lte (met 3 t) body-cap)  t
-  (end [3 body-cap] t)
+  (utf8-cut:ls body-cap t)
 ::  +item-id: an item's grub name, by its content
 ++  item-id
   |=  i=item
@@ -111,7 +111,7 @@
   =|  out=(list @ta)
   |-  ^-  (list @ta)
   ?~  all  (flop out)
-  =/  s=@p  (source-of i.i.all)
+  =/  s=@p  `@p`(family:ls (source-of i.i.all))
   =/  n=@ud  (~(gut by per) s 0)
   ?:  |((gte n source-cap) (gte kept item-cap))
     $(all t.all, out [id.i.all out])
@@ -125,31 +125,60 @@
 ::  held back and counted, and one item per sender says how many
 ::  (+flood-item), so nothing is dropped unseen.
 ::
+::  +board-cap: bytes of a board name kept in a refusal note
+++  board-cap  ^-(@ud 64)
+::  +refusal: a refusal note's [board reason] as it is stored, ~ for one
+::  to drop. Any ship may send one, so both fields are cut to size before
+::  they are kept: the board to +board-cap and then held to a board
+::  name's shape, the reason to +body-cap as every other inbox clips.
+++  refusal
+  |=  [board=@ reason=@]
+  ^-  (unit [board=@tas reason=@t])
+  =/  b=@  (end [3 board-cap] board)
+  ?.  &(!=(0 b) ((sane %tas) b))  ~
+  `[`@tas`b (clip `@t`reason)]
+::  +notes-cap, +notes-family-cap: refusal notes kept in all, and from
+::  one sender's family, so one sender cannot fill the store and have
+::  every other host's refusal dropped
+++  notes-cap         ^-(@ud 100)
+++  notes-family-cap  ^-(@ud 25)
+::  +notes-full: is the store full for a note from family `fam`, given
+::  the family of each stored note's host
+++  notes-full
+  |=  [fams=(list @) fam=@]
+  ^-  ?
+  ?|  (gte (lent fams) notes-cap)
+      (gte (lent (skim fams |=(f=@ =(f fam)))) notes-family-cap)
+  ==
 ::  +$  note-hits: per sender, the stamps of the notes it filed (newest
 ::  first, at most +note-cap), and how many it sent past the cap since
 +$  note-hits  (map @p [at=(list @da) over=@ud])
-++  note-cap     ^-(@ud 30)
-++  note-window  ^-(@dr ~h1)
+++  note-cap       ^-(@ud 30)
+++  note-window    ^-(@dr ~h1)
+++  note-hits-cap  ^-(@ud 1.000)
 ::  +note-gate: may `who` file a note at `now`? ok, the count held back
 ::  (when not ok), and the new state, senders with nothing live dropped
 ++  note-gate
   |=  [hits=note-hits who=@p now=@da]
   ^-  [ok=? over=@ud hits=note-hits]
+  =/  fam=@p  `@p`(family:ls who)
   =/  from=@da  ?:((lth now note-window) *@da (sub now note-window))
   =/  live  |=(at=(list @da) (skim at |=(t=@da (gth t from))))
-  =/  cur=[at=(list @da) over=@ud]  (~(gut by hits) who [~ 0])
+  =/  cur=[at=(list @da) over=@ud]  (~(gut by hits) fam [~ 0])
   =/  lv=(list @da)  (live at.cur)
   =/  kept=note-hits
     %-  ~(gas by *note-hits)
-    %+  murn  ~(tap by (~(del by hits) who))
+    %+  murn  ~(tap by (~(del by hits) fam))
     |=  [s=@p r=[at=(list @da) over=@ud]]
     ^-  (unit [@p [at=(list @da) over=@ud]])
     =/  l=(list @da)  (live at.r)
     ?~(l ~ `[s l over.r])
+  ?:  &(?=(~ lv) (gte ~(wyt by kept) note-hits-cap))
+    [| 0 kept]
   ?:  (lth (lent lv) note-cap)
-    [& 0 (~(put by kept) who [(scag note-cap `(list @da)`[now lv]) 0])]
+    [& 0 (~(put by kept) fam [(scag note-cap `(list @da)`[now lv]) 0])]
   =/  ov=@ud  +(over.cur)
-  [| ov (~(put by kept) who [lv ov])]
+  [| ov (~(put by kept) fam [lv ov])]
 ::  +flood-title: the title of the item that counts a sender's held notes
 ++  flood-title  'more notes held back'
 ::  +flood-item: that item, about the last note `rn` held back from `host`
@@ -238,6 +267,18 @@
       (~(get by (~(gut by comments.brd) post ~)) u.parent)
     ?~(c out (~(put in out) author.u.c))
   (~(del in out) src)
+::  +reply-tell-ok: may a reply note for a board go to `who`? The note
+::  carries the thread's title and a clip of the reply, so it goes only
+::  to a ship that may read the board now: never one the owner banned
+::  (`banned`, +is-banned:lattice-share), and on a private board only a
+::  ship its read group holds (`readers`). An author who was revoked, or
+::  who posted while the board was public, stays in the stored posts
+::  and must hear nothing more.
+++  reply-tell-ok
+  |=  [public=? readers=(set @p) banned=? who=@p]
+  ^-  ?
+  ?:  banned  |
+  |(public (~(has in readers) who))
 ::  +post-title: a post's title, '' when it is gone
 ++  post-title
   |=  [brd=board:ft post=post-id:ft]

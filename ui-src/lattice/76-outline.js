@@ -29,7 +29,8 @@
   }
 
   // The headings of a document, by the rules the same renderer uses: md
-  // #..###### with a space, gmi #..### with one, nothing inside a fence.
+  // #..###### with a space, gmi #..### with or without one, nothing inside
+  // a fence. A gmi fence is any line that starts with ```.
   // `line` counts from 1.
   function outline(body, kind) {
     const out = [];
@@ -38,16 +39,16 @@
     const lines = String(body == null ? '' : body).split('\n');
     let fence = null;
     for (let i = 0; i < lines.length; i++) {
-      const ln = lines[i];
+      const ln = lines[i].replace(/\r$/, '');
       if (kind === 'gmi') {
-        if (ln.trimEnd() === '```') { fence = fence ? null : '```'; continue; }
+        if (ln.startsWith('```')) { fence = fence ? null : '```'; continue; }
         if (fence) continue;
       } else {
         if (fence) { if (ln.trimStart().startsWith(fence)) fence = null; continue; }
         const f = ln.match(/^\s*(```|~~~)/);
         if (f) { fence = f[1]; continue; }
       }
-      const h = ln.match(kind === 'gmi' ? /^(#{1,3}) (.*)$/ : /^(#{1,6})\s+(.*)$/);
+      const h = ln.match(kind === 'gmi' ? GMI_H : /^(#{1,6})\s+(.*)$/);
       if (h) out.push({ level: h[1].length, text: h[2].trim(), line: i + 1 });
     }
     return out;
@@ -191,13 +192,10 @@
   }
   function goHeading(line, idx) {
     if ($('ws').classList.contains('vp')) {
-      let doc = null;
-      try { doc = prev.contentDocument; } catch {}
-      const el = doc && doc.querySelectorAll('h1, h2, h3, h4, h5, h6')[idx];
-      if (el) el.scrollIntoView({ block: 'start' });
+      if (prev && prev.contentWindow) prev.contentWindow.postMessage({ latHeading: idx }, '*');
       return;
     }
-    if (wr) return wr.heading(idx);
+    if (wr) { if (wr.heading) wr.heading(idx); return; }
     const lines = src.value.split('\n');
     let off = 0;
     for (let i = 0; i < line - 1 && i < lines.length; i++) off += lines[i].length + 1;

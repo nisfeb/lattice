@@ -110,6 +110,47 @@
     (expect-eq !>(nec) !>((source-of:ln r)))
     (expect-eq !>(pla) !>((source-of:ln (it t1 'a'))))
   ==
+::  a reply note goes only to a ship that may read the board now
+++  test-reply-tell-ok
+  =/  mem=(set @p)  (sy ~[pla])
+  ;:  weld
+    ::  a public board: anyone not banned
+    (expect !>((reply-tell-ok:ln & ~ | nec)))
+    (expect !>(!(reply-tell-ok:ln & ~ & nec)))
+    ::  a private board: only a ship its group holds
+    (expect !>((reply-tell-ok:ln | mem | pla)))
+    (expect !>(!(reply-tell-ok:ln | mem | nec)))
+    (expect !>(!(reply-tell-ok:ln | ~ | pla)))
+    ::  and never a banned one, member or not
+    (expect !>(!(reply-tell-ok:ln | mem & pla)))
+  ==
+::  a refusal note is cut to size before it is stored
+++  test-refusal-clips
+  =/  long=@t  (crip (reap 100.000 'r'))
+  ;:  weld
+    (expect-eq !>(`[%main 'no']) !>((refusal:ln %main 'no')))
+    ::  the reason is clipped to +body-cap
+    (expect-eq !>(`body-cap:ln) !>((bind (refusal:ln %main long) |=([@ r=@t] (met 3 r)))))
+    ::  the board is cut to +board-cap, and must read as a board name
+    (expect-eq !>(`board-cap:ln) !>((bind (refusal:ln (crip (reap 5.000 'b')) 'x') |=([b=@ @] (met 3 b)))))
+    (expect-eq !>(~) !>((refusal:ln 'Not A Board' 'x')))
+    (expect-eq !>(~) !>((refusal:ln '' 'x')))
+    (expect-eq !>(~) !>((refusal:ln (crip (reap 5.000 'B')) 'x')))
+  ==
+::  the note store is full at +notes-cap, or at +notes-family-cap from
+::  one family
+++  test-notes-full
+  =/  fam=@  pla
+  ;:  weld
+    (expect !>(!(notes-full:ln ~ fam)))
+    (expect !>(!(notes-full:ln (reap (dec notes-family-cap:ln) fam) fam)))
+    (expect !>((notes-full:ln (reap notes-family-cap:ln fam) fam)))
+    ::  another family still files while one is at its cap
+    (expect !>(!(notes-full:ln (reap notes-family-cap:ln fam) `@`nec)))
+    ::  and no one does once the store is full
+    (expect !>((notes-full:ln (turn (gulf 1 notes-cap:ln) |=(i=@ud i)) `@`nec)))
+    (expect !>(!(notes-full:ln (turn (gulf 2 notes-cap:ln) |=(i=@ud i)) `@`nec)))
+  ==
 ::  the note gate: note-cap an hour per sender, then held and counted,
 ::  and free again once the window passes
 ++  test-note-gate-cap
@@ -257,5 +298,32 @@
     (expect-eq !>(|) !>((is-read:ln s 'x' (mk %asked))))
     %+  expect-eq  !>(1)
     !>((unread:ln s ~[['a' (mk %share)] ['b' (mk %reshare)] ['c' (mk %unshare)]]))
+  ==
+::  +clip is UTF-8 safe; +note-gate and +overflow key by family; +note-gate caps map size
+++  test-notify-utf8-and-family
+  =/  pad=@t  (crip (reap 279 'a'))
+  =/  cut=@t  (clip:ln (cat 3 pad 'é'))
+  =/  m1=@p  `@p`(add (bex 32) nec)
+  =/  m2=@p  `@p`(add (mul 2 (bex 32)) nec)
+  =/  g1  (note-gate:ln ~ m1 t1)
+  =/  g2  (note-gate:ln hits.g1 m2 t1)
+  =/  full=note-hits:ln
+    %-  ~(gas by *note-hits:ln)
+    (turn (gulf 1 note-hits-cap:ln) |=(n=@ud [`@p`(add 256 n) [~[t1] 0]]))
+  =/  gcap  (note-gate:ln full ~bus t1)
+  ::  overflow counts moons under one planet family
+  =/  many=(list [id=@ta i=item:ln])
+    %+  turn  (gulf 1 (add source-cap:ln 2))
+    |=  n=@ud
+    =/  s=@p  ?:(=(0 (mod n 2)) m1 m2)
+    =/  it=item:ln  (make:ln %comment (add t1 n) s ~zod 'p' 0 '' 'hi')
+    [(crip "id{(a-co:co n)}") it]
+  ;:  weld
+    (expect-eq !>(279) !>((met 3 cut)))
+    (expect-eq !>(pad) !>(cut))
+    (expect-eq !>(1) !>(~(wyt by hits.g2)))
+    (expect-eq !>(|) !>(ok.gcap))
+    (expect-eq !>(note-hits-cap:ln) !>(~(wyt by hits.gcap)))
+    (expect-eq !>(2) !>((lent (overflow:ln many))))
   ==
 --

@@ -40,6 +40,21 @@
   ^-  tape
   ?~  a  a
   ?:(=(' ' i.a) $(a t.a) a)
+::  +lblank: drop leading spaces and tabs
+++  lblank
+  |=  a=tape
+  ^-  tape
+  ?~  a  a
+  ?:(|(=(' ' i.a) =('\09' i.a)) $(a t.a) a)
+::  +blank-at: how many characters come before the first space or tab
+++  blank-at
+  |=  a=tape
+  ^-  @ud
+  =|  n=@ud
+  |-  ^-  @ud
+  ?~  a  n
+  ?:  |(=(' ' i.a) =('\09' i.a))  n
+  $(a t.a, n +(n))
 ::  +strip-cr: drop one trailing carriage return.
 ::
 ::    to-wain splits on \0a alone, so every line of a CRLF document arrives
@@ -84,7 +99,7 @@
     ::  a closing fence is ``` and whatever follows it. Matching the whole
     ::  line meant ```hoon never opened a block, so the CLOSING fence opened
     ::  one instead and swallowed the rest of the document into it.
-    ?.  (has-prefix "```" ln)  $(lines t.lines, prebuf [i.lines prebuf])
+    ?.  (has-prefix "```" ln)  $(lines t.lines, prebuf [(crip ln) prebuf])
     %=  $
       lines   t.lines
       pre     |
@@ -107,17 +122,23 @@
     =/  item=tape  :(weld "<li>" (esc (ltrim (slag 2 ln))) "</li>")
     ?:  lst  $(lines t.lines, acc [item acc])
     $(lines t.lines, lst &, acc [item "<ul>" acc])
-  ?:  (has-prefix "=> " ln)
-    =/  rest=tape  (ltrim (slag 3 ln))
-    =/  sp=(unit @ud)  (find " " rest)
-    =/  raw=tape   ?~(sp rest (scag u.sp rest))
-    =/  dsc=tape   (ltrim ?~(sp rest (slag +(u.sp) rest)))
+  ::  a link line: "=>", optional blanks, the address, then blanks and a
+  ::  label. The spec needs no space after the arrow, and a tab separates
+  ::  as a space does: read with a space only, "=>url" was dead text and a
+  ::  tab put the label inside the address.
+  ?:  &((has-prefix "=>" ln) ?=(^ (lblank (slag 2 ln))))
+    =/  rest=tape  (lblank (slag 2 ln))
+    =/  n=@ud  (blank-at rest)
+    =/  raw=tape   (scag n rest)
+    =/  dsc=tape   (lblank (slag n rest))
     ::  a link with no description shows its url. An empty <a> is unclickable
     ::  and invisible, which is the one thing a link must never be.
     =/  desc=tape  ?:(=(~ dsc) raw dsc)
     =/  anchor=tape
       ?:  =("urb://" (scag 6 raw))
-        :(weld "<a href=\"/apps/lattice?url=" (esc raw) "\">" (esc desc) "</a>")
+        ::  the address is a query value: encoded, so its own & # + and
+        ::  % reach the reader as part of it
+        :(weld "<a href=\"/apps/lattice?url=" (en-urlt:html raw) "\">" (esc desc) "</a>")
       ?:  |(=("http://" (scag 7 raw)) =("https://" (scag 8 raw)))
         :(weld "<a href=\"" (esc raw) "\" target=\"_blank\" rel=\"noopener noreferrer\">" (esc desc) "</a>")
       (esc desc)

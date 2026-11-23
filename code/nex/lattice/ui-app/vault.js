@@ -57,12 +57,24 @@
   }
 
   // ── tar reader (verifies the checksum; refuses a truncated archive) ──────────
-  const td = new TextDecoder();
+  // A byte order mark at the head of a page is the page's own: kept.
+  const td = new TextDecoder('utf-8', { ignoreBOM: true });
   function untar(buf) {
     const u = new Uint8Array(buf);
     const out = [];
     let off = 0;
     let longName = null;
+    // An archive ends with two blocks of zeros, and one that does not was
+    // cut short: by a copy that stopped, or a full disk. Reading up to the
+    // cut and calling that the archive restored the first pages and none of
+    // what the export writes last: which pages are sensitive, which are
+    // shared, their display names, the memories.
+    let ended = false;
+    const zeros = (at) => {
+      if (at + 512 > u.length) return false;
+      for (let i = at; i < at + 512; i++) if (u[i]) return false;
+      return true;
+    };
     const str = (at, len) => {
       const s = u.subarray(at, at + len);
       const e = s.indexOf(0);
@@ -70,9 +82,7 @@
     };
     while (off + 512 <= u.length) {
       const h = u.subarray(off, off + 512);
-      let zero = true;
-      for (const b of h) if (b) { zero = false; break; }
-      if (zero) break;
+      if (zeros(off)) { ended = zeros(off + 512); break; }
       let sum = 0;
       for (let i = 0; i < 512; i++) sum += (i >= 148 && i < 156) ? 32 : h[i];
       const want = parseInt(str(off + 148, 8).replace(/[^0-7]/g, '') || '-1', 8);
@@ -92,6 +102,7 @@
         text: td.decode(data) });
       longName = null;
     }
+    if (!ended) throw new Error('the archive was cut short: it does not reach its end marker');
     return out;
   }
 
@@ -236,6 +247,33 @@ editor, or git will do if you only want to look.
     return msg;
   }
 
+  // What an archive lacks of what its export meant to write, as lines for
+  // the user. manifest.json holds the export's counts and what it could not
+  // read (exportVault). An archive without one is an older export or one
+  // made by hand, and has nothing to be held to.
+  function shortfall(manifestJson, npages, knowJson) {
+    if (!manifestJson) return [];
+    let m = null;
+    try { m = JSON.parse(manifestJson); } catch (e) {}
+    if (!m || typeof m !== 'object')
+      return ['manifest.json is unreadable, so the archive cannot be checked against its export'];
+    const out = [];
+    const missing = Array.isArray(m.missing) ? m.missing.filter((x) => typeof x === 'string') : [];
+    // the pages the export itself could not read were never written
+    const meant = m.pages - missing.filter((x) => x !== 'the memories' && x !== 'the share modes').length;
+    if (typeof m.pages === 'number' && npages < meant)
+      out.push('it holds ' + npages + ' of the ' + meant + ' pages its export wrote');
+    if (typeof m.memories === 'number') {
+      let n = 0;
+      if (knowJson) { try { n = (JSON.parse(knowJson).items || []).length; } catch (e) {} }
+      if (n < m.memories) out.push('it holds ' + n + ' of the ' + m.memories + ' memories its export wrote');
+    }
+    if (missing.length)
+      out.push('its export could not read: ' + missing.slice(0, 5).join(', ')
+        + (missing.length > 5 ? ' and ' + (missing.length - 5) + ' more' : ''));
+    return out;
+  }
+
   // -> the counts, and `saved`: the Set of page names the ship actually took.
   // Everything restored after the pages is filtered through that set.
   async function uploadPages(list) {
@@ -286,29 +324,43 @@ editor, or git will do if you only want to look.
     catch (e) { st('not a readable archive: ' + e.message, false); return; }
 
     const pages = [];
-    let knowJson = null, shareJson = null, namesJson = null, sensJson = null;
+    let knowJson = null, shareJson = null, namesJson = null, sensJson = null, manifestJson = null;
+    // the control files are JSON: an editor's byte order mark is no part of it
+    const bare = (t) => t.replace(/^\uFEFF/, '');
     for (const e of entries) {
-      if (e.name === 'know.json') knowJson = e.text;
-      else if (e.name === 'share.json') shareJson = e.text;
-      else if (e.name === 'names.json') namesJson = e.text;
-      else if (e.name === 'sensitive.json') sensJson = e.text;
+      if (e.name === 'know.json') knowJson = bare(e.text);
+      else if (e.name === 'manifest.json') manifestJson = bare(e.text);
+      else if (e.name === 'share.json') shareJson = bare(e.text);
+      else if (e.name === 'names.json') namesJson = bare(e.text);
+      else if (e.name === 'sensitive.json') sensJson = bare(e.text);
       else if (e.name.startsWith('pages/')) pages.push({ rel: e.name.slice(6), text: e.text });
     }
     if (!pages.length && !knowJson) { st('that archive has no pages/ and no know.json in it', false); return; }
 
+    // Every stage reports on the one status line, so what a stage says is
+    // gone when the next one speaks: a restore with refused pages ended on
+    // "memories restored". Each result is kept, and the line is painted
+    // from all of them, as a failure once any stage failed.
+    const bits = [];
+    let fine = true;
+    const fail = (msg) => { fine = false; bits.push(msg); st(bits.join(', '), false); };
+
     let share = {};
-    if (shareJson) { try { share = JSON.parse(shareJson) || {}; } catch (e) { st('share.json is unreadable — pages will come back private', false); } }
+    if (shareJson) { try { share = JSON.parse(shareJson) || {}; } catch (e) { fail('share.json is unreadable — pages will come back private'); } }
     let names = {};
-    if (namesJson) { try { names = JSON.parse(namesJson) || {}; } catch (e) { st('names.json is unreadable — display names will not come back', false); } }
+    if (namesJson) { try { names = JSON.parse(namesJson) || {}; } catch (e) { fail('names.json is unreadable — display names will not come back'); } }
     let sens = [];
-    if (sensJson) { try { sens = JSON.parse(sensJson) || []; } catch (e) { st('sensitive.json is unreadable — sensitive marks will not come back', false); } }
+    if (sensJson) { try { sens = JSON.parse(sensJson) || []; } catch (e) { fail('sensitive.json is unreadable — sensitive marks will not come back'); } }
+    const short = shortfall(manifestJson, pages.length, knowJson);
 
     // what the confirm names: every share entry for a page this archive could
     // put back. The pages are not written yet, so this is the most it can be.
     const parsed = parsePages(pages);
     const willShare = restorePlan(share, {}, new Set(parsed.list.map((it) => it.name))).share
       .filter(([, m]) => m !== 'private');
-    if (!window.confirm(restoreMessage(pages.length, !!knowJson, willShare))) return;
+    if (!window.confirm(restoreMessage(pages.length, !!knowJson, willShare)
+      + (short.length ? '\n\nThis archive is incomplete:\n' + short.map((l) => '  ' + l).join('\n') : ''))) return;
+    if (short.length) fail('archive incomplete: ' + short.join('; '));
 
     let plan = restorePlan({}, {}, new Set());
     if (pages.length) {
@@ -318,7 +370,7 @@ editor, or git will do if you only want to look.
       // "restoring pages…" is the only status this leaves behind on a clean
       // run unless something replaces it below, so the summary paints every
       // time, not only when something went wrong.
-      const bits = ['pages: ' + u.ok + ' restored'];
+      bits.push('pages: ' + u.ok + ' restored');
       if (parsed.skipExt) bits.push(parsed.skipExt + ' skipped (unknown extension)');
       if (parsed.skipName) bits.push(parsed.skipName + ' skipped (bad name)');
       if (u.bad) {
@@ -326,7 +378,8 @@ editor, or git will do if you only want to look.
         bits.push(u.bad + ' failed: ' + u.failed.join(', ') + more);
       }
       if (plan.dropped) bits.push(plan.dropped + ' share mode or name entries ignored (no restored page)');
-      st(bits.join(', '), !u.bad);
+      if (u.bad) fine = false;
+      st(bits.join(', '), fine);
     }
 
     // sensitive marks before share modes, and as soon as the pages are in,
@@ -343,7 +396,7 @@ editor, or git will do if you only want to look.
           if (!(r && r.ok)) bad++;
         } catch (e) { bad++; }
       }
-      if (bad) st('sensitive marks: ' + bad + ' failed', false);
+      if (bad) fail('sensitive marks: ' + bad + ' failed');
     }
 
     if (plan.share.length) {
@@ -356,7 +409,7 @@ editor, or git will do if you only want to look.
           if (r && r.ok) ok++; else bad++;
         } catch (e) { bad++; }
       }
-      if (bad) st('share modes: ' + ok + ' restored, ' + bad + ' failed', false);
+      if (bad) fail('share modes: ' + ok + ' restored, ' + bad + ' failed');
     }
 
     // display names go back through page-move to the same path, which the
@@ -371,16 +424,18 @@ editor, or git will do if you only want to look.
           if (!(r && r.ok)) bad++;
         } catch (e) { bad++; }
       }
-      if (bad) st('display names: ' + bad + ' failed', false);
+      if (bad) fail('display names: ' + bad + ' failed');
     }
 
     if (knowJson) {
       st('restoring memories…');
       let r = null;
       try { r = await mutate(api + '/know-import', { method: 'POST', body: knowJson }); } catch (e) {}
-      if (r && r.ok) st('memories restored');
-      else st('pages restored, but the memories did not: ' + (r ? r.status : 'no answer'), false);
+      if (r && r.ok) bits.push('memories restored');
+      else fail('the memories did not restore: ' + (r ? r.status : 'no answer'));
     }
+    // the last word: every stage's result, whatever was painted meanwhile
+    st(bits.join(', '), fine);
   }
 
   // ── export ───────────────────────────────────────────────────────────────────

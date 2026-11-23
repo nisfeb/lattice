@@ -2,7 +2,7 @@
 ::  %del and %put from the owner's own UI. Sender identity comes from the
 ::  poke's transport, never from this payload.
 ::
-/<  ls  /lib/lattice-share.hoon
+/<  ls  /lib/lattice-share-types.hoon
 |_  act=action:ls
 ++  grad  %noun
 ++  grow

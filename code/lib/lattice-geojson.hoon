@@ -34,12 +34,13 @@
 ++  max-show   2.000
 ++  max-shapes  2.000
 ::  a body this small cannot nest deep enough to cost anything
-++  scan-from  16.384
+++  scan-from  64
 ++  note-html  "<p class=\"geojson-note\">page too large or not previewable</p>"
 ::  +html-pres: how every +gj-html output starts, the map or the note
 ++  html-pres  `(list @t)`~['<div class="geojson">' '<p class="geojson-note">']
 ::  a feature as the render reads it
-+$  part  [k=?(%pt %ln %pg) ps=(list json)]
+::  %pg is a polygon's outer ring and %ph a hole in the polygon before it
++$  part  [k=?(%pt %ln %pg %ph) ps=(list json)]
 +$  feat
   $:  name=(unit @t)
       kind=(unit @t)
@@ -233,6 +234,16 @@
   ^-  (unit json)
   =/  c  (checked body)
   ?:(?=(%& -.c) `p.c ~)
+::  +utf8-cut: cut `t` to at most `n` bytes without splitting a multibyte char
+++  utf8-cut
+  |=  [n=@ud t=@t]
+  ^-  @t
+  ?:  (lte (met 3 t) n)  t
+  =/  k=@ud  n
+  |-
+  ?:  =(0 k)  ''
+  ?.  =(2 (rsh [0 6] (cut 3 [k 1] t)))  (end [3 k] t)
+  $(k (dec k))
 ::  +str: a string member of an object, cut to `n` bytes
 ++  str
   |=  [o=(map @t json) k=@t n=@ud]
@@ -240,7 +251,7 @@
   =/  v  (~(get by o) k)
   ?.  ?=([~ %s *] v)  ~
   ?:  =('' p.u.v)  ~
-  `(end [3 n] p.u.v)
+  `(utf8-cut n p.u.v)
 ::  +props: a feature's properties, ~ when there are none
 ++  props
   |=  f=(map @t json)
@@ -300,10 +311,20 @@
   ?:  =('MultiPoint' p.ty)  ~[[%pt (ar c)]]
   ?:  =('LineString' p.ty)  ~[[%ln (ar c)]]
   ?:  =('MultiLineString' p.ty)  (turn (ar c) |=(x=json `part`[%ln (ar x)]))
-  ?:  =('Polygon' p.ty)  ~[[%pg (zing (turn (ar c) ar))]]
-  ?:  =('MultiPolygon' p.ty)
-    (turn (ar c) |=(x=json `part`[%pg (zing (turn (ar x) ar))]))
+  ?:  =('Polygon' p.ty)  (rings c)
+  ?:  =('MultiPolygon' p.ty)  (zing (turn (ar c) rings))
   ~
+::  +rings: a polygon's rings as parts, the first its outline and the
+::  rest its holes. Run together as one list of positions they drew as
+::  one outline, with an edge from the end of each ring to the start of
+::  the next, and every hole filled.
+++  rings
+  |=  c=json
+  ^-  (list part)
+  =/  rs=(list json)  (ar c)
+  ?~  rs  ~
+  :-  `part`[%pg (ar i.rs)]
+  (turn t.rs |=(x=json `part`[%ph (ar x)]))
 ::  +ar: an array's items, ~ for anything else
 ++  ar
   |=  j=json
@@ -487,7 +508,7 @@
       ==
       "</div>"
   ==
-+$  drawn  [f=feat ps=(list [k=?(%pt %ln %pg) xs=(list [x=@ud y=@ud])])]
++$  drawn  [f=feat ps=(list [k=?(%pt %ln %pg %ph) xs=(list [x=@ud y=@ud])])]
 ::  +feat-size: how many positions a feature has
 ++  feat-size
   |=  f=feat
@@ -511,7 +532,7 @@
   |-  ^-  [pts=(list drawn) n=@ud]
   ?~  fs  [(flop out) n]
   =/  ps=(list part)  parts.i.fs
-  =|  got=(list [k=?(%pt %ln %pg) xs=(list [x=@ud y=@ud])])
+  =|  got=(list [k=?(%pt %ln %pg %ph) xs=(list [x=@ud y=@ud])])
   =/  r=[got=_got n=@ud m=@ud full=?]
     |-  ^-  [got=_got n=@ud m=@ud full=?]
     ?~  ps  [got n m |]
@@ -594,15 +615,15 @@
     "\" fill=\"none\" stroke=\"currentColor\" stroke-opacity=\"0.2\"/>"
     %-  zing
     %+  turn  pts
-    |=  [f=feat ps=(list [k=?(%pt %ln %pg) xs=(list [x=@ud y=@ud])])]
+    |=  [f=feat ps=(list [k=?(%pt %ln %pg %ph) xs=(list [x=@ud y=@ud])])]
     ^-  tape
     =/  col=tape  ?~(color.f "#2563eb" (trip u.color.f))
     =/  tip=tape
       ?~  name.f  ""
       :(weld "<title>" (esc (trip u.name.f)) "</title>")
     %-  zing
-    %+  turn  ps
-    |=  [k=?(%pt %ln %pg) xs=(list [x=@ud y=@ud])]
+    %+  turn  (holed ps)
+    |=  [k=?(%pt %ln %pg %ph) xs=(list [x=@ud y=@ud]) hs=(list (list [x=@ud y=@ud]))]
     ^-  tape
     ?~  xs  ""
     ?:  ?=(%pt k)
@@ -614,21 +635,44 @@
         "<circle cx=\""  (a-co:co (px x))  "\" cy=\""  (a-co:co (py y))
         "\" r=\"5\" fill=\""  col  "\">"  tip  "</circle>"
       ==
-    =/  d=tape
+    =/  run
+      |=  r=(list [x=@ud y=@ud])
+      ^-  tape
       %-  zing
-      %+  turn  `(list [x=@ud y=@ud])`xs
+      %+  turn  r
       |=  [x=@ud y=@ud]
       :(weld " " (a-co:co (px x)) "," (a-co:co (py y)))
+    =/  d=tape  (run xs)
+    =/  shut=?  ?=(?(%pg %ph) k)
+    ::  each hole is a sub-path of its polygon's path, cut out by the
+    ::  even-odd rule
+    =/  hd=tape
+      %-  zing
+      %+  turn  (skip hs |=(r=(list [x=@ud y=@ud]) =(~ r)))
+      |=(r=(list [x=@ud y=@ud]) :(weld " M" (run r) " Z"))
     %-  cats
     :~
-      "<path d=\"M"  d  ?:(?=(%pg k) " Z" "")
+      "<path d=\"M"  d  ?:(shut " Z" "")  hd
       "\" stroke=\""  col  "\" stroke-width=\"2\" fill=\""
-      ?:(?=(%pg k) col "none")
+      ?:(shut col "none")
+      ?~(hd "" "\" fill-rule=\"evenodd")
       "\" fill-opacity=\"0.2\" vector-effect=\"non-scaling-stroke\">"
       tip  "</path>"
     ==
     "</svg>"
   ==
+::  +holed: drawn parts with each polygon's holes moved onto it, so a
+::  polygon and its holes are drawn as one path
+++  holed
+  |=  ps=(list [k=?(%pt %ln %pg %ph) xs=(list [x=@ud y=@ud])])
+  ^-  (list [k=?(%pt %ln %pg %ph) xs=(list [x=@ud y=@ud]) hs=(list (list [x=@ud y=@ud]))])
+  ?~  ps  ~
+  ?.  ?=(%pg k.i.ps)  [[k.i.ps xs.i.ps ~] $(ps t.ps)]
+  =|  hs=(list (list [x=@ud y=@ud]))
+  =/  r=_t.ps  t.ps
+  |-
+  ?:  &(?=(^ r) ?=(%ph k.i.r))  $(r t.r, hs [xs.i.r hs])
+  [[%pg xs.i.ps (flop hs)] ^$(ps r)]
 ::  +table-of: a row for each of the first +max-show features
 ++  table-of
   |=  fs=(list feat)

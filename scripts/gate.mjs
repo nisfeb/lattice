@@ -254,7 +254,7 @@ async function live(url, cookie, stamp, secs = 900) {
 //  --- the suites ---
 const browser = (f) => /puppeteer|lib\/harness\.mjs/.test(readFileSync(S + '/' + f, 'utf8'));
 const uis = readdirSync(S).filter((f) => /^ui-.*\.mjs$/.test(f)).sort();
-const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs', 'ui-sheet-grid.mjs', 'ui-map-view.mjs', 'ui-scad-view.mjs'];
+const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs', 'ui-sheet-grid.mjs', 'ui-map-view.mjs', 'ui-scad-view.mjs', 'ui-races.mjs', 'ui-writer-view.mjs'];
 const TWO_SHIP = ['ui-links.mjs', 'ui-shares-live.mjs', 'ui-follow-live.mjs'];
 const allShip = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
@@ -263,7 +263,7 @@ const allShip = [
 const shipSuites = allShip.filter((n) => !ONLY || ONLY.includes(n));
 const TWOS = [['two-ship-links.sh', 'bash'], ['two-ship-save.sh', 'bash'], ['two-ship-comments.sh', 'bash'],
   ['two-ship-notify.sh', 'bash'], ['ui-links.mjs', 'node'], ['ui-shares-live.mjs', 'node'], ['ui-follow-live.mjs', 'node'],
-  ['two-ship-dirshare.py', 'python3'], ['two-ship-urb-read.sh', 'bash'], ['two-ship-forum.sh', 'bash'], ['two-ship-share-race.sh', 'bash'], ['two-ship-group-share.sh', 'bash'],
+  ['two-ship-dirshare.py', 'python3'], ['two-ship-urb-read.sh', 'bash'], ['two-ship-forum.sh', 'bash'], ['two-ship-forum-guard.sh', 'bash'], ['two-ship-share-race.sh', 'bash'], ['two-ship-group-share.sh', 'bash'],
   ['two-ship-hand-share.sh', 'bash'], ['two-ship-invariants.sh', 'bash'], ['two-ship-republish.sh', 'bash'],
   ['two-ship-ban.sh', 'bash'], ['two-ship-access-request.sh', 'bash'], ['two-ship-share-paths.sh', 'bash']];
 //  A lane is a ~1.2 GB pier copy and a serf with a 2 GB loom that runs
@@ -296,7 +296,9 @@ const allLocal = [
   ['ui-sheet-grid.mjs', 'node', [S + '/ui-sheet-grid.mjs']],
   ['ui-map-view.mjs', 'node', [S + '/ui-map-view.mjs']],
   ['ui-scad-view.mjs', 'node', [S + '/ui-scad-view.mjs']],
+  ['ui-writer-view.mjs', 'node', [S + '/ui-writer-view.mjs']],
   ['ui-reader-loading.mjs', 'node', [S + '/ui-reader-loading.mjs']],
+  ['ui-races.mjs', 'node', [S + '/ui-races.mjs']],
   ['offline-tests', 'bash', [S + '/offline-tests.sh']],
   ['code-closure', 'python3', [S + '/code-closure.py', 'code']],
   ['bill-check', 'python3', [S + '/bill-check.py', 'code']],

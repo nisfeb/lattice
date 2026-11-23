@@ -100,13 +100,34 @@
     return (from ? '…' : '') + body.slice(from, to).replace(/\s+/g, ' ') + (to < body.length ? '…' : '');
   };
 
-  // a Writer page or a spreadsheet is searched as its words, not its XML
+  // fallback word extraction for a map page before map.js has loaded
+  const geoFallback = (b) => {
+    try {
+      const d = JSON.parse(b);
+      if (!d || typeof d !== 'object') return '';
+      const out = [];
+      if (d.lattice && typeof d.lattice.title === 'string') out.push(d.lattice.title);
+      for (const f of Array.isArray(d.features) ? d.features : []) {
+        const pr = f && f.properties;
+        if (!pr || typeof pr !== 'object') continue;
+        for (const key of ['name', 'kind', 'note']) if (typeof pr[key] === 'string' && pr[key]) out.push(pr[key]);
+      }
+      return out.join('\n');
+    } catch { return ''; }
+  };
+  // a Writer page, a spreadsheet or a map is searched as its words, not its markup
   const qTx = new Map();
   const searchText = (k, b, p) => {
     if (!isRich(k)) return b;
+    const lib = richLib(k), has = !!lib;
     let m = qTx.get(p);
-    if (!m || m[0] !== b) qTx.set(p, m = [b, richLib(k) ? richLib(k).extract.text(b) : (b.split('<office:body>')[1] || '')
-      .replace(/<\/text:[ph]>|<text:(s|tab|line-break)\b[^>]*>/g, ' ').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&')]);
+    if (!m || m[0] !== b || m[2] !== has || m[3] !== k) {
+      const tx = lib ? lib.extract.text(b)
+        : k === 'geojson' ? geoFallback(b)
+        : (b.split('<office:body>')[1] || '')
+          .replace(/<\/text:[ph]>|<text:(s|tab|line-break)\b[^>]*>/g, ' ').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&');
+      qTx.set(p, m = [b, tx, has, k]);
+    }
     return m[1];
   };
   //  one hit builder for both corpora. A page and a memory differ only in

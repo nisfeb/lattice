@@ -2,15 +2,15 @@
 (function () {
 'use strict';
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
-const WRITER_H = '0v3.4g8bu.gitpg.4hui5.6i6ib.91c19';
+const WRITER_H = '0v1.oeihn.h47ui.s0kd2.qk8a7.9s5i7';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
-const SHEET_H = '0v3.v145b.hha4j.kjuag.dcc4c.ld732';
+const SHEET_H = '0vn4nb7.a78dr.co17h.6mnuh.sls6l';
 // and map.js's, the map view (26-writer.js)
-const MAP_H = '0v4.gefvq.vdk6m.u260a.mdsrr.iaf1a';
+const MAP_H = '0v2.qvi4q.9l1pi.jq76v.0pi55.tqmdd';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)
-const SCAD_H = '0v1.34a0s.qp4ih.24c5l.t4asl.8br0p';
+const SCAD_H = '0v4.50udo.0qbj6.9njfd.j9can.rl7ma';
 // and pdf.js's (78-pdf.js)
-const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
+const PDF_H = '0vsfmrl.oc0ab.tuss5.vl8kv.smcmm';
 // and skills.js's (95s-skills.js)
 const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
@@ -157,13 +157,18 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return d.invoke(cmd, args || {});
   };
 
+  const qClaim = new Map();
+  const qSee = (q) => {
+    if (q && q.name && !q.op && q.kind !== 'know' && !q.isNew && isRev(qBase(q))) qClaim.set(q.name, qBase(q));
+    return q;
+  };
   const offGet = async (name) => {
-    if (!qrust()) return idbGet(name);
-    try { return (await qcall('queue_get', { name })) || null; } catch { return null; }
+    if (!qrust()) return qSee(await idbGet(name));
+    try { return qSee((await qcall('queue_get', { name })) || null); } catch { return null; }
   };
   const offAll = async () => {
-    if (!qrust()) return idbAll();
-    try { return (await qcall('queue_list')) || []; } catch { return []; }
+    if (!qrust()) return (await idbAll()).map(qSee);
+    try { return ((await qcall('queue_list')) || []).map(qSee); } catch { return []; }
   };
   const offPut = async (rec) => {
     let ok = false;
@@ -173,6 +178,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return ok;
   };
   const offDel = async (name) => {
+    qClaim.delete(name);
     if (!qrust()) await idbDel(name);
     else { try { await qcall('queue_del', { name }); } catch {} }
     bustPages(name);
@@ -189,6 +195,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     let v = null;
     try { v = await offGet(q.name); } catch {}
     const kept = !!v && !sameRec(v, q);
+    if (!v) qClaim.delete(q.name);
     if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: null, bv: 1 });
     if (kept) offKept = true;
     bustPages(q.name);
@@ -359,15 +366,42 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
 
   const qBase = (q) => (isRev(q.baseRev) && (q.bv || q.baseRev) ? q.baseRev : null);
-  async function enqueueSave(name, kind, body, isNew, rn, rev = curRev, drawn = false) {
+  async function queueEdit(name, kind, body, isNew, rn, rev, drawn, stash) {
     let prev = null;
     try { prev = await offGet(name); } catch {}
-    if (tooBig(body)) { st(TOO_BIG, false); return false; }
-    const queued = await offPut({ name, kind, body, baseRev: jobWait || replaying || !isRev(rev) ? null : rev, bv: 1,
-      isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(), ...qStamp(),
+    const create = !!isNew || !!(prev && prev.isNew);
+    const none = jobWait || (replaying && !!prev);
+    const from = isRev(rev) ? baseFor(name, rev)
+      : prev && !prev.isNew && isRev(qBase(prev)) ? qBase(prev) : baseFor(name, paintRev.get(name));
+    const base = none || !isRev(from) ? null : from;
+    const queued = await offPut({ name, kind, body, baseRev: base, bv: 1,
+      ...(base === null && !none && !create && !(prev && !prev.isNew && !prev.blind) && { blind: 1 }),
+      ...(stash && (!prev || prev.stash) && { stash: 1 }),
+      isNew: create, queuedAt: Date.now(), ...qStamp(),
       drawn: !!drawn || !!(prev && prev.drawn),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
+    if (queued) { if (isRev(base)) qClaim.set(name, base); else qClaim.delete(name); }
+    return { queued, base };
+  }
+  let stashed = false;
+  const ownStashed = new Map();
+  const ownStash = (q) => !!q.stash && q.win === winId;
+  async function stashSave(name, kind, body, rev) {
+    if (tooBig(body)) return;
+    stashed = true;
+    ownStashed.set(name, body);
+    const { queued, base } = await queueEdit(name, kind, body, false, null, rev, false, true);
+    if (queued) snapPage(name, { body, kind, rev: base });
+  }
+  async function unstash() {
+    if (!stashed) return;
+    stashed = false;
+    for (const q of await offAll()) if (ownStash(q)) await offDone(q);
+  }
+  async function enqueueSave(name, kind, body, isNew, rn, rev = curRev, drawn = false) {
+    if (tooBig(body)) { st(TOO_BIG, false); return false; }
+    const { queued, base } = await queueEdit(name, kind, body, isNew, rn, rev, drawn, false);
     const job = saveStalled();
     if (!queued) {
       st(NOT_SAVED, false);
@@ -376,7 +410,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
-    snapPage(name, { body, kind, rev: isRev(rev) ? rev : null });
+    snapPage(name, { body, kind, rev: base });
     st(job ? JOB_NOTE : 'saved offline — ' + offCount + ' waiting to sync');
     return job ? 'job' : true;
   }
@@ -406,24 +440,26 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       hay = hay.slice(i + ndl.length);
     }
   }
-  const moveBody = (b, from, to) => (from ? rwWiki(rwRoot(b, '/' + from, '/' + to), from, to) : b);
+  const PROSE = new Set(['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'geojson', 'scad']);
+  const moveBody = (b, from, to, kind) => (from
+    ? rwWiki(PROSE.has(kind) ? b : rwRoot(b, '/' + from, '/' + to), from, to) : b);
   async function enqueueOp(rec) {
     const stamp = qStamp();
     if (rec.op !== 'mkdir') {
       for (const q of await offAll()) {
         if (q.kind === 'know') continue;
-        if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
+        if (rec.op === 'del' && (rec.tree ? under(q.name, rec.name) : q.name === rec.name)) await offDel(q.name);
         if (rec.op === 'move' && under(q.name, rec.from)) {
           await offDel(q.name);
           await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: null, bv: 1,
-            body: moveBody(q.body || '', rec.from, rec.to), via: stamp.id, from: q.name, drawn: false });
+            body: moveBody(q.body || '', rec.from, rec.to, q.kind), via: stamp.id, from: q.name, drawn: false });
         }
       }
       for (const k of [...pageCache.keys()])
-        if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
+        if (rec.op === 'del' && !rec.tree ? k === rec.name : under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
       try {
         const p = JSON.parse(localStorage.appPage || 'null');
-        if (p && p.name && under(p.name, rec.op === 'del' ? rec.name : rec.from))
+        if (p && p.name && (rec.op === 'del' && !rec.tree ? p.name === rec.name : under(p.name, rec.op === 'del' ? rec.name : rec.from)))
           localStorage.removeItem('appPage');
       } catch {}
     }
@@ -586,7 +622,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     for (const o of ops) {
       if (o.op !== 'del' && o.op !== 'move' && o.op !== 'mkdir') { await opDel(o._k); continue; }
       const u = o.op === 'del'
-        ? api + '/page-del?name=' + encodeURIComponent(o.name)
+        ? api + '/page-del?name=' + encodeURIComponent(o.name) + (o.tree ? '&tree=1' : '')
         : o.op === 'mkdir'
           ? api + '/folder-new?name=' + encodeURIComponent(o.name)
           : api + '/page-move?from=' + encodeURIComponent(o.from) +
@@ -668,7 +704,18 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
 
   const BATCH_MAX = 4 * 1024 * 1024;
+  async function blindClaim(q) {
+    let r = null;
+    try { r = await tfetch(api + '/page-source?name=' + encodeURIComponent(q.name), {}, 20000); } catch {}
+    if (shipGone(r)) return false;
+    let d = null;
+    if (r.ok) { try { d = await r.json(); } catch {} }
+    if (d && isRev(d.rev) && !d.link) { q.baseRev = d.rev > 0 ? d.rev - 1 : d.rev + 1; q.bv = 1; }
+    return true;
+  }
+  const landedRev = (q, it) => { if (q && it && q.win === winId) knowRev(q.name, it.rev); };
   async function drainEdits(edits, conflicts) {
+    for (const q of edits) if (q.blind && !(await blindClaim(q))) return false;
     const parts = [];
     let cur = [], bytes = 0;
     for (const q of edits) {
@@ -691,8 +738,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       } else r = { status: 413 };
       if (r && r.ok) {
         try {
-          for (const it of ((await r.json()).items || []))
+          ((await r.json()).items || []).forEach((it) => {
             if (it.conflicted) conflicts.push(it.kept || it.name);
+            landedRev(part.find((q) => q.name === it.name), it);
+          });
         } catch {}
         for (const q of part) await offDone(q);
         continue;
@@ -715,6 +764,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           try {
             const j = await one.json();
             if (j.conflicted) conflicts.push(j.kept || q.name);
+            landedRev(q, j);
           } catch {}
         } else if (!await keepSafe(q, one.status, 'edit', conflicts)) return false;
         await offDone(q);
@@ -744,7 +794,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   async function drainQueue(proven) {
     const ops = (await opAll()).filter((o) => !isStuck(o));
-    const first = (await offAll()).filter((q) => !isStuck(q));
+    const first = (await offAll()).filter((q) => !isStuck(q) && !ownStash(q));
     if (!first.length && !ops.length) return;
     if (proven && degraded) { degraded = false; renderOffline(); }
     const total = first.length + ops.length;
@@ -753,7 +803,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     let knows = [];
     const saves = async () => {
       const wait = new Set((await opAll()).map((o) => o.id).filter(Boolean));
-      return (await offAll()).filter((q) => !isStuck(q) && !(q.via && wait.has(q.via)));
+      return (await offAll()).filter((q) => !isStuck(q) && !ownStash(q) && !(q.via && wait.has(q.via)));
     };
     const landed = await drainOps(ops, first, conflicts)
       && await (async () => {
@@ -1436,12 +1486,16 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   let deletedHere = null;
   const DELETED_NOTE = 'this page was deleted elsewhere — save to recreate it';
   let mode = 'pages';      // 'know' while a memory is in front (95-know.js)
-  window.__latUnsaved = () => dirty === true
+  window.__latUnsaved = () => !writerSync() || dirty === true
     || allTabs().some((t) => t !== activeTab && t.snap && t.snap.dirty)
     || skUnsaved();
   let everTyped = false;
   async function guardDirty() {
-    if (!dirty) return true;
+    const synced = writerSync();
+    if (!dirty) {
+      return synced || askConfirm('the last edit to ' + (current || pname.value.trim() || 'this')
+        + ' could not be written. discard it?', 'discard');
+    }
     if (grubPath)
       return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
     const label = current || pname.value.trim() || 'this';
@@ -1463,14 +1517,15 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return !dirty;
   }
   async function flushNoAsk() {
-    if (!dirty) return true;
+    const synced = writerSync();
+    if (!dirty) return synced;
     if (grubPath) return false;
     await waitSave();
-    if (!dirty) return true;
+    if (!dirty) return synced;
     if (!saving && autosaveOn()) {
       if (mode === 'know') await saveKnow(); else await save();
     }
-    return !dirty;
+    return synced && !dirty;
   }
   async function waitSave() {
     const t0 = Date.now();
@@ -1582,7 +1637,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     try { u = new globalThis.URL(url, location.origin); } catch { return null; }
     const p = u.searchParams;
     if (u.pathname.endsWith('/page-del') && p.get('name'))
-      return { op: 'del', name: p.get('name') };
+      return { op: 'del', name: p.get('name'), ...(p.has('tree') && { tree: true }) };
     if (u.pathname.endsWith('/page-move') && p.get('from') && p.get('to'))
       return { op: 'move', from: p.get('from'), to: p.get('to') };
     if (u.pathname.endsWith('/folder-new') && p.get('name'))
@@ -1718,6 +1773,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const mine = TAB_KINDS[t.kind].shows(t);
     if (dirty && !mine &&
         !(await askConfirm('discard unsaved changes to ' + label + '?', 'discard')))
+      return false;
+    if (mine && !writerSync() &&
+        !(await askConfirm('the last edit to ' + label + ' could not be written. discard it?', 'discard')))
       return false;
     t.snap = mine ? snapNow() : null;
     if (mine) gGhostKeep(t);
@@ -1940,6 +1998,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (dirty && !mine) return false;
     if (saving && !t.key) return false;
     if (dirty && mine && !t.key && t.kind === 'page') return false;
+    if (mine && !writerSync()) return false;
     if (mine) { t.snap = snapNow(); gGhostKeep(t); }
     dirty = false;
     clearTimeout(autoTimer);
@@ -3956,7 +4015,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     Promise.all([writerReady(k), k === 'geojson' ? tileStatus() : null]).then(([LW, tiles]) => {
       if (my !== wrSeq || src.value !== body || richHere() !== k || writerSourceOn()) return;
       const opts = { text: body, editable: ed, name: current, cur: () => src.value, onChange: writerChanged,
-        onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => st('not saved: ' + e, false) };
+        onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => { wrSaid = true; wrWhy = 'not saved: ' + e; st(wrWhy, false); } };
       if (k === 'geojson') Object.assign(opts, { onText: mapWrite, undo: () => mapUndo(false), redo: () => mapUndo(true),
         tiles, layer: mapLayer, md: (t) => mdToHtml(String(t)), openSettings: () => latOpenSettings('maps'),
         openPage: (n) => openPage(String(n)) });
@@ -3968,7 +4027,18 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     dirty = everTyped = true;
     clearTimeout(autoTimer);
   }
-  function writerSync() { return !wr || wr.sync(); }
+  let wrSaid = false, wrWhy = '';
+  const wrLive = () => !!wr && !!wrFor && wrFor.tab === activeTab && wrFor.n === wrDoc;
+  function writerSync() {
+    if (!wrLive()) return true;
+    wrSaid = false;
+    if (wr.sync() !== false) return true;
+    if (!wrSaid) {
+      wrWhy = 'not saved: the edit in progress could not be written. Finish or undo it, then save';
+      st(wrWhy, false);
+    }
+    return false;
+  }
   function writerDrop() {
     wrSeq++;
     if (wr) wr.destroy();
@@ -4144,15 +4214,23 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   function setSel(a, b){ ta.selectionStart = a; ta.selectionEnd = b; }
   function clamp(n, lo, hi){ return n < lo ? lo : (n > hi ? hi : n); }
 
-  function lineStart(p){ var v = val(); var i = v.lastIndexOf("\n", p - 1); return i + 1; }
+  function pairAt(v, i){ return (v.charCodeAt(i) & 0xfc00) === 0xd800 && (v.charCodeAt(i + 1) & 0xfc00) === 0xdc00; }
+  function oneChar(k){ return k.length === 1 || (k.length === 2 && pairAt(k, 0)); }
+  function nextCh(p){ return p + (pairAt(val(), p) ? 2 : 1); }
+  function prevCh(p){ return p - (p >= 2 && pairAt(val(), p - 2) ? 2 : 1); }
+  function fwdCh(p, n, hi){ while(n-- > 0 && p < hi) p = nextCh(p); return p < hi ? p : hi; }
+  function backCh(p, n, lo){ while(n-- > 0 && p > lo) p = prevCh(p); return p > lo ? p : lo; }
+  function snapCh(p){ return p > 0 && pairAt(val(), p - 1) ? p - 1 : p; }
+
+  function lineStart(p){ if(p <= 0) return 0; var i = val().lastIndexOf("\n", p - 1); return i + 1; }
   function lineEnd(p){ var v = val(); var i = v.indexOf("\n", p); return i < 0 ? v.length : i; }
   function lineText(p){ return val().slice(lineStart(p), lineEnd(p)); }
   function col(p){ return p - lineStart(p); }
-  function lineLastCol(p){ var s = lineStart(p), e = lineEnd(p); return e > s ? e - 1 : s; }
+  function lineLastCol(p){ var s = lineStart(p), e = lineEnd(p); return e > s ? prevCh(e) : s; }
   function normClamp(p){
     var ls = lineStart(p), le = lineEnd(p);
     if(le === ls) return ls;              // empty line
-    return clamp(p, ls, le - 1);
+    return snapCh(clamp(p, ls, le - 1));
   }
   function firstNonBlank(p){
     var ls = lineStart(p), le = lineEnd(p), v = val(), i = ls;
@@ -4163,6 +4241,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if(MODE === "insert") return;
     var p = pos(), last = lineLastCol(p);
     if(p > last) setPos(last);
+    else if(snapCh(p) !== p) setPos(snapCh(p));
   }
 
   /* ============================================================================
@@ -4214,7 +4293,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   function toNormal(){
     if(MODE === "insert"){                 // vim steps caret left when leaving insert
       var p = pos(), ls = lineStart(p);
-      if(p > ls) setPos(p - 1);
+      if(p > ls) setPos(prevCh(p));
     }
     MODE = "normal"; pending = ""; count = ""; fixCaret(); setInd();
   }
@@ -4225,7 +4304,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
      ============================================================================ */
   function visRange(){
     var a = visAnchor, b = visCaret;
-    var lo = Math.min(a, b), hi = Math.max(a, b) + 1;
+    var lo = Math.min(a, b), hi = nextCh(Math.max(a, b));
     return [lo, clamp(hi, 0, val().length)];
   }
   function visSync(){
@@ -4269,18 +4348,18 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     var v = val(), len = v.length;
     for(var k = 0; k < n; k++){
       if(p >= len - 1){ p = len - 1 < 0 ? 0 : len - 1; break; }
-      p++;
+      p = nextCh(p);
       while(p < len && (charClass(v[p]) === "sp" || charClass(v[p]) === "nl")) p++;
       if(p >= len){ p = len - 1; break; }
       var cls = charClass(v[p]);
       while(p + 1 < len && charClass(v[p + 1]) === cls) p++;
     }
-    return clamp(p, 0, len);
+    return snapCh(clamp(p, 0, len));
   }
   function changeWordEnd(p, n){
     var v = val();
     if(charClass(v[p]) === "sp" || charClass(v[p]) === "nl") return wordFwd(p, n);
-    return clamp(wordEnd(p, n) + 1, p, v.length);
+    return clamp(nextCh(wordEnd(p, n)), p, v.length);
   }
   function vertical(p, delta){
     var v = val(), c = col(p), cur = p;
@@ -4298,7 +4377,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
     }
     var ns = lineStart(cur), maxc = MODE === "visual" ? lineEnd(cur) : lineLastCol(cur);
-    return clamp(ns + c, ns, maxc);
+    return snapCh(clamp(ns + c, ns, maxc));
   }
   function paraFwd(p, n){
     var v = val(), len = v.length, i = p;
@@ -4329,9 +4408,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   function findChar(p, ch, forward, till){
     var v = val(), ls = lineStart(p), le = lineEnd(p);
     if(forward){
-      for(var i = p + 1; i < le; i++) if(v[i] === ch) return till ? i - 1 : i;
+      for(var i = nextCh(p); i < le; i++) if(v.startsWith(ch, i)) return till ? prevCh(i) : i;
     } else {
-      for(var j = p - 1; j >= ls; j--) if(v[j] === ch) return till ? j + 1 : j;
+      for(var j = p - 1; j >= ls; j--) if(v.startsWith(ch, j)) return till ? j + ch.length : j;
     }
     return -1;
   }
@@ -4403,7 +4482,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         setPos(firstNonBlank(ls));
       }
     } else {
-      var at = after ? (v.length === 0 || v[p] === "\n" ? p : p + 1) : p;
+      var at = after ? (v.length === 0 || v[p] === "\n" ? p : nextCh(p)) : p;
       insertAt(at, reg);
       setPos(normClamp(at + reg.length - 1));
     }
@@ -4417,9 +4496,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     switch(key){
       case "w": return { end: op === "c" ? changeWordEnd(p, n) : wordFwd(p, n), linewise:false };
       case "b": return { end: wordBack(p, n), linewise:false };
-      case "e": return { end: wordEnd(p, n) + 1, linewise:false };
-      case "h": return { end: Math.max(lineStart(p), p - n), linewise:false };
-      case "l": case " ": return { end: Math.min(lineEnd(p), p + n), linewise:false };
+      case "e": return { end: nextCh(wordEnd(p, n)), linewise:false };
+      case "h": return { end: backCh(p, n, lineStart(p)), linewise:false };
+      case "l": case " ": return { end: fwdCh(p, n, lineEnd(p)), linewise:false };
       case "0": return { end: lineStart(p), linewise:false };
       case "^": return { end: firstNonBlank(p), linewise:false };
       case "$": return { end: lineEnd(vertical(p, n - 1)), linewise:false };
@@ -4509,11 +4588,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
     if(pending === "r"){
       var n0 = eff(); pending = "";
-      if(k.length === 1){
-        var p0 = pos(), le0 = lineEnd(p0);
-        if(p0 + n0 <= le0){
-          var rep = ""; for(var ri = 0; ri < n0; ri++) rep += k;
-          replaceRange(p0, p0 + n0, rep, p0 + n0 - 1);
+      if(oneChar(k)){
+        var p0 = pos(), le0 = lineEnd(p0), e0 = p0, ri;
+        for(ri = 0; ri < n0 && e0 < le0; ri++) e0 = nextCh(e0);
+        if(ri === n0){
+          var rep = ""; for(ri = 0; ri < n0; ri++) rep += k;
+          replaceRange(p0, e0, rep, p0 + rep.length - k.length);
         }
       }
       count = ""; setInd(); return true;
@@ -4522,7 +4602,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       var fwd = (pending === "f" || pending === "t");
       var till = (pending === "t" || pending === "T");
       var nF = eff(); pending = "";
-      if(k.length === 1){
+      if(oneChar(k)){
         var base = (MODE === "visual") ? visCaret : pos();
         var target = base;
         for(var ci = 0; ci < nF; ci++){
@@ -4569,8 +4649,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if(MODE === "visual"){
       var vc = visCaret, moved = null;
       switch(k){
-        case "h": case "ArrowLeft":  moved = clamp(vc - n, 0, val().length); break;
-        case "l": case "ArrowRight": case " ": moved = clamp(vc + n, 0, val().length); break;
+        case "h": case "ArrowLeft":  moved = backCh(vc, n, 0); break;
+        case "l": case "ArrowRight": case " ": moved = fwdCh(vc, n, val().length); break;
         case "j": case "ArrowDown":  moved = vertical(vc, n); break;
         case "k": case "ArrowUp":    moved = vertical(vc, -n); break;
         case "w": moved = wordFwd(vc, n); break;
@@ -4609,8 +4689,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
     var p = pos();
     switch(k){
-      case "h": case "ArrowLeft":  setPos(clamp(p - n, lineStart(p), p)); fixCaret(); break;
-      case "l": case "ArrowRight": case " ": setPos(clamp(p + n, p, lineLastCol(p))); break;
+      case "h": case "ArrowLeft":  setPos(backCh(p, n, lineStart(p))); fixCaret(); break;
+      case "l": case "ArrowRight": case " ": setPos(fwdCh(p, n, Math.max(p, lineLastCol(p)))); fixCaret(); break;
       case "j": case "ArrowDown":  setPos(vertical(p, n)); break;
       case "k": case "ArrowUp":    setPos(vertical(p, -n)); break;
       case "w": setPos(normClamp(wordFwd(p, n))); break;
@@ -4626,7 +4706,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       case "f": case "F": case "t": case "T": pending = k; setInd(); return true;
 
       case "i": toInsert(); break;
-      case "a": if(lineText(p).length) setPos(p + 1); toInsert(); break;
+      case "a": if(lineText(p).length) setPos(nextCh(p)); toInsert(); break;
       case "I": setPos(firstNonBlank(p)); toInsert(); break;
       case "A": setPos(lineEnd(p)); toInsert(); break;
       case "o": { var le = lineEnd(p); insertAt(le, "\n"); setPos(le + 1); toInsert(); break; }
@@ -4640,7 +4720,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       case "D": { var le2 = lineEnd(p); yank(p, le2, false); deleteRange(p, le2, p); fixCaret(); break; }
       case "C": { var le3 = lineEnd(p); yank(p, le3, false); deleteRange(p, le3, p); setPos(p); toInsert(); break; }
       case "s": {
-        var le4 = lineEnd(p), end4 = clamp(p + n, p, le4);
+        var le4 = lineEnd(p), end4 = fwdCh(p, n, le4);
         if(end4 > p) yank(p, end4, false);
         deleteRange(p, end4, p); setPos(p); toInsert();
         break;
@@ -4648,12 +4728,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       case "S": linewiseChange(p, n); break;
 
       case "x": {
-        var le5 = lineEnd(p), end5 = clamp(p + n, p, le5);
+        var le5 = lineEnd(p), end5 = fwdCh(p, n, le5);
         if(end5 > p){ yank(p, end5, false); deleteRange(p, end5, p); fixCaret(); }
         break;
       }
       case "X": {
-        var ls6 = lineStart(p), start6 = clamp(p - n, ls6, p);
+        var ls6 = lineStart(p), start6 = backCh(p, n, ls6);
         if(start6 < p){ yank(start6, p, false); deleteRange(start6, p, start6); }
         break;
       }
@@ -6184,6 +6264,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     selectFolder(path);
   }
   function selectFolder(path) {
+    openNext();
     curFolder = path;
     curKind = null;
     exitGrub();
@@ -6601,6 +6682,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         return false;
       }
       if (!r.ok) {
+        freshPending.delete(name);
         if (painted) return true;
         if (start && r.status === 404 && my === openSeq && await startable(name) && my === openSeq && tabStart(name))
           return true;
@@ -6609,6 +6691,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
       d = await r.json();
     } catch {
+      freshPending.delete(name);
       if (painted) return true;
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
@@ -6629,19 +6712,21 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     if (!d.link) pageCache.set(name, d);
     snapPage(name, d);
-    applyPage(name, d);
+    const keepErr = painted && current === name && d.body === shown && d.kind === curKind && !!status.style.color;
+    applyPage(name, d, false, keepErr);
     return true;
   }
-  const bodyRead = async (name) => {
+  const bodyRead = async (name, o = {}) => {
     try {
-      const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name));
+      const r = await tfetch(api + '/page-source?name=' + encodeURIComponent(name), {}, o.ms || 20000);
+      if (shipGone(r)) { o.gone = true; return null; }
       if (!r.ok) return null;
       const d = await r.json();
       if (typeof d.body !== 'string' || d.link) return null;
       return { body: d.body, kind: d.kind, rev: d.rev, share: d.share, comments: d.comments };
-    } catch { return null; }
+    } catch { o.gone = true; return null; }
   };
-  function applyPage(name, d, quiet) {
+  function applyPage(name, d, quiet, keepErr) {
     if (name !== current) writerNewDoc();
     shipDoc = null;      // the ship's render on show was another document's
     curFolder = null;
@@ -6650,6 +6735,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
     curRev = quiet || !isRev(d.rev) ? null : d.rev;
+    if (isRev(d.rev)) paintRev.set(name, d.rev);
     if (quiet) shipText.delete(name); else { shipText.set(name, d.body); freshPending.delete(name); }
     refreshTexButton();
     src.value = d.body;
@@ -6657,7 +6743,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     everTyped = false;
     render(); syncSoon();
     markCurrent();
-    st(d.kind + ' · rev ' + d.rev);
+    if (!keepErr) st(d.kind + ' · rev ' + d.rev);
     exitRev();
     src.readOnly = linkRO(name);
     paintLock();         // and read-only while another window edits it
@@ -6822,7 +6908,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     } else pageCache.delete(name);
     if (scadG) scadG.forget(name);
     const nd = nodes.find((n) => n.page && n.path === name);
-    if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
+    if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; if (isRev(rev)) nd.rev = rev; persistTree(); }
+    ownStashed.delete(name);
   };
   window.addEventListener('beforeunload', (e) => {
     if (!window.__latUnsaved()) return;
@@ -6878,7 +6965,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return !!rn && nodes.some((n) => n.page && n.path === rn.name && !n.pending);
   };
   async function save(kindOverride, fixed, drawn = 0, auto = false) {
-    if (!fixed) writerSync();     // a Writer page's text into src.value
+    if (!fixed && !writerSync()) return;
     if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
     if (!fixed && viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     const typed = pname.value.trim();
@@ -6916,13 +7003,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }, creating);
       return 'queued';
     }
-    saving = true;
     st('saving…');
     let sent = fixed ? fixed.body : src.value;
     const kind = fixed ? fixed.kind : kindOverride || curKind || pkind.value;
     const rn = realName(name);
     if (!rn) {
-      saving = false;
       st('bad name — use at least one letter or digit', false);
       return;
     }
@@ -6939,8 +7024,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
       flushPending();
     };
-    if (!fixed && editLocked()) { saving = false; st(LOCK_NOTE, false); return failed(); }
-    if (tooBig(sent)) { saving = false; st(TOO_BIG, false); return failed(); }
+    if (!fixed && editLocked()) { st(LOCK_NOTE, false); return failed(); }
+    if (tooBig(sent)) { st(TOO_BIG, false); return failed(); }
     const base = creating ? null : baseFor(name, curRev);
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1&by=' + winId : casQ(name, base)) + dnameQ(rnc)
@@ -6949,6 +7034,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const sentSeq = offSeq();
     casHold.delete(name);       // a save on purpose tries again
     paintCas();
+    saving = true;
     try {
       if (!(jobWait && !creating && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -7069,8 +7155,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return isRev(k) ? Math.max(rev, k) : rev;
   };
   const casQ = (name, rev) => {
+    if (linkOf(name)) return '';
     const b = baseFor(name, rev);
-    return linkOf(name) ? '' : '&by=' + winId + (isRev(b) ? '&base=' + b + '&cas=1' : '');
+    if (isRev(b)) return '&by=' + winId + '&base=' + b + '&cas=1';
+    const soft = isRev(qClaim.get(name)) ? qClaim.get(name) : paintRev.get(name);
+    return '&by=' + winId + (isRev(soft) ? '&base=' + soft : '');
   };
   const takeRev = async (name, w) => {
     if (!w || !w.r || !w.r.ok) return;
@@ -7092,6 +7181,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   casBar.querySelector('#castheirs').onclick = async () => {
     const name = current;
+    if (editorText() !== cfKept.get(name) && editorText() !== (shipText.get(name) || '\n')
+        && !(await askConfirm('some of your text is in no copy. show theirs and drop it?', 'drop it'))) return;
+    cfKept.delete(name);
     casHold.delete(name);
     dirty = false;
     paintCas();
@@ -7107,10 +7199,13 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   };
   const shipText = new Map();
   const freshPending = new Map();
-  function reconcileFresh(name, painted, d) {
+  const paintRev = new Map();
+  async function reconcileFresh(name, painted, d) {
     freshPending.delete(name);
+    if (await offGet(name)) return;
     if (!d || typeof d.body !== 'string' || typeof painted !== 'string') return;
     if (current !== name || mode === 'know' || grubPath) return;
+    if (wrLive() && wr.editing && wr.editing()) return;
     curRev = isRev(d.rev) ? d.rev : null;
     shipText.set(name, d.body);
     if (d.body === (painted || '\n')) return;   // an empty paint is the ship's one newline
@@ -7130,7 +7225,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     casHold.set(name, isRev(d.rev) ? d.rev : null);
     paintCas();
     keepAside({ name, kind, body: mine }, keptName('mine', name)).then((alt) => {
-      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
+      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); cfKept.set(name, mine); }
       st(name + ' changed elsewhere, so your text was not saved over it. '
         + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
     });
@@ -7151,55 +7246,99 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return b.slice(0, a.p) + a.txt + b.slice(a.e, c.p) + c.txt + b.slice(c.e);
   }
   async function settleStale(name, kind, sent, base, here) {
-    const th = await bodyRead(name);
+    while (saving) await new Promise((r) => setTimeout(r, 50));
+    saving = true;
+    try { await settleRun(name, kind, sent, base, here); } finally { saving = false; }
+  }
+  const srcSwap = (text) => {
+    const old = src.value, a = src.selectionStart, b = src.selectionEnd, d = text.length - old.length;
+    let p = 0;
+    while (p < old.length && p < text.length && old[p] === text[p]) p++;
+    src.value = text;
+    src.setSelectionRange(a > p ? Math.max(p, a + d) : a, b > p ? Math.max(p, b + d) : b);
+  };
+  const SETTLE_MS = 30000;
+  const editorText = () => { writerSync(); return src.value; };
+  const cfKept = new Map();
+  async function settleRun(name, kind, sent, base, here, until = Date.now() + SETTLE_MS, tries = 0) {
+    const left = () => Math.max(1, until - Date.now());
+    const gone = async () => {
+      if (!(await enqueueSave(name, kind, sent, false, null, base))) return;
+      if (here() && src.value === sent) dirty = false;
+      else tabLanded('page', name, sent);
+    };
+    const nog = { ms: left() };
+    const th = await bodyRead(name, nog);
+    if (!th && nog.gone) return gone();
+    const known = pageRevs.get(name);
+    const moved = isRev(known) && isRev(base) && known > base;
     pageRevs.delete(name);
     let res = null;
     if (th && th.body === (sent || '\n')) { knowRev(name, th.rev); res = { rev: th.rev, body: sent, how: 'saved' }; }
     if (th && !res && isRev(base)) {
       let mb = null;
-      let bt = shipText.get(name);
+      let bt = moved ? null : shipText.get(name);
+      if (th.body === ownStashed.get(name)) bt = th.body;
       if (typeof bt !== 'string') {
         try {
-          const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base);
+          const r = await tfetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base, {}, left());
+          if (shipGone(r)) return gone();
           if (r.ok) bt = (await r.json()).body;
-        } catch {}
+        } catch { return gone(); }
       }
       if (typeof bt === 'string') mb = merge3(bt, sent, th.body);
       if (typeof mb === 'string') {
-        const r = await fetch(api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
-          + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);
-        let j = null;
-        if (r && r.ok) { try { j = await r.json(); } catch {} }
+        let r = null, j = null;
+        try {
+          r = await tfetch(api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
+            + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }, left());
+        } catch { return gone(); }
+        if (shipGone(r)) return gone();
+        if (r.ok) { try { j = await r.json(); } catch {} }
+        if (r.status === 409 && tries < 3 && /^: stale/.test(await errText(r))) {
+          return settleRun(name, kind, sent, base, here, until, tries + 1);
+        }
         if (j && isRev(j.rev)) {
           knowRev(name, j.rev);
           res = { rev: j.rev, body: mb, how: bt === th.body ? 'saved' : 'saved, merged with a change made elsewhere' };
         }
       }
     }
-    let alt = null;
-    if (th && !res) {
-      alt = await keepAside({ name, kind, body: sent }, keptName('mine', name));
-      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
-    }
-    if (!res) {
-      casHold.set(name, th && isRev(th.rev) ? th.rev : null);
+    const hold = async (text, rev, keep) => {
+      let alt = null;
+      if (keep) {
+        alt = await keepAside({ name, kind, body: text }, keptName('mine', name));
+        if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); cfKept.set(name, text); }
+      }
+      casHold.set(name, rev);
       st(name + ' changed elsewhere, so your text was not saved over it. '
         + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
       if (here()) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
       paintCas();
-      return;
-    }
+    };
+    if (!res) { await hold(here() ? editorText() : sent, th && isRev(th.rev) ? th.rev : null, !!th); return; }
     patchLocal(name, null, res.body, res.rev);
-    for (const t of allTabs())
-      if (t.kind === 'page' && t.key === name && t.snap && t.snap.body === sent)
-        Object.assign(t.snap, { body: res.body, rev: res.rev, dirty: false });
-    if (here() && src.value === sent) {
-      if (res.body !== sent) { src.value = res.body; render(); refreshPreview(); }
-      curRev = res.rev;
-      dirty = false;
-      cerr.textContent = 'saved'; cerr.className = 'ok';
+    const rebase = (text) => (text === sent ? res.body : res.body === sent ? text : merge3(sent, text, res.body));
+    const apart = [];
+    for (const t of allTabs()) {
+      if (t.kind !== 'page' || t.key !== name || !t.snap) continue;
+      const nb = rebase(t.snap.body);
+      if (typeof nb !== 'string') { apart.push(t.snap.body); continue; }
+      Object.assign(t.snap, t.snap.body === sent ? { dirty: false } : {}, { body: nb, rev: res.rev });
     }
-    st(res.how, res.how === 'saved');
+    if (here()) {
+      const ok = writerSync();
+      const was = src.value, nb = rebase(was);
+      if (!ok || typeof nb !== 'string') apart.push(was);
+      else {
+        if (nb !== was) { srcSwap(nb); render(); refreshPreview(); }
+        curRev = res.rev;
+        if (was === sent) { dirty = false; cerr.textContent = 'saved'; cerr.className = 'ok'; }
+        else if (dirty && autosaveOn()) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 2000); }
+      }
+    }
+    for (const text of apart) await hold(text, res.rev, true);
+    if (!apart.length) st(res.how, res.how === 'saved');
   }
 
   let autoTimer = null;
@@ -7207,10 +7346,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const AUTO_RETRY = 5000;
   const UNREACHED_NOTE = 'not saved yet: the ship is unreachable. It saves when the ship answers';
   const flushHidden = (e) => {
-    if (e.type === 'visibilitychange' && !document.hidden) return;
+    if (e.type === 'visibilitychange' && !document.hidden) { unstash(); return; }
+    writerSync();
     if (!dirty) return;
     clearTimeout(autoTimer);
-    autosave();
+    autosave(true);
   };
   document.addEventListener('visibilitychange', flushHidden);
   window.addEventListener('pagehide', flushHidden);
@@ -7219,9 +7359,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     clearTimeout(autoTimer);
     autoTimer = setTimeout(autosave, 2000);
   });
-  async function autosave() {
+  async function autosave(hiding) {
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
-    writerSync();
+    const whole = writerSync();
     if (curFolder || !dirty || viewingRev !== null) return;
     if (!current && mode === 'know') return;
     if (moving) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 1000); return; }
@@ -7231,7 +7371,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       return save(undefined, undefined, 0, true);
     }
     const fp = mode !== 'know' && freshPending.get(current);
-    if (fp && Date.now() - fp.at < 15000) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 500); return; }
+    if (fp && Date.now() - fp.at < 15000) {
+      if (hiding === true && autosaveOn() && !linkOf(current) && !editLocked() && !casHold.has(current))
+        stashSave(current, curKind || pkind.value, src.value, curRev);
+      clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 500);
+      return;
+    }
     if (fp) freshPending.delete(current);
     if (mode !== 'know' && linkCf.has(current) && linkOf(current)) {
       st('not saved: ' + linkOf(current).host + ' changed this page since you opened it', false);
@@ -7241,7 +7386,6 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (mode !== 'know' && (editLocked() || casHold.has(current))) return;
     if (tooBig(src.value)) { st(TOO_BIG, false); return; }
     if (saving) { if (!savePending) savePending = true; return; }
-    saving = true;
     const target = current;
     const sent = src.value;
     const know = mode === 'know';
@@ -7254,6 +7398,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         '&type=' + tkind + linkBase(target) + casQ(target, trev);
     let w = { gone: true };
     const sentSeq = offSeq();
+    const tbase = baseFor(target, trev);     // the rev this save claims
+    saving = true;     // at the send, as in save(): nothing awaits before it
     try {
       if (!(jobWait && !know && !linkOf(target)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -7267,14 +7413,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         flushPending();
         return;
       }
-      if (here() && src.value === sent) dirty = false;
+      if (here() && src.value === sent) { if (whole) dirty = false; else st(wrWhy, false); }
       else tabLanded(tk, target, sent);
       flushPending();
       return;
     }
     if (!know && r.status === 409) {
       const why = await errText(r);
-      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, baseFor(target, trev), here);
+      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, tbase, here);
       else st('autosave failed' + why, false);
       flushPending();
       return;
@@ -7285,11 +7431,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!know) { patchLocal(target, null, sent, vr && vr.rev); await dropQueued(target, sentSeq); }
     if (!here()) tabLanded(tk, target, sent, vr && vr.rev);
     if (here()) {
-      if (src.value === sent) dirty = false;   // typed during the request? stay dirty
+      if (src.value === sent && whole) dirty = false;   // typed during the request? stay dirty
       if (!know && vr && isRev(vr.rev)) curRev = vr.rev;
       if (vr && vr.conflicted)
         st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
-      else st('autosaved');
+      else if (whole) st('autosaved');
+      else st(wrWhy, false);
       if (!know && !CONTENT()) setTimeout(checkErrors, 800);
     }
     flushPending();
@@ -7309,7 +7456,6 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     await savesSettled(false);
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
     if (t.snap !== s || !s.dirty || !allTabs().includes(t)) return;
-    saving = true;
     const name = t.key;
     const sent = s.body;
     const kind = s.kind || s.pkind;
@@ -7319,6 +7465,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         + (linkOf(name) && isRev(s.rev) ? '&base=' + s.rev : '') + casQ(name, s.rev);
     let w = { gone: true };
     const sentSeq = offSeq();
+    const sbase = baseFor(name, s.rev);     // the rev this save claims
+    saving = true;
     try {
       if (!(jobWait && !know && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -7341,7 +7489,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!know && w.r.status === 409) {
       const why = await errText(w.r);
       if (/^: stale/.test(why)) {
-        await settleStale(name, kind, sent, baseFor(name, s.rev),
+        await settleStale(name, kind, sent, sbase,
           () => t === activeTab && current === name && mode !== 'know' && !grubPath);
       } else st('autosave of ' + name + ' failed' + why, false);
       flushPending();
@@ -7455,6 +7603,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     lockBar.hidden = !ro;
     if (ro) src.readOnly = true;
     else if (lockName && current === lockName && viewingRev === null) src.readOnly = linkRO(current);
+    writerFollow();
   }
   function letGo() {
     if (lockWait) { lockWait.abort(); lockWait = null; }
@@ -7498,9 +7647,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const m = e.data || {};
     if (!m.give || !lockHeld || m.give !== lockName) return;
     const name = lockName;
-    await flushNoAsk();
+    if (!(await flushNoAsk())) {
+      if (dirty) st('could not hand over ' + name + ': save your changes first', false);
+      return;
+    }
     await savesSettled();
-    if (lockName !== name || !lockHeld) return;
+    if (lockName !== name || !lockHeld || dirty) return;
     letGo();
     lockName = null;
     editLock(name);
@@ -7928,6 +8080,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   const mdHref = (u) => {
     const s = mdUnesc(u).trim();
+    if (/^\/\\/.test(s)) return '';
     return /^(https?:\/\/|urb:\/\/|mailto:|#|\/)/i.test(s) ? mdEsc(s) : '';
   };
   let mdOutside = false, mdBlocked = false;
@@ -7941,11 +8094,30 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       localStorage[OUTSIDE] = JSON.stringify([name, ...l].slice(0, 500));
     } catch {}
   };
-  const remoteUrl = (u) => /^(https?:)?\/\//i.test(mdUnesc(u).trim());
+  const remoteUrl = (u) => /^(https?:)?[\/\\]{2}/i.test(mdUnesc(u).trim());
+  const sameOrigin = (u) => {
+    if (!remoteUrl(u)) return true;
+    const o = typeof location !== 'undefined' && location && location.origin;
+    if (!o || o === 'null') return false;
+    try { return new URL(mdUnesc(u).trim(), o).origin === o; } catch { return false; }
+  };
+  const routeUrl = (u) => {
+    const s = mdUnesc(u), q = s.indexOf('?');
+    return q >= 0 && s.slice(q + 1) !== 'data';
+  };
 
   let mdGhosts = null;
 
   const CD_RE = /&CD(\d+);/g;
+  const SCAN = 2048, LSCAN = 4096;
+  const ENT = '&(?:amp|lt|gt|quot);';
+  const PAREN = '\\((?=(?:[^)\\]&]|' + ENT + '|&(?!(?:amp|lt|gt|quot);)|\\](?!\\())' + '{0,' + LSCAN + '}\\))((?:[^)\\s\\]]|\\](?!\\())+)(?:\\s[^)]*)?\\)';
+  const IMG_RE = new RegExp('!\\[((?:[^\\]!]|!(?!\\[)){0,' + SCAN + '})\\]' + PAREN, 'g');
+  const LINK_RE = new RegExp('\\[([^\\]\\[]{1,' + SCAN + '})\\]' + PAREN, 'g');
+  const WIKI_RE = /\[\[((?:[^\]|[]|\[(?!\[))+)(?:\|((?:[^\][]|\[(?!\[))+))?\]\]/g;
+  const NW = '[^\\w\\u0080-\\uffff]';
+  const UBOLD_RE = new RegExp('(^|' + NW + ')__((?:[^_]|_(?!_))+)__(?=' + NW + '|$)', 'g');
+  const UEM_RE = new RegExp('(^|' + NW + ')_([^_]+)_(?=' + NW + '|$)', 'g');
   const mdInline = (t) => {
     let s = mdEsc(t);
     const code = [];
@@ -7955,33 +8127,53 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     });
     const tags = [];
     const tag = (html) => { tags.push(html); return '&TG' + (tags.length - 1) + ';'; };
-    s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (m, alt, u) => {
+    s = s.replace(IMG_RE, (m, alt, u) => {
       if (remoteUrl(u) && !mdOutside) {
         mdBlocked = true;
         return tag('<span class="ximg">[image from another site' + (alt ? ': ' + alt : '') + ']</span>');
       }
       const h = mdHref(u);
+      if (h && sameOrigin(u) && routeUrl(u)) return tag('<a href="' + h + '">') + (alt || h) + '</a>';
       return h ? tag('<img alt="' + alt + '" src="' + h + '">') : m;
     });
-    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (m, txt, u) => {
+    s = s.replace(LINK_RE, (m, txt, u) => {
       const h = mdHref(u);
       return h ? tag('<a href="' + h + '">') + txt + '</a>' : m;
     });
-    s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, tgt, label) => {
+    s = s.replace(WIKI_RE, (_, tgt, label) => {
       const t = mdUnesc(tgt).trim();
       return tag('<a href="' + mdHref('/apps/lattice/app?name=' + encodeURIComponent(t)) + '"'
         + (mdGhosts && mdGhosts(t) ? ' class="ghost" title="' + mdEsc(t + ' does not exist yet') + '"' : '') + '>')
         + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>';
     });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    s = s.replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
+    s = s.replace(UBOLD_RE, '$1<strong>$2</strong>');
+    s = s.replace(UEM_RE, '$1<em>$2</em>');
     s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+    if (s.includes('  \n')) s = s.split('\n').map((l, i, a) => {
+      if (i === a.length - 1 || !l.endsWith('  ')) return l;
+      let e = l.length;
+      while (l[e - 1] === ' ') e--;
+      return l.slice(0, e) + '<br>';
+    }).join('\n');
     s = s.replace(/&TG(\d+);/g, (_, i) => tags[+i]);
     s = s.replace(CD_RE, (_, i) => '<code>' + code[+i] + '</code>');
     return s;
   };
 
+  const QDEPTH = 32;
+  const capQuote = (l) => {
+    let n = 0, p = 0;
+    for (;;) {
+      let q = p;
+      while (l[q] === ' ' || l[q] === '\t') q++;
+      if (l[q] !== '>') break;
+      p = q + 1; n++;
+    }
+    return n > QDEPTH ? '>'.repeat(QDEPTH) + l.slice(p) : l;
+  };
+  const tableSep = (l) => l.indexOf('|', 1) > 0 && /^[\s:|-]+$/.test(l);
   function mdToHtml(input, tasks, base = 0) {
     const lines = String(input == null ? '' : input).split('\n').map((l) => l.replace(/\r$/, ''));
     const out = [];
@@ -8025,14 +8217,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         closeLists(0);
         const q = [];
         while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
-          q.push(lines[i].replace(/^\s*>\s?/, ''));
+          q.push(capQuote(lines[i]).replace(/^\s*>\s?/, ''));
           i += 1;
         }
         out.push('<blockquote>' + mdToHtml(q.join('\n'), tasks, base + i - q.length) + '</blockquote>');
         continue;
       }
 
-      if (ln.includes('|') && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(lines[i + 1])) {
+      if (ln.includes('|') && i + 1 < lines.length && tableSep(lines[i + 1])) {
         closeLists(0);
         const cells = (r) => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
         const head = cells(ln);
@@ -8111,23 +8303,31 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return { at: at + m[1].length, ch: on ? 'x' : ' ' };
   }
 
+  const GMI_H = /^(#{1,3}) *(.*)$/;
   const gmiToHtml = (input) => {
     const out = [];
-    let pre = null;
-    for (const ln of String(input == null ? '' : input).split('\n')) {
+    let pre = null, list = false;
+    for (const raw of String(input == null ? '' : input).split('\n')) {
+      const ln = raw.replace(/\r$/, '');
       if (pre !== null) {
-        if (ln.trimEnd() === '```') { out.push('<pre>' + mdEsc(pre) + '</pre>'); pre = null; }
-        else pre = pre === '' ? ln : pre + '\n' + ln;
+        if (ln.startsWith('```')) { out.push('<pre>' + mdEsc(pre.join('\n')) + '</pre>'); pre = null; }
+        else pre.push(ln);
         continue;
       }
-      if (ln.trimEnd() === '```') { pre = ''; continue; }
-      const h = ln.match(/^(#{1,3}) (.*)$/);
+      if (list && !ln.startsWith('* ')) { list = false; out.push('</ul>'); }
+      if (ln.startsWith('```')) { pre = []; continue; }
+      const h = ln.match(GMI_H);
       if (h) { out.push('<h' + h[1].length + '>' + mdEsc(h[2]) + '</h' + h[1].length + '>'); continue; }
-      if (ln.startsWith('=> ')) {
-        const rest = ln.slice(3).replace(/^\s+/, '');
-        const sp = rest.indexOf(' ');
-        const raw = sp < 0 ? rest : rest.slice(0, sp);
-        const desc = mdEsc((sp < 0 ? rest : rest.slice(sp + 1)).replace(/^\s+/, ''));
+      if (ln.startsWith('* ')) {
+        if (!list) { list = true; out.push('<ul>'); }
+        out.push('<li>' + mdEsc(ln.slice(2).replace(/^ +/, '')) + '</li>');
+        continue;
+      }
+      const lk = ln.startsWith('=>') && ln.slice(2).replace(/^[ \t]+/, '');
+      if (lk) {
+        const sp = lk.search(/[ \t]/);
+        const raw = sp < 0 ? lk : lk.slice(0, sp);
+        const desc = mdEsc((sp < 0 ? '' : lk.slice(sp).replace(/^[ \t]+/, '')) || raw);
         if (raw.startsWith('urb://'))
           out.push('<p><a href="/apps/lattice?url=' + mdEsc(encodeURIComponent(raw)) + '">' + desc + '</a></p>');
         else if (/^https?:\/\//.test(raw))
@@ -8139,7 +8339,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (!ln.trim()) continue;
       out.push('<p>' + mdEsc(ln) + '</p>');
     }
-    if (pre !== null) out.push('<pre>' + mdEsc(pre) + '</pre>');
+    if (list) out.push('</ul>');
+    if (pre !== null) out.push('<pre>' + mdEsc(pre.join('\n')) + '</pre>');
     return out.join('\n');
   };
 
@@ -8226,7 +8427,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const previewFit = () => {
     if (prev) { scrollHold(); prev.style.minHeight = ''; }
     return outsideGuard() + previewScrollbars()
-      + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)})})()</script>';
+      + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)});addEventListener("message",function(e){if(e.source!==parent)return;var m=e.data;if(!m||typeof m.latHeading!=="number")return;var h=document.querySelectorAll("h1,h2,h3,h4,h5,h6")[m.latHeading];if(!h)return;h.scrollIntoView({block:"start"});parent.postMessage({latHeadingY:Math.max(0,h.getBoundingClientRect().top+scrollY)},"*")})})()</script>';
   };
   const withPreviewScrollbars = (html, ours) => {
     const head = /<head\b[^>]*>/i.exec(html);
@@ -8255,7 +8456,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     mdBlocked = false;
     mdOutside = outsideOn(current);
     mdGhosts = ghostTest();
-    try { return localHtml(kindNow(), src.value, tasks); } finally { mdGhosts = null; }
+    try { return localHtml(kindNow(), src.value, tasks); } finally { mdGhosts = null; mdOutside = false; }
   };
   let gtKey = [], gtFn = null;
   const ghostTest = () => {
@@ -8330,6 +8531,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const m = e.data;
     if (m && m.latOutside) outShow(true);
     if (m && Number.isInteger(m.latTask) && m.latTask >= 0) taskFlip(m.latTask, !!m.on, m.h);
+    if (m && typeof m.latHeadingY === 'number' && prev.parentNode) prev.parentNode.scrollTop = m.latHeadingY;
   });
   const localShell = (fit) => '<!doctype html><meta charset="utf-8"><base target="_top">'
         + '<style>:root{color-scheme:light dark}'
@@ -8613,7 +8815,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       lines.push('Lattice makes this folder again on the next conflict.');
     const open = mode !== 'know' && !grubPath && current
       && (current === path || current.startsWith(path + '/'));
-    if (open && dirty) lines.push('The open page has unsaved changes, and they go too.');
+    if (open && (!writerSync() || dirty)) lines.push('The open page has unsaved changes, and they go too.');
     const parked = parkedUnder(path).filter((t) => t.snap.dirty).length;
     if (parked) lines.push(plural(parked, 'other tab') + ' with unsaved changes to it'
       + (parked === 1 ? ' loses them.' : ' lose them.'));
@@ -8638,7 +8840,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     let r;
     try {
       await savesSettled();
-      r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
+      r = await mutate(api + '/page-del?name=' + encodeURIComponent(path) + '&tree=1');
     } finally { end(); }
     if (!r.ok) { st('delete failed' + await errText(r), false); return false; }
     dropTreeNodes(path);
@@ -8994,21 +9196,24 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         b.onclick = fn;
         row.appendChild(b);
       };
-      const names = (x) => x === path || x === path + '/code';
+      const sole = !curFolder && (g.peek.includes(path + '/dir-index')
+        || nodes.some((x) => !x.page && x.path === target));
+      const grant = sole ? path + '/code' : path;
+      const names = curFolder ? (x) => x === path : (x) => x === grant || x === path + '/code';
       const canRead = g.peek.some(names);
       const canEdit = g.make.some(names);
       mk('read', canRead, () => {
         if (canRead) {
-          g.peek = g.peek.filter((x) => !names(x));
+          g.peek = g.peek.filter((x) => !names(x) && !(curFolder && x === path + '/dir-index'));
           g.make = g.make.filter((x) => !names(x));
-        } else g.peek.push(path);
+        } else g.peek.push(grant);
         permSave(g);
       });
       mk('edit', canEdit, () => {
         if (canEdit) g.make = g.make.filter((x) => !names(x));
         else {
-          if (!g.peek.includes(path)) g.peek.push(path);   // edit implies read
-          g.make.push(path);
+          if (!g.peek.some(names)) g.peek.push(grant);   // edit implies read
+          g.make.push(grant);
         }
         permSave(g);
       });
@@ -9024,6 +9229,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
 // ── src/67-perms.js ───────────────────────────────────────────────────────
   let permGroups = [];
+  let permVer = 0;
   let permLegacy = [];
   let permsLoaded = false;
   let permsErr = null;
@@ -9042,7 +9248,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       renderGroupAccess();
       return;
     }
-    permGroups = await r.json();
+    const gj = await r.json();
+    permGroups = Array.isArray(gj) ? gj : (gj && gj.groups) || [];
+    permVer = (Array.isArray(gj) ? (permGroups[0] && permGroups[0].v) : gj && gj.v) === 2 ? 2 : 0;
     permsLoaded = true;
     permsErr = null;
     try {
@@ -9056,7 +9264,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   async function permSave(g) {
     const r = await busyFetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {
       method: 'POST',
-      body: JSON.stringify({ ships: g.ships, peek: g.peek, make: g.make }),
+      body: JSON.stringify(permVer === 2
+        ? { v: 2, ships: g.ships, peek: g.peek, make: g.make }
+        : { ships: g.ships, peek: g.peek, make: g.make }),
     }).catch(() => null);
     if (!r || !r.ok) st('permissions' + await errText(r), false);
     loadPerms();
@@ -9501,6 +9711,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       const part = list.slice(i, i + CHUNK);
       let r = null;
       const payload = [];
+      let readFails = 0;
       try {
         for (const it of part) {
           let c;
@@ -9508,22 +9719,24 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           else if (it.csv) c = (await writerReady('fods')).importCsv(await it.file.text());
           else c = { text: await it.file.text() };
           if (c.error || c.note) upErr.textContent += it.name + ': ' + (c.error || c.note) + '\n';
-          if (c.error) { fails++; continue; }
+          if (c.error) { fails++; readFails++; continue; }
           payload.push({ name: it.name, type: it.kind, body: c.text || '\n' });
           upProg(done + payload.length, list.length, it.name, 'reading');
         }
+        if (!payload.length) { done += part.length; continue; }
         r = await mutate(api + '/page-save-batch',
           { method: 'POST', body: JSON.stringify(payload) });
       } catch {}
       if (!r || !r.ok) {
-        fails += part.length;
+        const lost = payload.length || (part.length - readFails);
+        fails += lost;
         let msg = r ? r.status : 'network';
         if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
-        const names = part.map((it) => it.name);
+        const names = (payload.length ? payload : part).map((it) => it.name);
         const held = names.length > 6
           ? names.slice(0, 6).join(', ') + ', and ' + (names.length - 6) + ' more'
           : names.join(', ');
-        upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n  ${held}\n`;
+        upErr.textContent += `failed: ${lost} file(s) — ${msg}\n  ${held}\n`;
       } else {
         for (const it of payload) {
           pageCache.delete(it.name);
@@ -9603,6 +9816,17 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   const TEX_DROP = 'script,style,iframe,frame,object,embed,video,audio,source,track,form,base,meta,link,svg';
   const TEX_SRC = ['src', 'srcset', 'poster', 'action', 'formaction', 'data', 'background'];
+  const texBadStyle = (val) => {
+    const s = String(val || '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\\([0-9a-f]{1,6})\s?/gi, (_, h) => {
+      const c = parseInt(h, 16);
+      return c > 0 && c <= 0x10ffff ? String.fromCodePoint(c) : '';
+    }).replace(/\\(.)/g, '$1');
+    return /@import|(?:url|image-set|expression)\s*\(/i.test(s);
+  };
+  const texBadQuery = (v) => {
+    const h = v.split('#')[0], q = h.indexOf('?');
+    return q >= 0 && h.slice(q + 1) !== 'data';
+  };
   function cleanTexHtml(html) {
     const t = document.createElement('template');
     t.innerHTML = html;
@@ -9613,8 +9837,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         const v = a.value.replace(/[\u0000-\u0020]/g, '').replace(/\\/g, '/');
         const abs = /^[a-z][a-z0-9+.-]*:|^\/\//i.test(v);
         const bad = n.startsWith('on')
+          || n === 'ping'
+          || n === 'srcset'
+          || (n === 'style' && texBadStyle(a.value))
           || ((n === 'href' || n === 'xlink:href') && abs && !/^(https?|mailto):/i.test(v))
-          || (TEX_SRC.includes(n) && abs);
+          || (TEX_SRC.includes(n) && (abs || texBadQuery(v)));
         if (bad) e.removeAttribute(a.name);
       }
     }
@@ -10014,8 +10241,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     card.className = 'aclcard';
     card.appendChild(aclHead(g));
     aclShips(card, g);
-    aclSection(card, 'read', g.peek, (v) => {
-      g.peek = g.peek.filter((x) => x !== v);
+    aclSection(card, 'read', g.peek.filter((x) => !x.endsWith('/dir-index')), (v) => {
+      g.peek = g.peek.filter((x) => x !== v && x !== v + '/dir-index');
       g.make = g.make.filter((x) => x !== v);
       permSave(g);
     }, disp);
@@ -10042,7 +10269,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       grid.appendChild(e);
       return;
     }
-    const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
+    const allPaths = permGroups.flatMap((x) => [...x.peek.filter((p) => !p.endsWith('/dir-index')), ...x.make]);
     const disp = (v) => shortPath(v, allPaths);
     for (const g of permGroups) grid.appendChild(aclCard(g, disp));
   }
@@ -10711,16 +10938,16 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const lines = String(body == null ? '' : body).split('\n');
     let fence = null;
     for (let i = 0; i < lines.length; i++) {
-      const ln = lines[i];
+      const ln = lines[i].replace(/\r$/, '');
       if (kind === 'gmi') {
-        if (ln.trimEnd() === '```') { fence = fence ? null : '```'; continue; }
+        if (ln.startsWith('```')) { fence = fence ? null : '```'; continue; }
         if (fence) continue;
       } else {
         if (fence) { if (ln.trimStart().startsWith(fence)) fence = null; continue; }
         const f = ln.match(/^\s*(```|~~~)/);
         if (f) { fence = f[1]; continue; }
       }
-      const h = ln.match(kind === 'gmi' ? /^(#{1,3}) (.*)$/ : /^(#{1,6})\s+(.*)$/);
+      const h = ln.match(kind === 'gmi' ? GMI_H : /^(#{1,6})\s+(.*)$/);
       if (h) out.push({ level: h[1].length, text: h[2].trim(), line: i + 1 });
     }
     return out;
@@ -10840,13 +11067,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   function goHeading(line, idx) {
     if ($('ws').classList.contains('vp')) {
-      let doc = null;
-      try { doc = prev.contentDocument; } catch {}
-      const el = doc && doc.querySelectorAll('h1, h2, h3, h4, h5, h6')[idx];
-      if (el) el.scrollIntoView({ block: 'start' });
+      if (prev && prev.contentWindow) prev.contentWindow.postMessage({ latHeading: idx }, '*');
       return;
     }
-    if (wr) return wr.heading(idx);
+    if (wr) { if (wr.heading) wr.heading(idx); return; }
     const lines = src.value.split('\n');
     let off = 0;
     for (let i = 0; i < line - 1 && i < lines.length; i++) off += lines[i].length + 1;
@@ -11002,20 +11226,27 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   async function openRev(rev, lbl) {
     if (!(await guardDirty())) return;
+    const want = current, wasMode = mode, my = openNext();
+    if (!want) return;
     let d = null;
     try {
-      const r = await busyFetch(mode === 'know'
-        ? api + '/know-read-at?key=' + encodeURIComponent(current) + '&rev=' + rev
-        : api + '/page-source-at?name=' + encodeURIComponent(current) + '&rev=' + rev);
+      const r = await busyFetch(wasMode === 'know'
+        ? api + '/know-read-at?key=' + encodeURIComponent(want) + '&rev=' + rev
+        : api + '/page-source-at?name=' + encodeURIComponent(want) + '&rev=' + rev);
+      if (my !== openSeq || current !== want || mode !== wasMode) return;
       if (!r.ok) {
         st('revision load failed' + await errText(r), false);
         if (r.status === 404) loadHistory();
         return;
       }
       d = await r.json();
-    } catch { st('revision load failed (network)', false); return; }
+    } catch {
+      if (my === openSeq && current === want && mode === wasMode) st('revision load failed (network)', false);
+      return;
+    }
+    if (my !== openSeq || current !== want || mode !== wasMode) return;
     viewingRev = rev;
-    revKind = mode === 'know' ? null : (d.kind === 'index' ? 'md' : d.kind);
+    revKind = wasMode === 'know' ? null : (d.kind === 'index' ? 'md' : d.kind);
     dirty = false;
     src.value = d.body;
     src.readOnly = true;
@@ -11024,7 +11255,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     for (const a of histList.children)
       a.className = +a.dataset.rev === rev ? 'on' : '';
     st('viewing ' + (lbl || 'an earlier version') + ' \u00b7 read-only');
-    if (mode !== 'know' && CONTENT()) refreshPreview();
+    if (wasMode !== 'know' && CONTENT()) refreshPreview();
   }
   $('hback').onclick = () => {
     exitRev();
@@ -11160,8 +11391,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       document.head.append(s);
     })));
   const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'fods', 'geojson', 'scad', 'js', 'css', 'hoon'];
-  async function pdfBody(kind, body) {
-    if (kind === 'md') return { html: mdToHtml(body) };
+  async function pdfBody(kind, body, name) {
+    if (kind === 'md') {
+      mdOutside = outsideOn(name);
+      try { return { html: mdToHtml(body) }; } finally { mdOutside = false; }
+    }
     if (kind === 'gmi') return { html: gmiToHtml(body) };
     if (kind === 'text') return { html: '<pre class="text">' + mdEsc(body) + '</pre>' };
     if (kind === 'html') return { html: body, doc: true };
@@ -11188,9 +11422,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!PDF_KINDS.includes(kind)) { st('no PDF for a ' + kind + ' page', false); return; }
     stWork('preparing PDF…');
     try {
-      const r = await pdfBody(kind, body);
+      const r = await pdfBody(kind, body, name);
       const P = await pdfReady();
-      const out = await P.save(Object.assign(r, { title: String(name).split('/').pop() || 'page' }));
+      const out = await P.save(Object.assign(r, { title: String(name).split('/').pop() || 'page', outside: outsideOn(name) }));
       st(out.path ? 'saved ' + out.path : out.cancelled ? 'PDF not saved' : 'PDF ready to print');
     } catch (e) {
       st('PDF: ' + String(e && e.message ? e.message : e).slice(0, 160), false);
@@ -11271,12 +11505,32 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return (from ? '…' : '') + body.slice(from, to).replace(/\s+/g, ' ') + (to < body.length ? '…' : '');
   };
 
+  const geoFallback = (b) => {
+    try {
+      const d = JSON.parse(b);
+      if (!d || typeof d !== 'object') return '';
+      const out = [];
+      if (d.lattice && typeof d.lattice.title === 'string') out.push(d.lattice.title);
+      for (const f of Array.isArray(d.features) ? d.features : []) {
+        const pr = f && f.properties;
+        if (!pr || typeof pr !== 'object') continue;
+        for (const key of ['name', 'kind', 'note']) if (typeof pr[key] === 'string' && pr[key]) out.push(pr[key]);
+      }
+      return out.join('\n');
+    } catch { return ''; }
+  };
   const qTx = new Map();
   const searchText = (k, b, p) => {
     if (!isRich(k)) return b;
+    const lib = richLib(k), has = !!lib;
     let m = qTx.get(p);
-    if (!m || m[0] !== b) qTx.set(p, m = [b, richLib(k) ? richLib(k).extract.text(b) : (b.split('<office:body>')[1] || '')
-      .replace(/<\/text:[ph]>|<text:(s|tab|line-break)\b[^>]*>/g, ' ').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&')]);
+    if (!m || m[0] !== b || m[2] !== has || m[3] !== k) {
+      const tx = lib ? lib.extract.text(b)
+        : k === 'geojson' ? geoFallback(b)
+        : (b.split('<office:body>')[1] || '')
+          .replace(/<\/text:[ph]>|<text:(s|tab|line-break)\b[^>]*>/g, ' ').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&');
+      qTx.set(p, m = [b, tx, has, k]);
+    }
     return m[1];
   };
   const qHit = (key, body, q, scope, know) => {
@@ -11622,7 +11876,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 // ── src/90-sync.js ────────────────────────────────────────────────────────
   async function refreshOpen() {
     if (!current || curFolder || dirty || document.hidden || viewingRev !== null) return;
+    if (wrLive() && wr.editing && wr.editing()) return;
     const wasCurrent = current, wasMode = mode;
+    const shown = src.value;
     if (await offGet(mode === 'know' ? 'know:' + current : current)) return;
     const url = mode === 'know'
       ? api + '/know-read?key=' + encodeURIComponent(current)
@@ -11636,7 +11892,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       else d = await r.json();
     } catch { return; }
     if (dirty || current !== wasCurrent || mode !== wasMode) return;
-    if (curFolder || viewingRev !== null) return;
+    if (curFolder || viewingRev !== null || (wrLive() && wr.editing && wr.editing())) return;
+    if (src.value !== shown) return;
+    if (mode !== 'know' && d && isRev(d.rev) && d.rev < baseFor(wasCurrent, curRev)) return;
     if (notFound) {
       if (mode !== 'know') {
         const doomed = current;

@@ -37,6 +37,31 @@
     (expect-eq !>(|) !>((sane-comment:fr (crip (reap 10.001 'a')))))
     (expect-eq !>(&) !>((sane-comment:fr 'ok')))
   ==
+::  a name that is no board of ours is counted under one entry a family,
+::  so a fresh name on each poke meets the cooldown and adds no entry
+++  test-rate-key
+  =/  t0=@da  ~2026.6.1
+  =/  moon=@p  ~doznec-sampel-palnet
+  =/  fam=@  ~sampel-palnet
+  =/  ka  (rate-key:fr fam %aaa |)
+  =/  kb  (rate-key:fr fam %bbb |)
+  =/  l1  (rate-update:fr -.ka +.ka t0 ~)
+  =/  l2  (rate-update:fr -.kb +.kb (add t0 ~s1) l1)
+  ;:  weld
+    (expect-eq !>(ka) !>(kb))
+    (expect-eq !>([~sampel-palnet %$]) !>(ka))
+    (expect-eq !>(1) !>(~(wyt by l2)))
+    ::  the second name is inside the first one's cooldown
+    (expect !>(?=(^ (~(get by l1) kb))))
+    ::  a real board keeps an entry of its own, by family
+    (expect-eq !>([~sampel-palnet %main]) !>((rate-key:fr fam %main &)))
+    (expect !>(!=((rate-key:fr fam %main &) ka)))
+    ::  another family is not held by it
+    (expect !>(!=((rate-key:fr ~nec %aaa |) ka)))
+    ::  a huge name is never stored
+    =/  big=@tas  (crip (reap 5.000 'a'))
+    (expect-eq !>(ka) !>((rate-key:fr fam big |)))
+  ==
 ++  test-rate-limit
   =/  t0=@da  ~2026.6.1
   =/  l1  (rate-update:fr ~nec %main t0 ~)
@@ -155,5 +180,15 @@
     (expect-eq !>(&) !>((can-tag:fr ~wet ~nec brd)))   ::  a mod
     (expect-eq !>(&) !>((can-tag:fr ~zod ~nec brd)))   ::  the host
     (expect-eq !>(|) !>((can-tag:fr ~bus ~nec brd)))   ::  anyone else
+  ==
+::  +rate-ok and +rate-update do not crash when clock steps backward (now < last)
+++  test-rate-clock-backwards
+  =/  t1=@da  ~2026.1.1..00.01.00
+  =/  t0=@da  ~2026.1.1..00.00.30
+  =/  lim=limits:fr  (rate-update:fr ~nec %main t1 ~)
+  =/  lim2=limits:fr  (rate-update:fr ~nec %main t0 lim)
+  ;:  weld
+    (expect-eq !>(|) !>((rate-ok:fr ~nec %main brd t0 lim)))
+    (expect-eq !>(~s20) !>(cooldown:(~(got by lim2) [~nec %main])))
   ==
 --

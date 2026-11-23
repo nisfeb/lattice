@@ -3,7 +3,7 @@
 ::  beacon bump however many memories it saves. Noun only: no HTTP client
 ::  drives it directly.
 ::
-/<  lk  /lib/lattice-know.hoon
+/<  lk  /lib/lattice-know-types.hoon
 |_  acts=(list know-action:lk)
 ++  grad  %noun
 ++  grow

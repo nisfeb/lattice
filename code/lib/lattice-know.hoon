@@ -6,47 +6,8 @@
 ::  gub/lib (where the lattice nexus wraps them). The nexus casts our structural
 ::  [pax nom] to a real rail:tarball.
 ::
+/<  *  /lib/lattice-know-types.hoon
 |%
-::  ==  Knowledge types, the canonical know-* shapes the nexus stores and the
-::  HTTP reads emit.
-::
-+$  know-vector  [model=@t dim=@ud vec=(list @rd)]
-+$  know-entry
-  $:  body=@t
-      updated=@da
-      tags=(set @t)
-      vector=(unit know-vector)
-  ==
-::  programmatic knowledge actions (poked at the vault-manager fiber).
-::
-+$  know-action
-  $%  [%save key=@t body=@t]
-  ::  an agent key's save, by key id. The route checked a read that may
-  ::  be stale by now, so the writer checks again against the entry it
-  ::  is about to replace (+apply in the app).
-      [%key-save key=@t body=@t kid=@t]
-      [%del key=@t]
-      [%restore key=@t]
-      [%move from=@t to=@t]
-      [%tag key=@t tag=@t]
-      [%untag key=@t tag=@t]
-  ::  verbatim imports (used by the bulk-import endpoint, POST /know-import).
-  ::  Unlike %save, these write the entry VERBATIM, preserving its original
-  ::  updated/tags/vector, instead of stamping updated=now. %import lands a
-  ::  live entry. %import-trashed lands it then soft-deletes (so it sits in
-  ::  trash, body recoverable).
-      [%import key=@t entry=know-entry]
-      [%import-trashed key=@t entry=know-entry]
-  ==
-::  derived per-entry index row for the trash listing (know-trash). Lists
-::  soft-deleted entries without reading bodies. bytes = body byte-length. restore is a RESERVED
-::  slot for a future revision-restore feature (peek-at the firm cass captured at
-::  delete time). The current soft-delete keeps the body grub live in the trash
-::  vault and restores it whole, so restore is always ~. Kept in the row shape so
-::  adding the feature later doesn't re-key the persisted know-index grub.
-::
-+$  index-entry  [updated=@da bytes=@ud tags=(set @t) restore=(unit @ud)]
-+$  know-index   (map path index-entry)
 ::  +to-index-entry: project a stored entry onto its index row (restore always ~).
 ::
 ++  to-index-entry
@@ -130,7 +91,28 @@
 ++  word-char
   |=  c=@tD
   ^-  ?
-  ?|(&((gte c 'a') (lte c 'z')) &((gte c '0') (lte c '9')) (seam c))
+  ?|  &((gte c 'a') (lte c 'z'))
+      &((gte c '0') (lte c '9'))
+      (seam c)
+      (gte c 128)
+  ==
+::  +high-punct: how many bytes of punctuation past ASCII `t` starts with,
+::  0 for none. A byte of 128 or more is a word byte, so a word in any
+::  script is a term. These characters are the exceptions, and separate
+::  words as their ASCII twins do: U+0080 to U+00BF (no-break space,
+::  guillemets), U+2000 to U+2BFF (dashes, curly quotes, the ellipsis,
+::  arrows, symbols), U+3000 to U+303F (CJK punctuation) and the emoji
+::  from U+1F000. /lib/lattice-index has the same arm:
+::  the two tokenizers agree on it.
+++  high-punct
+  |=  t=tape
+  ^-  @ud
+  ?.  ?=([@ @ *] t)  0
+  ?:  =(0xc2 i.t)  2
+  ?:  &(=(0xe2 i.t) (gte i.t.t 0x80) (lte i.t.t 0xaf))  3
+  ?:  &(=(0xe3 i.t) =(0x80 i.t.t))  3
+  ?:  &(=(0xf0 i.t) =(0x9f i.t.t))  4
+  0
 ::  +terms: a text's ranking terms, in order, repeats kept. Lower-cased
 ::  words with their parts, words under two letters and stop words dropped,
 ::  then stemmed.
@@ -150,6 +132,9 @@
   ^-  (unit @t)
   ?:  (lth (lent p) 2)  ~
   ?:  (~(has in stop-words) (crip p))  ~
+  ::  the stemmer knows English endings. A word with bytes past ASCII
+  ::  goes in whole: its last bytes are part of a character.
+  ?:  (lien p |=(c=@tD (gte c 128)))  `(crip p)
   `(crip (stem p))
 ::  +runs: maximal runs of word characters.
 ++  runs
@@ -158,6 +143,8 @@
   =|  [cur=tape out=(list tape)]
   |-  ^-  (list tape)
   ?~  t  (flop ?~(cur out [(flop cur) out]))
+  =/  hp=@ud  (high-punct t)
+  ?.  =(0 hp)  $(t (slag hp `tape`t), cur ~, out ?~(cur out [(flop cur) out]))
   ?:  (word-char i.t)  $(t t.t, cur [i.t cur])
   $(t t.t, cur ~, out ?~(cur out [(flop cur) out]))
 ++  drop-seams
@@ -186,7 +173,7 @@
 ::  (stopp-ed). Without it release stemmed to release and released to
 ::  releas, which never met. +stem-ver names this rule set: the term cache
 ::  is rebuilt when it changes.
-++  stem-ver  ^-(@ud 2)
+++  stem-ver  ^-(@ud 3)
 ++  stem
   |=  w=tape
   ^-  tape
@@ -229,24 +216,158 @@
 ::  provenance there (author, source, created, verified, superseded-by), so
 ::  it travels with the entry through moves, trash, history, import and
 ::  export, and an older reader just sees text.
+::
+::  This is the one reader. Lines end in LF or CRLF, a name reads in
+::  lower case whatever case it is written in, and lines that are not
+::  `name: value` (a YAML list, a comment, a continued value, a stray
+::  word) are skipped here and kept by +front-set. A block is front
+::  matter only when one of its lines is a field (+key-line): a body that
+::  opens with a rule, a line of prose and another rule is all body.
 ++  front
   |=  body=@t
   ^-  [meta=(list [k=@t v=@t]) rest=@t]
-  =/  t=tape  (trip body)
-  ?.  =("---\0a" (scag 4 t))  [~ body]
-  =/  aft=tape  (slag 4 t)
-  =/  e=(unit @ud)  (find "\0a---" aft)
-  ?~  e  [~ body]
-  =/  tail=tape  (slag (add u.e 4) aft)
-  =?  tail  &(?=(^ tail) =(10 i.tail))  t.tail
-  :_  (crip tail)
-  %+  murn  (to-wain:format (crip (scag u.e aft)))
-  |=  l=@t
+  =/  s  (front-split body)
+  ?~  s  [~ body]
+  [(murn head.u.s field-of) (crip rest.u.s)]
+::  +take-line: the first line of `t` with its line end, and what follows
+++  take-line
+  |=  t=tape
+  ^-  [l=tape r=tape]
+  =|  acc=tape
+  |-  ^-  [l=tape r=tape]
+  ?~  t  [(flop acc) ~]
+  ?:  =('\0a' i.t)  [(flop [i.t acc]) t.t]
+  $(t t.t, acc [i.t acc])
+::  +drop-ws, +trim-ws, +bare: without leading blanks (space, tab, CR,
+::  LF), without blanks at both ends, and a line without its line end
+::  and trailing blanks
+++  drop-ws
+  |=  t=tape
+  ^-  tape
+  ?~  t  ~
+  ?.  |(=(' ' i.t) =('\09' i.t) =('\0d' i.t) =('\0a' i.t))  t
+  $(t t.t)
+++  trim-ws  |=(t=tape ^-(tape (flop (drop-ws (flop (drop-ws t))))))
+++  bare  |=(l=tape ^-(tape (flop (drop-ws (flop l)))))
+::  +unq: without one pair of quotes around it
+++  unq
+  |=  t=tape
+  ^-  tape
+  =/  n=@ud  (lent t)
+  ?:  (lth n 2)  t
+  =/  a=@tD  (snag 0 t)
+  ?.  &(|(=('"' a) =('\'' a)) =(a (snag (dec n) t)))  t
+  (scag (sub n 2) (slag 1 t))
+++  fence-line  |=(l=tape =("---" (bare l)))
+::  +key-line: a field line, `name: value` with a name that is one word.
+::  Prose with a colon in it (`see http://x for it`) names no field.
+++  key-line
+  |=  l=tape
+  ^-  ?
+  =/  f  (field-of l)
+  ?~  f  |
+  =/  k=tape  (trip k.u.f)
+  &(!=(~ k) !(lien k |=(c=@tD |(=(' ' c) =('\09' c)))))
+::  +field-of: a front-matter line as its name and value. The name is
+::  lower-cased and unquoted, the value trimmed and otherwise as written.
+++  field-of
+  |=  l=tape
   ^-  (unit [k=@t v=@t])
-  =/  lt=tape  (trip l)
-  =/  c=(unit @ud)  (find ":" lt)
+  =/  s=tape  (bare l)
+  =/  c=(unit @ud)  (find ":" s)
   ?~  c  ~
-  `[(crip (trim-sp (scag u.c lt))) (crip (trim-sp (slag +(u.c) lt)))]
+  `[(crip (cass (unq (trim-ws (scag u.c s))))) (crip (trim-ws (slag +(u.c) s)))]
+::  +front-split: a body that opens with front matter, in pieces that
+::  weld back to it byte for byte: the opening fence, the lines between,
+::  the closing fence, and the text after. Each line keeps its line end.
+::  A rule right under the opening one closes nothing (the reader before
+::  CRLF support read on past it too), and a block with no field in it
+::  is no front matter.
+++  front-split
+  |=  body=@t
+  ^-  (unit [open=tape head=(list tape) close=tape rest=tape])
+  =/  a  (take-line (trip body))
+  ?.  (fence-line l.a)  ~
+  =|  head=(list tape)
+  =/  t=tape  r.a
+  =/  top=?  &
+  |-  ^-  (unit [open=tape head=(list tape) close=tape rest=tape])
+  ?~  t  ~
+  =/  b  (take-line t)
+  ?:  &((fence-line l.b) !top)
+    ?.  (lien head key-line)  ~
+    `[l.a (flop head) l.b r.b]
+  $(t r.b, head [l.b head], top |)
+::  +prose-of: what a stamped save (+stamp) keeps of the body it was
+::  sent. The stamp writes the entry's front matter itself, so a block of
+::  the sender's own goes when it holds nothing but the fields the stamp
+::  writes or carries (+stamped) and lines the entry's block holds as
+::  they are (the entry sent back as it was read). Any other block is
+::  kept whole as text: it is the sender's, and no byte of it is lost.
+++  prose-of
+  |=  [bod=@t old=(unit know-entry)]
+  ^-  @t
+  =/  s  (front-split bod)
+  ?~  s  bod
+  =/  had=(list tape)
+    =/  o  ?~(old ~ (front-split body.u.old))
+    ?~(o ~ (turn head.u.o bare))
+  =/  ours
+    |=  l=tape
+    ?|  ?=(~ (bare l))
+        (lien had |=(h=tape =(h (bare l))))
+        =/  f  (field-of l)
+        &(?=(^ f) (~(has in stamped) k.u.f))
+    ==
+  ?.  (levy head.u.s ours)  bod
+  (crip rest.u.s)
+::  +stamped: the fields +stamp writes, or carries from the entry it
+::  replaces, whatever the sender's body says
+++  stamped
+  ^~  %-  silt
+  ^-  (list @t)
+  :~  'created'  'author'  'source'  'verified'  'verified-by'
+      'sensitive'  'superseded-by'  'kept'
+  ==
+::  +front-put: `body` with front-matter field `k` set to `v`, or taken
+::  out when `v` is ''. Only that field's line changes: every other byte
+::  of the block and of the text passes through, so a YAML list, a
+::  comment or a continued value survives. A body with no front matter
+::  gets a block in front of it, and keeps all of its own text.
+++  front-put
+  |=  [body=@t k=@t v=@t]
+  ^-  @t
+  =/  val=tape  (skip (trip v) |=(c=@tD |(=('\0a' c) =('\0d' c))))
+  =/  s  (front-split body)
+  ?~  s
+    ?~  val  body
+    (crip :(weld "---\0a" (trip k) ": " val "\0a---\0a" (trip body)))
+  =/  is  |=(l=tape =(`k (bind (field-of l) |=([a=@t @t] a))))
+  =/  eol=tape  ?:(?=(^ (find "\0d" open.u.s)) "\0d\0a" "\0a")
+  =/  line=tape  :(weld (trip k) ": " val eol)
+  =/  old=(list tape)  head.u.s
+  =/  head=(list tape)
+    ?~  val  (skip old is)
+    ?.  (lien old is)  (snoc old line)
+    =/  done=?  |
+    |-  ^-  (list tape)
+    ?~  old  ~
+    ?:  (is i.old)
+      ?:  done  $(old t.old)
+      [line $(old t.old, done &)]
+    [i.old $(old t.old)]
+  ?~  head  (crip rest.u.s)
+  (crip :(weld open.u.s `tape`(zing head) close.u.s rest.u.s))
+::  +front-set: +front-put that never lowers the sensitive mark. The
+::  routes that stamp an entry (verify, supersede, keep) write through
+::  here. Whatever shape the entry's front matter has, an entry that
+::  was sensitive before the write is sensitive after it.
+++  front-set
+  |=  [body=@t k=@t v=@t]
+  ^-  @t
+  =/  out=@t  (front-put body k v)
+  ?:  &((sens-text body) !(sens-text out))  (raise-sens out)
+  out
 ++  drop-sp
   |=  t=tape
   ^-  tape
@@ -320,9 +441,7 @@
   =/  k=(unit path)  (key-of (crip (trim-sp ?~(bar inner (scag u.bar inner)))))
   =?  out  &(?=(^ k) !(lien out |=(p=path =(p u.k))))  [u.k out]
   $(t (slag (add u.j 2) aft))
-::  +$  doc: an entry as ranking sees it. The key counts twice and each tag
-::  once, over the body's terms; front matter is not ranked.
-+$  doc  [key=path tf=(map @t @ud) len=@ud]
+::  +to-doc: convert an entry to its ranking doc (see /lib/lattice-know-types).
 ++  to-doc
   |=  [key=path e=know-entry]
   ^-  doc
@@ -347,8 +466,7 @@
 ::  its front matter once, when the row is made, under the same freshness
 ::  rule as the doc. A search filters on both for every entry, and parsing
 ::  every body's front matter per prompt cost about twice the vault's bytes.
-+$  term-row  [updated=@da tags=(set @t) =doc sup=? sen=?]
-+$  term-cache  (map path term-row)
+::  Types live in /lib/lattice-know-types.
 ++  row-of
   |=  [k=path e=know-entry]
   ^-  term-row
@@ -453,6 +571,13 @@
   |=  [body=@t q=@t]
   ^-  @t
   =/  qs=(set @t)  (silt (terms q))
+  ::  for a quoted query, the first line that holds the phrase
+  =/  ph=(unit tape)  (phrase-of q)
+  =/  pl=(list @t)
+    ?~  ph  ~
+    %+  skim  (to-wain:format body)
+    |=(l=@t ?=(^ (find u.ph (cass (trip l)))))
+  ?:  &(?=(^ ph) ?=(^ pl))  (clip-around i.pl (silt ~[(crip u.ph)]))
   =/  ls=(list @t)  (skip (to-wain:format rest:(front body)) |=(l=@t =('' l)))
   ?~  ls  ''
   =/  best=[n=@ud l=@t]
@@ -487,14 +612,18 @@
   ?~  t  ~
   ?.  &((gte i.t 128) (lth i.t 192))  t
   $(t t.t)
-::  +drop-high: leading non-ASCII bytes off. Run on a reversed tape it drops
-::  the last character if it is multi-byte, whole or cut.
+::  +drop-high: one leading non-ASCII character off, read backwards: its
+::  continuation bytes, then its lead byte. Run on a reversed tape it
+::  drops the last character if it is multi-byte, whole or cut, and no
+::  more. Dropping every byte past ASCII emptied a line with no ASCII
+::  in it.
 ++  drop-high
   |=  t=tape
   ^-  tape
-  ?~  t  ~
-  ?.  (gte i.t 128)  t
-  $(t t.t)
+  =/  r=tape  (drop-cont t)
+  ?~  r  ~
+  ?:  (gte i.r 192)  t.r
+  r
 ::  +term-set / +overlap: the duplicate test. Percent of distinct terms two
 ::  bodies share. On the live store every true duplicate pair scored 60 or
 ::  more and every distinct pair under 45.
@@ -528,11 +657,37 @@
 ::  +weak-at: a best hit under this strength is reported as weak, the way to
 ::  say "probably nothing stored about this" without hiding what there is.
 ++  weak-at  ^-(@ud 35)
-::  +superseded: where an entry says its fact now lives.
+::  +superseded: where an entry says its fact now lives. An empty
+::  `superseded-by:` line (a hand edit, an import) names nowhere, and
+::  the entry is live: read as superseded it left search, recall and
+::  the index with nothing in its place.
+::  An entry the reader before CRLF support read as superseded still is
+::  (+front-v1), whatever this reader makes of its block.
 ++  superseded
   |=  e=know-entry
   ^-  (unit @t)
-  (meta-get meta:(front body.e) 'superseded-by')
+  =/  v=(unit @t)  (meta-get meta:(front body.e) 'superseded-by')
+  =?  v  |(?=(~ v) =(`'' v))  (meta-get (front-v1 body.e) 'superseded-by')
+  ?:(=(`'' v) ~ v)
+::  +front-v1: the front matter fields as the reader before CRLF support
+::  read them: from a first line of `---` to the next line that starts
+::  with `---`, every line with a colon a field, its name and value
+::  trimmed of spaces
+++  front-v1
+  |=  body=@t
+  ^-  (list [k=@t v=@t])
+  =/  t=tape  (trip body)
+  ?.  =("---\0a" (scag 4 t))  ~
+  =/  aft=tape  (slag 4 t)
+  =/  e=(unit @ud)  (find "\0a---" aft)
+  ?~  e  ~
+  %+  murn  (to-wain:format (crip (scag u.e aft)))
+  |=  l=@t
+  ^-  (unit [k=@t v=@t])
+  =/  lt=tape  (trip l)
+  =/  c=(unit @ud)  (find ":" lt)
+  ?~  c  ~
+  `[(crip (trim-sp (scag u.c lt))) (crip (trim-sp (slag +(u.c) lt)))]
 ::  +search: the query path the tools and the routes share. Words rank by
 ::  BM25; a query in double quotes must appear verbatim (key or body) and
 ::  ranks by its words. Superseded entries are left out unless old. tc is
@@ -540,11 +695,7 @@
 ++  search
   |=  [es=(list [key=path e=know-entry]) tc=term-cache q=@t old=?]
   ^-  (list hit)
-  =/  qt=tape  (trip q)
-  =/  phrase=(unit tape)
-    ?.  ?=([%'"' * * *] qt)  ~
-    ?.  =(`@`34 `@`(rear `tape`qt))  ~
-    `(cass (snip `tape`t.qt))
+  =/  phrase=(unit tape)  (phrase-of q)
   =/  live=(list [key=path e=know-entry])
     %+  skim  es
     |=  [key=path e=know-entry]
@@ -553,7 +704,26 @@
         =/  hay=tape  (cass :(weld (trip (spat key)) " " (trip body.e)))
         ?=(^ (find u.phrase hay))
     ==
-  (rank (docs-of live tc) ?~(phrase q (crip u.phrase)))
+  =/  ranked=(list hit)  (rank (docs-of live tc) ?~(phrase q (crip u.phrase)))
+  ?~  phrase  ranked
+  ::  every live entry holds the phrase. The ranker scores whole words
+  ::  outside the front matter, and gives nothing for "C++", "to be" or
+  ::  part of a word: those entries follow the ranked ones as full
+  ::  matches rather than being dropped.
+  =/  got=(set path)  (silt (turn ranked |=(h=hit key.h)))
+  %+  weld  ranked
+  %+  murn  live
+  |=  [key=path e=know-entry]
+  ^-  (unit hit)
+  ?:((~(has in got) key) ~ `[0 100 key])
+::  +phrase-of: the lower-cased text of a query in double quotes
+++  phrase-of
+  |=  q=@t
+  ^-  (unit tape)
+  =/  qt=tape  (trip q)
+  ?.  ?=([%'"' * * *] qt)  ~
+  ?.  =(`@`34 `@`(rear `tape`qt))  ~
+  `(cass (snip `tape`t.qt))
 ::  +source-of: an entry's front-matter source (agent, user or ''). The
 ::  plugins quote what an agent wrote when they show it.
 ++  source-of
@@ -601,7 +771,7 @@
   =/  hops=(list [to=path via=path])
     %+  scag  5
     =|  [out=(list [to=path via=path]) seen=(set path)]
-    =/  top=(list hit)  (scag 3 hs)
+    =/  top=(list hit)  (scag (min 3 k) hs)
     |-  ^-  (list [to=path via=path])
     ?~  top  (flop out)
     =/  ls=(list path)
@@ -724,35 +894,83 @@
 ::  matter, created kept (or set), author and source set when given,
 ::  verified today (by the author when there is one), and marked sensitive
 ::  or not as sens says.
+::  The old entry's block passes through, every byte of it but the lines
+::  of the fields set here (+front-put), so a YAML list, a comment or a
+::  field this lib does not know survives a save.
 ++  stamp
   |=  [old=(unit know-entry) prose=@t author=@t source=@t now=@da sens=?]
   ^-  @t
   =/  meta=(list [k=@t v=@t])  ?~(old ~ meta:(front body.u.old))
-  =?  meta  =(~ (meta-get meta 'created'))  (meta-put meta 'created' (iso-day ?~(old now updated.u.old)))
-  =?  meta  !=('' author)  (meta-put meta 'author' author)
-  =?  meta  !=('' source)  (meta-put meta 'source' source)
-  =.  meta  (meta-put meta 'verified' (iso-day now))
-  =?  meta  !=('' author)  (meta-put meta 'verified-by' author)
-  =.  meta  (meta-put meta 'sensitive' ?:(sens 'yes' ''))
-  (with-front meta prose)
+  ::  an entry read as superseded only by the reader before CRLF support
+  ::  (+superseded, a block closed by `----`) keeps that mark in a block
+  ::  built here, so a save never makes it live
+  =?  meta  ?&(?=(^ old) ?=(~ (meta-get meta 'superseded-by')))
+    =/  sup=(unit @t)  (superseded u.old)
+    ?~(sup meta (meta-put meta 'superseded-by' u.sup))
+  =/  sets=(list [k=@t v=@t])
+    ;:  weld
+      ?^  (meta-get meta 'created')  ~
+      ~[['created' (iso-day ?~(old now updated.u.old))]]
+      ?:(=('' author) ~ ~[['author' author]])
+      ?:(=('' source) ~ ~[['source' source]])
+      ~[['verified' (iso-day now)]]
+      ?:(=('' author) ~ ~[['verified-by' author]])
+      ~[['sensitive' ?:(sens 'yes' '')]]
+    ==
+  =/  s  ?~(old ~ (front-split body.u.old))
+  ?~  s
+    (with-front (roll sets |=([[k=@t v=@t] m=_meta] (meta-put m k v))) prose)
+  ::  the old block alone, its closing fence ended, then the fields set
+  =/  eol=tape  ?:(?=(^ (find "\0d" open.u.s)) "\0d\0a" "\0a")
+  =/  close=tape
+    =/  fc=tape  (flop close.u.s)
+    ?:  &(?=(^ fc) =('\0a' i.fc))  close.u.s
+    (weld close.u.s eol)
+  =/  blk=@t  (crip :(weld open.u.s `tape`(zing head.u.s) close))
+  =.  blk  (roll sets |=([[k=@t v=@t] b=_blk] (front-put b k v)))
+  (cat 3 blk prose)
 ::  +sensitive: marked `sensitive: yes` in its front matter. Only the owner
 ::  and keys cleared for it see such an entry (docs/agent-knowledge.md).
-::  It fails closed on the shapes a hand edit or an import brings: any case,
-::  a tab, and CRLF line endings.
+::  It fails closed. In doubt the entry is sensitive.
 ++  sensitive
   |=  e=know-entry
   ^-  ?
-  =/  b=@t
-    ?.  =("---\0d\0a" (scag 5 (trip body.e)))  body.e
-    (crip (skip (trip body.e) |=(c=@tD =('\0d' c))))
-  =/  v=(unit @t)  (meta-get meta:(front b) 'sensitive')
-  ?~(v | (yes-word u.v))
+  (sens-text body.e)
+::  +sens-text: does a body carry the mark? Every line from the opening
+::  fence to the closing one is read with +field-of, as +front reads it,
+::  so the name counts in any case and with CRLF line ends. It also
+::  counts where +front sees no front matter: in a block with no field
+::  or a line of prose in it, and under an opening fence that is never
+::  closed. A rule right under the opening one closes nothing: the
+::  reader before CRLF support read the mark below it.
+++  sens-text
+  |=  body=@t
+  ^-  ?
+  =/  a  (take-line (trip body))
+  ?.  (fence-line l.a)  |
+  =/  t=tape  r.a
+  =/  top=?  &
+  |-  ^-  ?
+  ?~  t  |
+  =/  b  (take-line t)
+  ?:  &((fence-line l.b) !top)  |
+  =/  f  (field-of l.b)
+  ?:  &(?=(^ f) =('sensitive' k.u.f) (sens-on v.u.f))  &
+  $(t r.b, top |)
 ::  +yes-word: a front-matter yes or true, in any case, with no tab or CR
 ++  yes-word
   |=  v=@t
   ^-  ?
   =/  w=tape  (cass (skip (trip v) |=(c=@tD |(=('\09' c) =('\0d' c)))))
   |(=("yes" w) =("true" w))
+::  +sens-on: does a value of the mark set it? Anything but a plain no:
+::  a quoted yes, a yes with a comment after it and a word we do not
+::  know all leave the entry sensitive.
+++  sens-on
+  |=  v=@t
+  ^-  ?
+  =/  w=@t  (crip (cass (unq (trim-ws (trip v)))))
+  !(~(has in (silt `(list @t)`~['' 'no' 'false' 'off' 'n' '0' 'null' '~'])) w)
 ::  +is-core: tagged core, so every session loads it (+index-text). Only
 ::  the owner adds or removes the tag. An agent key may not rewrite or
 ::  supersede an entry that has it.
@@ -768,7 +986,7 @@
 ++  key-save-check
   |=  [old=(unit know-entry) cleared=? tainted=? body=@t]
   ^-  (each @t tape)
-  ?~  old  [%& body]
+  ?~  old  [%& ?:(tainted (raise-sens body) body)]
   ?:  (is-core u.old)  [%| "an agent key may not edit a core entry"]
   =/  sen=?  (sensitive u.old)
   ?:  &(sen !cleared)  [%| "the entry is not available to this agent key"]
@@ -779,9 +997,8 @@
 ++  raise-sens
   |=  body=@t
   ^-  @t
-  ?:  (sensitive [body *@da ~ ~])  body
-  =/  f  (front body)
-  (with-front (meta-put meta.f 'sensitive' 'yes') rest.f)
+  ?:  (sens-text body)  body
+  (front-put body 'sensitive' 'yes')
 ::  +core-tag: does a requested tag name core once the writer case-folds
 ::  it? An untag drops the folded tag, so 'Core' removes 'core' too.
 ++  core-tag
@@ -896,6 +1113,7 @@
     (turn es |=([k=path e=know-entry] (turn (links body.e) |=(t=path [k t]))))
   =/  ends=(list path)  (zing (turn outs |=([f=path t=path] ~[f t])))
   =/  linked=(set path)  (silt ends)
+  =/  by-key=(map path know-entry)  (malt all)
   :*  dups
       (skip outs |=([* t=path] (~(has in keys) t)))
     ::
@@ -905,7 +1123,18 @@
       =/  s=(unit @t)  (superseded e)
       ?~  s  ~
       =/  t=(unit path)  (key-of u.s)
-      ?:(&(?=(^ t) (~(has in keys) u.t)) ~ `[k u.s])
+      ?:  |(?=(~ t) !(~(has by by-key) u.t))  `[k u.s]
+      =/  cur=path  u.t
+      =/  seen=(set path)  (silt ~[k])
+      |-  ^-  (unit [key=path to=@t])
+      ?:  (~(has in seen) cur)  `[k u.s]
+      =/  ne=(unit know-entry)  (~(get by by-key) cur)
+      ?~  ne  ~
+      =/  ns=(unit @t)  (superseded u.ne)
+      ?~  ns  ~
+      =/  nt=(unit path)  (key-of u.ns)
+      ?~  nt  ~
+      $(cur u.nt, seen (~(put in seen) cur))
     ::
       (murn es |=([k=path e=know-entry] ?.(=(~ tags.e) ~ `k)))
     ::

@@ -382,7 +382,8 @@ try {
   check('a read link can\'t be typed in', await d.evaluate(() =>
     document.getElementById('src').readOnly && document.getElementById('src').value === '# ro'));
   await d.keyboard.down('Control'); await d.click(KEEP); await d.keyboard.up('Control');
-  await until(d, () => document.querySelector('.dtab.on')?.dataset.key === 'notes/keep');
+  await until(d, () => document.querySelector('.dtab.on')?.dataset.key === 'notes/keep'
+    && document.getElementById('src').value !== '# ro');
   await d.click('.dtab[data-key="notes/ro"]');
   await until(d, () => document.getElementById('src').value === '# ro');
   await d.focus('#src');
@@ -430,6 +431,10 @@ try {
   await drawer(m, 'l');
   const MV = SWROW('/x/doc/code') + ' + .swmv';
   await until(m, (s) => !!document.querySelector(s), MV);
+  //  the drawer lists the whole page tree above shared with me, so on a
+  //  ship with more pages the row starts below the fold. It is scrolled
+  //  to, as a user would, and must then be on screen and uncovered
+  await m.evaluate((s) => document.querySelector(s)?.scrollIntoView({ block: 'center' }), MV);
   check('phone: the row\'s Move into my pages is in the left drawer', await reach(m, MV));
   check('  ...a titled button, in the tab order', await m.evaluate((s) => {
     const b = document.querySelector(s);
@@ -448,6 +453,9 @@ try {
   check('phone: the link row appears', await until(m, (s) => !!document.querySelector(s), LP('notes/doc')));
   await closeAll(m);
   await drawer(m, 'l');
+  //  the drawer lists the whole tree, so on a ship with many pages at the root
+  //  the row sits below the fold: bring it in before asking if it is reachable
+  await m.evaluate((s) => document.querySelector(s)?.scrollIntoView({ block: 'center' }), LP('notes/doc'));
   check('phone: the link row is in the drawer', await reach(m, LP('notes/doc')));
   await tapRow(m, LP('notes/doc'));
   check('phone: it opens', await until(m, () => document.getElementById('src').value === '# B again'));

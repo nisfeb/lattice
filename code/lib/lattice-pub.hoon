@@ -10,18 +10,9 @@
 ::  in a plain desk /lib (where these arms are unit-tested) and in grubbery's
 ::  gub/lib (where the lattice nexus wraps them).
 ::
+/<  *  /lib/lattice-pub-types.hoon
 |%
-::  a stored page: the gemtext body, stored as a bare cord.
-::
-+$  page  @t
-::  public-page actions poked at the pub writer. %save-page is an idempotent
-::  upsert. Pages carry no timestamp or tags, so there's no separate import
-::  action (unlike know entries).
-::
-+$  pub-action
-  $%  [%save-page key=@t body=@t]
-      [%del-page key=@t]
-  ==
+::  Stored-page and action types live in /lib/lattice-pub-types.
 ::  derived per-page index row (no bodies). hash = (sham body), the parity key
 ::  the agent diffs its content-map against. updated/bytes are informational.
 ::
@@ -178,8 +169,6 @@
   ?~  ds  ~
   =/  at=@da  (roll t.ds |:([a=*@da b=i.ds] (min a b)))
   `?:((lte at now) *@da at)
-+$  pub-row    [updated=@da bytes=@ud hash=@uvH]
-+$  pub-index  (map path pub-row)
 ::  +to-pub-row: project a stored page onto its index row.
 ::
 ++  to-pub-row
@@ -196,15 +185,8 @@
 ::  (urb://ship/pax). Stored as its own grub under /sub/pages/, whose per-sub
 ::  keep fiber notices the moment the peer edits that page. %sub-page /
 ::  %unsub-page create and tear down that grub (and thus its keep).
+::  (+follows, +page-sub, +sub-action live in /lib/lattice-pub-types.)
 ::
-+$  follows  (set @p)
-+$  page-sub  [ship=@p pax=path]
-+$  sub-action
-  $%  [%follow ship=@p]
-      [%unfollow ship=@p]
-      [%sub-page =page-sub]
-      [%unsub-page =page-sub]
-  ==
 +$  vrail  [pax=path nom=@ta]
 ::  +key-to-rail: a content-map key (path) -> the vault rail holding its page,
 ::  rooted at [base]. Strips the leading `pub` element (redundant with base) and

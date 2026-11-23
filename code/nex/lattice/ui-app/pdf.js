@@ -82,6 +82,22 @@
   }
 
   const same = (u) => u.origin === location.origin;
+  const badQuery = (raw, u) => {
+    const h = String(raw || '').split('#')[0], q = h.indexOf('?');
+    if (q >= 0 && h.slice(q + 1) !== 'data') return true;
+    return !!u.search && u.search !== '?data';
+  };
+  const decodeCssEsc = (s) => s.replace(/\\([0-9a-f]{1,6})\s?/gi, (_, h) => {
+    const c = parseInt(h, 16);
+    return c > 0 && c <= 0x10ffff ? String.fromCodePoint(c) : '';
+  }).replace(/\\(.)/g, '$1');
+  const cleanCss = (css) => {
+    let s = String(css || '').replace(/\/\*[\s\S]*?\*\//g, '');
+    if (/\\/.test(s) && /@import|(?:url|image-set)\s*\(/i.test(decodeCssEsc(s))) s = decodeCssEsc(s);
+    s = s.replace(/@import[^;{}]*(?:;|$)/gi, '');
+    s = s.replace(/(?:url|image-set)\s*\((?:[^()"']|"[^"]*"|'[^']*')*\)/gi, 'none');
+    return s;
+  };
   const dataUrl = (blob) => new Promise((ok, no) => {
     const r = new FileReader();
     r.onload = () => ok(r.result);
@@ -90,40 +106,65 @@
   });
   //  Self-contained: the ship's images and stylesheets go in as data, since
   //  neither the desktop's print window nor a print frame carries the
-  //  session, and every other link is made absolute. Scripts go: nothing
-  //  here would run them, and a PDF has no use for them.
-  async function inline(d) {
+  //  session, and every other link is made absolute. Scripts, frames, objects,
+  //  embeds, and external fetches go: nothing here may trigger route GETs or
+  //  leak to other hosts unless outside content is allowed for this page.
+  async function inline(d, opts = {}) {
     const base = location.href;
     const abs = (v) => { try { return new URL(v, base); } catch { return null; } };
-    d.querySelectorAll('script,base,meta[http-equiv]').forEach((e) => e.remove());
+    const dropImg = (img) => img.replaceWith(d.createTextNode(img.getAttribute('alt') || ''));
+    const dropSel = opts.writer
+      ? 'script,base,meta[http-equiv],iframe,object,embed,svg script,svg image,svg use,svg foreignObject'
+      : 'script,base,meta[http-equiv],iframe,object,embed,svg';
+    d.querySelectorAll(dropSel).forEach((e) => e.remove());
     for (const e of d.querySelectorAll('*')) {
-      for (const a of [...e.attributes]) if (/^on/i.test(a.name)) e.removeAttribute(a.name);
+      for (const a of [...e.attributes]) {
+        const n = a.name.toLowerCase();
+        if (/^on/i.test(n) || n === 'ping' || n === 'srcset' || n === 'poster' || n === 'background') e.removeAttribute(a.name);
+        else if (n === 'style') e.setAttribute('style', cleanCss(a.value));
+      }
     }
+    for (const s of d.querySelectorAll('style')) s.textContent = cleanCss(s.textContent);
     for (const a of d.querySelectorAll('a[href]')) {
-      const u = abs(a.getAttribute('href'));
-      if (u && !a.getAttribute('href').startsWith('#')) a.setAttribute('href', u.href);
+      const raw = a.getAttribute('href') || '';
+      const u = abs(raw);
+      if (!u) { a.removeAttribute('href'); continue; }
+      if (!/^(https?:|mailto:|urb:)$/i.test(u.protocol) && !raw.startsWith('#')) { a.removeAttribute('href'); continue; }
+      if (!raw.startsWith('#')) a.setAttribute('href', u.href);
     }
     const jobs = [];
     for (const img of d.querySelectorAll('img[src]')) {
-      img.removeAttribute('srcset');
       img.removeAttribute('loading');
-      const u = abs(img.getAttribute('src'));
-      if (!u || u.protocol === 'data:') continue;
-      img.setAttribute('src', u.href);
-      if (!same(u)) continue;
+      const raw = img.getAttribute('src') || '';
+      const u = abs(raw);
+      if (!u) { dropImg(img); continue; }
+      if (u.protocol === 'data:' || u.protocol === 'blob:') continue;
+      if (!/^https?:$/i.test(u.protocol)) { dropImg(img); continue; }
+      if (!same(u)) {
+        if (!opts.outside) { dropImg(img); continue; }
+        img.setAttribute('src', u.href);
+        continue;
+      }
+      if (badQuery(raw, u)) { dropImg(img); continue; }
       jobs.push(fetch(u.href, { credentials: 'same-origin' })
         .then((r) => (r.ok ? r.blob() : null))
         .then((b) => (b ? dataUrl(b) : null))
-        .then((v) => { if (v) img.setAttribute('src', v); })
-        .catch(() => {}));
+        .then((v) => { if (v) img.setAttribute('src', v); else dropImg(img); })
+        .catch(() => dropImg(img)));
     }
     for (const l of d.querySelectorAll('link[rel~=stylesheet][href]')) {
-      const u = abs(l.getAttribute('href'));
-      if (!u) { l.remove(); continue; }
-      if (!same(u)) { l.setAttribute('href', u.href); continue; }
+      const raw = l.getAttribute('href') || '';
+      const u = abs(raw);
+      if (!u || !/^https?:$/i.test(u.protocol)) { l.remove(); continue; }
+      if (!same(u)) {
+        if (!opts.outside) { l.remove(); continue; }
+        l.setAttribute('href', u.href);
+        continue;
+      }
+      if (badQuery(raw, u)) { l.remove(); continue; }
       jobs.push(fetch(u.href, { credentials: 'same-origin' })
         .then((r) => (r.ok ? r.text() : ''))
-        .then((t) => { l.replaceWith(style(d, t)); })
+        .then((t) => { l.replaceWith(style(d, cleanCss(t))); })
         .catch(() => l.remove()));
     }
     await Promise.all(jobs);
@@ -194,7 +235,13 @@
     let t = d.querySelector('title');
     if (!t) { t = d.createElement('title'); d.head.prepend(t); }
     if (!t.textContent.trim()) t.textContent = o.title;
-    await inline(d);
+    await inline(d, o);
+    const csp = d.createElement('meta');
+    csp.setAttribute('http-equiv', 'Content-Security-Policy');
+    csp.setAttribute('content', o.outside
+      ? "default-src 'none'; img-src data: blob: https: http:; style-src 'unsafe-inline' https: http:; font-src data:;"
+      : "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:;");
+    d.head.prepend(csp);
     const rust = window.__TAURI__ && window.__TAURI__.core;
     if (rust) {
       const page = pageOf(d, o.writer);

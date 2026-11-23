@@ -18,7 +18,7 @@ import * as L from 'leaflet/dist/leaflet-src.esm.js';
 import leafletCss from 'leaflet/dist/leaflet.css';
 import { forward as toMgrs } from 'mgrs';
 import {
-  parse, serialize, props, view as readView, sourceLink, bounds, firstPos, fmtPos,
+  parse, serialize, props, view as readView, sourceLink, bounds, firstPos, fmtPos, ringPts,
   colorOf, kindColor, ICONS, iconOf, orreryLink, gridStep, STYLES,
 } from './core.js';
 import { attachDraw } from './draw.js';
@@ -30,7 +30,7 @@ const BASE_CSS = `
 .lm-pop .lm-kv{font-size:12px;word-break:break-word}
 .lm-pop .lm-md{font-size:12.5px;margin-top:4px;max-height:120px;overflow:auto;word-break:break-word}
 .lm-pop a{color:#1a6fb0}
-lat-map{display:flex;flex-direction:column;min-height:0;height:100%;overflow:hidden;font-size:13px;position:relative}
+lat-map{display:flex;flex-direction:column;min-height:0;height:100%;overflow:hidden;font-size:13px;position:relative;isolation:isolate}
 .lm-bar{display:flex;flex-wrap:wrap;gap:2px;align-items:center;padding:4px 6px;border-bottom:1px solid var(--border,#8884);flex:none}
 .lm-bar button,.lm-bar select{font:inherit;font-size:13px;min-width:28px;height:28px;padding:0 8px;border:1px solid transparent;border-radius:4px;background:none;color:inherit;cursor:pointer}
 .lm-bar select{border-color:var(--border,#8884)}
@@ -268,8 +268,8 @@ export function mount(host, opts = {}) {
       case 'MultiPoint': for (const c of g.coordinates) out.push(...layersOf({ type: 'Point', coordinates: c }, p, selOn, rend, dim)); break;
       case 'LineString': out.push(L.polyline(g.coordinates.map(ll), o)); break;
       case 'MultiLineString': out.push(L.polyline(g.coordinates.map((l) => l.map(ll)), o)); break;
-      case 'Polygon': out.push(L.polygon(g.coordinates.map((r) => r.slice(0, -1).map(ll)), { ...o, fillOpacity: dim ? 0.08 : 0.2 })); break;
-      case 'MultiPolygon': out.push(L.polygon(g.coordinates.map((pg) => pg.map((r) => r.slice(0, -1).map(ll))), { ...o, fillOpacity: dim ? 0.08 : 0.2 })); break;
+      case 'Polygon': out.push(L.polygon(g.coordinates.map((r) => ringPts(r).map(ll)), { ...o, fillOpacity: dim ? 0.08 : 0.2 })); break;
+      case 'MultiPolygon': out.push(L.polygon(g.coordinates.map((pg) => pg.map((r) => ringPts(r).map(ll))), { ...o, fillOpacity: dim ? 0.08 : 0.2 })); break;
       case 'GeometryCollection': for (const h of g.geometries) out.push(...layersOf(h, p, selOn, rend, dim)); break;
       default:
     }
@@ -555,8 +555,8 @@ export function mount(host, opts = {}) {
       parts.push(el('label', '', 'Time'), trow);
       tm.onchange = () => {
         const v = tm.value.trim();
-        if (v && !Number.isFinite(Date.parse(v))) { ctl.say('That time is not a date lattice can read.'); return; }
-        setProp('time', v || undefined);
+        if (v && !Number.isFinite(Date.parse(v))) { ctl.say('That time is not a date lattice can read.'); return false; }
+        return setProp('time', v || undefined);
       };
       const crow = el('div', 'lm-row');
       const col = el('input');
@@ -577,7 +577,7 @@ export function mount(host, opts = {}) {
       if (g && g.type === 'Point') {
         const rd = field('Ring radius, metres', inp('radius', 'number'));
         rd.min = '0';
-        rd.onchange = () => { const v = Number(rd.value); setProp('radius', rd.value === '' || !(v > 0) ? undefined : Math.min(v, 2e7)); };
+        rd.onchange = () => { const v = Number(rd.value); return setProp('radius', rd.value === '' || !(v > 0) ? undefined : Math.min(v, 2e7)); };
       }
       const sr = field('Source (a URL or a page)', inp('source'));
       sr.onchange = () => setProp('source', sr.value.trim() || undefined);
@@ -607,6 +607,14 @@ export function mount(host, opts = {}) {
       }
     }
     detail.replaceChildren(...parts);
+    //  what each field shows as painted, and as last written: a field is
+    //  written only when it holds something else, so that being in a field
+    //  is not an edit
+    for (const x of detail.querySelectorAll('[data-k]')) {
+      x._v0 = x.value;
+      const was = x.onchange;
+      if (typeof was === 'function') x.onchange = () => { const ok = was(); if (ok !== false) x._v0 = x.value; return ok; };
+    }
   }
   function kv(k, v) { const d = el('div', 'lm-kv'); d.append(el('b', '', k + ': '), String(v)); return d; }
   //  what a feature is, to read: its name, kind, time, where, its links
@@ -663,10 +671,11 @@ export function mount(host, opts = {}) {
     d.append(el('b', '', 'source: '), linkEl(src, src.url || src.page));
     return d;
   }
+  //  false when the write was refused
   function setProp(k, v) {
-    if (sel < 0) return;
+    if (sel < 0) return true;
     const i = sel;
-    write(() => {
+    const ok = write(() => {
       const f = doc.features[i];
       const p = {};
       const old = f.properties && typeof f.properties === 'object' ? f.properties : {};
@@ -677,7 +686,27 @@ export function mount(host, opts = {}) {
     drawOne(i);
     paintLegend();
     paintList();
-    if (k === 'radius' || k === 'kind') paintDetail();
+    if (k === 'radius' || k === 'kind') repaintDetail();
+    return ok;
+  }
+  //  the detail pane rebuilt under a field in use: the field keeps what
+  //  is typed in it, and the cursor. A field taken off the page while it
+  //  has the focus fires no change, so its text would be lost.
+  //  Text typed in it comes back only if this is still the feature it was
+  //  typed for (`same`), and a field only focused takes what the page now has.
+  function repaintDetail(same = true) {
+    const a = document.activeElement;
+    const held = a && detail.contains(a) && a.dataset.k ? { k: a.dataset.k, v: a.value, s: a.selectionStart, e: a.selectionEnd, typed: a.value !== a._v0 } : null;
+    //  the field taken off the page may still fire its change when the focus
+    //  leaves it, and write what it holds to whatever is selected by then
+    if (held) a.onchange = null;
+    paintDetail();
+    const b = held && [...detail.querySelectorAll('[data-k]')].find((x) => x.dataset.k === held.k);
+    if (!b) return;
+    if (held.typed && !same) ctl.say('The features changed under what was being typed, so that text was not kept.');
+    else if (held.typed) b.value = held.v;
+    b.focus({ preventScroll: true });
+    try { b.setSelectionRange(held.s, held.e); } catch { /* a field with no text selection */ }
   }
   function mgrsOf(c) { try { return toMgrs([c[0], c[1]], 5); } catch { return ''; } }
 
@@ -836,13 +865,23 @@ export function mount(host, opts = {}) {
     const r = parse(t);
     if (r.error) return false;
     const oldLayers = JSON.stringify(viewOf().layers);
+    //  the selected feature is the one with the same shape, which may be at
+    //  another place in the list now. With none, the selection stays at its
+    //  place and nothing typed for the old one is carried to the new.
+    const shape = (f) => JSON.stringify(f && f.geometry);
+    const was = sel >= 0 && doc.features[sel] ? shape(doc.features[sel]) : null;
     doc = r.doc;
     base = String(t);
     draw.cancel();
+    let same = true;
+    if (was !== null && !(sel < doc.features.length && shape(doc.features[sel]) === was)) {
+      const at = doc.features.findIndex((f) => shape(f) === was);
+      if (at >= 0) sel = at; else same = false;
+    }
     if (sel >= doc.features.length) sel = -1;
     drawAll();
     draw.selected();
-    paintLegend(); paintList(); paintDetail(); paintTime();
+    paintLegend(); paintList(); repaintDetail(same); paintTime();
     const v = viewOf();
     if (v.base !== style) setStyle(v.base);
     if (JSON.stringify(v.layers) !== oldLayers) loadLayers();
@@ -857,7 +896,25 @@ export function mount(host, opts = {}) {
     draw.setEditable(!locked());
     if (locked() !== was) paintDetail();
   };
-  ctl.sync = () => true;
+  //  the shell calls this before a save, a tab switch or a park. A detail
+  //  field writes on change, which comes only when it is left, so the
+  //  field in use is written here. false when it could not be.
+  ctl.sync = () => {
+    const a = document.activeElement;
+    if (!a || !detail.contains(a) || typeof a.onchange !== 'function' || locked()) return true;
+    //  only a field whose text is not what the page holds
+    if (a.value === a._v0) return true;
+    return a.onchange() !== false;
+  };
+  //  the outline's nth entry is the nth named feature (core.js outline)
+  ctl.heading = (idx) => {
+    let seen = 0;
+    for (let i = 0; i < doc.features.length; i++) {
+      if (!props(doc.features[i]).name) continue;
+      if (seen === idx) { select(i, true); return; }
+      seen++;
+    }
+  };
   ctl.destroy = () => {
     dead = true;
     off.abort();

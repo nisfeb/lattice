@@ -251,7 +251,7 @@ class Parser {
     if (rows.some((r) => r.childCount !== width)) return null;
     return this.keep(S.table.create({
       ...spanOf(el),
-      pre: { text: this.src.slice(el.openEnd, preEnd), end: preEnd }, hdr,
+      pre: { text: this.src.slice(el.openEnd, preEnd), end: preEnd, cols: width }, hdr,
     }, rows), el);
   }
 

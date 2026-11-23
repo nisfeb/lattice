@@ -241,7 +241,7 @@
       lines.push('Lattice makes this folder again on the next conflict.');
     const open = mode !== 'know' && !grubPath && current
       && (current === path || current.startsWith(path + '/'));
-    if (open && dirty) lines.push('The open page has unsaved changes, and they go too.');
+    if (open && (!writerSync() || dirty)) lines.push('The open page has unsaved changes, and they go too.');
     const parked = parkedUnder(path).filter((t) => t.snap.dirty).length;
     if (parked) lines.push(plural(parked, 'other tab') + ' with unsaved changes to it'
       + (parked === 1 ? ' loses them.' : ' lose them.'));
@@ -285,7 +285,9 @@
     let r;
     try {
       await savesSettled();
-      r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
+      //  tree=1: the pages under a page go with it, as the confirm said.
+      //  Without it the ship deletes a page alone and leaves those.
+      r = await mutate(api + '/page-del?name=' + encodeURIComponent(path) + '&tree=1');
     } finally { end(); }
     if (!r.ok) { st('delete failed' + await errText(r), false); return false; }
     dropTreeNodes(path);

@@ -1,7 +1,7 @@
 ::  Unit tests for /lib/lattice-clip (HTML -> Markdown). Run via the run-tests
 ::  MCP tool.
 ::
-/+  *test, clip=lattice-clip
+/+  *test, clip=lattice-clip, md=lattice-md
 |%
 ++  m    to-md:clip
 ++  has  |=([n=tape h=@t] ^-(? ?=(^ (find n (trip h)))))
@@ -217,4 +217,148 @@
   =/  t=@t  (crip (zing (reap 16.000 "a <1 ")))
   (yes (has "a <1 a <1" (m (cat 3 t '>'))))
 ++  test-angle-before-space-is-text  (yes (has "1 < 2" (m '<p>1 < 2</p>')))
+::  a link or image address is the attribute's value, entities decoded,
+::  with the characters markdown would end it at percent-encoded
+++  test-url-entities
+  ;:  weld
+    (yes (has "[t](/s?a=1&b=2)" (m '<a href="/s?a=1&amp;b=2">t</a>')))
+    (yes (has "![x](/i?a=1&b=2)" (m '<img src="/i?a=1&amp;b=2" alt="x">')))
+    (yes (has "[t](/s?q=%22a%20b%22)" (m '<a href="/s?q=&quot;a b&quot;">t</a>')))
+  ==
+++  test-url-parens
+  ;:  weld
+    %-  yes
+    %+  has  "[M](https://en.wikipedia.org/wiki/Mercury_%28planet%29)"
+    (m '<a href="https://en.wikipedia.org/wiki/Mercury_(planet)">M</a>')
+    (yes (has "![p](/a%28b%29.png)" (m '<img src="/a(b).png" alt="p">')))
+    ::  the archived link renders as one link to the whole address
+    %-  yes
+    %+  has  "href=\"https://en.wikipedia.org/wiki/Mercury_%28planet%29\""
+    (crip (render-md:md (m '<a href="https://en.wikipedia.org/wiki/Mercury_(planet)">M</a>')))
+    %-  yes
+    %+  has  "href=\"/s?a=1&amp;b=2\""
+    (crip (render-md:md (m '<a href="/s?a=1&amp;b=2">t</a>')))
+  ==
+::  a scheme spelled with entities is still that scheme
+++  test-url-entity-scheme
+  ;:  weld
+    (no (has "](" (m '<a href="java&#115;cript:alert(1)">click</a>')))
+    (no (has "![" (m '<img src="&#106;avascript:x" alt="a">')))
+    (yes (has "click" (m '<a href="java&#115;cript:alert(1)">click</a>')))
+  ==
+::  alt text is text: entities decoded, and no bracket or line break that
+::  would end the image early
+++  test-img-alt
+  ;:  weld
+    (yes (has "![Tom & Jerry](/p.png)" (m '<img src="/p.png" alt="Tom &amp; Jerry">')))
+    (yes (has "![a b c](/p.png)" (m '<img src="/p.png" alt="a ]b[ c">')))
+  ==
+::  a form is not chrome: a page wrapped in one keeps its text, and its
+::  controls still go
+++  test-form-transparent
+  =/  o=@t  (m '<body><form id="aspnetForm"><h1>T</h1><p>all of the article</p><button>Send</button><select><option>pick me</option></select><textarea>typed</textarea></form></body>')
+  ;:  weld
+    (yes (has "# T" o))
+    (yes (has "all of the article" o))
+    (no (has "Send" o))
+    (no (has "pick me" o))
+    (no (has "typed" o))
+  ==
+::  a dropped tag with no closing tag: one written as empty, or one that
+::  holds markup and not raw text, costs only itself. An unclosed script
+::  or style still takes the rest, which is its source.
+++  test-unclosed-dropped-tag
+  ;:  weld
+    (yes (has "after" (m '<p>before</p><svg width="1"/><p>after</p>')))
+    (yes (has "after" (m '<p>before</p><script src="a.js"/><p>after</p>')))
+    (yes (has "after" (m '<p>before</p><button>go<p>after</p>')))
+    (yes (has "after" (m '<p>before</p><nav><p>after</p>')))
+    (no (has "var" (m '<p>before</p><script>var x = 1; <p>after</p>')))
+    (no (has "color" (m '<p>before</p><style>p { color: red }')))
+    (yes (has "before" (m '<p>before</p><script>var x = 1;')))
+    ::  a closed one still goes with its content
+    (no (has "gone" (m '<p>a</p><svg><text>gone</text></svg><p>b</p>')))
+  ==
+::  text right after a code block is on a line of its own, not on the
+::  closing fence's
+++  test-text-after-pre
+  =/  o=@t  (m '<pre>code</pre>after<p>x</p>')
+  ;:  weld
+    (yes (has "```\0aafter" o))
+    (yes (has "<p>after" (crip (render-md:md o))))
+    (yes (has "> after" (m '<blockquote><pre>code</pre>after</blockquote>')))
+  ==
+::  a browser drops tabs and line breaks inside a url, so the scheme is
+::  tested on the url with them gone, as it is written
+++  test-url-control-bytes
+  ;:  weld
+    (no (has "](" (m '<a href="java&#9;script:alert(1)">x</a>')))
+    (no (has "](" (m '<a href="java\09script:alert(1)">x</a>')))
+    (no (has "](" (m '<a href="java&#10;script:alert(1)//">x</a>')))
+    (no (has "](" (m '<a href="j&#x0D;avascript:alert(1)">x</a>')))
+    (no (has "](" (m '<a href="java&#1;script:alert(1)">x</a>')))
+    (no (has "![" (m '<img src="da&#9;ta:image/png,x" alt="a">')))
+    (no (has "![" (m '<img src="java&#9;script:x" alt="a">')))
+    (yes (has "x" (m '<a href="java&#9;script:alert(1)">x</a>')))
+    ::  a safe url keeps its link, written without the byte
+    (yes (has "[t](http://x/ab)" (m '<a href="http://x/a&#9;b">t</a>')))
+    (yes (has "![p](/a.png)" (m '<img src="/a&#10;.png" alt="p">')))
+  ==
+::  `/>` makes no script, style or other raw text element empty: what
+::  follows up to its closing tag is its content, and goes with it. On
+::  any tag, a `/` that ends an unquoted value is that value's.
+++  test-self-closed-raw
+  ;:  weld
+    (no (has "hidden" (m 'a<script src="x" />hidden</script>z')))
+    (yes (has "z" (m 'a<script src="x" />hidden</script>z')))
+    (no (has "color" (m 'a<style/>b{color:red}</style>c')))
+    (no (has "hidden" (m 'a<iframe src=x />hidden</iframe>c')))
+    (no (has "hidden" (m 'a<textarea/>hidden <b>x</b></textarea>c')))
+    (no (has "hidden" (m 'a<button a=/>hidden</button>b')))
+    (no (has "hidden" (m 'a<svg x=y/>hidden</svg>c')))
+    ::  with no closing tag, an empty one costs only itself
+    (yes (has "after" (m 'a<script src="x" />after')))
+    (yes (has "after" (m 'a<svg x="1"/>after')))
+    (yes (has "after" (m 'a<svg a/>after</svg>')))
+  ==
+::  a quoted value that holds a blank and then `word=` is one value: the
+::  tag is still written as an empty element
+++  test-self-closed-quoted
+  ;:  weld
+    (yes (has "X" (m 'a<svg title="a b=c"/>X<svg>y</svg>Z')))
+    (yes (has "Z" (m 'a<svg title="a b=c"/>X<svg>y</svg>Z')))
+    (yes (has "X" (m 'a<svg style="fill: none; stroke=1"/>X<svg>y</svg>Z')))
+    (yes (has "X" (m 'a<svg title=\'q r=s\'/>X<svg>y</svg>Z')))
+    (yes (has "X" (m 'a<svg title="a=b"/>X<svg>y</svg>Z')))
+    (yes (has "X" (m 'a<svg title="a/b c=d" />X<svg>y</svg>Z')))
+    ::  an unquoted value or an unterminated quote ends in the `/`
+    (no (has "hidden" (m 'a<svg x = y/>hidden</svg>c')))
+    (no (has "hidden" (m 'a<svg title="a b=c/>hidden</svg>c')))
+    (no (has "hidden" (m 'a<svg title="q" x=y/>hidden</svg>c')))
+  ==
+::  a tag whose closing tag is not there is looked for once. Each such
+::  tag looked again through the rest, which made a page of them take
+::  minutes.
+++  test-unclosed-tags-linear
+  =/  navs=@t  (crip (zing (reap 4.000 "<nav>")))
+  =/  btns=@t  (crip (zing (reap 2.000 "<button a=/>")))
+  ;:  weld
+    (yes (has "end" (m (cat 3 navs '<p>end</p>'))))
+    (yes (has "end" (m (cat 3 btns '<p>end</p>'))))
+  ==
+::  a truncated closing tag on a non-raw dropped element does not drop the article,
+::  while a raw tag with a truncated closing tag still drops its content
+++  test-truncated-close-tag
+  ;:  weld
+    (yes (has "article" (m '<nav><p>article</p></nav')))
+    (no (has "secret" (m 'before<script>secret</script')))
+    (yes (has "before" (m 'before<script>secret</script')))
+  ==
+::  +attr matches full attribute names, not suffixes like data-src= or text in quotes
+++  test-attr-boundary
+  ;:  weld
+    (yes (has "https://real" (m '<img data-src="https://lazy" src="https://real" alt="pic">')))
+    (no (has "https://lazy" (m '<img data-src="https://lazy" alt="pic">')))
+    (yes (has "https://real" (m '<img alt="src=https://fake" src="https://real">')))
+  ==
 --

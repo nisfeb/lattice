@@ -181,6 +181,36 @@ console.log('# white space as LibreOffice reads it');
   check('rewriting LibreOffice\'s own white space layout is byte-identical', r.text === t2, r.error || firstDiff(t2, r.text || ''));
 }
 
+{
+  //  a character XML cannot hold is never written, and must not count as
+  //  text between two spaces: saved and reopened, the paragraph reads as
+  //  typed, less that character
+  const base = '<?xml version="1.0" encoding="UTF-8"?>\n<office:document xmlns:office="o" xmlns:text="t">\n <office:body>\n  <office:text>\n   <text:p>seed</text:p>\n  </office:text>\n </office:body>\n</office:document>\n';
+  const S = schema.nodes;
+  const strip = (x) => x.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, '');
+  const trip = (x) => {
+    const o = serializeFodt({ doc: S.doc.create(null, [S.paragraph.create(null, schema.text(x))]) }, base);
+    const back = o.text && parseFodt(o.text);
+    return o.error || back.error || back.doc.firstChild.textContent;
+  };
+  for (const x of ['two \u000c words', '\u0001 indented', 'a \u0008 b', ' \u0001 x', 'x \u0001 ', 'a  \u0002\u0003  b', '\u0001', 'a\u0001 b', 'a \ufffe b', 'tab\t\u0001 x', '\u0001\u0002 \u0003 \u0004 z']) {
+    check.eq(`${JSON.stringify(x)} reopens as typed, less what XML cannot hold`, trip(x), strip(x));
+  }
+  //  and split over text nodes with different marks, as a paste leaves it
+  const bold = schema.marks.strong.create();
+  const o = serializeFodt({ doc: S.doc.create(null, [S.paragraph.create(null, [schema.text('two '), schema.text('\u000c', [bold]), schema.text(' words')])]) }, base);
+  check.eq('a stripped character alone in a span leaves the spaces around it', o.error || parseFodt(o.text).doc.firstChild.textContent, 'two  words');
+  //  a seeded sweep over short strings of spaces, letters and such characters
+  let seed = 7, bad = null;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  for (let i = 0; i < 3000 && !bad; i++) {
+    let x = '';
+    for (let k = rnd(9) + 1; k > 0; k--) x += [' ', ' ', 'a', '\u0001', '\u000c', '\t', 'b'][rnd(7)];
+    if (trip(x) !== strip(x)) bad = x;
+  }
+  check('3000 random strings with such characters reopen as typed', !bad, JSON.stringify(bad));
+}
+
 console.log('# paired markers');
 {
   const t = read('10-unknown.fodt');
@@ -438,6 +468,192 @@ console.log('# copy and paste within Writer');
   const known = [...st7.styles.values()].find((e) => e.family === 'text' && !e.auto);
   check('a pasted character style this document defines stays', !!known && para(known.name) === 1);
   check('one it does not define goes', para('No_20_Such') === 0);
+}
+
+console.log('# attribute values, however the file quoted them');
+{
+  const wrap = (body, styles = '') => `<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="o" xmlns:text="t" xmlns:style="s" xmlns:table="tb" xmlns:xlink="x" office:mimetype="application/vnd.oasis.opendocument.text">
+ <office:styles>${styles}</office:styles>
+ <office:body>
+  <office:text>
+${body}
+  </office:text>
+ </office:body>
+</office:document>
+`;
+  //  the first element of that name in the saved text, as the tokenizer reads it
+  const first = (text, name) => { let hit = null; const walk = (e) => { for (const k of e.kids) if (k.name) { if (!hit && k.name === name) hit = k; walk(k); } }; const x = core.parseXml(text); if (x.error) return { error: x.error }; walk(x.root); return hit; };
+  const edit = (t, find = 'hello') => serializeFodt(applyEdit(parseFodt(t), { op: 'insertText', find, at: 'end', text: 'Z' }), t);
+  const attrsOf = (el) => el.attrs.map(([k]) => k + '=' + core.attr(el, k)).join(' | ');
+  //  values a producer may put in single quotes: a double quote, one that
+  //  reads as a second attribute, an ampersand, angle brackets, both quotes
+  for (const [what, tag, want] of [
+    ['a double quote', `text:style-name='a"b'`, 'text:style-name=a"b'],
+    ['what reads as a second attribute', `text:style-name="S" text:x='1" evil="2'`, 'text:style-name=S | text:x=1" evil="2'],
+    ['ampersands and brackets', `text:x='a &amp; b &lt;c&gt; > "d" &quot;e&quot; &#34;'`, 'text:x=a & b <c> > "d" "e" "'],
+    ['an apostrophe in double quotes', `text:x="it's &apos;so&apos;"`, "text:x=it's 'so'"],
+    ['spaces around the equals sign', `text:x = 'q"q'`, 'text:x=q"q'],
+  ]) {
+    const t = wrap(`   <text:p ${tag}>hello</text:p>`);
+    const o = edit(t);
+    const el = o.text ? first(o.text, 'text:p') : o;
+    check(`a paragraph with ${what} is rewritten well-formed`, !el.error && !!el.attrs, el.error || o.error);
+    check.eq('  with the same attributes and values', el.attrs ? attrsOf(el) : '', want);
+    check('  and opens again with the edit', !parseFodt(o.text || '').error && (o.text || '').includes('helloZ'));
+    check('  and unedited it is byte-identical', serializeFodt(parseFodt(t), t).text === t);
+  }
+  for (const [what, body, name, want] of [
+    ['link', `<text:p>hello <text:a xlink:href='h?a=1&amp;b="2"' office:name='a"b'>l</text:a></text:p>`, 'text:a', 'xlink:href=h?a=1&b="2" | office:name=a"b'],
+    ['span', `<text:p>hello <text:span text:style-name='N"o' text:x='"'>s</text:span></text:p>`, 'text:span', 'text:style-name=N"o | text:x="'],
+    ['list', `<text:list text:style-name='L"1' xml:id='i"d'><text:list-item><text:p>hello</text:p></text:list-item></text:list>`, 'text:list', 'text:style-name=L"1 | xml:id=i"d'],
+    ['section', `<text:section text:name='s"1'><text:p>hello</text:p></text:section>`, 'text:section', 'text:name=s"1'],
+    ['table cell', `<table:table table:name='t"1'><table:table-column/><table:table-row><table:table-cell table:style-name='c"1'><text:p>hello</text:p></table:table-cell></table:table-row></table:table>`, 'table:table-cell', 'table:style-name=c"1'],
+  ]) {
+    const o = edit(wrap('   ' + body));
+    const el = o.text ? first(o.text, name) : o;
+    check.eq(`a rewritten ${what} keeps single-quoted values`, el && el.attrs ? attrsOf(el) : (el && el.error) || o.error, want);
+  }
+  //  a list style whose name needs escaping, from the toolbar's command
+  const { TextSelection } = await import('prosemirror-state');
+  const keys = await importWriter('keys.js');
+  for (const raw of ['A&amp;B&quot;x', 'A&lt;B&gt;&apos;c']) {
+    const t = wrap('   <text:p>hello</text:p>', `<text:list-style style:name="${raw}"><text:list-level-style-bullet text:level="1" text:bullet-char="•"/></text:list-style>`);
+    const p = parseFodt(t);
+    const name = core.listStyleFor(p.styles, 'bullet');
+    let st = EditorState.create({ doc: p.doc, selection: TextSelection.create(p.doc, 2) });
+    keys.toList(name)(st, (tr) => { st = st.apply(tr); });
+    const o = serializeFodt({ ...p, doc: st.doc }, t);
+    const el = o.text ? first(o.text, 'text:list') : o;
+    check.eq(`a new list in the style ${JSON.stringify(name)} names it`, el && el.attrs ? core.attr(el, 'text:style-name') : (el && el.error) || o.error, name);
+    const dom = schema.nodes.list.spec.toDOM(st.doc.firstChild);
+    check.eq('  and shows under its decoded name, which a copy reads back', dom[1]['data-ls'] + ' ' + core.decode(schema.nodes.list.spec.parseDOM[0].getAttrs({ hasAttribute: () => true, getAttribute: () => dom[1]['data-ls'] }).xattrs[0][1]), name + ' ' + name);
+  }
+  //  a paired marker with its name in single quotes is still a pair
+  const pair = parseFodt(wrap(`   <text:p>hello <text:bookmark-start text:name='b"1'/>in<text:bookmark-end text:name = 'b"1'/> out</text:p>`));
+  const half = pair.doc.firstChild.copy(Fragment.from(pair.doc.firstChild.content.content.filter((n) => n.attrs.name !== 'text:bookmark-end')));
+  check.eq('a marker named in single quotes is paired', [...core.unbalanced(pair.doc)].join(), '');
+  check.eq('  and missing its other half is seen', [...core.unbalanced(pair.doc.copy(Fragment.from(half)))].join(), 'text:bookmark "b"1"');
+}
+
+console.log('# a table keeps its shape');
+{
+  //  the editor's guard (view.js) over the editor's own keymap: a replace
+  //  that joins cells or rows is refused, so the saved table opens as a
+  //  table again
+  const { Plugin, TextSelection, NodeSelection } = await import('prosemirror-state');
+  const { deleteSelection } = await import('prosemirror-commands');
+  const t = read('08-tables.fodt');
+  const p = parseFodt(t);
+  let tpos = -1, table = null;
+  p.doc.descendants((n, pos) => { if (tpos < 0 && n.type.name === 'table') { tpos = pos; table = n; } return tpos < 0; });
+  const cells = [];
+  table.descendants((n, pos) => { if (n.type.name === 'table_cell') cells.push(tpos + 1 + pos); return n.type.name !== 'table_cell'; });
+  const w = table.firstChild.childCount;
+  const shape = (doc) => { let tb = null; doc.descendants((n) => { if (!tb && n.type.name === 'table') tb = n; return !tb; }); const s = []; if (tb) tb.forEach((r) => s.push(r.childCount)); return s.join(); };
+  const kinds = (doc) => { const k = []; doc.forEach((n) => k.push(n.type.name)); return k.join(); };
+  const guard = new Plugin({ filterTransaction: (tr) => core.tablesKept(tr) });
+  const run = (sel, f) => {
+    const st = EditorState.create({ doc: p.doc, plugins: [guard], selection: sel });
+    let next = st;
+    f(st, (tr) => { next = st.apply(tr); });
+    const o = serializeFodt({ ...p, doc: next.doc }, t);
+    return { doc: next.doc, changed: next.doc !== st.doc, again: o.error || kinds(parseFodt(o.text).doc) };
+  };
+  const text = (a, b) => TextSelection.create(p.doc, a + 3, b + 3);
+  const type = (s, d) => d(s.tr.insertText('x'));
+  for (const [what, sel, f] of [
+    ['Delete from one cell into the next', text(cells[w], cells[w + 1]), deleteSelection],
+    ['typing over that selection', text(cells[w], cells[w + 1]), type],
+    ['Delete from one row into the next', text(cells[w], cells[2 * w]), deleteSelection],
+    ['Delete from the paragraph above into a cell', TextSelection.create(p.doc, tpos - 2, cells[w + 1] + 3), deleteSelection],
+    ['Delete from a cell to the paragraph below', TextSelection.create(p.doc, cells[w + 1] + 3, tpos + table.nodeSize + 2), deleteSelection],
+  ]) {
+    const r = run(sel, f);
+    check(what + ' leaves the table as it was', shape(r.doc) === shape(p.doc) && !r.changed, shape(r.doc));
+    check('  and it opens as a table again', r.again === kinds(p.doc), r.again);
+  }
+  const inCell = run(TextSelection.create(p.doc, cells[w] + 2, cells[w] + 4), deleteSelection);
+  check('a selection inside one cell is still deleted', inCell.changed && shape(inCell.doc) === shape(p.doc) && inCell.again === kinds(p.doc));
+  const whole = run(NodeSelection.create(p.doc, tpos), deleteSelection);
+  const tables = (doc) => kinds(doc).split(',').filter((k) => k === 'table').length;
+  check.eq('a table selected whole is still deleted', tables(whole.doc), tables(p.doc) - 1);
+  const typed = run(TextSelection.create(p.doc, cells[0] + 2), type);
+  check('typing in a cell still works', typed.changed && typed.again === kinds(p.doc));
+  //  a table of one column or one row has no ragged leftover to show a
+  //  deletion that begins before it
+  {
+    const S = schema.nodes, P = (t) => S.paragraph.create(null, schema.text(t));
+    const cell = (t) => S.table_cell.create(null, P(t));
+    const mk = (rows) => S.table.create(null, rows.map((r) => S.table_row.create(null, r.map(cell))));
+    const shapeOf = (d) => { const o = []; d.forEach((n) => { if (n.type.name === 'table') n.forEach((r) => o.push(r.childCount)); }); return o.join(); };
+    const cellAt = (doc, k) => { let at = -1, seen = 0; doc.descendants((n, pos) => { if (n.type.name === 'table_cell' && ++seen === k) at = pos; return true; }); return at; };
+    for (const [what, rows] of [['one column', [['h'], ['1'], ['2'], ['3']]], ['one row', [['a', 'b', 'c']]]]) {
+      const doc = S.doc.create(null, [P('before'), mk(rows), P('after')]);
+      const from = TextSelection.create(doc, 3, cellAt(doc, 2) + 3);
+      const st = EditorState.create({ doc, plugins: [guard], selection: from });
+      let del = st, typed = st;
+      deleteSelection(st, (tr) => { del = st.apply(tr); });
+      typed = st.apply(st.tr.insertText('x'));
+      check(what + ': a delete from the paragraph above into the second cell leaves every cell', shapeOf(del.doc) === shapeOf(doc) && del.doc === doc, shapeOf(del.doc));
+      check(what + ': and so does typing over it', shapeOf(typed.doc) === shapeOf(doc) && typed.doc === doc, shapeOf(typed.doc));
+      const one = EditorState.create({ doc, plugins: [guard], selection: TextSelection.create(doc, 3, cellAt(doc, 1) + 3) });
+      let d1 = one;
+      deleteSelection(one, (tr) => { d1 = one.apply(tr); });
+      check(what + ': one that ends in the first cell keeps its shape', shapeOf(d1.doc) === shapeOf(doc), shapeOf(d1.doc));
+    }
+  }
+  //  some columns of a table, pasted as a table of their own, are written
+  //  under column declarations of their own width
+  const narrow = table.copy(Fragment.from(table.content.content.map((r) => r.copy(Fragment.from([r.child(0), r.child(1)])))));
+  const o = serializeFodt({ ...p, doc: p.doc.replace(0, 0, new Slice(Fragment.from(narrow.type.create({ ...narrow.attrs, src: null }, narrow.content)), 0, 0)) }, t);
+  const first = o.text && o.text.slice(o.text.indexOf('<table:table '), o.text.indexOf('</table:table>'));
+  const cols = (x) => [...x.matchAll(/<table:table-column\b([^>]*)>/g)].reduce((a, m) => a + Number((/number-columns-repeated="(\d+)"/.exec(m[1]) || [0, 1])[1]), 0);
+  check.eq('a table narrower than its column declarations gets its own', first ? cols(first) : o.error, 2);
+  check.eq('  and a table of the width it came with keeps them', cols(t.slice(t.indexOf('<table:table '), t.indexOf('</table:table>'))), w);
+}
+
+console.log('# what a paste may bring');
+{
+  const S = schema.nodes;
+  const st = parseFodt(read('01-paragraphs.fodt')).styles;
+  const P = (attrs, ...kids) => S.paragraph.create(attrs, kids);
+  const note = S.opaque_inline.create({ raw: '<text:note>x</text:note>', name: 'text:note', label: '1' });
+  const mark = S.opaque_inline.create({ raw: '<text:bookmark text:name="b"/>', name: 'text:bookmark' });
+  const cell = (...kids) => S.table_cell.create({ xattrs: [['a', '"><x/>']] }, kids);
+  const tbl = S.table.create({ pre: { text: '<x/>', end: 0, cols: 1 }, xattrs: [['a', '"><x/>']] }, S.table_row.create(null, cell(P(null, schema.text('in a cell'), note))));
+  //  from clipboard HTML: no opaque node, no table, whatever the slice
+  //  context claimed, and the open sides shrink with the wrappers
+  const out = core.fromOutside(new Slice(Fragment.from([tbl, S.opaque_block.create({ raw: '<x/>', name: 'x' })]), 4, 0));
+  const names = []; out.content.descendants((n) => { names.push(n.type.name); });
+  check.eq('a slice from outside loses its table, its opaque nodes and their attributes', names.join(), 'paragraph,text');
+  check.eq('  and is open as deep as what is left', out.openStart + ',' + out.openEnd, '1,0');
+  //  a context naming a text block around a list item is not placed whole
+  for (const wrap of [S.heading.create({ level: 3 }, S.list_item.create(null, P(null, schema.text('item')))), S.paragraph.create(null, S.list_item.create(null, P(null, schema.text('item'))))]) {
+    let threw = null, got = null;
+    try {
+      const d = S.doc.create(null, [P(null, schema.text('abc'))]);
+      const sl = core.fromOutside(new Slice(Fragment.from(wrap), 1, 1));
+      const stt = EditorState.create({ doc: d });
+      got = stt.apply(stt.tr.replaceSelection(sl)).doc.textContent;
+    } catch (e) { threw = e; }
+    check('a slice context that puts a list item in a ' + wrap.type.name + ' is pasted without throwing', !threw && /item/.test(got), String(threw || got));
+  }
+  const brk = S.hard_break.create({ src: [1, 2] }, schema.text('inside'));
+  const leaf = core.fromOutside(new Slice(Fragment.from(P(null, brk)), 2, 2));
+  check('a leaf given content is a plain leaf', leaf.content.firstChild.firstChild.content.size === 0 && leaf.openStart === 1 && leaf.openEnd === 1);
+  //  attributes of the right kind
+  const h = core.fixPasted(S.heading.create({ level: '9"><x/>', pageBreak: 'x', quote: { a: 1 }, style: { a: 1 } }, schema.text('h')), st);
+  check('a pasted heading has a level, flags and a style of the right kind', h.attrs.level === 1 && h.attrs.pageBreak === false && h.attrs.quote === false && (h.attrs.style === null || typeof h.attrs.style === 'string'), JSON.stringify(h.attrs));
+  check.eq('  a level past 10 is 1, one inside is kept', [4000, 0, -3, 2.9, '7', 10].map((level) => core.fixPasted(S.heading.create({ level }, schema.text('h')), st).attrs.level).join(), '1,1,1,2,7,10');
+  const li = core.fixPasted(S.list.create({ xattrs: 'x', kind: { a: 1 } }, S.list_item.create({ header: 'x', xattrs: 7 }, P(null, schema.text('i')))), st);
+  check('a pasted list whose attributes are not a list is this document\'s own', li.attrs.kind === null && Array.isArray(li.attrs.xattrs) && li.firstChild.attrs.header === false);
+  //  a copy made in this document comes back as it was, less its markers
+  const own = core.ownPasted(Fragment.from([tbl, P({ src: [5, 9], xattrs: [['k', 'v']] }, schema.text('t'), note, mark)]));
+  const on = []; own.descendants((n) => { on.push(n.type.name === 'opaque_inline' ? n.attrs.name : n.type.name); });
+  check.eq('a copy from this document keeps its table and footnotes, not a named marker', on.join(), 'table,table_row,table_cell,paragraph,text,text:note,paragraph,text,text:note');
+  check('  with the attributes it had', own.firstChild.attrs.pre.text === '<x/>' && own.lastChild.attrs.src[0] === 5 && own.lastChild.attrs.xattrs[0][1] === 'v');
+  check('what HTML cannot carry is told from what it can', core.beyondHtml(Fragment.from(tbl)) && core.beyondHtml(Fragment.from(P(null, note))) && !core.beyondHtml(Fragment.from(P(null, schema.text('t')))));
 }
 
 console.log('# speed');

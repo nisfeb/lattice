@@ -8,29 +8,10 @@
 ::  entry is what proves it either way. That is also why entries are capped
 ::  and removable. This is a bookmark list a stranger can append to.
 ::
+/<  *  /lib/lattice-share-types.hoon
 |%
-::  +$  action: what arrives at the shares inbox.
-::
-::  The sender's identity is NEVER in here. The inbox takes it from the poke's
-::  transport (+get-poke-src), the same rule the comment design records. %del
-::  is the owner's own curation and is refused from foreign ships. %put is
-::  the owner's own too: a link moved back to shared with me, which names
-::  the host itself, so from any other ship it is dropped.
-::
-::  %dir is a folder shared whole: one entry for the folder, not one per
-::  page. Its pax names the folder's index grub, <base>/page/<rel>/dir-index
-::  (+dir-key), which is what the receiver reads to list the pages. Its
-::  %del is the plain %del with that pax. A lattice older than %dir fails
-::  the soft cast and drops it, so it lists nothing for a folder until it
-::  updates (a page shared on its own still reaches it as %add).
-+$  action
-  $%  [%add pax=path mode=@t]          ::  mode: 'read' | 'edit'
-      [%dir pax=path mode=@t]          ::  a folder, by its dir-index
-      [%del host=@p pax=path]
-      [%put host=@p pax=path mode=@t]
-  ==
-+$  entry   [host=@p pax=path mode=@t when=@da]
-+$  shared  (list entry)               ::  newest first
+::  Types action, entry, shared, banned, title-row, fold-action, and ask
+::  live in /lib/lattice-share-types so marks never depend on share logic.
 ::  +cap: list bound. Anyone may poke the inbox, so without a cap a hostile
 ::  ship grows the grub without limit. With one they can at worst churn it.
 ::  A folder is one entry however many pages it holds, so the cap counts
@@ -72,9 +53,11 @@
     %+  skip  cur
     |=(e=entry &(=(host.e host.new) =(pax.e pax.new)))
   (scag cap all)
-::  +host-cap: how many entries one host may hold in the list. The global
-::  +cap alone let one ship evict every other host's entries by sending
-::  +cap notices; with this, one host fills at most its own share.
+::  +host-cap: how many entries one host's family may hold in the list
+::  (+family: a planet with its moons, or every comet). The global +cap
+::  alone let one ship evict every other host's entries by sending +cap
+::  notices. With this, one family fills at most its own share, however
+::  many moons or comets it sends from.
 ++  host-cap  ^-(@ud 500)
 ::  +pax-segs, +pax-bytes: the longest notice path the inbox keeps. A page
 ::  path is a base, /page, the page's rel and a grub name, so these are
@@ -89,17 +72,18 @@
       (lte (roll p |=([s=@ta n=@ud] :(add n 1 (met 3 s)))) pax-bytes)
       (levy p |=(s=@ta &(!=(%$ s) ((sane %ta) s))))
   ==
-::  +host-full: may `host` not add the entry `pax`: it holds +host-cap
-::  entries and this is not one of them (a re-share of one it holds only
-::  updates it)
+::  +host-full: may `host` not add the entry `pax`: its family holds
+::  +host-cap entries and this is not one `host` itself holds (a re-share
+::  of one it holds only updates it)
 ++  host-full
   |=  [cur=shared host=@p pax=path]
   ^-  ?
+  =/  fam=@  (family host)
   =/  n=@ud  0
   |-  ^-  ?
   ?~  cur  (gte n host-cap)
-  ?.  =(host host.i.cur)  $(cur t.cur)
-  ?:  =(pax pax.i.cur)  |
+  ?.  =(fam (family host.i.cur))  $(cur t.cur)
+  ?:  &(=(host host.i.cur) =(pax pax.i.cur))  |
   $(cur t.cur, n +(n))
 ::  +dir-touch: is a folder notice `pax` at `mode` nothing new, given the
 ::  entry `hit` (+dir-cover) that covers it? The folder's own entry at the
@@ -148,8 +132,7 @@
 ::  page you published. A published page's road sits in /public's peek set,
 ::  which means everyone, and clearweb has no ship identity at all. Banning is
 ::  about who can reach you and who can hold a grant. Unpublish to stop a
-::  read.
-+$  banned  (set @p)
+::  read. (+banned lives in /lib/lattice-share-types.)
 ::  +ban-cap: bound, same reasoning as +cap. A list the owner grows by hand,
 ::  but bounded so a runaway client cannot balloon the grub.
 ++  ban-cap  ^-(@ud 500)
@@ -557,8 +540,8 @@
 ::  named as the revision list names it ('/site/a'). A cord under %noun, as
 ::  /pub/comments is, so a reader without lattice's marks reads it as text.
 ::  A folder shared with ships or groups keeps the same lines for its own
-::  pages in its `dir-index` grub, which only they may read.
-+$  title-row  [when=@ud title=@t]
+::  pages in its `dir-index` grub, which only they may read. (+title-row
+::  lives in /lib/lattice-share-types.)
 ::  +title-clean: a title fit for one field of a line: no tab or line
 ::  break, at most +title-cap bytes, cut where a character starts
 ++  title-cap  ^-(@ud 300)
@@ -795,6 +778,72 @@
   |=  [a=@t b=@t]
   ^-  @t
   ?:((lte (mode-rank a) (mode-rank b)) a b)
+::  +folder-roads: the roads a folder share is made of, as +share-file
+::  makes one: a file road on the code grub of each page under the
+::  folder that is not sensitive, and on the index of the folder and of
+::  each folder under it. `at` is the folder's absolute path, `all` what
+::  is under it (+collect-tree: a path below the folder, and whether it is
+::  a page), `sens` the sensitive pages among them. With `ed` the pages
+::  may be written too. The indexes are read only. Never a dir road: one
+::  would reach the sensitive pages and every page's owner-only grubs,
+::  and a weir has no deny to take them back out.
+::  +folder-subs: every subfolder path under a folder in `all` (+collect-tree):
+::  every explicit non-page folder [p |] and every non-empty proper ancestor
+::  prefix of any entry in `all`, so a dual-role subfolder (a page with pages
+::  under it, emitted as [rel &]) still gets its dir-index road.
+++  folder-subs
+  |=  all=(list [p=path page=?])
+  ^-  (set path)
+  %+  roll  all
+  |=  [[p=path page=?] acc=(set path)]
+  =.  acc  ?:(&(?=(^ p) !page) (~(put in acc) p) acc)
+  =/  n=@ud  (lent p)
+  ?:  (lte n 1)  acc
+  =/  i=@ud  1
+  |-  ^-  (set path)
+  ?:  =(i n)  acc
+  $(i +(i), acc (~(put in acc) (scag i p)))
+++  folder-roads
+  |=  [at=path all=(list [p=path page=?]) sens=(set path) ed=?]
+  ^-  [peek=(set *) make=(set *)]
+  =/  codes=(set *)
+    %-  silt
+    %+  murn  all
+    |=  [p=path page=?]
+    ^-  (unit *)
+    ?.  &(?=(^ p) page !(~(has in sens) p))  ~
+    `[%& %& (weld at p) %code]
+  =/  idx=(set *)
+    %-  silt
+    ^-  (list *)
+    :-  [%& %& at %'dir-index']
+    %+  turn  ~(tap in (folder-subs all))
+    |=(p=path [%& %& (weld at p) %'dir-index'])
+  [(~(uni in codes) idx) ?:(ed codes ~)]
+::  +folder-out: is a folder shared with a group unshared by a save of
+::  that group's paths? When the save took out the last page road under
+::  it (`had` before, `has` after), as before folders were listed. And
+::  when the group list named the folder (`noted`: it has the folder's
+::  note), the save does not (`named`), and the save was read from a list
+::  that showed the folder (`seen`: it holds the folder's index line): the
+::  owner took its line out. A list that never showed the line (read
+::  before the folder was shared, or before folder lines were listed)
+::  cannot take it out.
+++  folder-out
+  |=  [had=? has=? noted=? named=? seen=?]
+  ^-  ?
+  |(&(had !has) &(noted !named seen))
+::  +index-line: the folder a group list's index line names, or ~. The
+::  list gives `<folder>/dir-index` with each folder line, a road the
+::  group holds, so a save that still has it was read from a list that
+::  showed the folder. `pre` is our /page path, absolute.
+++  index-line
+  |=  [pre=path p=path]
+  ^-  (unit path)
+  =/  n=@ud  (lent pre)
+  ?.  &((gth (lent p) +(n)) =(pre (scag n p)))  ~
+  ?.  =(%'dir-index' (rear p))  ~
+  `(snip `path`(slag n p))
 ::  +own-infer: a page's own grant in a group (`own-grants`), as a folder
 ::  starts to share it: `own` as noted, never wider than the group now
 ::  grants it (`held`, so a group made again keeps no stale note), and
@@ -855,14 +904,7 @@
 ::
 +$  fold  [host=@p rel=path seen=(map @t @ud) late=(map @t title-row) ok=? at=@da]
 +$  folds  [%1 l=(list fold)]
-::  +$  fold-action: what the writer does to the follows
-+$  fold-action
-  $%  [%add host=@p rel=path rows=(unit (map @t title-row))]
-      [%read host=@p rel=path rows=(unit (map @t title-row))]
-      [%del host=@p rel=path]
-      [%seen host=@p rel=path key=@t]
-  ==
-::  +fold-act: one fold-action on the follows
+::  +fold-act: one fold-action on the follows (+fold-action in lattice-share-types)
 ++  fold-act
   |=  [fs=(list fold) act=fold-action now=@da]
   ^-  (list fold)
@@ -1127,7 +1169,7 @@
   %-  ~(gas by *(map path @t))
   %+  skip  ~(tap by ps)
   |=  [p=path md=@t]
-  =/  own=path  ?:((dir-key p) (snip p) p)
+  =/  own=path  ?~(p ~ (snip `path`p))
   %+  lien  `(list [d=path md=@t])`dirs
   |=  [d=path dm=@t]
   ?&  (gth (lent own) (lent d))
@@ -1171,13 +1213,7 @@
 ::  share notice named: <base>/page/<rel>/code, or <base>/page/<rel>/
 ::  dir-index for a folder. A lattice older than this has no /access.sig
 ::  road and drops the poke, which the asker learns from /pub/access.
-+$  ask
-  $%  [%ask pax=path note=@t]            ::  asker to host
-      [%nay pax=path]                    ::  host to asker: declined
-      [%sent host=@p pax=path note=@t]   ::  own: an ask went out
-      [%took host=@p pax=path]           ::  own: the host granted edit
-      [%answer who=@p pax=path ok=?]     ::  own: we decided an ask
-  ==
+::  (+ask lives in /lib/lattice-share-types.)
 +$  ask-req  [who=@p pax=path note=@t when=@da]
 +$  ask-nay  [who=@p pax=path when=@da]
 ::  +$  asks: the host's pending asks, newest first, and recent denies
@@ -1197,7 +1233,7 @@
   |=  t=@t
   ^-  @t
   ?:  (lte (met 3 t) ask-note-cap)  t
-  (end [3 ask-note-cap] t)
+  (utf8-cut ask-note-cap t)
 ::  +ask-live: the denies still cooling at `now`
 ++  ask-live
   |=  [nays=(list ask-nay) now=@da]

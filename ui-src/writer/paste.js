@@ -9,7 +9,15 @@
 //  style takes the body style, a heading the document's Heading N, and a
 //  list the document's bullet or numbered list style. Nothing pasted keeps
 //  a source span or file attributes, so it is written as a new node.
-import { Fragment, Slice } from 'prosemirror-model';
+//
+//  HTML cannot carry everything a document holds: an opaque node is raw
+//  XML, and a table or section has its file attributes. A copy or cut of
+//  those is remembered here, by this editor, under a key no page can
+//  guess, and the key is all the clipboard gets. A paste that brings the
+//  key back to the same document gets the nodes as they were copied. Any
+//  other HTML is untrusted: it can become text blocks, lists and line
+//  breaks, never an opaque node or a table, whatever it claims to be.
+import { DOMSerializer, Fragment, Slice } from 'prosemirror-model';
 import { Plugin } from 'prosemirror-state';
 import { schema } from './schema.js';
 import { decode, escAttr } from './xml.js';
@@ -32,6 +40,64 @@ export function listStyleFor(st, kind) {
 //  or half a pair, so a paste leaves them behind
 const NAMED = /^(text:bookmark|text:reference-mark|text:change|office:annotation)/;
 
+const isOpaque = (n) => n.type === S.opaque_block || n.type === S.opaque_inline;
+//  the containers a paste from outside is never given: their content is
+//  pasted without them
+const BARE = new Set([S.table, S.table_row, S.table_cell, S.section]);
+const FLAGS = ['pageBreak', 'quote', 'header', 'placeholder'];
+
+//  whether a copy holds what clipboard HTML cannot carry
+export function beyondHtml(frag) {
+  let yes = false;
+  frag.descendants((n) => { if (isOpaque(n) || BARE.has(n.type)) yes = true; return !yes; });
+  return yes;
+}
+
+//  A slice parsed from clipboard HTML, with nothing but what HTML may
+//  make. ProseMirror builds wrapper nodes of any type, with any
+//  attributes, from the JSON a page puts in data-pm-slice, so the node
+//  types are checked here and the attributes in fixPasted.
+export function fromOutside(slice) {
+  const strip = (n) => {
+    if (n.isText) return [n];
+    if (isOpaque(n)) return [];
+    const kids = [];
+    n.content.forEach((c) => kids.push(...strip(c)));
+    if (n.isLeaf) return [n.type.create(null, null, n.marks)];
+    //  a wrapper that cannot hold what is left in it goes too, as a
+    //  context naming a list item inside a paragraph would otherwise
+    //  make a node the editor cannot place
+    if (BARE.has(n.type) || !n.type.validContent(Fragment.from(kids))) { gone.add(n); return kids; }
+    return [n.copy(Fragment.from(kids))];
+  };
+  const gone = new Set();
+  //  how deep a side is still open once the wrappers on it are gone
+  const open = (depth, last) => {
+    let kept = 0;
+    for (let f = slice.content, d = 0; d < depth && f.childCount; d++) {
+      const n = last ? f.lastChild : f.firstChild;
+      if (n.isLeaf) break;
+      if (!gone.has(n)) kept++;
+      f = n.content;
+    }
+    return kept;
+  };
+  const kids = [];
+  slice.content.forEach((c) => kids.push(...strip(c)));
+  return new Slice(Fragment.from(kids), open(slice.openStart, false), open(slice.openEnd, true));
+}
+
+//  a copy made in this document, pasted back into it: as it was, but for
+//  the markers that name themselves
+export function ownPasted(frag) {
+  const kids = [];
+  frag.forEach((c) => {
+    if (c.type === S.opaque_inline && NAMED.test(c.attrs.name)) return;
+    kids.push(c.isLeaf || c.isText ? c : c.copy(ownPasted(c.content)));
+  });
+  return Fragment.from(kids);
+}
+
 export function fixPasted(node, st) {
   const kids = [];
   node.content.forEach((c) => {
@@ -47,29 +113,111 @@ export function fixPasted(node, st) {
   const attrs = { ...node.attrs };
   if ('src' in attrs) attrs.src = null;
   if ('xattrs' in attrs) attrs.xattrs = [];
+  //  a flag is a boolean, a style a name and a level 1 to 10, whatever
+  //  the clipboard said
+  for (const k of FLAGS) if (k in attrs) attrs[k] = attrs[k] === true;
+  if ('style' in attrs && typeof attrs.style !== 'string') attrs.style = null;
+  if (node.type === S.heading) {
+    const lv = Math.trunc(Number(attrs.level));
+    attrs.level = lv >= 1 && lv <= 10 ? lv : 1;
+  }
   if (node.type === S.paragraph && attrs.style != null && !lookup(st, 'paragraph', attrs.style)) attrs.style = null;
   if (node.type === S.paragraph && attrs.style == null) attrs.style = bodyStyle(st);
   if (node.type === S.heading && (attrs.style == null || !lookup(st, 'paragraph', attrs.style))) attrs.style = headingStyle(st, attrs.level);
   if (node.type === S.list) {
     //  the list style a copy from a Writer document names, if this
     //  document has it, else this document's own of that kind
-    const was = node.attrs.xattrs.find(([k]) => k === 'text:style-name');
+    const xa = Array.isArray(node.attrs.xattrs) ? node.attrs.xattrs : [];
+    const was = xa.find((a) => Array.isArray(a) && a[0] === 'text:style-name' && typeof a[1] === 'string');
     const own = was && decode(was[1]);
-    const name = own && st.lists.has(own) ? own : listStyleFor(st, attrs.kind || 'bullet');
+    const name = own && st.lists.has(own) ? own : listStyleFor(st, attrs.kind === 'number' ? 'number' : 'bullet');
     attrs.xattrs = name ? [['text:style-name', escAttr(name)]] : [];
     attrs.kind = null;
   }
   return node.type.create(attrs, content, marks);
 }
 
-export function pastePlugin(ctl, st) {
+//  the clipboard's HTML, with the key of a remembered copy on its first
+//  element
+class ClipSerializer extends DOMSerializer {
+  constructor(stamp) {
+    super(DOMSerializer.nodesFromSchema(schema), DOMSerializer.marksFromSchema(schema));
+    this.stamp = stamp;
+    this.depth = 0;
+  }
+
+  serializeFragment(frag, opts, target) {
+    this.depth++;
+    let out;
+    try { out = super.serializeFragment(frag, opts, target); } finally { this.depth--; }
+    if (!this.depth) this.stamp(out);
+    return out;
+  }
+}
+
+const KEY = 'data-lw-clip';
+const NOT_KEPT = 'Pasted as plain text: footnotes, fields, pictures and tables are kept only when copied and pasted inside one document.';
+
+//  The copies that held more than HTML carries, by the document they were
+//  made in, a few deep, each under a key no page can guess. They outlive the
+//  editor over a document: a tab switch or Source view mounts it again.
+const MEMORY = new Map();
+const DEPTH = 8, DOCS = 16;
+function memory(name) {
+  const id = String(name == null ? '' : name);
+  let m = MEMORY.get(id);
+  if (!m) {
+    m = { nonce: [...crypto.getRandomValues(new Uint32Array(4))].map((x) => x.toString(36)).join(''), n: 0, slices: new Map() };
+    MEMORY.set(id, m);
+    if (MEMORY.size > DOCS) MEMORY.delete(MEMORY.keys().next().value);
+  }
+  return {
+    keep(slice) {
+      const key = m.nonce + '-' + (++m.n);
+      m.slices.set(key, slice);
+      if (m.slices.size > DEPTH) m.slices.delete(m.slices.keys().next().value);
+      return key;
+    },
+    get: (key) => m.slices.get(key) || null,
+  };
+}
+
+export function pastePlugin(ctl, st, name) {
+  //  the last copy that held more than HTML carries, and its key
+  let copying = null, pasting = null, lost = false, dragging = false;
+  const mem = memory(name);
+  const stamp = (out) => {
+    const slice = copying, drag = dragging;
+    copying = null;
+    //  a drag is a move inside the view, which has its own slice: it must
+    //  not take the place of a copy the clipboard still names
+    const el = slice && !drag && beyondHtml(slice.content) ? out.firstElementChild : null;
+    if (!el) return;
+    el.setAttribute(KEY, mem.keep(slice));
+  };
   return new Plugin({
     props: {
+      handleDOMEvents: { dragstart() { dragging = true; setTimeout(() => { dragging = false; }, 0); return false; } },
+      clipboardSerializer: new ClipSerializer(stamp),
+      transformCopied(slice) { copying = slice; return slice; },
+      transformPastedHTML(html) {
+        const m = /\sdata-lw-clip="([a-z0-9-]+)"/.exec(html);
+        pasting = m ? mem.get(m[1]) : null;
+        lost = !!m && !pasting;
+        return html;
+      },
       //  a drag that moves within this document is a move, not a paste:
       //  its markers, comments and attributes go with it, as they are
-      transformPasted(slice, view) {
+      transformPasted(slice, view, plain) {
         const d = view && view.dragging;
         if (d && d.move && d.slice === slice) return slice;
+        const own = pasting, say = lost;
+        pasting = null; lost = false;
+        if (own && !plain) return new Slice(ownPasted(own.content), own.openStart, own.openEnd);
+        if (say && !plain && ctl.say) ctl.say(NOT_KEPT);
+        //  a copy dragged inside this view is its own nodes, anything else
+        //  was parsed from the clipboard
+        if (!(d && d.slice === slice)) slice = fromOutside(slice);
         const kids = [];
         slice.content.forEach((c) => {
           if (c.type === S.opaque_inline && NAMED.test(c.attrs.name)) return;

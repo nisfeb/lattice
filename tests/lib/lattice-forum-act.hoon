@@ -189,4 +189,18 @@
     (expect-eq !>(none) !>(tags:(drop-posts:fa b1 ~[1])))
     (expect-eq !>(none) !>(tags:(cull:fa b1 |=(p=@p =(p ~nec)))))
   ==
+::  a planet and its moons share one vote slot (family-keyed)
+++  test-vote-moon-sybil
+  =/  b1=board:ft  (ok brd ~nec [%new-post %main 'hi' ~ ~])
+  =/  m1=@p  `@p`(add (bex 32) ~bus)
+  =/  m2=@p  `@p`(add (mul 2 (bex 32)) ~bus)
+  =/  b2=board:ft  (ok b1 ~bus [%upvote %main [%post 1]])
+  =/  b3=board:ft  (ok b2 m1 [%upvote %main [%post 1]])
+  =/  b4=board:ft  (ok b3 m2 [%upvote %main [%post 1]])
+  =/  b5=board:ft  (ok b4 m1 [%downvote %main [%post 1]])
+  ;:  weld
+    (expect-eq !>((sy ~[~bus])) !>(up-votes:(~(got by posts.b4) 1)))
+    (expect-eq !>(*(set @p)) !>(up-votes:(~(got by posts.b5) 1)))
+    (expect-eq !>((sy ~[~bus])) !>(down-votes:(~(got by posts.b5) 1)))
+  ==
 --

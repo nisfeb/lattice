@@ -224,6 +224,13 @@ try {
       await sleep(500);
     }
     rule = null;
+    //  the ship can serve the last page to the reads above before the
+    //  browser has the answer to its create, and the tab is named only
+    //  on that answer. So the check waits for the name, 15 s at most
+    await until((k) => {
+      const s = window.latTabs.state();
+      return s.tabs[s.active].key === k;
+    }, T[2], 15000);
     const fr = await front();
     check('I1: creates queued behind a slow one all land, and the editor names the last',
       got.every((b) => b !== null) && fr.key === T[2], JSON.stringify({ got, fr }));

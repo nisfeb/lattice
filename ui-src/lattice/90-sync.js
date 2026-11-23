@@ -5,11 +5,15 @@
   // content swap until the page is saved or reopened.
   async function refreshOpen() {
     if (!current || curFolder || dirty || document.hidden || viewingRev !== null) return;
+    if (wrLive() && wr.editing && wr.editing()) return;
     // remember WHAT we are fetching. By the time it lands the user may have opened
     // another page, switched mode, selected a folder, or entered history view.
     // Applying a stale body then would show the wrong content or, across modes,
     // autosave a page body over a memory.
     const wasCurrent = current, wasMode = mode;
+    //  and what the editor held when the read left. `dirty` cannot stand in
+    //  for it: text typed and saved while the read was out is clean again.
+    const shown = src.value;
     // a queued edit outranks the ship's copy. Reconciling now would paint
     // the stale server body over work that has not synced yet
     if (await offGet(mode === 'know' ? 'know:' + current : current)) return;
@@ -25,7 +29,16 @@
       else d = await r.json();
     } catch { return; }
     if (dirty || current !== wasCurrent || mode !== wasMode) return;
-    if (curFolder || viewingRev !== null) return;
+    if (curFolder || viewingRev !== null || (wrLive() && wr.editing && wr.editing())) return;
+    //  An answer from before a save of ours must not be painted: it holds
+    //  the text from before the edit, the editor would show that as clean,
+    //  and the next keystroke would save it over the edit. Answers do come
+    //  back out of order (two connections, a proxy, a link read from its
+    //  host). So an editor that has moved on since the read left keeps its
+    //  text, and so does one at a newer rev than the answer's. The next
+    //  refresh reads again.
+    if (src.value !== shown) return;
+    if (mode !== 'know' && d && isRev(d.rev) && d.rev < baseFor(wasCurrent, curRev)) return;
     if (notFound) {
       // the ship no longer has what this fetch is FOR (the staleness checks
       // above already ruled out "the user moved on" as the explanation), so

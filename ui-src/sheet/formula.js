@@ -152,27 +152,10 @@ export function tokenize(text, mode) {
       continue;
     }
     if (mode === 'of' && ch === '[') {
-      const close = text.indexOf(']', i);
-      if (close < 0) bad('a reference that is not closed');
-      const a = readEnd(text, i + 1, 'of');
-      let ref = fullRef(text.slice(i + 1, close), 'of');
-      if (a) {
-        if (a.end === close) ref = { a: strip(a), b: null };
-        else if (text[a.end] === ':') {
-          const b = readEnd(text, a.end + 1, 'of');
-          if (b && b.end === close) ref = { a: strip(a), b: strip(b) };
-        }
-      }
-      //  what is left is either a reference to deleted cells, which is
-      //  the error it says it is, or one lattice does not read (another
-      //  file's cells, a range across sheets written some other way). The
-      //  second is not an error: it is kept as written and never guessed at.
-      if (!ref) {
-        const inner = text.slice(i + 1, close);
-        ref = inner.includes('#REF!') ? { bad: true } : { unknown: true, raw: text.slice(i, close + 1) };
-      }
-      i = close + 1;
-      out.push({ t: 'ref', ref, s, e: i });
+      const b = readBracket(text, i);
+      if (!b) bad('a reference that is not closed');
+      i = b.end;
+      out.push({ t: 'ref', ref: b.ref, s, e: i });
       continue;
     }
     if (mode === 'user') {
@@ -184,7 +167,12 @@ export function tokenize(text, mode) {
     if ((ch >= '0' && ch <= '9') || (ch === '.' && text[i + 1] >= '0' && text[i + 1] <= '9')) {
       const m = /^(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/.exec(text.slice(i));
       i += m[0].length;
-      out.push({ t: 'num', v: Number(m[0]), s, e: i });
+      //  a number no double holds is not turned into the name Infinity
+      const v = Number(m[0]);
+      //  typed, it is refused. In a stored formula it stays a number the
+      //  moves read past, so its references still move with the rows.
+      if (!Number.isFinite(v) && mode === 'user') bad(`${m[0]} is too large a number`);
+      out.push({ t: 'num', v, s, e: i });
       continue;
     }
     if (ch === '#') {
@@ -232,6 +220,31 @@ export function tokenize(text, mode) {
   return out;
 }
 const strip = (e) => ({ sheet: e.sheet, sheetAbs: e.sheetAbs, c: e.c, cAbs: e.cAbs, r: e.r, rAbs: e.rAbs });
+
+//  the stored reference whose "[" is at text[i]: { ref, end }, or null
+//  when it is not closed
+function readBracket(text, i) {
+  const close = text.indexOf(']', i);
+  if (close < 0) return null;
+  const a = readEnd(text, i + 1, 'of');
+  let ref = fullRef(text.slice(i + 1, close), 'of');
+  if (a) {
+    if (a.end === close) ref = { a: strip(a), b: null };
+    else if (text[a.end] === ':') {
+      const b = readEnd(text, a.end + 1, 'of');
+      if (b && b.end === close) ref = { a: strip(a), b: strip(b) };
+    }
+  }
+  //  what is left is either a reference to deleted cells, which is
+  //  the error it says it is, or one lattice does not read (another
+  //  file's cells, a range across sheets written some other way). The
+  //  second is not an error: it is kept as written and never guessed at.
+  if (!ref) {
+    const inner = text.slice(i + 1, close);
+    ref = inner.includes('#REF!') ? { bad: true } : { unknown: true, raw: text.slice(i, close + 1) };
+  }
+  return { ref, end: close + 1 };
+}
 
 //  a whole-column or whole-row reference: [.A:.C] or [.2:.5] as stored,
 //  A:C or 2:5 as typed. It is a range with `full` set ('c' or 'r'), so
@@ -489,6 +502,36 @@ export function moveFormula(stored, home, op) {
   return changed ? head + out + body.slice(pos) : stored;
 }
 
+//  +moveRefs: the references in a text that is not a whole formula, after
+//  the edit: a validation's condition, a conditional format's value, a
+//  named expression. Such a text holds words and separators a formula
+//  does not, so it is never tokenized. Only its bracketed references are
+//  read and respelled, and text in quotes is passed over. Returns the
+//  same string when nothing moved, and null when a reference in it cannot
+//  be read: the caller must not guess.
+export function moveRefs(text, home, op) {
+  let out = '';
+  let pos = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '"') {
+      //  to the closing quote, a doubled one being a quote in the text
+      for (i++; i < text.length; i++) {
+        if (text[i] !== '"') continue;
+        if (text[i + 1] !== '"') break;
+        i++;
+      }
+      continue;
+    }
+    if (text[i] !== '[') continue;
+    const b = readBracket(text, i);
+    if (!b || b.ref.unknown) return null;
+    const moved = moveRef(b.ref, home, op);
+    if (moved !== b.ref) { out += text.slice(pos, i) + printRef(moved, 'of'); pos = b.end; }
+    i = b.end - 1;
+  }
+  return pos ? out + text.slice(pos) : text;
+}
+
 //  a sheet rename: every reference naming `from` names `to`
 export function renameInFormula(stored, from, to) {
   const body = bodyOf(stored);
@@ -585,5 +628,43 @@ export function offsetFormula(stored, dr, dc) {
   return head + out + body.slice(pos);
 }
 
-//  does a stored formula hold a reference that points at nothing
-export const hasBadRef = (stored) => stored.includes('#REF!');
+//  +cutFormula: a stored formula as it reads after a block of cells it
+//  was in, `b` ({ r1, c1, r2, c2 }) on sheet `from`, was moved `dr` rows
+//  down and `dc` columns right onto sheet `to`. A move does not change
+//  what a formula reads. A reference to cells outside the block stays as
+//  written, absolute or not, and names the sheet it was on when the
+//  formula left it. A reference to cells that moved with it follows them.
+//  null when lattice cannot tokenize it.
+export function cutFormula(stored, b, dr, dc, from, to) {
+  const body = bodyOf(stored);
+  if (body === null) return null;
+  const head = stored.slice(0, stored.length - body.length);
+  let toks;
+  try { toks = tokenize(body, 'of'); } catch { return null; }
+  if (toks.some((k) => k.t === 'ref' && k.ref.unknown)) return null;
+  const away = !sameSheet(from, to);
+  const shift = (e) => {
+    const r = e.r + dr, c = e.c + dc;
+    if (r < 0 || c < 0 || r >= 1048576 || c >= 16384) return null;
+    return { ...e, r, c, sheet: e.sheet !== null && away ? to : e.sheet };
+  };
+  let out = '';
+  let pos = 0;
+  for (const k of toks) {
+    if (k.t !== 'ref' || k.ref.bad) continue;
+    const { a } = k.ref;
+    const z = k.ref.b || a;
+    const sa = a.sheet ?? from, sz = z.sheet ?? sa;
+    const inside = !k.ref.full && sameSheet(sa, from) && sameSheet(sz, from)
+      && Math.min(a.r, z.r) >= b.r1 && Math.max(a.r, z.r) <= b.r2 && Math.min(a.c, z.c) >= b.c1 && Math.max(a.c, z.c) <= b.c2;
+    let ref;
+    if (inside) {
+      const na = shift(a), nz = k.ref.b ? shift(k.ref.b) : null;
+      ref = !na || (k.ref.b && !nz) ? { bad: true } : { a: na, b: nz };
+    } else if (away && a.sheet === null) ref = { ...k.ref, a: { ...a, sheet: from, sheetAbs: true } };
+    else continue;
+    out += body.slice(pos, k.s) + printRef(ref, 'of');
+    pos = k.e;
+  }
+  return head + out + body.slice(pos);
+}

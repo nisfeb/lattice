@@ -41,7 +41,7 @@
 ++  test-fence-escapes  (yes (has "&lt;script&gt;" (r '```\0a<script>\0a```')))
 ::  links
 ++  test-link-urb
-  (yes (has "href=\"/apps/lattice?url=urb://~zod/x\"" (r '=> urb://~zod/x text')))
+  (yes (has "href=\"/apps/lattice?url=urb%3A%2F%2F~zod%2Fx\"" (r '=> urb://~zod/x text')))
 ++  test-link-http
   (yes (has "rel=\"noopener noreferrer\"" (r '=> https://example.com site')))
 ::  a bare link shows its url rather than rendering an empty, unclickable <a>
@@ -68,5 +68,39 @@
     (yes !(looks-html:gmi '# a heading\0a<b>not first</b>'))
     (yes !(looks-html:gmi ''))
     (yes !(looks-html:gmi '   '))
+  ==
+::  a link line is "=>", optional blanks, the address, then blanks and a
+::  label. A space after "=>" is not needed, and a tab separates as a
+::  space does.
+++  test-link-tight
+  =/  out  (r '=>https://example.com site')
+  (yes ?&((has "<a href=\"https://example.com\"" out) (has ">site</a>" out)))
+++  test-link-tab
+  =/  out  (r '=>\09https://example.com\09the  site')
+  (yes ?&((has "<a href=\"https://example.com\"" out) (has ">the  site</a>" out)))
+++  test-link-tab-urb
+  =/  out  (r '=> urb://~zod/x\09label')
+  (yes ?&((has "url=urb%3A%2F%2F~zod%2Fx\"" out) (has ">label</a>" out)))
+::  an arrow with no address is text
+++  test-link-arrow-only  (yes =("<p>=&gt;</p>" (r '=>')))
+::  a line that only starts like a link is a paragraph
+++  test-link-not-arrow  (yes (has "<p>= x</p>" (r '= x')))
+::  a urb:// address goes into the reader's query string percent-encoded,
+::  so its own & # + % and ? stay part of it
+++  test-link-urb-encoded
+  =/  out  (r '=> urb://~zod/notes/a&b#part two')
+  ;:  weld
+    (yes (has "href=\"/apps/lattice?url=urb%3A%2F%2F~zod%2Fnotes%2Fa%26b%23part\"" out))
+    (yes (has ">two</a>" out))
+    (yes (has "url=urb%3A%2F%2F~zod%2Fa%2Bb%2541%3Fq%3D1\"" (r '=> urb://~zod/a+b%41?q=1')))
+    ::  the bare address is still what the reader sees
+    (yes (has ">urb://~zod/x</a>" (r '=> urb://~zod/x')))
+  ==
+::  CRLF inside a preformatted block strips trailing CR
+++  test-pre-crlf-stripped
+  =/  out=tape  (r '```\0d\0aline one\0d\0aline two\0d\0a```')
+  ;:  weld
+    (expect-eq !>("<pre>line one\0aline two</pre>") !>(out))
+    (yes ?=(~ (find "\0d" out)))
   ==
 --

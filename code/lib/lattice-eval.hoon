@@ -14,6 +14,7 @@
 ::    [dat=(unit *) dep=(list path)]
 ::  ~ dat means "no change". dep is the FULL dependency list each run.
 ::
+/<  *   /lib/lattice-eval-types.hoon
 /<  ft  /lib/lattice-forum-types.hoon
 /<  ll  /lib/lattice-link.hoon
 |%
@@ -32,13 +33,27 @@
       ::  not written over it. A page gone since has moved past it too.
       ::  ~ claims nothing.
       [%make-by pax=path src=@t who=@t base=(unit @ud)]
+      ::  +make or +make-marked, for a page a move copies to pax from
+      ::  under `from`, where its source hashed to `had`. Not written
+      ::  when pax holds a page that an earlier run of the same move
+      ::  copied from that same text.
+      [%move-make pax=path src=@t marked=? from=path had=@uv]
+      ::  +make-by with no base, for a page that must not exist yet (a
+      ::  create-only save). Checked here in the writer, so of two
+      ::  creates of one name the second leaves the first as it is.
+      [%make-new pax=path src=@t who=@t]
       ::  N pages in ONE writer transaction. An upload used to be one HTTP
       ::  request (and one poke) per file, and every request pays the pier's
       ::  ~0.5s floor serially. A 20-file drop was ~20 round-trips of pure
       ::  overhead. Same per-page work, paid once.
       [%make-many pages=(list [pax=path src=@t])]
       [%cmd pax=path txt=@t bud=@ud]    ::  send a command (bud = poke budget)
-      [%del pax=path]                   ::  delete a page
+      ::  delete the page or folder at pax, and everything under it
+      [%del pax=path]
+      ::  delete the page at pax and leave what is under it, where +del
+      ::  takes that too. A folder, or a page with nothing under it,
+      ::  goes as +del.
+      [%del-page pax=path]
       ::  a move's last step: the source `from` goes, as %del, once every
       ::  page under it whose code is not the one the move copied (`seen`,
       ::  the sham of each page's code by its path under `from`) is copied
@@ -156,29 +171,18 @@
       ::  only while that same link is still there, so a read that finishes
       ::  after a move or delete never brings it back.
       [%link-seen pax=path host=@p rpax=path got=(unit [kind=@ta body=@t rev=@ud])]
+      ::  serialized ACL writes on /ug/*, /banned, and /forum/members/*:
+      ::  routed through /main.sig so HTTP handlers never race each other or
+      ::  writer revocations (+sens-revoke, +grant-new, +revoke-folder-grants).
+      ::  Each request-bound action stores its outcome in /acl-res under rid.
+      [%acl-ban rid=@ta who=@p]
+      [%acl-unban rid=@ta who=@p]
+      [%acl-forum-member rid=@ta nom=@ta who=@p add=?]
+      [%acl-group-save rid=@ta gname=@t who=(set @p) pkp=(list path) mkp=(list path) v2=?]
+      [%acl-group-del rid=@ta gname=@t]
+      [%acl-share-page rid=@ta shp=@p mode=@t pax=path]
+      [%acl-share-folder rid=@ta gname=@t who=(set @p) mode=@t pax=path tell=?]
+      [%acl-unshare-file rid=@ta shp=@p pax=path]
+      [%acl-move-grants from=path to=(unit path) own=?]
   ==
-::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit.
-::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form
-::  with the same nearest-wins walk as the on/off flag, so a folder can carry
-::  the policy for a whole site.
-+$  form-cfg  [cap=@ud gap=@dr]
-::  +$  form-use: a page's submission tally. Per-page and exact (never
-::  inherited). A folder-level cap that shared one counter across every page
-::  under it would be surprising in both directions.
-+$  form-use  [count=@ud last=@da]
-::  +$  share-mode: a page's sharing preset (docs/platform.md step 4).
-::    %private    not gained, owner-only (default).
-::    %shared     data grub gained + public-usergroup peek. Any ship reads
-::                it over ames (peek-remote), live.
-::    %clearweb   shared, and its data is also served over unauthenticated
-::                HTTP at /apps/lattice/c/<name>.
-::
-+$  share-mode  ?(%private %shared %clearweb)
-::  +$  eval-cmd: the command inbox grub. seq bumps per command so an
-::  identical command still fires a wave (save-file suppresses no-op writes).
-::  bud is the poke budget the run this command triggers may spend. A page
-::  reached via another page's poke gets a decremented budget, so a poke chain
-::  (or cycle) terminates at a fixed depth regardless of timing.
-::
-+$  eval-cmd  [seq=@ud txt=@t bud=@ud]
 --

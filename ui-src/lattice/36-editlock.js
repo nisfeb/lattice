@@ -34,6 +34,7 @@
     lockBar.hidden = !ro;
     if (ro) src.readOnly = true;
     else if (lockName && current === lockName && viewingRev === null) src.readOnly = linkRO(current);
+    writerFollow();
   }
   function letGo() {
     if (lockWait) { lockWait.abort(); lockWait = null; }
@@ -83,9 +84,12 @@
     const m = e.data || {};
     if (!m.give || !lockHeld || m.give !== lockName) return;
     const name = lockName;
-    await flushNoAsk();
+    if (!(await flushNoAsk())) {
+      if (dirty) st('could not hand over ' + name + ': save your changes first', false);
+      return;
+    }
     await savesSettled();
-    if (lockName !== name || !lockHeld) return;
+    if (lockName !== name || !lockHeld || dirty) return;
     letGo();
     lockName = null;
     editLock(name);

@@ -1,6 +1,6 @@
 ::  mar/lattice/comment: one stored comment grub, [author when body].
 ::
-/<  lc  /lib/lattice-comment.hoon
+/<  lc  /lib/lattice-comment-types.hoon
 =,  format
 |_  c=comment:lc
 ++  grad  %noun

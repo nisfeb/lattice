@@ -2,7 +2,7 @@
 ::  as the bare noun. The per-sub keep fiber under /sub/pages/ reads this to know
 ::  which remote page to watch and re-index.
 ::
-/<  lp  /lib/lattice-pub.hoon
+/<  lp  /lib/lattice-pub-types.hoon
 |_  p=page-sub:lp
 ++  grad  %noun
 ++  grow

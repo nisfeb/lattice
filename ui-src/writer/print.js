@@ -15,7 +15,10 @@ export function printCss(l) {
 }
 
 //  print an HTML document: a frame of its own, same origin so print() can
-//  be called, no allow-scripts so nothing in it runs
+//  be called, no allow-scripts so nothing in it runs. The frame is a copy
+//  of the whole document. It stays while the browser prints from it, and
+//  goes at the next print or when the caller drops it (the answer): the
+//  editor does when it closes
 export function printFrame(html) {
   for (const f of document.querySelectorAll('iframe[data-lw-print]')) f.remove();
   const f = document.createElement('iframe');
@@ -26,4 +29,5 @@ export function printFrame(html) {
   f.onload = () => f.contentWindow.print();
   f.srcdoc = html;
   document.body.append(f);
+  return f;
 }

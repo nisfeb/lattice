@@ -13,27 +13,80 @@
 //  OpenSCAD reports the include it could not open, on its line.
 
 export const ROOT = '/w/';
-export const CAPS = { depth: 8, files: 64, bytes: 4 * 1024 * 1024 };
+//  `files` caps the pages asked for, found or not, and `refs` the include
+//  lines looked at, so a hostile page costs neither reads nor notes
+export const CAPS = { depth: 8, files: 64, bytes: 4 * 1024 * 1024, refs: 1024 };
 
-//  the source with its comments and strings blanked, lengths kept
-//  An include's path is read whole, as OpenSCAD's lexer does, so a `//`
-//  inside one is part of the path, not a comment.
-function bare(src) {
-  return src.replace(/\b(?:include|use)\s*<[^>\n]*>|\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:[^"\\\n]|\\.)*"/g,
-    (m) => (/^(include|use)/.test(m) ? m : m.replace(/[^\n]/g, ' ')));
-}
+const isWs = (c) => c === ' ' || c === '\n' || c === '\t' || c === '\r' || c === '\f' || c === '\v';
 
 //  every include and use in a source: { kind, ref, line }
-export function scanIncludes(src) {
-  const out = [];
-  const b = bare(String(src));
-  const re = /(^|[;\s}])(include|use)\s*<([^>\n]*)>/g;
-  let m;
-  while ((m = re.exec(b))) {
-    const at = m.index + m[1].length;
-    const ref = String(src).slice(at, at + m[0].length - m[1].length).replace(/^(include|use)\s*</, '').replace(/>$/, '');
-    out.push({ kind: m[2], ref, line: b.slice(0, at).split('\n').length });
+//
+//  One pass, each character looked at a bounded number of times, because
+//  the text is the page's and may be hostile. Comments and strings hide
+//  an include. A block comment that never ends is not one, and neither
+//  is an include with no > on its line: the scan goes on from there, and
+//  looks for that end only once.
+//  An include's path is read whole, as OpenSCAD's lexer does, so a `//`
+//  inside one is part of the path, not a comment.
+//  `tally.steps`, when asked for, is the work done, for the suite.
+export function scanIncludes(src, tally) {
+  const s = String(src), n = s.length, out = [];
+  let i = 0, line = 1, steps = 0;
+  //  what came before: an include starts the text or follows white
+  //  space, a ; or a }. A comment or a string counts as a space.
+  let prev = ' ';
+  //  the next of each, found once and kept while it is still ahead
+  let gt = -1, eol = -1, close = -1, noClose = false;
+  const ahead = (at, ch, from) => {
+    if (at >= from) return at;
+    const e = s.indexOf(ch, from);
+    steps += (e < 0 ? n : e) - from;
+    return e < 0 ? n : e;
+  };
+  while (i < n) {
+    steps++;
+    const c = s[i];
+    if (c === '\n') { line++; prev = c; i++; continue; }
+    if (c === '/' && s[i + 1] === '/') { i = eol = ahead(eol, '\n', i); prev = ' '; continue; }
+    if (c === '/' && s[i + 1] === '*' && !noClose) {
+      if (close < i + 2) { const e = s.indexOf('*/', i + 2); steps += (e < 0 ? n : e) - i; close = e; noClose = e < 0; }
+      if (!noClose) {
+        for (let k = i; k < close; k++) if (s[k] === '\n') line++;
+        i = close + 2; prev = ' ';
+        continue;
+      }
+    }
+    if (c === '"') {
+      //  to the closing quote on this line
+      eol = ahead(eol, '\n', i);
+      let j = i + 1;
+      while (j < eol && s[j] !== '"') j += s[j] === '\\' ? 2 : 1;
+      steps += j - i;
+      if (j < eol) { i = j + 1; prev = ' '; continue; }
+      //  a quote with no partner on its line: the rest of the line is
+      //  inside it, as OpenSCAD reads it, so no include is read there
+      i = eol; prev = ' ';
+      continue;
+    }
+    const kind = (prev === ';' || prev === '}' || isWs(prev)) && (s.startsWith('include', i) ? 'include' : s.startsWith('use', i) ? 'use' : null);
+    if (kind) {
+      let j = i + kind.length, nl = 0;
+      while (j < n && isWs(s[j])) { if (s[j] === '\n') nl++; j++; }
+      steps += j - i;
+      if (s[j] === '<') {
+        gt = ahead(gt, '>', j + 1);
+        eol = ahead(eol, '\n', j + 1);
+        if (gt < eol) {
+          out.push({ kind, ref: s.slice(j + 1, gt), line });
+          line += nl;
+          i = gt + 1; prev = '>';
+          continue;
+        }
+      }
+    }
+    prev = c; i++;
   }
+  if (tally) tally.steps = steps;
   return out;
 }
 
@@ -74,9 +127,18 @@ export async function collect(name, text, read, caps = CAPS) {
   //  a page's own file, so its includes resolve from the page's folder
   const queue = [{ page: name, text, depth: 0 }];
   const asked = new Map();
+  let looked = 0;
+  //  a file cannot also be a folder: `include <a>` is the file /w/a, so a
+  //  page under it, /w/a/b, has nowhere to go, and the other way round
+  const clash = (f) => {
+    for (let d = f.lastIndexOf('/'); d > ROOT.length; d = f.lastIndexOf('/', d - 1)) if (files.has(f.slice(0, d))) return f.slice(0, d);
+    for (const k of files.keys()) if (k.startsWith(f + '/')) return k;
+    return null;
+  };
   while (queue.length) {
     const { page, text: t, depth } = queue.shift();
     for (const inc of scanIncludes(t)) {
+      if (++looked > caps.refs) { notes.push(`more than ${caps.refs} include lines, the rest not looked at`); queue.length = 0; break; }
       const r = resolveRef(dirOf(page), inc.ref);
       if (r.error) { notes.push(`line ${inc.line} of ${page}: ${r.error}`); continue; }
       if (files.has(r.file)) continue;
@@ -84,10 +146,14 @@ export async function collect(name, text, read, caps = CAPS) {
       if (files.size >= caps.files) { notes.push(`more than ${caps.files} included files, the rest not read`); queue.length = 0; break; }
       let body = asked.get(r.page);
       if (body === undefined) {
+        //  a page that does not exist costs a read as well
+        if (asked.size >= caps.files) { notes.push(`more than ${caps.files} included files, the rest not read`); queue.length = 0; break; }
         try { body = await read(r.page); } catch { body = null; }
         asked.set(r.page, body);
       }
       if (typeof body !== 'string') continue;
+      const hit = clash(r.file);
+      if (hit) { notes.push(`${inc.ref}: not read, ${hit.slice(ROOT.length)} is in its way. Write the .scad on the include of the page above it`); continue; }
       if (bytes + body.length > caps.bytes) { notes.push(`${r.page}: the included files pass ${caps.bytes >> 20} MB, not read`); continue; }
       bytes += body.length;
       files.set(r.file, body);

@@ -7,19 +7,26 @@
 ::  other ships, and it reaches only /comments/. So a commenter can append a
 ::  comment but structurally cannot edit a page.
 ::
+/<  *   /lib/lattice-comment-types.hoon
+/<  ls  /lib/lattice-share.hoon
 |%
-::  +$  comment: one stored comment grub.
-::
-+$  comment  [author=@p when=@da body=@t]
-::  +$  comment-action: the poke payload a commenter sends. `author` is NOT
-::  carried here. The receiver takes it from the poke source. body is length-
-::  capped and HTML-escaped by the receiver/renderer.
-::
-+$  comment-action  [page=path body=@t]
 ::  +max-body: comment length cap (bytes). Bounds storage + render of a hostile
 ::  commenter, like the peer-page data cap.
 ::
 ++  max-body  ^-(@ud 4.096)
+::  +act-ok: is a comment action worth a read at all? Any ship may poke
+::  one, and what follows walks the page path a segment at a time, so the
+::  path is bounded here, before anything is read, as the shares and
+::  access inboxes bound theirs (+pax-ok:lattice-share: its length, its
+::  bytes, every segment sane). The body and the path may not be empty:
+::  an empty path would file a comment loose in the store's root.
+++  act-ok
+  |=  act=comment-action
+  ^-  ?
+  ?&  !=('' body.act)
+      !=(~ page.act)
+      (pax-ok:ls page.act)
+  ==
 ::  +per-author: of a page's 200 slots, how many one author may hold, its
 ::  moons counted with it and each comet on its own
 ::  (+quota-family:lattice-share).
@@ -108,7 +115,16 @@
     ?.  ?=([~ %s *] id)  ''
     ?.(((sane %ta) p.u.id) '' p.u.id)
   =/  when=@da  (add ~1970.1.1 (div (mul u.ms ~s1) 1.000))
-  `[nid [u.who when (end [3 max-body] p.u.bo)]]
+  `[nid [u.who when (utf8-cut max-body p.u.bo)]]
+++  utf8-cut
+  |=  [n=@ud t=@t]
+  ^-  @t
+  ?:  (lte (met 3 t) n)  t
+  =/  k=@ud  n
+  |-
+  ?:  =(0 k)  ''
+  ?.  =(2 (rsh [0 6] (cut 3 [k 1] t)))  (end [3 k] t)
+  $(k (dec k))
 ::  +thread-names / +threads-cord: [/pub %threads], one page name a line,
 ::  named as /pub/comments names them
 ++  thread-names

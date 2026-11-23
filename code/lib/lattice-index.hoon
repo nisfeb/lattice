@@ -14,15 +14,9 @@
 ::    - peeking one grub is cheap, peeking a DIRECTORY is not. So a lookup must be
 ::      a pure name computation and must never enumerate the directory.
 ::
+/<  *  /lib/lattice-index-types.hoon
 |%
-::  +$  posts: who carries a term, and how often.
-::
-::  Keyed by the document key ALONE. Scope is a field, never part of the key. A
-::  page flipping private -> public must move, not fork, or the document ends up
-::  indexed twice under two identities.
-+$  posts  (map key=@t [scope=@t tf=@ud])
-::  +$  bucket: one grub's worth of the index.
-+$  bucket  (map term=@t posts)
+::  Types posts and bucket live in /lib/lattice-index-types.
 ::  +buckets: how many. Fanout of the /idx directory, so it is a write cost.
 ++  buckets  ^-(@ud 256)
 ::  +bucket-of: which bucket a term lives in.
@@ -98,6 +92,14 @@
 ::  +index-terms: fold every content word in [t] into the frequency map [m].
 ::  Dropped tokens (too short / stop word) never enter the map. Surviving
 ::  tokens bump their count. This is the dedup-to-count (bag-of-words) stage.
+::
+::  A token goes in whole, so ricsul-bilwyt and foo.hoon are found as
+::  typed, and also by its parts, the runs of word bytes in it. Whole
+::  tokens alone hid every word that touches punctuation inside its
+::  token: the text of a markdown link is glued to its url, and
+::  client/server, name=value and [[notes/todo]] are one token each. A
+::  query word is still looked up whole (+query-terms), and now meets
+::  the part.
 ++  index-terms
   |=  [m=(map @t @ud) t=tape]
   ^-  (map @t @ud)
@@ -105,8 +107,25 @@
   |-  ^-  (map @t @ud)
   ?~  toks  m
   =/  nt=(unit @t)  (normalize-term i.toks)
-  ?~  nt  $(toks t.toks)
-  $(toks t.toks, m (~(put by m) u.nt +((~(gut by m) u.nt 0))))
+  =/  ps=(list @t)
+    %+  skip  (murn (word-runs i.toks) normalize-term)
+    |=(p=@t =(`p nt))
+  =/  ws=(list @t)  ?~(nt ps [u.nt ps])
+  %=  $
+    toks  t.toks
+    m     (roll ws |=([w=@t n=_m] (~(put by n) w +((~(gut by n) w 0)))))
+  ==
+::  +word-runs: the maximal runs of word bytes in a token
+++  word-runs
+  |=  t=tape
+  ^-  (list tape)
+  =|  [cur=tape out=(list tape)]
+  |-  ^-  (list tape)
+  ?~  t  (flop ?~(cur out [(flop cur) out]))
+  =/  hp=@ud  (high-punct t)
+  ?.  =(0 hp)  $(t (slag hp `tape`t), cur ~, out ?~(cur out [(flop cur) out]))
+  ?:  (is-alnum i.t)  $(t t.t, cur [i.t cur])
+  $(t t.t, cur ~, out ?~(cur out [(flop cur) out]))
 ::  +query-terms: the index terms a search query asks for, by the same
 ::  split and normalization the indexer uses (+index-terms), in the order
 ::  typed, each once. The omnibar used to split its query in the browser
@@ -176,33 +195,54 @@
   ?:  (~(has in stop-words) c)  ~
   `c
 ::
-::  +trim-punct: drop non-alphanumeric characters from BOTH ends of a tape
-::  (leading via +trim-leading, trailing via flop/trim-leading/flop).
+::  +trim-punct: drop non-word characters from BOTH ends of a tape: what
+::  is left runs from its first word byte to its last. Punctuation past
+::  ASCII (+high-punct) is skipped a character at a time.
 ++  trim-punct
   |=  t=tape
   ^-  tape
-  (flop (trim-leading (flop (trim-leading t))))
-::  +trim-leading: drop leading non-alphanumeric characters.
-++  trim-leading
-  |=  t=tape
-  ^-  tape
-  ?~  t  ~
-  ?:  (is-alnum i.t)  t
-  $(t t.t)
-::  +is-alnum: is [c] an ASCII letter or digit?
+  =|  [i=@ud a=(unit @ud) b=@ud]
+  =/  s=tape  t
+  |-  ^-  tape
+  ?~  s  ?~(a ~ (swag [u.a (sub b u.a)] t))
+  =/  hp=@ud  (high-punct s)
+  ?.  =(0 hp)  $(s (slag hp `tape`s), i (add i hp))
+  ?.  (is-alnum i.s)  $(s t.s, i +(i))
+  $(s t.s, i +(i), a ?~(a `i a), b +(i))
+::  +is-alnum: is [c] a word byte: an ASCII letter or digit, or a byte
+::  of a character past ASCII? Without the last, text in any script but
+::  Latin was indexed nowhere, and "café" as "caf".
 ++  is-alnum
   |=  c=@tD
   ^-  ?
   ?|  &((gte c '0') (lte c '9'))
       &((gte c 'a') (lte c 'z'))
       &((gte c 'A') (lte c 'Z'))
+      (gte c 128)
   ==
+::  +high-punct: how many bytes of punctuation past ASCII `t` starts with,
+::  0 for none. A byte of 128 or more is a word byte, so a word in any
+::  script is a term. These characters are the exceptions, and separate
+::  words as their ASCII twins do: U+0080 to U+00BF (no-break space,
+::  guillemets), U+2000 to U+2BFF (dashes, curly quotes, the ellipsis,
+::  arrows, symbols), U+3000 to U+303F (CJK punctuation) and the emoji
+::  from U+1F000. /lib/lattice-know has the same arm:
+::  the two tokenizers agree on it.
+++  high-punct
+  |=  t=tape
+  ^-  @ud
+  ?.  ?=([@ @ *] t)  0
+  ?:  =(0xc2 i.t)  2
+  ?:  &(=(0xe2 i.t) (gte i.t.t 0x80) (lte i.t.t 0xaf))  3
+  ?:  &(=(0xe3 i.t) =(0x80 i.t.t))  3
+  ?:  &(=(0xf0 i.t) =(0x9f i.t.t))  4
+  0
 ::  +stop-words: a small fixed set of high-frequency English function words
 ::  (3+ chars, since shorter ones are already dropped by the min-length filter)
 ::  excluded from the term index. Deliberately small + fixed so this lib stays
 ::  pure and unit-testable. Content words (man/new/old/…) are NOT here.
 ++  stop-words
-  ^-  (set @t)
+  ^~  ^-  (set @t)
   %-  ~(gas in *(set @t))
   ^-  (list @t)
   :~  'the'  'and'  'for'  'are'  'but'  'not'  'you'  'all'  'any'

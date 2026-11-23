@@ -2,7 +2,7 @@
 ::  kept so a search reads one grub instead of tokenizing the store. Every
 ::  reader checks a row against its entry, so a stale row is only slower.
 ::
-/<  lk  /lib/lattice-know.hoon
+/<  lk  /lib/lattice-know-types.hoon
 |_  tc=term-cache:lk
 ++  grad  %noun
 ++  grow

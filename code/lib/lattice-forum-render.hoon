@@ -172,6 +172,7 @@
   ?~  text  [(flop url) ~]
   ?:  ?|  =(i.text ' ')
           =(i.text '\0a')
+          =(i.text '\0d')
           =(i.text '\09')
           =(i.text '<')
           =(i.text '>')
@@ -179,16 +180,19 @@
     [(flop url) text]
   $(text t.text, url [i.text url])
 ::
-::  +first-url: where the first http(s) url starts
+::  +first-url: where the first http(s) url starts, in a single linear pass
 ::
 ++  first-url
   |=  txt=tape
   ^-  (unit @ud)
-  =/  https-idx  (find "https://" txt)
-  =/  http-idx   (find "http://" txt)
-  ?~  https-idx  http-idx
-  ?~  http-idx   https-idx
-  `(min u.https-idx u.http-idx)
+  =/  i=@ud  0
+  |-  ^-  (unit @ud)
+  ?~  txt  ~
+  ?:  =('h' i.txt)
+    ?:  |(=("https://" (scag 8 `tape`txt)) =("http://" (scag 7 `tape`txt)))
+      `i
+    $(txt t.txt, i +(i))
+  $(txt t.txt, i +(i))
 ::
 ++  extract-image-urls
   |=  text=@t
@@ -375,7 +379,9 @@
 ++  parse-page
   |=  args=(map @t @t)
   ^-  @ud
-  =/  n=(unit @ud)  ((slat %ud) (~(gut by args) 'page' '1'))
+  =/  raw=@t  (~(gut by args) 'page' '1')
+  =/  n=(unit @ud)  (rush raw dim:ag)
+  =?  n  ?=(~ n)  (slaw %ud raw)
   ?~(n 1 ?:((lth u.n 1) 1 u.n))
 ::
 ++  rank-list-offset
@@ -425,20 +431,21 @@
     =/  up=(unit comment-id)
       ?~(parent.c ~ ?:((~(has by comments) u.parent.c) parent.c ~))
     (~(put by acc) up [c (~(gut by acc) up ~)])
-  (walk-children 0 ~ by-parent)
+  (walk-children 0 ~ by-parent ~)
 ::
 ++  walk-children
-  |=  [depth=@ud parent=(unit comment-id) by-parent=(map (unit comment-id) (list comment))]
+  |=  [depth=@ud parent=(unit comment-id) by-parent=(map (unit comment-id) (list comment)) seen=(set comment-id)]
   ^-  (list [@ud comment])
+  ?:  (gte depth 64)  ~
   =/  kids=(list comment)
-    %+  sort  (~(gut by by-parent) parent ~)
+    %+  sort  (skip (~(gut by by-parent) parent ~) |=(c=comment (~(has in seen) id.c)))
     |=  [a=comment b=comment]
     ?.  =(created.a created.b)  (lth created.a created.b)
     (lth id.a id.b)
   %-  zing
   %+  turn  kids
   |=  c=comment
-  [[depth c] (walk-children +(depth) `id.c by-parent)]
+  [[depth c] (walk-children +(depth) `id.c by-parent (~(put in seen) id.c))]
 ::
 ++  role-to-text
   |=  =role

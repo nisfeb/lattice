@@ -13,7 +13,7 @@
 //  document is dirty.
 
 import { Book } from './book.js';
-import { colName, toUser } from './formula.js';
+import { colName, toUser, moveFormula } from './formula.js';
 import { rowCount, MAX_ROWS, MAX_COLS } from './model.js';
 import { exportOds, exportCsv } from './ods.js';
 
@@ -228,7 +228,8 @@ export function mount(host, opts = {}) {
         if (cell && (cell.text || cell.st || cell.vt)) {
           const look = book.look(cur, r, c);
           if (cell.text) d.textContent = cell.text;
-          if (cell.err) d.classList.add('ls-err');
+          if (cell.err || cell.bad) d.classList.add('ls-err');
+          if (cell.bad) d.title = 'This formula cannot be read, so it is kept as text.';
           const align = look.align || (cell.err ? 'center' : cell.vt && cell.vt !== 'string' ? (cell.vt === 'boolean' ? 'center' : 'right') : '');
           if (align === 'right') d.classList.add('ls-num');
           else if (align === 'center') d.classList.add('ls-mid');
@@ -389,6 +390,8 @@ export function mount(host, opts = {}) {
     }
     changed();
     refresh();
+    //  the edit was made, with something to say about it
+    if (r && r.note) ctl.say(r.note);
     return true;
   }
 
@@ -414,18 +417,19 @@ export function mount(host, opts = {}) {
     const lines = ed.value.split('\n').length;
     if (lines > 1) ed.style.height = (lines * 20 + 6) + 'px';
   }
+  //  false when the commit was refused. The editor then stays open with
+  //  its text: what was typed is given up only by Escape.
   function closeEd(commit, dr = 0, dc = 0, quiet = false) {
     if (!editing) return true;
     const val = editFrom === 'bar' ? fxIn.value : ed.value;
+    if (commit && val !== book.input(cur, ar, ac) && !edit(() => book.enter(cur, ar, ac, val))) return false;
     editing = false;
     ed.classList.add('ls-idle');
     ed.value = '';
-    let ok = true;
-    if (commit && val !== book.input(cur, ar, ac)) ok = edit(() => book.enter(cur, ar, ac, val));
-    if (ok && (dr || dc)) select(ar + dr, ac + dc);
+    if (dr || dc) select(ar + dr, ac + dc);
     else { bars(); paint(true); }
     if (!quiet) focusGrid();
-    return ok;
+    return true;
   }
   const touch = () => matchMedia('(pointer: coarse)').matches;
   //  the hidden editor holds the focus, so a typed or composed character
@@ -443,14 +447,23 @@ export function mount(host, opts = {}) {
     fit();
   });
   ed.addEventListener('compositionstart', () => { if (!editing && !locked()) openEd(''); });
-  fxIn.addEventListener('focus', () => { if (!editing && !locked()) { editing = true; editFrom = 'bar'; } });
-  fxIn.addEventListener('input', () => { if (editing && editFrom === 'bar') { /* the bar is the editor */ } });
+  //  the bar and the cell editor are one edit. Whichever has the focus is
+  //  where the text is read from at commit, and each shows what is typed
+  //  in the other, so an edit begun in the cell and gone on with in the
+  //  bar commits what the bar shows.
+  fxIn.addEventListener('focus', () => { if (!locked()) { editing = true; editFrom = 'bar'; } });
+  fxIn.addEventListener('input', () => { if (editing && !ed.classList.contains('ls-idle')) { ed.value = fxIn.value; fit(); } });
   fxIn.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); editing = true; editFrom = 'bar'; closeEd(true, 1, 0); }
-    else if (e.key === 'Escape') { e.preventDefault(); editing = false; fxIn.value = book.input(cur, ar, ac); focusGrid(); }
+    else if (e.key === 'Escape') { e.preventDefault(); editing = true; closeEd(false); fxIn.value = book.input(cur, ar, ac); }
     else if (e.key === 'Tab') { e.preventDefault(); editing = true; editFrom = 'bar'; closeEd(true, 0, e.shiftKey ? -1 : 1); }
   });
-  fxIn.addEventListener('blur', () => { if (editing && editFrom === 'bar') { editing = true; closeEd(true); } });
+  fxIn.addEventListener('blur', (e) => {
+    if (!editing || editFrom !== 'bar') return;
+    //  back into the open cell editor: the edit goes on there
+    if (e.relatedTarget === ed && !ed.classList.contains('ls-idle')) { editFrom = 'cell'; return; }
+    closeEd(true);
+  });
 
   // ── keyboard ───────────────────────────────────────────────────────────
   const page = () => Math.max(1, Math.floor((scroll.clientHeight - HDR_H) / ROW_H) - 1);
@@ -512,8 +525,10 @@ export function mount(host, opts = {}) {
       return null;
     });
   }
-  function undo() { if (!locked() && book.undo()) { changed(); refresh(); } }
-  function redo() { if (!locked() && book.redo()) { changed(); refresh(); } }
+  //  an undo or a redo changes the sheet in ways the held cut cannot follow,
+  //  and a cut that was undone has its cells back: it is pasted as a copy
+  function undo() { if (!locked() && book.undo()) { if (clip) clip.cut = false; changed(); refresh(); } }
+  function redo() { if (!locked() && book.redo()) { if (clip) clip.cut = false; changed(); refresh(); } }
   function toggle(prop, val) {
     const [r1, r2, c1, c2] = box();
     const now = book.look(cur, ar, ac)[prop];
@@ -617,7 +632,22 @@ export function mount(host, opts = {}) {
   // ── rows and columns ───────────────────────────────────────────────────
   function shift(dim, where, n) {
     if (editing && !closeEd(true)) return;
-    edit(() => book.shift(cur, dim, where, n));
+    if (edit(() => book.shift(cur, dim, where, n))) moveCut(dim, where, n);
+  }
+  //  rows or columns moved after a cut and before its paste: what the cut
+  //  formulas read is where it now is, and a block below the edit has moved
+  function moveCut(dim, at, n) {
+    if (!clip || !clip.cut) return;
+    const op = { sheet: book.sheets[cur].name, dim, at, n };
+    const home = book.sheets[clip.sheet].name;
+    for (const k of clip.cells) if (k.f) k.f = moveFormula(k.f, home, op) ?? k.f;
+    if (clip.sheet !== cur) return;
+    const [lo, hi] = dim === 'r' ? [clip.r1, clip.r2] : [clip.c1, clip.c2];
+    if (at > hi) return;
+    //  an edit that reaches into the block: it is pasted as a copy
+    if (n > 0 ? at > lo : at - n - 1 >= lo) { clip.cut = false; return; }
+    for (const k of clip.cells) k[dim === 'r' ? 'r' : 'c'] += n;
+    if (dim === 'r') { clip.r1 += n; clip.r2 += n; } else { clip.c1 += n; clip.c2 += n; }
   }
   let openMenu = null;
   function menu(e, kind, idx) {
@@ -670,7 +700,7 @@ export function mount(host, opts = {}) {
     const tsv = rows.join('\n');
     e.clipboardData.setData('text/plain', tsv);
     e.preventDefault();
-    clip = { tsv, r1, c1, cells, sheet: cur };
+    clip = { tsv, r1, c1, r2: Math.min(r2, r1 + 5000), c2: Math.min(c2, c1 + 500), cells, sheet: cur, cut };
     if (cut) clear();
   }
   function pasteIn(e) {
@@ -681,10 +711,15 @@ export function mount(host, opts = {}) {
     const [r1, , c1] = box();
     edit(() => {
       if (clip && clip.tsv === t.replace(/\r/g, '')) {
-        //  lattice's own copy: formulas come along, their references moved
-        for (const k of clip.cells) {
-          const r = r1 + (k.r - clip.r1), c = c1 + (k.c - clip.c1);
-          if (r < MAX_ROWS && c < MAX_COLS && !book.cell(cur, r, c).covered) book.copyCell(k, cur, r, c);
+        //  lattice's own copy: formulas come along, their references
+        //  moved. A cut is a move: its formulas read what they read
+        //  before, and it is pasted once.
+        const from = clip;
+        if (from.cut) clip = null;
+        for (const k of from.cells) {
+          const r = r1 + (k.r - from.r1), c = c1 + (k.c - from.c1);
+          if (r >= MAX_ROWS || c >= MAX_COLS || book.cell(cur, r, c).covered) continue;
+          if (from.cut) book.moveCell(k, from, cur, r, c); else book.copyCell(k, cur, r, c);
         }
         return null;
       }
@@ -817,9 +852,12 @@ export function mount(host, opts = {}) {
   //  the shell calls this before a save, a tab switch or a park: what is
   //  being typed is committed first, so it is not lost
   ctl.sync = () => {
-    if (editing) closeEd(true, 0, 0, true);
+    //  false when the text being typed could not be committed: it is still
+    //  in the open editor and not in the buffer
+    if (editing && !closeEd(true, 0, 0, true)) return false;
     return flush();
   };
+  ctl.editing = () => !!editing;
   ctl.setEditable = (on) => { wanted = !!on; if (!wanted && editing) closeEd(false); drawTabs(); bars(); };
   ctl.focus = () => focusGrid();
   ctl.select = (s, r, c) => { if (s !== cur) show(s); select(r, c); };

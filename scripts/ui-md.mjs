@@ -22,6 +22,7 @@ import { makeCheck, read, cut } from './lib/check.mjs';
 // with it. Nothing is marked until a test sets a tree and the preview's
 // test, which is how the PDF and the Skills pane render: unset.
 const MD = `let nodes = [], grubPath = null, current = null, treeGen = 0;
+let location = { origin: 'https://ship.example' };
 let knowKeys = [{ key: '/a-memory' }];
 const linkOf = () => null;
 ${cut('ui-src/lattice/10-shell.js', /const validName = [\s\S]*?\);\n/, 'validName')}
@@ -161,6 +162,155 @@ for (const [n, v] of [['empty', ''], ['null', null], ['undefined', undefined],
   try { mdToHtml(v); check.ok('survives ' + n); } catch (e) { check.bad('survives ' + n, 'threw ' + e.message); }
 }
 
+console.log('\ncost: a hostile paragraph is linear, not quadratic or cubic');
+// The scans for a closing bracket or paren are capped (as the ship's
+// +scan-cap and +link-scan-cap are), so four times the text costs about
+// four times the work. A ratio, not a time: quadratic gives 16 and cubic
+// 64 whatever the machine. The sizes are past the caps, where the cost
+// per opener has stopped growing, and small enough that the renderer as
+// it was fails this in a minute instead of hanging the suite.
+const cost = (s) => {
+  let best = Infinity;
+  for (let k = 0; k < 3 && (!k || best < 200); k++) {
+    const t0 = performance.now(); mdToHtml(s); best = Math.min(best, performance.now() - t0);
+  }
+  return Math.max(best, 0.5);
+};
+const N = 2000;
+for (const [n, unit, tail] of [['[a]( runs', '[a](', ''], ['[ runs', '[', ''], ['[[ runs', '[[', ''],
+  ['![ runs', '![', ''], ['![a]( runs', '![a](', ''], ['[[a| runs', '[[a|', ''],
+  ['spaces after a link url', ' ', ''], ['a pipe run under a table row', '|', 'x']]) {
+  const make = (len) => (unit === ' ' ? '[a](b' : unit === '|' ? '|\n' : '')
+    + unit.repeat(Math.ceil(len / unit.length)) + tail;
+  const r = cost(make(4 * N)) / cost(make(N));
+  check('4x the text is under 9x the work: ' + n, r < 9, 'ratio ' + r.toFixed(1));
+}
+{
+  let threw = null;
+  try { mdToHtml('>'.repeat(3000) + ' deep'); mdToHtml('> '.repeat(3000) + 'deep'); } catch (e) { threw = e; }
+  check('3000 quote marks on a line do not overflow the stack', !threw, String(threw));
+  const d = mdToHtml('>'.repeat(40) + ' deep');
+  check('quotes nest 32 deep and no deeper', d.split('<blockquote>').length - 1 === 32, d.slice(0, 80));
+}
+has('a link with a title still links', '[a](https://e.com "the title")', '<a href="https://e.com">a</a>');
+has('a 500 character url still links', '[a](https://e.com/' + 'p'.repeat(482) + ')', '<a href="https://e.com/pppp');
+has('an 800 character url (signed links) still links', '[a](https://e.com/?' + 'q=1&'.repeat(200) + ')', '<a href="https://e.com/?q=1&amp;q=1');
+has('so does an image with one', '![a](https://e.com/?' + 'q=1&'.repeat(200) + ')', 'image from another site: a');
+has('a bracket before the closing paren stays in the address', '[a](https://e.com/x])', 'href="https://e.com/x]"');
+// the paren holds at most 4,096 characters of the source, a title and its
+// quotes or the & of a query string counted as written (+link-scan-cap)
+{
+  const at = (n, mk) => { const g = mk(n); return '[a](' + g + ')'; };
+  const url = (n) => 'https://e.com/' + 'p'.repeat(n - 14);
+  const ttl = (n) => 'https://e.com/' + 'p'.repeat(n - 14 - 4) + ' "t"';
+  const amp = (n) => 'https://e.com/?' + 'p'.repeat(n - 15 - 4 * 100) + 'q=1&'.repeat(100);
+  for (const [nm, mk] of [['plain', url], ['titled', ttl], ['with & in it', amp]]) {
+    has('a ' + nm + ' paren of 4,096 characters links', at(4096, mk), '<a href="https://e.com/');
+    hasnt('a ' + nm + ' paren of 4,097 characters does not', at(4097, mk), '<a ');
+  }
+}
+hasnt('a paren 5000 characters on is no link', '[a](https://e.com/' + 'p'.repeat(5000) + ')', '<a ');
+{
+  const f = '```\n' + '>'.repeat(40) + '\n' + '> '.repeat(35) + 'x\n```';
+  has('a fence keeps a line of 40 quote marks', f, '<code>' + '&gt;'.repeat(40) + '\n');
+  has('and a spaced one with its blanks', f, '&gt; '.repeat(35) + 'x</code>');
+  hasnt('and no quote is opened', f, '<blockquote>');
+  const q = mdToHtml('>'.repeat(40) + ' deep');
+  check('a line of 40 marks outside a fence is still held to 32', q.split('<blockquote>').length - 1 === 32, q.slice(0, 60));
+}
+has('2000 characters of link text still link', '[' + 't'.repeat(2000) + '](https://e.com)', '<a href="https://e.com">tttt');
+hasnt('link text past the scan cap is no link', '[' + 't'.repeat(2100) + '](https://e.com)', '<a ');
+has('a table still renders', '| a | b |\n|---|:-:|\n| 1 | 2 |', '<table><thead><tr><th>a</th><th>b</th>');
+has('a table with no outer pipes still renders', 'a | b\n--- | ---\n1 | 2', '<td>1</td><td>2</td>');
+has('a bare pipe pair is a delimiter row, as before', 'a|b\n||\n1|2', '<table>');
+hasnt('a rule under a pipe line is no table', 'a|b\n---', '<table>');
+hasnt('one leading pipe is no delimiter row', 'a|b\n|', '<table>');
+
+console.log('\nan image or link whose path the browser reads as another host');
+// The browser reads a backslash in a path as a slash, so /\host/p.png
+// is //host/p.png: another site, which no outside-content consent covers.
+for (const u of ['/\\evil.example/p.png', '\\\\evil.example/p.png', '\\/evil.example/p.png', '/\\\\evil.example/p.png', '//evil.example/p.png']) {
+  hasnt('no <img> for ' + u, '![x](' + u + ')', '<img');
+  hasnt('no link for ' + u.replace('//', '/\\'), '[x](' + u.replace('//', '/\\') + ')', '<a ');
+  setOutside(true);
+  hasnt('none with outside content allowed either: ' + u.replace('//', '/\\'), '![x](' + u.replace('//', '/\\') + ')', '<img');
+  setOutside(false);
+}
+has('an image on this ship still draws', '![x](/apps/lattice/a/b.png?data)', '<img alt="x" src="/apps/lattice/a/b.png?data">');
+has('a backslash later in a path is left alone', '[x](/a/b\\c)', '<a href="/a/b\\c">');
+
+console.log('\ngemtext agrees with the ship (code/lib/lattice-gmi.hoon)');
+const gmi = require59gmi;
+const FENCED = '```hoon\n# not a heading\n```\n# Real';
+check.eq('a fence with a language opens a block', gmi(FENCED), '<pre># not a heading</pre>\n<h1>Real</h1>');
+check.eq('a closing fence may carry text too', gmi('```\na\n``` end\nb'), '<pre>a</pre>\n<p>b</p>');
+check.eq('an unclosed fence still renders', gmi('```x\na'), '<pre>a</pre>');
+check.eq('a heading needs no space', gmi('#One\n##Two\n###Three'), '<h1>One</h1>\n<h2>Two</h2>\n<h3>Three</h3>');
+check.eq('extra spaces after the hashes are dropped', gmi('#   One'), '<h1>One</h1>');
+check.eq('a fourth hash is heading text', gmi('#### d'), '<h3># d</h3>');
+check.eq('CRLF: the CR is not content', gmi('# a\r\n```x\r\nb\r\n```\r\nc\r\n'), '<h1>a</h1>\n<pre>b</pre>\n<p>c</p>');
+eqj('the outline skips a fence with a language', outline(FENCED, 'gmi'), [{ level: 1, text: 'Real', line: 4 }]);
+eqj('the outline reads a heading with no space', outline('#One\n##Two', 'gmi'),
+  [{ level: 1, text: 'One', line: 1 }, { level: 2, text: 'Two', line: 2 }]);
+eqj('the outline reads CRLF gemtext', outline('# a\r\n```x\r\n# b\r\n```\r\n', 'gmi'), [{ level: 1, text: 'a', line: 1 }]);
+eqj('gemtext links inside a fence with a language are not links', outLinks('```x\n=> https://e.com a\n```', 'gmi'), []);
+
+check.eq('a link line needs no space after the arrow', gmi('=>http://x y'), '<p><a href="http://x" target="_blank" rel="noopener noreferrer">y</a></p>');
+check.eq('a tab ends the address', gmi('=> http://x\tlab'), '<p><a href="http://x" target="_blank" rel="noopener noreferrer">lab</a></p>');
+check.eq('a tab after the arrow, blanks before the label', gmi('=>\thttp://x  two words'), '<p><a href="http://x" target="_blank" rel="noopener noreferrer">two words</a></p>');
+check.eq('a tab ends an urb address too', gmi('=> urb://~zod/a&b#c\tlabel'), '<p><a href="/apps/lattice?url=urb%3A%2F%2F~zod%2Fa%26b%23c">label</a></p>');
+check.eq('a link with no label shows its address', gmi('=> http://x '), '<p><a href="http://x" target="_blank" rel="noopener noreferrer">http://x</a></p>');
+check.eq('an arrow alone is a paragraph', gmi('=>\n=> '), '<p>=&gt;</p>\n<p>=&gt; </p>');
+check.eq('a run of bullets is one list', gmi('* a\n*   b\nc\n* d'), '<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n<p>c</p>\n<ul>\n<li>d</li>\n</ul>');
+check.eq('a star with no space is a paragraph', gmi('*a'), '<p>*a</p>');
+eqj('gemtext links with a tab or no space', outLinks('=>https://e.com/a one\n=> urb://~zod/x\ttwo', 'gmi'), ['https://e.com/a', 'urb://~zod/x']);
+
+console.log('\nmarkdown agrees with the ship (code/lib/lattice-md.hoon)');
+// An <img> is loaded as the page is drawn, with the reader's session. A
+// source on this host with a query is a request to a route, so it is
+// drawn as a link (+safe-img, +route-url). Only the bare ?data of a
+// file's raw view still draws.
+const CLIP = '![x](/apps/lattice/clip?url=https://evil.example/t?id=1)';
+hasnt('a same-host image with a query is no image', CLIP, '<img');
+has('it is a link to the same address', CLIP, '<a href="/apps/lattice/clip?url=https://evil.example/t?id=1">x</a>');
+has('with no alt the link shows the address', '![](/apps/lattice?url=urb://~zod/p)', '<a href="/apps/lattice?url=urb://~zod/p">/apps/lattice?url=urb://~zod/p</a>');
+for (const u of ['/a.png?data=1', '/a.png?data&url=http://e', '/a.png?', '/a.png#f?q=1', '/apps/lattice/share?text=http://e.example'])
+  hasnt('no image for ' + u, '![x](' + u + ')', '<img');
+has('the alt of such a link is still escaped', '![a "b <i>](/a?b=1)', '<a href="/a?b=1">a &quot;b &lt;i&gt;</a>');
+has('a raw view still draws', '![x](/apps/lattice/x/~zod/p/pic.png?data)', '<img alt="x" src="/apps/lattice/x/~zod/p/pic.png?data">');
+has('and so does a plain path', '![x](/pic.png)', '<img alt="x" src="/pic.png">');
+setOutside(true);
+hasnt('outside content allowed does not lift it', CLIP, '<img');
+hasnt('an absolute same-origin image with a query is no image either',
+  '![x](https://ship.example/apps/lattice/clip?url=https://evil.example/t)', '<img');
+has('it becomes a link instead',
+  '![x](https://ship.example/apps/lattice/clip?url=https://evil.example/t)',
+  '<a href="https://ship.example/apps/lattice/clip?url=https://evil.example/t">x</a>');
+hasnt('a protocol-relative same-origin image with a query is no image either',
+  '![x](//ship.example/apps/lattice/clip?url=https://evil.example/t)', '<img');
+has('a same-origin absolute raw ?data view still draws',
+  '![x](https://ship.example/apps/lattice/f/pic.png?data)',
+  '<img alt="x" src="https://ship.example/apps/lattice/f/pic.png?data">');
+has('a remote image keeps its query', '![a](https://x.example/i.png?w=2)', '<img alt="a" src="https://x.example/i.png?w=2">');
+has('a protocol-relative remote image keeps its query', '![a](//x.example/i.png?w=2)', '<img alt="a" src="//x.example/i.png?w=2">');
+setOutside(false);
+check.eq('two spaces before a line end are a break', mdToHtml('a  \nb'), '<p>a<br>\nb</p>');
+check.eq('more than two as well', mdToHtml('a    \nb'), '<p>a<br>\nb</p>');
+check.eq('one space is not', mdToHtml('a \nb'), '<p>a \nb</p>');
+check.eq('emphasis runs across a break', mdToHtml('*a  \nb*'), '<p><em>a<br>\nb</em></p>');
+check.eq('a code span keeps its spaces', mdToHtml('`a  \nb`'), '<p><code>a  \nb</code></p>');
+hasnt('nothing breaks at the end of a paragraph', 'a  ', '<br>');
+check.eq('a link address cannot hold "]("', mdToHtml('[a](/u](/v)'), '<p>[a](/u](/v)</p>');
+check.eq('nor can an image source', mdToHtml('![a](/u](/v)'), '<p>![a](/u](/v)</p>');
+check.eq('a bracket alone in an address is fine', mdToHtml('[a](/u]v)'), '<p><a href="/u]v">a</a></p>');
+// A byte past ASCII is a word character on the ship, so an underscore
+// beside one opens or closes nothing.
+for (const t of ['é_a_é', '_a_é', 'é_a_', '—_a_—', 'a_b_c', '_a_b_', 'a__b__c', '__a__é'])
+  check.eq('no emphasis in ' + t, mdToHtml(t), '<p>' + t + '</p>');
+check.eq('underscores at word edges are emphasis', mdToHtml('é _a_ é (_b_)'), '<p>é <em>a</em> é (<em>b</em>)</p>');
+check.eq('two underscores at word edges are bold', mdToHtml('__a__ x __b c__.'), '<p><strong>a</strong> x <strong>b c</strong>.</p>');
+check.eq('and may hold one inside a word', mdToHtml('__a_b__'), '<p><strong>a_b</strong></p>');
+
 console.log('\noutgoing links and outline (76-outline.js)');
 eqj('an empty body has no links', outLinks('', 'md'), []);
 eqj('an empty body has no outline', outline('', 'md'), []);
@@ -185,7 +335,7 @@ eqj('#nospace is not a heading', outline('#tag\n####### seven', 'md'), []);
 eqj('gemtext headings stop at three',
   outline('# a\n### c\n#### d\n```\n# fenced\n```\n## b', 'gmi'),
   [{ level: 1, text: 'a', line: 1 }, { level: 3, text: 'c', line: 2 },
-    { level: 2, text: 'b', line: 7 }]);
+    { level: 3, text: '# d', line: 3 }, { level: 2, text: 'b', line: 7 }]);
 eqj('other kinds have no outline', outline('# x', 'html'), []);
 
 console.log('task boxes: a click flips the one marker on its own source line');

@@ -642,6 +642,7 @@
     selectFolder(path);
   }
   function selectFolder(path) {
+    openNext();
     curFolder = path;
     curKind = null;
     exitGrub();

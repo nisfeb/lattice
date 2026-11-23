@@ -5,7 +5,7 @@
 ::  invite something to peek the /idx DIRECTORY to render it. That is the one
 ::  access pattern this layout cannot afford (see docs/native-index.md).
 ::
-/<  li  /lib/lattice-index.hoon
+/<  li  /lib/lattice-index-types.hoon
 |_  bk=bucket:li
 ++  grad  %noun
 ++  grow

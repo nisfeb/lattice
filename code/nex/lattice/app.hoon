@@ -588,6 +588,10 @@
         ::  /pub-trying: the page whose publish is in flight, so a writer
         ::  start can count the try a crashed event lost (+pub-arm)
             [%fall %& [/ %'pub-trying'] [[/ %noun] *pub-trying:lp]]
+        ::  /acl-res: recent serialized ACL write outcomes, keyed by request
+        ::  nonce so concurrent HTTP callers read only their own result after
+        ::  +writer-drain (capped at 64 entries).
+            [%fall %& [/ %'acl-res'] [[/ %noun] *(list [@ta *])]]
         ==
     ::
     ++  on-file
@@ -623,8 +627,11 @@
         ::  self-healing on every writer start. know/ needs nothing. Foreign
         ::  access is deny-by-default.
         ;<  ~  bind:m  (send-public-how root)
+        ::  carry legacy sharing groups into /ug once (+carry-groups), in the
+        ::  writer so no startup race can happen against +narrow-page-grants.
+        ;<  ~  bind:m  (carry-groups root)
         ::  page grants made before they were file roads (+narrow-page-grants)
-        ;<  ~  bind:m  narrow-page-grants
+        ;<  ~  bind:m  (narrow-page-grants root)
         ::  folder grants a crash left with no note (+fix-folder-grants)
         ;<  ~  bind:m  fix-folder-grants
         ::  lay down the built-in page-tree templates (idempotent; skips if the
@@ -715,16 +722,14 @@
         ;<  now=@da  bind:m  bowl-now
         ;<  ~  bind:m  (apply-share-notice root from sage now)
         $
-      ::  /groups.sig: the one writer of groups.json. It carries the
-      ::  sharing groups into /ug once (+carry-groups), then names /ug and
-      ::  the /public entry there whenever either changes (+publish-groups).
+      ::  /groups.sig: the one writer of groups.json. It watches /ug and
+      ::  public-how.json and publishes groups.json whenever either changes
+      ::  (+publish-groups). Only /main.sig writes /ug.
           [~ %'groups.sig']
         ;<  ~  bind:m  (rise-later prod "lattice /groups.sig" "")
         =/  root=@ud  (lent path.rail)
         ;<  *  bind:m  (keep:io /ug (rv root /ug) ~)
         ;<  *  bind:m  (keep:io /ph (rf root / %'public-how.json') ~)
-        ;<  ~  bind:m  (publish-groups root)
-        ;<  ~  bind:m  (carry-groups root)
         |-
         ;<  ~  bind:m  (publish-groups root)
         ;<  ~  bind:m  take-groups-news
@@ -971,7 +976,7 @@
         ::  as fast as the loop allows). gen accumulates while rapid and resets
         ::  on a settled gap. (Page-to-page POKE cycles are too slow per hop for
         ::  this window. Those are bounded by the poke budget instead.)
-        =/  rapid=?  &(!=(`@da`0 last-now) (lth (sub now last-now) rerun-gap))
+        =/  rapid=?  &(!=(`@da`0 last-now) (gte now last-now) (lth (sub now last-now) rerun-gap))
         =.  gen  ?:(rapid +(gen) 0)
         =.  last-now  now
         ?:  (gth gen recompute-cap)
@@ -1490,6 +1495,8 @@
   ::  base check below reads the page as those saves left it.
   ;<  ~  bind:m  writer-drain
   ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of u.name))
+  ::  a page made while this create waited for the writer
+  ?:  &((~(has by args) 'new') ?=(^ src.pc))  (send-err eyre-id 409 'page exists')
   ::  a save into a folder move under way, or an overwrite of a page
   ::  that moved away, would be deleted or make the old folder again.
   ::  ?mount=1 (lattice-fs) puts its creates through the same check: a
@@ -1545,11 +1552,13 @@
   ::  this check and the write is not written over. A save that claims
   ::  nothing, or makes a page, is written as before.
   =/  claim=(unit @ud)  ?.(&(?=(^ base) ?=(^ src.pc)) ~ `prev)
-  ;<  ~  bind:m  (poke-eval [%make-by (pax-of u.name) src wid claim])
-  ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
-  ::  client only when the typed name was not a valid path and the path is
-  ::  its slug. Absent on every ordinary save, so autosave never touches them.
-  ;<  ~  bind:m  (poke-dnames args (pax-of u.name))
+  ::  a create-only save is checked again where it lands (%make-new):
+  ::  two creates of one name can both pass the checks above
+  =/  new=?  (~(has by args) 'new')
+  ;<  ~  bind:m
+    %-  poke-eval
+    ?:  new  [%make-new (pax-of u.name) src wid]
+    [%make-by (pax-of u.name) src wid claim]
   ::  answer once the write is down: the writer took the poke above
   ::  before it applied it. The next save's base check, and the rev
   ::  below, then see it.
@@ -1565,6 +1574,17 @@
   =/  mine=?  =(src.ph `src)
   ?:  &(!mine ?=(^ claim))
     (send-err eyre-id 409 (crip "stale: the page is at rev {(num-tape:pg rev.ph)}"))
+  ::  a create that finds another body at its name lost the race for it,
+  ::  and the writer left that page as it was
+  ?:  &(!mine new)  (send-err eyre-id 409 'page exists')
+  ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
+  ::  client only when the typed name was not a valid path and the path is
+  ::  its slug. Absent on every ordinary save, so autosave never touches
+  ::  them. Only for a save that was written: one refused above, a lost
+  ::  create or a stale claim, leaves the names the page has.
+  =/  dacts=(list eval-action:le)  (dname-acts-of args (pax-of u.name))
+  ;<  ~  bind:m  (poke-dnames args (pax-of u.name))
+  ;<  ~  bind:m  ?~(dacts (pure:(fiber:fiber:nexus ,~) ~) writer-drain)
   ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
   %+  send-json  eyre-id
   %-  pairs:enjs:format
@@ -1638,6 +1658,16 @@
         make+(ar:dejs:format so:dejs:format)
     ==
   ?:  ?=(%| -.pr)  (send-err eyre-id 400 'expected {ships, peek, make}')
+  ::  `v`: 2 says the lists are every line the client showed, so a line
+  ::  absent from them is removed, a folder's index line or not. Without
+  ::  it (an older client) a save removes nothing it was not shown.
+  =/  vv=(unit @t)
+    ?.  ?=([%o *] u.jon)  ~
+    =/  x=(unit json)  (~(get by p.u.jon) 'v')
+    ?~  x  ~
+    ?.(?=([%n *] u.x) `'bad' `p.u.x)
+  ?:  &(?=(^ vv) !?=(?(%'1' %'2') u.vv))  (send-err eyre-id 400 'v: 2 or leave it out')
+  =/  v2=?  =(vv `'2')
   =/  ships=(list (unit @p))  (turn ships.p.pr |=(t=@t (slaw %p t)))
   ?:  (lien ships |=(u=(unit @p) ?=(~ u)))
     ::  a typo'd ship silently dropped = someone believes they granted
@@ -1673,40 +1703,105 @@
   ?:  %+  lien  u.mkp
       |=(p=path (lien intake |=(i=path =(p (scag (lent p) i)))))
     (send-err eyre-id 400 'a make grant there would reach lattice\'s request intake')
-  ;<  ub=path  bind:m  ug-dir
-  =/  gdir=path  (snoc ub (crip (weld (trip u.gname) ".grp")))
-  ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
-  ::  ABSOLUTE, as the grantee's weir matches them. A group weir is read
-  ::  as written into each member's weir under /sys/ames/ships, so a
-  ::  relative road there is relative to the peer's dir and grants
-  ::  nothing. Only the registry's %how resolves relative roads, and it
-  ::  confines them to the sender's prefix, which this editor is not.
-  ;<  mkr=(set road:tarball)  bind:m  (page-roads u.mkp)
-  ;<  pkr=(set road:tarball)  bind:m  (page-roads u.pkp)
-  =/  =weir:nexus
-    :+  (~(uni in (ug-keep make.old)) mkr)
-      poke.old
-    (~(uni in (ug-keep peek.old)) pkr)
-  ;<  bans=banned:ls  bind:m  read-banned
   =/  who=(set @p)  (~(gas in *(set @p)) (murn ships same))
-  ::  a group save must not smuggle a banned ship back in. Reject rather than
-  ::  silently drop. A silently-dropped ship is someone believing they granted
-  ::  access and did not, which is this editor's worst failure mode.
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  rid=@ta  bind:m  acl-rid
+  ;<  ~  bind:m
+    (poke-eval [%acl-group-save rid u.gname who u.pkp u.mkp v2])
+  ;<  ~  bind:m  writer-drain
+  ;<  raw=(unit *)  bind:m  (acl-res-get up rid)
+  =/  res=(unit $%([%ok bads=(list [p=path why=@t])] [%bad-req why=@t] [%banned ~] [%refused ~]))
+    ?~  raw  ~
+    (mole |.(;;($%([%ok bads=(list [p=path why=@t])] [%bad-req why=@t] [%banned ~] [%refused ~]) u.raw)))
+  ?~  res  (send-err eyre-id 500 'group save did not complete')
+  ?-  -.u.res
+    %bad-req  (send-err eyre-id 400 why.u.res)
+    %banned   (send-err eyre-id 403 'that group names a banned ship')
+    %refused  (ug-refused eyre-id)
+      %ok
+    ?~  bads.u.res  (send-ok eyre-id)
+    ::  lines the group held that may not be granted any more were left out
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['ok' b+&]
+        :-  'removed'
+        a+(turn bads.u.res |=([p=path why=@t] (pairs:enjs:format ~[['path' s+(spat p)] ['why' s+why]])))
+    ==
+  ==
+::  +apply-acl-group-save: serialized body of POST /share-group-save, run in
+::  /main.sig so group saves never race +sens-revoke, +grant-new, or bans.
+++  apply-acl-group-save
+  |=  [root=@ud rid=@ta gname=@t who=(set @p) upkp=(list path) umkp=(list path) v2=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sb=path  bind:m  self-base
+  ;<  ub=path  bind:m  ug-dir
+  =/  gdir=path  (snoc ub (crip (weld (trip gname) ".grp")))
+  ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
+  =/  pre=path  (weld sb /page)
+  ;<  noted=(list path)  bind:m  (folders-noted sb gname peek.old)
+  ;<  idxs=(list path)  bind:m  (index-lines pre noted (weld upkp umkp))
+  =/  seen=(set path)
+    (~(gas in *(set path)) (murn idxs |=(p=path (index-line:ls pre p))))
+  =/  idx  |=(p=path ?=(^ (find ~[p] idxs)))
+  =/  pkp=(list path)  (skip upkp idx)
+  =/  mkp=(list path)  (skip umkp idx)
+  =/  all=(set road:tarball)  (~(uni in peek.old) make.old)
+  =/  olds=(set path)  (~(uni in (road-paths all &)) (road-paths all |))
+  =/  held=(set path)  (~(dif in (road-paths all &)) (road-paths all |))
+  ;<  bads=(list [p=path why=@t])  bind:m
+    (page-grant-bad (skip (weld pkp mkp) |=(p=path (~(has in held) p))))
+  =/  fresh=(list [p=path why=@t])  (skip bads |=([p=path why=@t] (~(has in olds) p)))
+  ?^  fresh  (acl-res-put up rid [%bad-req why.i.fresh])
+  =/  gone  |=(p=path (lien bads |=([q=path why=@t] =(p q))))
+  =/  pkp=(list path)  (skip pkp gone)
+  =/  mkp=(list path)  (skip mkp gone)
+  ;<  fmk=(list path)  bind:m  (page-folders gname mkp)
+  ;<  fpk=(list path)  bind:m  (page-folders gname pkp)
+  =/  named=(set path)  (silt (weld fmk fpk))
+  =/  plain
+    |=  ps=(list path)
+    ^-  (list path)
+    %+  skip  ps
+    |=  p=path
+    &(=(pre (scag (lent pre) p)) (~(has in named) (slag (lent pre) p)))
+  ;<  mkr=(set road:tarball)  bind:m  (page-roads (plain mkp))
+  ;<  pkr=(set road:tarball)  bind:m  (page-roads (plain pkp))
+  =/  below
+    |=  [f=path p=path]
+    =/  a=path  (weld pre f)
+    &((gth (lent p) (lent a)) =(a (scag (lent a) p)))
+  =/  keep=(list path)
+    ?:  v2  ~
+    %+  skip  noted
+    |=  f=path
+    ?|  (~(has in named) f)
+        (~(has in seen) f)
+        (lien (weld pkp mkp) |=(p=path (below f p)))
+    ==
+  =/  kept
+    |=  rs=(set road:tarball)
+    ^-  (set road:tarball)
+    %-  ~(gas in *(set road:tarball))
+    %+  skim  ~(tap in rs)
+    |=  r=road:tarball
+    ?&  ?=([%& %& *] r)
+        =(%code name.p.p.r)
+        (lien keep |=(f=path (below f path.p.p.r)))
+    ==
+  =/  =weir:nexus
+    :+  (~(uni in (~(uni in (ug-keep make.old)) mkr)) (kept make.old))
+      poke.old
+    (~(uni in (~(uni in (ug-keep peek.old)) pkr)) (kept peek.old))
+  ;<  bans=banned:ls  bind:m  read-banned
   ?:  (lien ~(tap in who) |=(w=@p (is-banned:ls bans w)))
-    (send-err eyre-id 403 'that group names a banned ship')
-  ::  who reads what, before and after, so each ship this save grants a
-  ::  page or takes one from is told, and no other (+tell-holds)
+    (acl-res-put up rid [%banned ~])
   ;<  h0=holds:ls  bind:m  holds-now
   ;<  ok=?  bind:m  (ug-put gdir who weir)
-  ?.  ok  (ug-refused eyre-id)
-  ::  the pages this save named by their code path, so the list gives
-  ::  them back that way and the client's own unshare finds them
-  ::  (+code-named)
-  ;<  ~  bind:m  (put-code-named u.gname (code-named (weld u.pkp u.mkp) weir))
-  ::  a page this save grants, regrants or takes out has that as its own
-  ::  grant in the group, so a folder's unshare leaves it (+ungrant:ls)
+  ?.  ok  (acl-res-put up rid [%refused ~])
+  ;<  ~  bind:m  (put-code-named gname (code-named (weld pkp mkp) weir))
   ;<  ~  bind:m
-    =/  pre=path  (weld sb /page)
     =/  n=@ud  (lent pre)
     =/  l=(list [rel=path md=@t])
       %+  murn  ~(tap in (~(uni in peek.old) peek.weir))
@@ -1719,26 +1814,42 @@
       `[(slag n path.p.p.r) md]
     |-  ^-  form:m
     ?~  l  (pure:m ~)
-    ;<  ~  bind:m  (poke-eval [%grant-own rel.i.l u.gname md.i.l])
+    ;<  ~  bind:m  (grant-own-do up rel.i.l gname md.i.l)
     $(l t.l)
-  ::  a folder shared with the group (+share-folder-with) whose last
-  ::  page this save took out is unshared, rule and index too, so a page
-  ::  added to it later is not shared again (+unshare-folder)
   ;<  ~  bind:m
     =/  fs=(list path)  (folders-granted sb peek.old)
     |-  ^-  form:m
     ?~  fs  (pure:m ~)
-    ?.  ?&  (page-roads-under sb i.fs peek.old)
-            !(page-roads-under sb i.fs peek.weir)
+    ;<  sg=(map @t @t)  bind:m  (read-share-grants i.fs)
+    ?.  %:  folder-out:ls
+          (page-roads-under sb i.fs peek.old)
+          (page-roads-under sb i.fs peek.weir)
+          (~(has by sg) gname)
+          (~(has in named) i.fs)
+          |(v2 (~(has in seen) i.fs))
         ==
       $(fs t.fs)
-    ;<  ~  bind:m  (unshare-folder u.gname i.fs)
+    ;<  ~  bind:m  (unshare-folder-do up gname i.fs)
     $(fs t.fs)
-  ::  a folder granted here lists its pages to the group (+dir-index-acts)
-  ;<  ~  bind:m  (dir-index-pokes (weld sb /page) u.pkp)
+  ;<  ~  bind:m
+    =/  fs=(list path)  ~(tap in named)
+    |-  ^-  form:m
+    ?~  fs  (pure:m ~)
+    =/  md=@t  ?:((lien fmk |=(f=path =(f i.fs))) 'edit' 'read')
+    ;<  sg=(map @t @t)  bind:m  (read-share-grants i.fs)
+    ;<  nw=weir:nexus  bind:m  (ug-read-weir gdir)
+    =/  ix=road:tarball  [%& %& :(weld sb /page i.fs) %'dir-index']
+    =/  was=(unit @t)  (~(get by sg) gname)
+    ?:  &(=(`md was) (~(has in peek.nw) ix))  $(fs t.fs)
+    ?:  &(=(`'edit' was) =('read' md) (~(has in peek.nw) ix))
+      ;<  ~  bind:m  (folder-grant-do i.fs gname md)
+      $(fs t.fs)
+    ;<  *  bind:m  (share-folder-grant-do root gname ~ md i.fs |)
+    $(fs t.fs)
+  ;<  ~  bind:m  (dir-index-do root pre pkp)
   ;<  h1=holds:ls  bind:m  holds-now
-  ;<  ~  bind:m  (tell-holds h0 h1)
-  (send-ok eyre-id)
+  ;<  ~  bind:m  (tell-holds-do h0 h1)
+  (acl-res-put up rid [%ok bads])
 ::  +handle-link-make: POST /link-make?host=&path=&to=. The shared-with-me
 ::  entry [host path] becomes a link at <to>. The host is peeked once,
 ::  with a short deadline, for the page's kind, body and rev: kind is frozen
@@ -2876,7 +2987,7 @@
       [%'GET' %know-search]
     =/  q=@t  (~(gut by args) 'q' '')
     ?:  =('' q)  (send-err eyre-id 400 'missing q')
-    =/  k=@ud  (fall (rush (~(gut by args) 'k' '10') dem) 10)
+    =/  k=@ud  (max 1 (fall (rush (~(gut by args) 'k' '10') dem) 10))
     ;<  all=(map path know-entry:lk)  bind:m  read-know-map
     =/  old=?  =('1' (~(gut by args) 'superseded' '0'))
     ::  the cache is kept over every entry; the ranking only over what
@@ -2893,14 +3004,14 @@
         (max k 3)
       ==
     ;<  ~  bind:m
-      (taint-if key (lien (scag k hs) |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
+      (taint-if key (lien hs |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
     (send-json eyre-id (hits-json:lk es hs q k))
   ::  know-recall: what to know before a task (+recall-json:lk, the answer
   ::  the lattice-recall tool gives). task= the description, k= how many (8).
       [%'GET' %know-recall]
     =/  task=@t  (~(gut by args) 'task' '')
     ?:  =('' task)  (send-err eyre-id 400 'missing task')
-    =/  k=@ud  (fall (rush (~(gut by args) 'k' '8') dem) 8)
+    =/  k=@ud  (max 1 (fall (rush (~(gut by args) 'k' '8') dem) 8))
     ;<  all=(map path know-entry:lk)  bind:m  read-know-map
     ;<  tc=term-cache:lk  bind:m  (current-terms all)
     =/  es=(map path know-entry:lk)
@@ -2912,7 +3023,7 @@
         (max k 3)
       ==
     ;<  ~  bind:m
-      (taint-if key (lien (scag k hs) |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
+      (taint-if key (lien hs |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
     (send-json eyre-id (recall-json:lk es hs task k))
   ::  know-index: what an agent loads at session start (+index-text:lk, as
   ::  the lattice-index tool), as plain text for a hook to print. brief=1
@@ -2957,15 +3068,26 @@
       [%'POST' %know-verify]
     =/  ko=(unit path)  (know-key (~(gut by args) 'key' ''))
     ?~  ko  (send-err eyre-id 400 'bad key')
+    ;<  g=(unit [code=@ud msg=@t])  bind:m  (key-guard key u.ko & rnow)
+    ?^  g  (send-err eyre-id code.u.g msg.u.g)
     ;<  e=(unit know-entry:lk)  bind:m  (know-one u.ko)
     ?~  e  (send-err eyre-id 404 'not found')
     ?.  (may-see key u.e)  (send-err eyre-id 404 'not found')
+    ?:  &(?=(^ key) (is-core:lk u.e))
+      (send-err eyre-id 403 'an agent key cannot verify a core entry: only the owner can')
     ;<  now=@da  bind:m  ?~(key bowl-now (pure:(fiber:fiber:nexus ,@da) rnow))
-    =/  f  (front:lk body.u.e)
-    =/  meta  (meta-put:lk meta.f 'verified' (iso-day:lk now))
+    ::  +front-set:lk changes the one field's line and nothing else, and
+    ::  keeps the sensitive mark. Rebuilding the block from its parsed
+    ::  fields dropped every line that was not `name: value`, and for a
+    ::  block the parser could not read it dropped the mark.
+    =/  bod=@t  (front-set:lk body.u.e 'verified' (iso-day:lk now))
     =/  by=@t  ?^(key by.u.key (~(gut by args) 'author' ''))
-    =?  meta  !=('' by)  (meta-put:lk meta 'verified-by' by)
-    ;<  ~  bind:m  (poke-know [%save (spat u.ko) (with-front:lk meta rest.f)])
+    =?  bod  !=('' by)  (front-set:lk bod 'verified-by' by)
+    ;<  ~  bind:m  (poke-know ?~(key [%save (spat u.ko) bod] [%key-save (spat u.ko) bod id.u.key]))
+    ?~  key  (send-ok eyre-id)
+    ;<  ~  bind:m  writer-sync
+    ;<  bad=(unit [code=@ud msg=@t])  bind:m  (key-landed u.key u.ko bod)
+    ?^  bad  (send-err eyre-id code.u.bad msg.u.bad)
     (send-ok eyre-id)
   ::  know-supersede: old= is replaced by new=, which must exist. Search then
   ::  leaves old out and reading it points at new; history keeps both. An
@@ -2988,10 +3110,15 @@
     ;<  n=(unit know-entry:lk)  bind:m  (know-one (fall nk u.ok))
     ?:  &(?=(^ nk) ?=(~ n))  (send-err eyre-id 404 'no such new entry')
     ?:  &(?=(^ nk) ?=(^ n) !(may-see key u.n))  (send-err eyre-id 404 'no such new entry')
-    =/  f  (front:lk body.u.e)
-    =/  meta  (meta-put:lk meta.f 'superseded-by' ?~(nk '' (spat u.nk)))
-    =/  bod=@t  (with-front:lk meta rest.f)
+    ;<  ~  bind:m  (taint-if key &(?=(^ nk) ?=(^ n) (sensitive:lk u.n)))
+    ?:  &(?=(^ key) ?=(^ nk) ?=(^ n) !(sensitive:lk u.e) (sensitive:lk u.n))
+      (send-err eyre-id 403 'an agent key cannot supersede an ordinary entry with a sensitive one')
+    =/  bod=@t  (front-set:lk body.u.e 'superseded-by' ?~(nk '' (spat u.nk)))
     ;<  ~  bind:m  (poke-know ?~(key [%save (spat u.ok) bod] [%key-save (spat u.ok) bod id.u.key]))
+    ?~  key  (send-ok eyre-id)
+    ;<  ~  bind:m  writer-sync
+    ;<  bad=(unit [code=@ud msg=@t])  bind:m  (key-landed u.key u.ok bod)
+    ?^  bad  (send-err eyre-id code.u.bad msg.u.bad)
     (send-ok eyre-id)
   ::
       [%'GET' %know-read]
@@ -3182,16 +3309,16 @@
     ::  sorted by path like the old walk. murn preserves input order
     =/  srt=(list [pax=path when=@da code=@t])
       (sort pages |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
-    ::  build the links. An uncleared key must not even learn a sensitive
-    ::  linker's path exists, so drop sensitive linkers for it (like the tree
-    ::  and search sensitive filters). A cleared key or the owner sees all.
-    =/  cleared=?  |(?=(~ key) sensitive.scope.u.key)
-    ;<  links=(list json)  bind:m
-      =/  n  (fiber:fiber:nexus ,(list json))
+    ::  build the links. An uncleared key must not learn a sensitive linker
+    ::  exists; a cleared key sees sensitive linkers and is tainted if any
+    ::  sensitive linker is returned.
+    ;<  [links=(list json) saw-sens=?]  bind:m
+      =/  n  (fiber:fiber:nexus ,[(list json) ?])
       =/  todo=(list [pax=path when=@da code=@t])  srt
       =|  acc=(list json)
+      =/  saw=?  |
       |-  ^-  form:n
-      ?~  todo  (pure:n (flop acc))
+      ?~  todo  (pure:n [(flop acc) saw])
       =/  pax=path  pax.i.todo
       ::  keyed: only include linker pages the key can read
       ?:  &(?=(^ key) !(may-path:ky u.key %local pax %read))
@@ -3201,11 +3328,12 @@
       ?.  (backlink-hit:gfm (trip u.name) (trip bod))
         $(todo t.todo)
       =/  entry=json  [%s (crip (pax-str pax))]
-      ?:  cleared
+      ?~  key
         $(todo t.todo, acc [entry acc])
-      ;<  ps=?  bind:n  (page-sensitive pax)
-      ?:  ps  $(todo t.todo)
-      $(todo t.todo, acc [entry acc])
+      ;<  lps=?  bind:n  (page-sensitive pax)
+      ?:  &(lps !sensitive.scope.u.key)  $(todo t.todo)
+      $(todo t.todo, acc [entry acc], saw |(saw lps))
+    ;<  ~  bind:m  (taint-if key &(saw-sens ?=(^ key) sensitive.scope.u.key))
     (send-json eyre-id (pairs:enjs:format ~[['links' a+links]]))
   ::
   ::  page-errors: a page's latest evaluator error as plain text ('' = clean).
@@ -3254,20 +3382,19 @@
       =/  rp=(unit path)  (mole |.((stab p.u.rj)))
       ?:  |(?=(~ hp) ?=(~ rp))  |
       (may-path:ky u.key [%ship u.hp] u.rp %read)
-    ::  a cleared key sees sensitive pages, so the per-node grub walk below
-    ::  would never drop a node: skip it. Owner (key=~) already returned above.
-    ?:  sensitive.scope.u.key
-      (send-json eyre-id (pairs:enjs:format ~[['nodes' a+scope-ok]]))
-    ::  sensitive filter: remove nodes an uncleared key cannot see.
-    ::  page-sensitive reads grubs; use a recursive bind:m loop.
+    ::  sensitive filter: uncleared keys never see sensitive nodes; cleared
+    ::  keys see them only when asking sensitive=1, which taints the key.
+    =/  want-sens=?  &(sensitive.scope.u.key =('1' (~(gut by args) 'sensitive' '0')))
     =/  todo=(list json)  scope-ok
     =|  acc=(list json)
+    =/  saw=?  |
     |-  ^-  form:m
     ?~  todo
+      ;<  ~  bind:m  (taint-if key &(saw want-sens))
       =/  filtered=(list json)  (flop acc)
       %+  send-json  eyre-id
       %-  pairs:enjs:format
-      ~[['nodes' a+filtered]]
+      ~[['nodes' a+filtered] ['page_only_del' b+&]]
     =/  node=json  i.todo
     =/  pj=(unit json)
       ?.  ?=([%o *] node)  ~
@@ -3279,9 +3406,9 @@
     ?:  ?=(%| -.np)
       $(todo t.todo, acc [node acc])
     ;<  ps=?  bind:m  (page-sensitive p.np)
-    ?:  &(ps !sensitive.scope.u.key)
+    ?:  &(ps !want-sens)
       $(todo t.todo)
-    $(todo t.todo, acc [node acc])
+    $(todo t.todo, acc [node acc], saw |(saw ps))
   ::
   ::  page-dump: page-tree PLUS every page's body inline, in ONE deep peek. Warms
   ::  a filesystem client's whole read-cache so rg/grep run from RAM. Heavier than
@@ -3468,16 +3595,20 @@
     ::  +ban-cap:ls ships at most: a ship banned already bans again
     ?:  (ban-full:ls bans u.who)
       (send-err eyre-id 400 'banlist is full')
-    ;<  ~  bind:m
-      (over:io (ban-road up) [[/lattice %banned] (~(put in bans) u.who)])
-    ::  REVOKE FIRST. The group revocation is the security-critical half of a
-    ::  ban: it cuts the banned ship's private-board READ grants. The culls are
-    ::  best-effort cleanup and can fault (a deep board peek, a missing grub);
-    ::  if one did, running it before the revocation would kill this fiber with
-    ::  the grants still in place. So strip the groups (after the banned-flag
-    ::  write above, also durable), THEN cull what the ship wrote, its moons'
-    ::  too: a ban that freed no slots left the page full (security audit run-1).
-    ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
+    ::  REVOKE FIRST, atomically in /main.sig: write /banned, strip every
+    ::  usergroup under /ug, and strip every private board roster under
+    ::  /forum/members in one serialized writer turn so no concurrent share
+    ::  or forum invite can interleave. Best-effort culls follow after.
+    ;<  rid=@ta  bind:m  acl-rid
+    ;<  ~  bind:m  (poke-eval [%acl-ban rid u.who])
+    ;<  ~  bind:m  writer-drain
+    ;<  raw=(unit *)  bind:m  (acl-res-get up rid)
+    =/  res=(unit $%([%ok n=(unit @ud)] [%full ~]))
+      ?~  raw  ~
+      (mole |.(;;($%([%ok n=(unit @ud)] [%full ~]) u.raw)))
+    ?~  res  (send-err eyre-id 500 'ban did not complete')
+    ?:  ?=(%full -.u.res)  (send-err eyre-id 400 'banlist is full')
+    =/  n=(unit @ud)  n.u.res
     ;<  *  bind:m  (cull-comments-of u.who)
     ;<  ~  bind:m  (poke-eval [%pub-threads ~])
     ;<  ~  bind:m  (poke-eval [%forum-cull u.who])
@@ -3496,19 +3627,17 @@
     ::  own name is that comet alone
     =/  who=(unit @p)  ?:(=('comets' u.st) `all-comets:ls (slaw %p u.st))
     ?~  who  (send-err eyre-id 400 'bad ship')
-    ;<  bans=banned:ls  bind:m  read-banned
-    ::  unban restores nothing. The grants were revoked, and re-granting is a
-    ::  deliberate act, not a side effect of lifting a ban. The ship's own
-    ::  groups go again first, while it is still banned: one a ban before
-    ::  this rule left in place, or a folder rule made again, would hand
-    ::  back every old grant on the next share (+drop-ban-groups).
-    ;<  dropped=(unit @ud)  bind:m
-      =/  n  (fiber:fiber:nexus ,(unit @ud))
-      ?.  (~(has in bans) u.who)  (pure:n `0)
-      (drop-ban-groups (silt ~[u.who]))
-    ?~  dropped  (ug-refused eyre-id)
-    ;<  ~  bind:m
-      (over:io (ban-road up) [[/lattice %banned] (~(del in bans) u.who)])
+    ::  unban restores nothing. Drop ban groups, strip forum rosters, and
+    ::  update /banned atomically inside /main.sig.
+    ;<  rid=@ta  bind:m  acl-rid
+    ;<  ~  bind:m  (poke-eval [%acl-unban rid u.who])
+    ;<  ~  bind:m  writer-drain
+    ;<  raw=(unit *)  bind:m  (acl-res-get up rid)
+    =/  res=(unit $%([%ok ~] [%refused ~]))
+      ?~  raw  ~
+      (mole |.(;;($%([%ok ~] [%refused ~]) u.raw)))
+    ?~  res  (send-err eyre-id 500 'unban did not complete')
+    ?:  ?=(%refused -.u.res)  (ug-refused eyre-id)
     (send-ok eyre-id)
   ::  ── sharing groups: the permission editor (see +share-groups-json) ──
       [%'GET' %share-groups]
@@ -3564,15 +3693,19 @@
     ?.  pe  (send-err eyre-id 404 'no such page')
     ;<  isp=?  bind:m  (peek-exists:fio (rf up pdir %code))
     ?.  isp  (share-folder-with eyre-id u.shp mode (pax-of u.name))
-    ;<  told=(unit ?)  bind:m  (share-page-with u.shp mode (pax-of u.name))
-    ?~  told  (ug-refused eyre-id)
-    %+  send-json  eyre-id
-    (pairs:enjs:format ~[['ok' b+&] ['notified' b+u.told]])
+    ;<  res=$%([%ok told=?] [%banned ~] [%refused ~])  bind:m
+      (share-page-with u.shp mode (pax-of u.name))
+    ?-  -.res
+      %banned   (send-err eyre-id 403 'that ship is banned, unban it first')
+      %refused  (ug-refused eyre-id)
+        %ok
+      %+  send-json  eyre-id
+      (pairs:enjs:format ~[['ok' b+&] ['notified' b+told.res]])
+    ==
   ::  unshare-file: /share-file undone. A folder stops being shared with
-  ::  the ship (+unshare-folder): its rule goes, with every grant it made,
+  ::  the ship (+unshare-folder-do): its rule goes, with every grant it made,
   ::  so a page added later stays private. A page loses the ship's grant.
-  ::  Either way the ship is told of each page it no longer reads
-  ::  (+tell-holds), and its shared with me drops it live.
+  ::  Serialized through /main.sig so unshares never race saves or bans.
       [%'POST' %unshare-file]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -3582,24 +3715,9 @@
     =/  pdir=path  (weld /page (pax-of u.name))
     ;<  pe=?  bind:m  (peek-exists:fio (rv up pdir))
     ?.  pe  (send-err eyre-id 404 'no such page')
-    =/  gname=@t  (crip (slag 1 (scow %p u.shp)))
-    ;<  isp=?  bind:m  (peek-exists:fio (rf up pdir %code))
-    ;<  h0=holds:ls  bind:m  holds-now
-    ;<  ~  bind:m
-      ?.  isp  (unshare-folder gname (pax-of u.name))
-      ::  the page's own grant goes. What a folder above still shares
-      ::  with the ship stays, at the folder's mode.
-      ;<  sb=path  bind:m  self-base
-      ;<  ~  bind:m  (poke-eval [%grant-own (pax-of u.name) gname ''])
-      ;<  fm=@t  bind:m  (folders-mode gname (pax-of u.name))
-      =/  r=(set road:tarball)  (silt ~[`road:tarball`[%& %& (weld sb pdir) %code]])
-      ;<  *  bind:m
-        ?:  =('edit' fm)  (pure:(fiber:fiber:nexus ,?) &)
-        ?:  =('read' fm)  (ug-settle gname ~ r)
-        (ug-drop gname r)
-      (pure:m ~)
-    ;<  h1=holds:ls  bind:m  holds-now
-    ;<  ~  bind:m  (tell-holds h0 h1)
+    ;<  rid=@ta  bind:m  acl-rid
+    ;<  ~  bind:m  (poke-eval [%acl-unshare-file rid u.shp (pax-of u.name)])
+    ;<  ~  bind:m  writer-drain
     (send-ok eyre-id)
   ::  shared-with-me: the notices other ships sent us. Claims, not
   ::  capabilities. Opening one is what proves the grant is still real.
@@ -3708,11 +3826,13 @@
       %-  peek-exists:fio
       ?:(dir.u.rl (rv up pdir) (rf up pdir %code))
     ?.  ex  (send-err eyre-id 404 'no such page')
-    ;<  ok=?  bind:m
+    ;<  st=?(%ok %banned %refused)  bind:m
       ?:  dir.u.rl  (share-folder-grant u.shp 'edit' rel.u.rl)
-      ;<  t=(unit ?)  bind:(fiber:fiber:nexus ,?)  (share-page-with u.shp 'edit' rel.u.rl)
-      (pure:(fiber:fiber:nexus ,?) ?=(^ t))
-    ?.  ok  (ug-refused eyre-id)
+      ;<  t=$%([%ok told=?] [%banned ~] [%refused ~])  bind:(fiber:fiber:nexus ,?(%ok %banned %refused))
+        (share-page-with u.shp 'edit' rel.u.rl)
+      (pure:(fiber:fiber:nexus ,?(%ok %banned %refused)) -.t)
+    ?:  ?=(%banned st)  (send-err eyre-id 403 'that ship is banned, unban it first')
+    ?.  ?=(%ok st)  (ug-refused eyre-id)
     ;<  ~  bind:m  (tell &)
     (send-ok eyre-id)
   ::  followed folders (+read-folds): the list, follow, unfollow, read
@@ -3755,26 +3875,15 @@
     =/  gname=(unit @t)  (~(get by args) 'name')
     ?~  gname  (send-err eyre-id 400 'missing name')
     ?.  ((sane %tas) u.gname)  (send-err eyre-id 400 'bad name')
-    ;<  ub=path  bind:m  ug-dir
-    =/  gdir=path  (snoc ub (crip (weld (trip u.gname) ".grp")))
-    ::  who reads what, read before the group goes, so each member that
-    ::  loses a page is told (+tell-holds) and its shared with me drops it
-    ::  live. A page it still reads through another group stays.
-    ;<  h0=holds:ls  bind:m  holds-now
-    ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
-    ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| gdir])
-    ?^  e  (ug-refused eyre-id)
-    ::  and the folders shared with it share no more, or a page added
-    ::  to one would make the group again (+grant-new)
-    ;<  sb=path  bind:m  self-base
-    ;<  ~  bind:m
-      =/  fs=(list path)  (folders-granted sb peek.old)
-      |-  ^-  form:m
-      ?~  fs  (pure:m ~)
-      ;<  ~  bind:m  (poke-eval [%folder-ungrant i.fs u.gname])
-      $(fs t.fs)
-    ;<  h1=holds:ls  bind:m  holds-now
-    ;<  ~  bind:m  (tell-holds h0 h1)
+    ;<  rid=@ta  bind:m  acl-rid
+    ;<  ~  bind:m  (poke-eval [%acl-group-del rid u.gname])
+    ;<  ~  bind:m  writer-drain
+    ;<  raw=(unit *)  bind:m  (acl-res-get up rid)
+    =/  res=(unit $%([%ok ~] [%refused ~]))
+      ?~  raw  ~
+      (mole |.(;;($%([%ok ~] [%refused ~]) u.raw)))
+    ?~  res  (send-err eyre-id 500 'group delete did not complete')
+    ?:  ?=(%refused -.u.res)  (ug-refused eyre-id)
     (send-ok eyre-id)
   ::  ── private forum boards: invite and revoke (owner) ──
   ::  A private board's members are a per-board usergroup, forum-<board>, whose
@@ -3928,6 +4037,9 @@
     ::  the key's write grant is explicit consent from the owner.
     ?.  (may-path:ky u.key %local (pax-of u.name) %write)
       (send-err eyre-id 403 'outside this key\'s scope')
+    ::  the scope check above is on the leaf. ?dnames= would also name the
+    ::  folders above it, so keep only the names this key may write
+    ;<  args=(map @t @t)  bind:m  (key-dname-args u.key rnow args (pax-of u.name))
     ;<  wf=(unit rich)  bind:m  (fodt-at (pax-of u.name))
     ?:  &(?=(^ wf) !=(`@t`u.wf (~(gut by args) 'type' 'hoon')))
       (send-err eyre-id 403 (fodt-key-msg u.wf))
@@ -3961,6 +4073,7 @@
         ;<  ok=?  bind:m  (taint-dest-at (pax-of u.name))
         ?.  ok  (send-err eyre-id 403 tainted-shared-msg)
         (handle-page-save eyre-id req args (key-wid u.key))
+      ;<  ~  bind:m  writer-sync
       ;<  exists=?  bind:m  (peek-exists:fio (rv up (weld /page (pax-of u.name))))
       ?:  exists  (send-err eyre-id 403 tainted-msg)
       ;<  ~  bind:m  (poke-eval [%page-sensitive (pax-of u.name) &])
@@ -3974,7 +4087,7 @@
       [%'GET' %page-search]
     =/  q=@t  (~(gut by args) 'q' '')
     ?:  =('' q)  (send-err eyre-id 400 'missing q')
-    =/  k=@ud  (fall (rush (~(gut by args) 'k' '10') dem) 10)
+    =/  k=@ud  (max 1 (fall (rush (~(gut by args) 'k' '10') dem) 10))
     ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
     ;<  all=(list [rel=path body=@t shr=share-mode:le])  bind:m
       ?.  ?=([%ball *] sn)  (pure:(fiber:fiber:nexus ,(list [rel=path body=@t shr=share-mode:le])) ~)
@@ -4014,7 +4127,7 @@
       =/  n  (fiber:fiber:nexus ,?)
       ?~  key  (pure:n |)
       ?.  sensitive.scope.u.key  (pure:n |)
-      =/  todo=(list hit:lk)  (scag k hs)
+      =/  todo=(list hit:lk)  hs
       |-  ^-  form:n
       ?~  todo  (pure:n |)
       ;<  ps=?  bind:n  (page-sensitive key.i.todo)
@@ -4136,8 +4249,13 @@
     ::  name predates the dot-segment rule. Creation is where the rule belongs.
     =/  dpax=(unit path)  (raw-name-pax u.name)
     ?~  dpax  (send-err eyre-id 400 'bad name')
-    ;<  ~  bind:m  (poke-eval [%del u.dpax])
-    ;<  ~  bind:m  (move-grants u.dpax ~)
+    ::  a page named here goes alone: what is under it stays, unless
+    ::  ?tree=1 asks for all of it. A folder goes with all under it.
+    ::  Only 1 or true is yes: tree=0 says no, and is no.
+    =/  tree=(unit ?)  (arg-flag args 'tree')
+    ?~  tree  (send-err eyre-id 400 'tree: 1 or 0')
+    ;<  no=(unit [code=@ud msg=@t])  bind:m  (page-del-run u.dpax u.tree)
+    ?^  no  (send-err eyre-id code.u.no msg.u.no)
     (send-ok eyre-id)
   ::  page-move: server-side move/rename of a page or a whole folder subtree.
   ::  Replaces the old client choreography (page-source + page-save + page-del
@@ -4536,6 +4654,7 @@
     ?.  ex  (send-err eyre-id 404 'no such page or folder')
     =/  on=?  =('1' (~(gut by args) 'on' '0'))
     ;<  ~  bind:m  (poke-eval [%page-sensitive (pax-of u.name) on])
+    ;<  ~  bind:m  writer-drain
     ::  marking takes back what folders and groups granted, but a page's
     ::  own share stays (the owner chose it): `shared` says it is still
     ::  published or shared with a ship by hand, for the panel to warn
@@ -4800,13 +4919,21 @@
   ::  GET, not POST, because the whole point is that a bookmarklet reaches it
   ::  by top-level navigation. eyre's session cookie carries no SameSite
   ::  attribute, so a navigation sends it where a cross-site POST would not.
-  ::  That does leave it CSRF-reachable (an <img src=…/clip?url=> on a hostile
-  ::  page would archive a page of the attacker's choosing), which is noise in
-  ::  the owner's own tree, not disclosure. The fetched body never travels
-  ::  back to the attacker. +http-url and +fetchable:lcl are the real
-  ::  boundary. They keep `file:` and friends, and loopback, private and
-  ::  local hosts, away from iris on the initial url and every redirect.
+  ::  That does leave it reachable by a navigation another site starts,
+  ::  which archives a page of that site's choosing: noise in the owner's
+  ::  own tree, not disclosure. The fetched body never travels back to the
+  ::  attacker. +http-url and +fetchable:lcl are the real boundary. They
+  ::  keep `file:` and friends, and loopback, private and local hosts, away
+  ::  from iris on the initial url and every redirect.
+  ::
+  ::  A subresource load is refused (+subresource:lu). An image in a page
+  ::  the owner only reads, a peer's or a clipped one drawn on this host,
+  ::  is sent with the session: it made the ship fetch a url of the
+  ::  author's choosing, which told them when the page was read, and filed
+  ::  a page each time. The bookmarklet navigates, so it still arrives.
       [%'GET' %clip]
+    ?:  (subresource:lu (get-header:http 'sec-fetch-dest' header-list.request.req))
+      (send-err eyre-id 403 'open this address as a page')
     =/  url=(unit @t)  (~(get by args) 'url')
     ?~  url  (send-err eyre-id 400 'missing url')
     (clip-page eyre-id u.url)
@@ -4848,7 +4975,12 @@
   ::  only `url` would make the share sheet appear to do nothing on the platform
   ::  most likely to use it, so all three are searched for the first http(s)
   ::  token.
+  ::
+  ::  The share sheet navigates, so a subresource load is refused here as
+  ::  it is for /clip: the two routes run the same archive.
       [%'GET' %share]
+    ?:  (subresource:lu (get-header:http 'sec-fetch-dest' header-list.request.req))
+      (send-err eyre-id 403 'open this address as a page')
     =/  cand=(list @t)
       %+  murn  ~['url' 'text' 'title']
       |=(k=@t (~(get by args) k))
@@ -5044,11 +5176,14 @@
       (send-err eyre-id 404 'no such revision')
     ;<  sn=view:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
-    =/  e=know-entry:lk  !<(know-entry:lk (need-vase:tarball sang.sn))
+    ?:  (is-boom:tarball sang.sn)  (send-err eyre-id 404 'not found')
+    =/  e=(unit know-entry:lk)
+      (mole |.(!<(know-entry:lk (need-vase:tarball sang.sn))))
+    ?~  e  (send-err eyre-id 404 'not found')
     ::  a revision can be sensitive when the entry is no longer
-    ?.  (may-see key e)  (send-err eyre-id 404 'not found')
-    ;<  ~  bind:m  (taint-if key (sensitive:lk e))
-    (send-json eyre-id (know-entry-json u.ko e))
+    ?.  (may-see key u.e)  (send-err eyre-id 404 'not found')
+    ;<  ~  bind:m  (taint-if key (sensitive:lk u.e))
+    (send-json eyre-id (know-entry-json u.ko u.e))
   ::  restore a prior revision: re-save it live via %import (preserves tags/vector),
   ::  stamped updated=now so it sorts fresh in know-list (matches pub-restore). Works
   ::  for a trashed key too. %import revives it live. Non-destructive. The current
@@ -5072,9 +5207,12 @@
       (send-err eyre-id 404 'no such revision')
     ;<  sn=view:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
-    =/  e=know-entry:lk  !<(know-entry:lk (need-vase:tarball sang.sn))
+    ?:  (is-boom:tarball sang.sn)  (send-err eyre-id 404 'not found')
+    =/  e=(unit know-entry:lk)
+      (mole |.(!<(know-entry:lk (need-vase:tarball sang.sn))))
+    ?~  e  (send-err eyre-id 404 'not found')
     ;<  now=@da  bind:m  bowl-now
-    ;<  ~  bind:m  (poke-know [%import (spat u.ko) e(updated now)])
+    ;<  ~  bind:m  (poke-know [%import (spat u.ko) u.e(updated now)])
     (send-ok eyre-id)
   ::  prune a live key's history to the newest `keep` revisions (default 10, floor
   ::  1). DESTRUCTIVE + IRREVERSIBLE: %lose hard-drops the picked revisions and
@@ -5517,7 +5655,7 @@
       ?.  (save-near key args bod old)  (pure:n ~)
       ;<  es=(map path know-entry:lk)  bind:n  read-know-map
       ;<  tc=term-cache:lk  bind:n  (current-terms es)
-      (pure:n (near:lk ~(tap by (listed key es tc)) tc rest:(front:lk bod)))
+      (pure:n (near:lk ~(tap by (listed key es tc)) tc (prose-of:lk bod old)))
     ;<  bnow=@da  bind:m  bowl-now
     =/  pl  (save-plan key rnow bnow u.ko bod args old near)
     ?:  ?=(%| -.pl)  (send-err eyre-id code.p.pl msg.p.pl)
@@ -5580,11 +5718,20 @@
     =/  ko=(unit path)  (know-key u.k)
     ?~  ko  (send-err eyre-id 400 'invalid key')
     ::  the writer refuses a delete that would land on a deleted memory
-    ::  still in the trash under the key (+apply %del), so say why here
+    ::  still in the trash under the key (+apply %del), so say why here.
+    ::  Check both the trash index row and the trash grub, matching %del,
+    ::  so an orphan row in /know/trash cannot permanently block deletes.
     ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
-    ?:  (~(has by tx) u.ko)
+    ;<  held=?  bind:m  (peek-exists:fio (entry-road up /know/trash-vault u.ko))
+    ?:  &(held (~(has by tx) u.ko))
       (send-err eyre-id 409 'a deleted memory with this key is in the trash: restore it, or move this one to another key first')
     ;<  ~  bind:m  (poke-know [%del (spat u.ko)])
+    ::  a poke is acked before the writer reads it and a refusal has no
+    ::  way back, so wait for the writer and answer for what it left
+    ;<  ~  bind:m  writer-sync
+    ;<  left=(unit know-entry:lk)  bind:m  (know-one u.ko)
+    ?^  left
+      (send-err eyre-id 409 'the memory was not deleted: a deleted memory with this key is in the trash, or the writer refused it')
     (send-ok eyre-id)
   ::
       [%'POST' %know-restore]
@@ -5592,7 +5739,18 @@
     ?~  k  (send-err eyre-id 400 'missing key')
     =/  ko=(unit path)  (know-key u.k)
     ?~  ko  (send-err eyre-id 400 'invalid key')
+    ::  the writer refuses a restore over a live memory (+apply %restore) and
+    ::  a key with nothing in the trash, and a refusal has no way back to a
+    ::  poke already acked. Say why here, then wait for the writer and answer
+    ::  for what it left: ok only when the memory is live again.
+    ;<  held=(unit know-entry:lk)  bind:m  (know-one u.ko)
+    ?^  held
+      (send-err eyre-id 409 'a memory holds that key: move or delete it first')
     ;<  ~  bind:m  (poke-know [%restore (spat u.ko)])
+    ;<  ~  bind:m  writer-sync
+    ;<  back=(unit know-entry:lk)  bind:m  (know-one u.ko)
+    ?~  back
+      (send-err eyre-id 404 'nothing was restored: no deleted memory with this key is in the trash')
     (send-ok eyre-id)
   ::
       [%'POST' %know-tag]
@@ -5639,9 +5797,9 @@
     ;<  e=(unit know-entry:lk)  bind:m  (know-one u.ko)
     ?~  e  (send-err eyre-id 404 'not found')
     ;<  now=@da  bind:m  bowl-now
-    =/  f  (front:lk body.u.e)
-    =/  meta  (meta-put:lk (meta-put:lk meta.f 'source' 'user') 'kept' (iso-day:lk now))
-    ;<  ~  bind:m  (poke-know [%save (spat u.ko) (with-front:lk meta rest.f)])
+    =/  bod=@t
+      (front-set:lk (front-set:lk body.u.e 'source' 'user') 'kept' (iso-day:lk now))
+    ;<  ~  bind:m  (poke-know [%save (spat u.ko) bod])
     (send-ok eyre-id)
   ::
   ::  ── skills (lib/lattice-skills, docs/agent-knowledge.md, Skills) ──
@@ -5799,14 +5957,32 @@
     ?:  ?=(%| -.g)  (send-err eyre-id code.p.g ?:(=(404 code.p.g) 'no such old skill' msg.p.g))
     ?:  &(?=(^ key) (is-core:lsk p.g))
       (send-err eyre-id 403 'an agent key cannot supersede a core skill: only the owner can')
+    ?:  &(?=(^ key) (owner-perms:lsk p.g))
+      (send-err eyre-id 403 'this skill carries permissions the owner set: only the owner can supersede it')
     ;<  n=(unit skill:lsk)  bind:m
       ?:  =('' nn)  (pure:(fiber:fiber:nexus ,(unit skill:lsk)) ~)
       (skill-get key nn)
     ?:  &(!=('' nn) ?=(~ n))  (send-err eyre-id 404 'no such new skill')
+    ?:  &(?=(^ key) ?=(^ n) !(sensitive:lsk p.g) (sensitive:lsk u.n))
+      (send-err eyre-id 403 'an agent key cannot supersede an ordinary skill with a sensitive one')
     ;<  bnow=@da  bind:m  bowl-now
     =/  now=@da  ?~(key bnow rnow)
-    ;<  ~  bind:m  (skill-pokes ~[[%save on main-file:lsk (supersede:lsk body.p.g nn) now]])
-    (send-ok eyre-id)
+    =/  bod=@t  (supersede:lsk body.p.g nn)
+    ;<  ~  bind:m
+      %-  skill-pokes
+      ^-  (list skill-action:lsk)
+      :~  ?~  key  [%save on main-file:lsk bod now]
+          [%ksave on main-file:lsk bod now id.u.key]
+      ==
+    ?~  key  (send-ok eyre-id)
+    ;<  ~  bind:m  writer-sync
+    ;<  got=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/vault on))
+    ?:  &(?=(^ got) =(`bod (file-of:lsk u.got main-file:lsk)))
+      (send-ok eyre-id)
+    ;<  tnow=@da  bind:m  get-time:io
+    =/  why=(unit tape)  (key-check:lsk got sensitive.scope.u.key (tainted:ky u.key tnow) `bod)
+    ?^  why  (send-err eyre-id 403 (crip u.why))
+    (send-err eyre-id 409 'the skill changed before this save landed: read it again')
   ::
       [%'POST' %skill-tag]
     =/  nm=@t  (~(gut by args) 'name' '')
@@ -7404,7 +7580,8 @@
   ?.  got  (pure:m ~)
   ;<  now=@da  bind:m  get-time:io
   ?:  &(?=(^ taint.u.key) (lth now (add u.taint.u.key ~m10)))  (pure:m ~)
-  (poke-keys [%taint id.u.key now])
+  ;<  ~  bind:m  (poke-keys [%taint id.u.key now])
+  writer-sync
 ++  tainted-msg
   ^-  @t
   'this key read sensitive content in the last 12 hours, so until then its own writes go only to sensitive destinations'
@@ -7428,7 +7605,7 @@
   ?&  ?=(~ old)
       !(save-plain key args)
       !=('1' (~(gut by args) 'force_new' ''))
-      !=('' rest:(front:lk bod))
+      !=('' (prose-of:lk bod old))
   ==
 ::  +save-plan: one memory save checked and stamped, or its refusal. Both
 ::  /know-save and /know-save-batch decide here, so a batch gets exactly a
@@ -7457,7 +7634,9 @@
     [%| 400 'source must be user or agent']
   ?:  (save-plain key args)
     [%& [%save (spat ko) bod] (pairs:enjs:format ~[['ok' b+&]])]
-  =/  prose=@t  rest:(front:lk bod)
+  ::  the stamp writes the front matter. A block the body brought that
+  ::  holds anything else is kept as text (+prose-of:lk), not dropped.
+  =/  prose=@t  (prose-of:lk bod old)
   ?:  =('' prose)  [%| 400 'empty body']
   ?:  &(?=(^ old) !(may-see key u.old))
     [%| 403 'that key is not available to this agent key']
@@ -7523,7 +7702,7 @@
   =/  old=(unit know-entry:lk)  (~(get by es) u.ko)
   =/  near=(list [o=@ud k=path])
     ?.  (save-near key a.i.items b.i.items old)  ~
-    (near:lk pool tc rest:(front:lk b.i.items))
+    (near:lk pool tc (prose-of:lk b.i.items old))
   =/  pl  (save-plan key rnow bnow u.ko b.i.items a.i.items old near)
   ?:  ?=(%| -.pl)  $(items t.items, outs [(batch-err k.i.items p.pl) outs])
   ::  later items see this one: as the entry under its key, and as a
@@ -8315,13 +8494,19 @@
     (forum-reply-tell now src p.lod post.act parent.act body.act)
   (pure:m ~)
 ::  +apply-forum-remote: a forum action from a REMOTE ship, author stamped from
-::  the transport. Runs, in the ONE writer, the gates the inbox used to run: a
-::  banned ship is dropped silently; the per-[ship board] rate limit is
-::  consulted BEFORE any refusal note and a cooldown is accrued on every
-::  attempt that clears the limit (success OR refusal), so a ship streaming
-::  refused pokes backs off; a refusal (bad board, owner-only, private, role,
-::  caps, or +act) rides back to the poster as a best-effort note. Always
-::  returns ~: a remote refusal is a note, never a fault.
+::  the transport. Runs, in the ONE writer, the gates the inbox used to run.
+::  A banned ship is dropped silently. The rate limit is consulted BEFORE any
+::  refusal note, and a cooldown is accrued on every attempt that clears the
+::  limit (success OR refusal), so a ship streaming refused pokes backs off.
+::  A refusal on a board we host (owner-only, private, role, caps, or +act)
+::  rides back to the poster as a best-effort note. Always returns ~: a
+::  remote refusal is a note, never a fault.
+::
+::  The cooldown is kept per family and board (+rate-key:fr). The board name
+::  is the sender's to choose, so a name that is no board of ours (bad,
+::  unknown, or unreadable) is counted under the family's one entry for all
+::  such names, and is answered with no note: a stream of made-up names then
+::  meets the cooldown, adds one small entry, and sends nothing out.
 ::
 ++  apply-forum-remote
   |=  [now=@da src=@p act=action:ft]
@@ -8353,12 +8538,15 @@
   ::  so the plain cooldown applies (this is +rate-ok:fr for the no-board case).
   ;<  lim=limits:fr  bind:m  read-forum-limits
   =/  mod=?  ?~(obrd %.n (is-mod:fr src u.obrd))
-  =/  entry  (~(get by lim) [src name])
+  =/  key=[@p board-name:ft]  (rate-key:fr (family:ls src) name ?=(^ obrd))
+  =/  entry  (~(get by lim) key)
   =/  ratek=?
     ?:  mod  %.y
     ?~  entry  %.y
+    ?:  (lth now last.u.entry)  %.n
     (gte (sub now last.u.entry) cooldown.u.entry)
   ?.  ratek
+    ?~  obrd  (pure:m ~)
     (forum-note-send src name 'forum: you are acting too fast, slow down and retry')
   ::  run the gates and the apply, collecting any refusal reason.
   ;<  reason=(unit @t)  bind:m  (forum-remote-apply now src name act obrd)
@@ -8366,8 +8554,9 @@
   ::  refused pokes keeps lengthening the cooldown.
   ;<  ~  bind:m
     ?:  mod  (pure:(fiber:fiber:nexus ,~) ~)
-    (write-forum-limits (rate-update:fr src name now lim))
+    (write-forum-limits (rate-update:fr -.key +.key now lim))
   ?~  reason  (pure:m ~)
+  ?~  obrd  (pure:m ~)
   (forum-note-send src name u.reason)
 ::  +apply-forum-comet: a forum action from a comet, such as the desktop's
 ::  reader without a node. It lands only as a post or a reply on a public
@@ -8565,6 +8754,7 @@
   |=  [id=post-id:ft p=post:ft]
   ^-  (unit post-id:ft)
   ?:  (~(has in pinned.brd) id)  ~
+  ?:  (lth now created.p)  ~
   ?.  (gte (sub now created.p) after.u.prune.brd)  ~
   ?.  (lth n:(hot-score:fr now p) min-score.u.prune.brd)  ~
   `id
@@ -8628,6 +8818,41 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   (put-file (rf up /forum/members nom) [/ %noun] [%1 who])
+::  +strip-forum-rosters: every ship a ban of `who` covers (+ban-drop:ls:
+::  the ship, a planet's moons, every comet for the comets) comes off
+::  every board's roster. The roster is what the member gate reads
+::  (+forum-remote-apply), and a ban takes back all a ship was given, so
+::  an unban must not find it still a member. A roster nothing changes
+::  in is not written.
+++  strip-forum-rosters
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io (rv up /forum/members) ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  =/  noms=(list @ta)
+    ?~  fil.ball.u.vw  ~
+    ~(tap in ~(key by contents.u.fil.ball.u.vw))
+  =/  bans=banned:ls  (silt ~[who])
+  |-  ^-  form:m
+  ?~  noms  (pure:m ~)
+  ;<  mem=(set @p)  bind:m  (read-forum-members i.noms)
+  =/  left=(set @p)  (ban-drop:ls bans mem)
+  ?:  =(left mem)  $(noms t.noms)
+  ;<  ~  bind:m  (write-forum-members i.noms left)
+  $(noms t.noms)
+::  +forum-readers: the ships a private board's read group holds
+::  (+forum-group-name), none when it was never made or will not read
+++  forum-readers
+  |=  nom=@ta
+  =/  m  (fiber:fiber:nexus ,(set @p))
+  ^-  form:m
+  ;<  ub=path  bind:m  ug-dir
+  =/  gdir=path  (snoc ub (crip (weld (trip (forum-group-name nom)) ".grp")))
+  ;<  wv=(unit view:nexus)  bind:m  (peek-soft:io [%& %& gdir %'who.ships'] ~)
+  ?.  ?=([~ %file *] wv)  (pure:m ~)
+  (pure:m (fall (mole |.(;;((set @p) (sang-noun:tarball sang.u.wv)))) ~))
 ::  +handle-forum-invite: POST /forum-invite and /forum-revoke ?board=&ship=.
 ::  add=%.y invites, %.n revokes. Owner-only (the owner session is the route's
 ::  gate, as for /share-file). Only a PRIVATE board has members to manage.
@@ -8657,39 +8882,30 @@
   =/  lod=(each board:ft @t)  (load:fb u.gs)
   ?:  ?=(%| -.lod)  (send-err eyre-id 500 'board unreadable')
   ?:  public.info.p.lod  (send-err eyre-id 400 'a public board has no members to manage')
-  =/  gname=@t  (forum-group-name nom)
-  ;<  ub=path  bind:m  ug-dir
-  =/  gdir=path  (snoc ub (crip (weld (trip gname) ".grp")))
-  ;<  cur=(set @p)  bind:m  (read-forum-members nom)
-  ?.  add
-    ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
-    =/  ships=(set @p)
-      ?.  ?=([%file *] wv)  ~
-      (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
-    ;<  ok=?  bind:m
-      ?.  (~(has in ships) u.shp)  (pure:(fiber:fiber:nexus ,?) %.y)
-      (ug-over [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) u.shp)])
-    ?.  ok  (ug-refused eyre-id)
-    ;<  ~  bind:m  (write-forum-members nom (~(del in cur) u.shp))
-    (send-ok eyre-id)
-  ;<  bans=banned:ls  bind:m  read-banned
-  ?:  (is-banned:ls bans u.shp)
-    (send-err eyre-id 403 'that ship is banned, unban it first')
-  ;<  sb=path  bind:m  self-base
-  =/  bpath=path  (weld sb /forum/boards/[nom])
-  =/  roads=(set road:tarball)
-    (~(gas in *(set road:tarball)) ~[[%& %| (snoc bpath %pub)] [%& %| (snoc bpath %content)]])
-  ;<  ok=?  bind:m  (ug-merge gname (~(gas in *(set @p)) ~[u.shp]) roads ~)
-  ?.  ok  (ug-refused eyre-id)
-  ;<  ~  bind:m  (write-forum-members nom (~(put in cur) u.shp))
-  ;<  base=(unit path)  bind:m  (peer-base-cached u.shp)
-  ;<  told=?  bind:m
-    %^  remote-load-poke-wait  u.shp
-      :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
-      [%poke [/lattice %share-notice] `action:ls`[%add (snoc bpath %content) 'read']]
-    ~s5
-  %+  send-json  eyre-id
-  (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
+  ;<  rid=@ta  bind:m  acl-rid
+  ;<  ~  bind:m  (poke-eval [%acl-forum-member rid nom u.shp add])
+  ;<  ~  bind:m  writer-drain
+  ;<  raw=(unit *)  bind:m  (acl-res-get up rid)
+  =/  res=(unit $%([%ok ~] [%banned ~] [%refused ~]))
+    ?~  raw  ~
+    (mole |.(;;($%([%ok ~] [%banned ~] [%refused ~]) u.raw)))
+  ?~  res  (send-err eyre-id 500 'forum member update did not complete')
+  ?-  -.u.res
+    %banned   (send-err eyre-id 403 'that ship is banned, unban it first')
+    %refused  (ug-refused eyre-id)
+      %ok
+    ?.  add  (send-ok eyre-id)
+    ;<  sb=path  bind:m  self-base
+    =/  bpath=path  (weld sb /forum/boards/[nom])
+    ;<  base=(unit path)  bind:m  (peer-base-cached u.shp)
+    ;<  told=?  bind:m
+      %^  remote-load-poke-wait  u.shp
+        :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
+        [%poke [/lattice %share-notice] `action:ls`[%add (snoc bpath %content) 'read']]
+      ~s5
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
+  ==
 ::  +apply-forum-notice: a forum action poked by ANOTHER ship over /forum.sig.
 ::  The inbox fiber does the minimum: read the author from the TRANSPORT (never
 ::  the payload), ignore a sourceless (local) poke, and hand the action to the
@@ -8768,9 +8984,16 @@
   =/  rn=(unit reply-note:ln)  (mole |.(;;(reply-note:ln payload)))
   ?^  rn
     ?:  (is-comet:fr host)  (pure:m ~)
+    ?.  ?&  !=(%$ board.u.rn)
+            (lte (met 3 board.u.rn) board-cap:ln)
+            ((sane %tas) board.u.rn)
+            (lte (met 3 post.u.rn) 8)
+        ==
+      (pure:m ~)
     ?:  ok.gate
       %+  notify-add  now
       (make:ln %remote now who.u.rn host board.u.rn post.u.rn title.u.rn body.u.rn)
+    ?:  =(0 over.gate)  (pure:m ~)
     ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
     =/  old=(list @ta)  (flood-ids:ln items host)
     ;<  ~  bind:m
@@ -8781,15 +9004,22 @@
     %+  notify-add  now
     (flood-item:ln now host board.u.rn post.u.rn over.gate)
   ?.  ok.gate  (pure:m ~)
+  ::  both fields cut to size before they are kept (+refusal:ln): the
+  ::  sender chose them, and nothing else bounds what one note stores
   =/  nn=(unit [board=board-name:ft reason=@t])
-    (mole |.(;;([board-name:ft @t] payload)))
+    =/  raw=(unit [@ @])  (mole |.(;;([@ @] payload)))
+    ?~(raw ~ (refusal:ln u.raw))
   ?~  nn  (pure:m ~)
   ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
-  =/  stored=@ud
-    ?.  ?=([%ball *] v)  0
-    ?~  fil.ball.v  0
-    ~(wyt by contents.u.fil.ball.v)
-  ?:  (gte stored 100)  (pure:m ~)
+  ::  bounded in all, and for one sender's family (+notes-full:ln)
+  =/  fams=(list @)
+    ?.  ?=([%ball *] v)  ~
+    ?~  fil.ball.v  ~
+    %+  turn  ~(val by contents.u.fil.ball.v)
+    |=  [=sang:tarball *]
+    =/  n  (mole |.(;;([host=@p @ @ @] (sang-noun:tarball sang))))
+    ?~(n 0 (family:ls host.u.n))
+  ?:  (notes-full:ln fams (family:ls host))  (pure:m ~)
   =/  note=[host=@p board=board-name:ft reason=@t at=@da]
     [host board.u.nn reason.u.nn now]
   =/  id=@ta  (scot %uv (sham note))
@@ -8930,6 +9160,33 @@
     ;<  ~  bind:m  (prune-page pax.act)
     ?:  old  (pure:m ~)
     (grant-new root pax.act)
+      %make-new
+    ::  create-only: a name taken since the route looked is left as it is
+    ;<  taken=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
+    ?.  taken  $(act [%make-by pax.act src.act who.act ~])
+    %-  (say 1 ~[leaf+"lattice: a create of {(spud pax.act)} found a page there and was not written"])
+    (pure:m ~)
+      %move-make
+    ::  a page a move copies to its new place, with a note beside it of
+    ::  the source text it was copied from (`moved`). A move can run
+    ::  twice at once: asked again while its first request still runs,
+    ::  or resumed after a reload. The later run reads the same source,
+    ::  so it would copy every page again, over whatever was saved at
+    ::  the new place since the first copy. A page that holds the note
+    ::  of this same text was copied already, and is left as it is now.
+    ::  A source that changed since has another hash, and is copied.
+    =/  pdir=path  (weld /page pax.act)
+    =/  mr=road:tarball  (rf up pdir %moved)
+    ;<  there=?  bind:m  (peek-exists:fio (rf up pdir %code))
+    ;<  mv=view:nexus  bind:m  (peek:fio mr ~)
+    =/  was=(unit [path @uv])
+      ?.  ?=([%file *] mv)  ~
+      (mole |.(;;([path @uv] (sang-noun:tarball sang.mv))))
+    ?:  &(there =(was `[from.act had.act]))  (pure:m ~)
+    ;<  ~  bind:m
+      %^  apply-eval  root  now
+      ?:(marked.act [%make-marked pax.act src.act] [%make pax.act src.act])
+    (put-file mr [/ %noun] [from.act had.act])
       %make-marked
     ;<  old=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
     ;<  ~  bind:m  (write-page root pax.act src.act |)
@@ -9095,6 +9352,77 @@
     ?.  hex  (pure:m ~)
     ;<  *  bind:m  (cull-soft:io (rv up hdir))
     (pure:m ~)
+      %del-page
+    ::  the page at pax alone. No page there (a folder, or nothing), or
+    ::  a page with nothing under it: that is %del. Else what is under
+    ::  it stays, each page with all it had, and only the page's own
+    ::  grubs go (+page-own-grubs), which leaves the name a folder,
+    ::  noted as one a page left (`page-gone`, +page-gone-kept).
+    =/  pdir=path  (weld /page pax.act)
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up pdir))
+    ?.  ex  $(act [%del pax.act])
+    ;<  dv=view:nexus  bind:m  (peek:fio (rv up pdir) ~)
+    ?.  ?=([%ball *] dv)  $(act [%del pax.act])
+    ;<  lex=?  bind:m  (peek-exists:fio (rv up (weld /links pax.act)))
+    =/  fils  ?~(fil.ball.dv ~ contents.u.fil.ball.dv)
+    ::  this same delete, done already: the page is gone and what it left
+    ::  stays (+page-gone-kept). +page-del-run refuses one, so this is
+    ::  two of them at once.
+    ?^  (page-gone-kept ball.dv lex)  (pure:m ~)
+    ?.  &((~(has by fils) %code) |(lex ?=(^ dir.ball.dv)))
+      $(act [%del pax.act])
+    ::  the name is left a folder that was a page: noted first, so a
+    ::  delete cut short after the source goes still reads as this one
+    ;<  ~  bind:m  (put-file (rf up pdir %'page-gone') [/ %noun] now)
+    ::  what a folder granted this page goes with it. The ball is cut
+    ::  to the page's own grubs, so no page under it is counted.
+    ;<  ~  bind:m  (revoke-folder-grants pax.act ball.dv(dir ~))
+    ::  its published copy too. An unpublish of a key with no copy and
+    ::  no row is read as a folder's, and takes every page under it, so
+    ::  it is sent only for a page that has one of the two.
+    =/  key=path  (pub-path (crip (pax-str pax.act)))
+    =/  or=(unit vrail:lp)  (key-to-rail:lp /pub/vault key)
+    ;<  vx=?  bind:m
+      ?~  or  (pure:(fiber:fiber:nexus ,?) |)
+      (peek-exists:fio (rf up pax.u.or nom.u.or))
+    ;<  ix=pub-index:lp  bind:m  (read-pub-index (rf root /pub %index))
+    ;<  ~  bind:m
+      ?.  |(vx (~(has by ix) key))  (pure:m ~)
+      (apply-pub root now [%del-page (spat key)])
+    ::  every stored revision, as %del drops them: none is left for the
+    ::  next page made at this name
+    ;<  ~  bind:m  (prune-hist (rf up pdir %code) 0 ~s0)
+    ;<  ~  bind:m  (prune-hist (rf up pdir %data) 0 ~s0)
+    ::  each grub is checked first: a cull of an absent one veto-crashes
+    ::  the writer
+    ;<  ~  bind:m
+      =/  gs=(list @ta)  page-own-grubs
+      |-  ^-  form:m
+      ?~  gs  (pure:m ~)
+      ;<  gx=?  bind:m  (peek-exists:fio (rf up pdir i.gs))
+      ?.  gx  $(gs t.gs)
+      ;<  *  bind:m  (cull-soft:io (rf up pdir i.gs))
+      $(gs t.gs)
+    ;<  ~  bind:m  (refresh-dir-index-above root (snip `path`pax.act))
+    ;<  ~  bind:m  (send-public-how root)
+    ::  its comments and held comments, the files filed at its own path.
+    ::  The folders beside them are those of the pages under it.
+    =/  cds=(list path)  ~[(weld /comments pax.act) (weld /comments-held pax.act)]
+    |-  ^-  form:m
+    ?~  cds  (pure:m ~)
+    ;<  cex=?  bind:m  (peek-exists:fio (rv up i.cds))
+    ?.  cex  $(cds t.cds)
+    ;<  cv=view:nexus  bind:m  (peek:fio (rv up i.cds) ~)
+    =/  ids=(list @ta)
+      ?.  ?=([%ball *] cv)  ~
+      ?~  fil.ball.cv  ~
+      ~(tap in ~(key by contents.u.fil.ball.cv))
+    ;<  ~  bind:m
+      |-  ^-  form:m
+      ?~  ids  (pure:m ~)
+      ;<  *  bind:m  (cull-soft:io (rf up i.cds i.ids))
+      $(ids t.ids)
+    $(cds t.cds)
       %carry-state
     (carry-state from.act to.act)
       %carry
@@ -9128,29 +9456,11 @@
     ::  folder made (`grant-via`), which a move out takes back
     (folder-grant-do pax.act gname.act mode.act)
       %folder-ungrant
-    =/  r=road:tarball  (rf up (weld /page pax.act) %'share-grants')
-    ;<  old=(map @t @t)  bind:m  (read-share-grants pax.act)
-    ?.  (~(has by old) gname.act)  (pure:m ~)
-    =/  new=(map @t @t)  (~(del by old) gname.act)
-    ?^  new  (put-file r [/lattice %eval-data] new)
-    ;<  *  bind:m  (cull-soft:io r)
-    (pure:m ~)
+    (folder-ungrant-do up pax.act gname.act)
       %share-tell
     (share-tell-do add.act del.act)
       %grant-own
-    ?.  |(=('' mode.act) (mode-ok:ls mode.act))  (pure:m ~)
-    =/  pdir=path  (weld /page pax.act)
-    ;<  cx=?  bind:m  (peek-exists:fio (rf up pdir %code))
-    ?.  cx  (pure:m ~)
-    =/  r=road:tarball  (rf up pdir %'own-grants')
-    ;<  old=(map @t @t)  bind:m  (read-own-grants pax.act)
-    =/  new=(map @t @t)
-      ?:  =('' mode.act)  (~(del by old) gname.act)
-      (~(put by old) gname.act mode.act)
-    ?:  =(new old)  (pure:m ~)
-    ?^  new  (put-file r [/lattice %eval-data] new)
-    ;<  *  bind:m  (cull-soft:io r)
-    (pure:m ~)
+    (grant-own-do up pax.act gname.act mode.act)
       %share-clear
     ::  the page's own setting goes, and it takes its folder's, or none
     =/  pdir=path  (weld /page pax.act)
@@ -9252,6 +9562,24 @@
       (refresh:ll u.l kind.u.got.act body.u.got.act rev.u.got.act now)
     ?:  (link-same u.l nl)  (pure:m ~)
     (put-file lr [/lattice %link] nl)
+      %acl-ban
+    (apply-acl-ban root rid.act who.act)
+      %acl-unban
+    (apply-acl-unban root rid.act who.act)
+      %acl-forum-member
+    (apply-acl-forum-member root rid.act nom.act who.act add.act)
+      %acl-group-save
+    (apply-acl-group-save root rid.act gname.act who.act pkp.act mkp.act v2.act)
+      %acl-group-del
+    (apply-acl-group-del root rid.act gname.act)
+      %acl-share-page
+    (apply-acl-share-page root rid.act shp.act mode.act pax.act)
+      %acl-share-folder
+    (apply-acl-share-folder root rid.act gname.act who.act mode.act pax.act tell.act)
+      %acl-unshare-file
+    (apply-acl-unshare-file root rid.act shp.act pax.act)
+      %acl-move-grants
+    (move-grants-in from.act to.act own.act)
       %dname
     ::  the display name sits beside a page's %code or a folder's flags, as
     ::  a %name grub. '' clears it: the name typed at a rename was a valid
@@ -9355,20 +9683,19 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ?:  =('' body.act)  (pure:m ~)
-  ::  reject an empty page path (levy is vacuously true on ~) so a comment can't
-  ::  land loose in the /comments root. Value-eq, not ?=, so page.act keeps its
-  ::  general `path` type (a ?= refinement makes the levy below mull-grow).
-  ?:  =(~ page.act)  (pure:m ~)
-  ?.  (levy page.act |=(s=@ta &(!=(%$ s) ((sane %ta) s))))  (pure:m ~)
-  ;<  on=?  bind:m  (comments-on page.act)
-  ?.  on  (pure:m ~)
-  ::  the page must EXIST: comments-on walks flags upward, so a folder-level
-  ::  comment-on would otherwise let any un-banned ship spray grubs under
-  ::  invented sub-paths of a commentable site.
+  ::  an empty body or page path, or a path longer than any page's, is
+  ::  dropped before anything is read (+act-ok:lc)
+  ?.  (act-ok:lc act)  (pure:m ~)
+  ::  the page must EXIST, and that is asked first: one read. +comments-on
+  ::  walks the flags upward, a read for each segment of the path, so a
+  ::  path to nothing must not reach it. And a folder-level comment-on
+  ::  would otherwise let any un-banned ship spray grubs under invented
+  ::  sub-paths of a commentable site.
   ;<  ex=?  bind:m
     (peek-exists:fio (rf root (weld /page page.act) %code))
   ?.  ex  (pure:m ~)
+  ;<  on=?  bind:m  (comments-on page.act)
+  ?.  on  (pure:m ~)
   ::  and the store is BOUNDED, for the reason the shares inbox is bounded:
   ::  anyone may poke this road, each poke files a fresh time-salted grub,
   ::  and without a cap a hostile ship grows the pier without limit. 200
@@ -9549,6 +9876,12 @@
 ::  its /forum.sig, fire-and-forget as a refusal note is, at its base in
 ::  the peers record (+forum-note-send says why). A comet runs no
 ::  lattice to tell; the desktop reader finds its replies on its own.
+::
+::  The note holds the thread's title and a clip of the reply, so a ship
+::  is told only while it may read the board (+reply-tell-ok:ln): not
+::  once banned, and on a private board only while its read group holds
+::  it. The stored posts keep an author who was revoked, or who posted
+::  while the board was public, and that author hears no more.
 ++  forum-reply-tell
   |=  [now=@da src=@p brd=board:ft post=post-id:ft parent=(unit comment-id:ft) body=@t]
   =/  m  (fiber:fiber:nexus ,~)
@@ -9558,12 +9891,18 @@
   =/  title=@t  (post-title:ln brd post)
   =/  nom=@tas  name.info.brd
   ;<  known=(map @t json)  bind:m  read-peers
+  ;<  bans=banned:ls  bind:m  read-banned
+  ;<  readers=(set @p)  bind:m
+    ?:  public.info.brd  (pure:(fiber:fiber:nexus ,(set @p)) ~)
+    (forum-readers nom)
   |-  ^-  form:m
   ?~  who  (pure:m ~)
   ;<  ~  bind:m
     ?:  =(i.who our)
       (notify-add now (make:ln %reply now src our nom post title body))
     ?:  (is-comet:fr i.who)  (pure:m ~)
+    ?.  (reply-tell-ok:ln public.info.brd readers (is-banned:ls bans i.who) i.who)
+      (pure:m ~)
     =/  note=reply-note:ln  [%reply-1 nom post (clip:ln title) src (clip:ln body)]
     =/  req=load:remo:nexus
       :-  [/forum-note %& (known-base:lu known i.who) %'forum.sig']
@@ -9650,8 +9989,8 @@
   ^-  form:m
   ;<  sens=?  bind:m  (page-sensitive pax)
   ;<  mode=share-mode:le  bind:m  (read-share (weld /page pax))
-  ;<  own=(map @t @t)  bind:m  (read-own-grants pax)
-  (pure:m (taint-dest:ls sens !?=(%private mode) !=(~ own)))
+  ;<  shr=?  bind:m  (granted-via pax |)
+  (pure:m (taint-dest:ls sens !?=(%private mode) shr))
 ++  tainted-shared-msg
   ^-  @t
   'this key read sensitive content in the last 12 hours, and that page is published or shared with a ship, so it cannot write there until then'
@@ -10016,7 +10355,7 @@
   ^-  form:m
   ?.  =([/lattice %eval-action] p.sage)  (pure:m |)
   =/  act=eval-action:le  !<(eval-action:le q.sage)
-  ?.  ?=(?(%make %make-marked %make-by) -.act)  (pure:m |)
+  ?.  ?=(?(%make %make-marked %make-by %make-new %move-make) -.act)  (pure:m |)
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
   =/  w=(unit pub-wait:lp)  (~(get by pen) (spat pax.act))
   (pure:m &(?=(^ w) |(dirty.u.w (gte sent.u.w now))))
@@ -10535,6 +10874,22 @@
   =/  out=tape  (weld pre ?:(&(bnd pbnd) to from))
   %+  weld  out
   $(hay aft, bef ?~(out bef `(rear out)))
+::  +move-code: a page's source as it reads once the tree at `from` is at
+::  `to`. A [[wikilink]] into the moved tree follows it in every page. A
+::  path literal under the old root (+rewrite-root) follows only in code,
+::  a hoon page or a folder index. A content page's body is the writer's
+::  own text, where the same bytes are prose (`GET /api/users`,
+::  `cd /home/me`) and stay as written.
+++  move-code
+  |=  [code=@t from=path to=path]
+  ^-  @t
+  =/  cb=(unit @tas)  (content-builder code)
+  =/  prose=?  &(?=(^ cb) (~(has in content-builders) u.cb))
+  %-  crip
+  %^  rewrite-wikilinks:gfm
+      ?:(prose (trip code) (rewrite-root (trip code) (spud from) (spud to)))
+    (pax-str from)
+  (pax-str to)
 ::  +copy-tree: copy every PAGE under src (a [base rel] like [%page /mysite] or
 ::  [%template /site]) to dst, rewriting the source root path to the dest root in
 ::  each page's code. live=%.y -> dest is under /page and each page is MADE
@@ -10580,10 +10935,6 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   =/  sdir=path  (weld /page from)
-  =/  from-str=tape   (spud from)
-  =/  to-str=tape     (spud to)
-  =/  from-bare=tape  (pax-str from)
-  =/  to-bare=tape    (pax-str to)
   ;<  dv=view:nexus  bind:m  (peek:fio (rv up sdir) ~)
   ;<  lv=view:nexus  bind:m  (peek:fio (rv up (weld /links from)) ~)
   ?.  |(?=([%ball *] dv) ?=([%ball *] lv))  (pure:m ~)
@@ -10682,7 +11033,8 @@
       `[pax (sham (fils-code (ball-fils bl pax)))]
     ;<  ~  bind:m  (poke-eval [%del-from from to seen])
     ;<  ~  bind:m  (record-move from to)
-    ;<  ~  bind:m  (move-grants from `to)
+    ;<  ~  bind:m  (poke-eval [%acl-move-grants from `to |])
+    ;<  ~  bind:m  writer-drain
     (pure:m `count)
   =/  pf  (ball-fils bl i.rels)
   =/  code=@t  (fils-code pf)
@@ -10691,16 +11043,13 @@
   =/  own=(unit share-mode:le)  (fils-own-share pf)
   =/  dn=(unit @t)  (fils-dname pf)
   =/  dst=path  (weld to i.rels)
-  =/  newcode=@t
-    %-  crip
-    %^  rewrite-wikilinks:gfm
-        (rewrite-root (trip code) from-str to-str)
-      from-bare
-    to-bare
+  =/  newcode=@t  (move-code code from to)
   ::  a peer-written page stays marked where it lands (+make-page-as)
   ;<  pw=?  bind:m  (peer-written (weld from i.rels))
   =/  acts=(list eval-action:le)
-    :-  ?:(pw [%make-marked dst newcode] [%make dst newcode])
+    ::  unless a run of this move has copied this text there already
+    ::  (%move-make): the same move asked again runs beside the first
+    :-  [%move-make dst newcode pw from (sham code)]
     %+  weld
       ^-  (list eval-action:le)  ?~(dn ~ [%dname dst u.dn]~)
     %+  weld
@@ -10710,6 +11059,18 @@
     %+  turn  ~(tap by (fils-own pf))
     |=([g=@t md=@t] `eval-action:le`[%grant-own dst g md])
   $(todo acts, rels t.rels, count ?:(late count +(count)))
+::  +page-own-grubs: the grubs in a page's dir that are the page's alone:
+::  its source, its evaluator's state, its own share setting and grants,
+::  its form and render state. %del-page culls these, the source first.
+::  The rest is also a folder's, and the pages under the name take it
+::  from there: the display name, the sensitive mark, the comment, comet
+::  and form flags, the folder's share setting and grants, its index.
+++  page-own-grubs
+  ^-  (list @ta)
+  :~  %code  %data  %cmd  %deps  %err  %seen  %show  %writers  %moved
+      %share  %'share-via'  %'grant-via'  %'own-grants'
+      %'forms-cfg'  %'forms-use'  %'fodt.cache'  %'render.json'
+  ==
 ::  +carried-grubs: a page's or folder's own state that goes with it on a
 ::  move, by grub name and mark. The rest is carried by the move's own
 ::  actions (code, name, share, sensitive mark, grants, links) or remade
@@ -10930,12 +11291,7 @@
   |-  ^-  form:m
   ?~  late  (pure:m ~)
   =/  code=@t  (fils-code (ball-fils ball.dv i.late))
-  =/  newcode=@t
-    %-  crip
-    %^  rewrite-wikilinks:gfm
-        (rewrite-root (trip code) (spud from) (spud to))
-      (pax-str from)
-    (pax-str to)
+  =/  newcode=@t  (move-code code from to)
   =/  dst=path  (weld to i.late)
   ;<  pw=?  bind:m  (peer-written (weld from i.late))
   ;<  ~  bind:m  (ensure-dirs up /page (snip dst))
@@ -11590,7 +11946,7 @@
 ++  tree-jobs
   |=  act=eval-action:le
   ^-  ?
-  ?=(?(%share-tree %share-dir %del %del-from %pub-regrow %unpub) -.act)
+  ?=(?(%share-tree %share-dir %del %del-page %del-from %pub-regrow %unpub) -.act)
 ::  +job-resume: as the writer starts, run again the whole-tree action a
 ::  reload cut short. Each such action (%share-tree, %del, %pub-regrow,
 ::  %unpub) is idempotent, so finishing it is running it. One the writer
@@ -12100,11 +12456,11 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
-  ?.  ?=([%ball *] sn)  (pure:m (pairs:enjs:format ~[['nodes' a+~]]))
+  ?.  ?=([%ball *] sn)  (pure:m (pairs:enjs:format ~[['nodes' a+~] ['page_only_del' b+&]]))
   ;<  [b=ball:tarball w=wave:nexus]  bind:m  (with-links ball.sn wave.sn)
   =/  nodes=(list [pax=path j=json])  (tree-walk b w ~)
   =/  srt  (sort nodes |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
-  (pure:m (pairs:enjs:format ~[['nodes' a+(turn srt |=([* j=json] j))]]))
+  (pure:m (pairs:enjs:format ~[['nodes' a+(turn srt |=([* j=json] j))] ['page_only_del' b+&]]))
 ::  +with-links: the /page ball and wave with each link (/links) put back
 ::  at its page path, for the owner's own listings: tree and dump. Every
 ::  walk others read (publishing, search, indexes, the reader) takes /page
@@ -12429,12 +12785,12 @@
   =/  tok=json  s+?.(?=([%n *] rev) '0' p.rev)
   ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
   ?.  ?=([%ball *] sn)
-    (pure:m (pairs:enjs:format ~[['nodes' a+~] ['rev' rev] ['since' tok]]))
+    (pure:m (pairs:enjs:format ~[['nodes' a+~] ['rev' rev] ['since' tok] ['page_only_del' b+&]]))
   ;<  [b=ball:tarball w=wave:nexus]  bind:m  (with-links ball.sn wave.sn)
   =/  nodes=(list [pax=path j=json])  (dump-walk b w ~ since)
   =/  srt  (sort nodes |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
   =/  js=(list json)  (turn srt |=([* j=json] j))
-  (pure:m (pairs:enjs:format ~[['nodes' a+js] ['rev' rev] ['since' tok]]))
+  (pure:m (pairs:enjs:format ~[['nodes' a+js] ['rev' rev] ['since' tok] ['page_only_del' b+&]]))
 ::  +since-arg: a ?since= token (the digits of a @da) as the date it names.
 ::  Anything else is no token, so a garbled one costs a full dump.
 ++  since-arg
@@ -12570,6 +12926,36 @@
   =/  rest  $(segs t.segs, i +(i))
   ?:  =('' i.segs)  rest
   [[%dname (scag i pax) i.segs] rest]
+::  +key-dname-args: a keyed save's args with only the display names the
+::  key may write. Each folder ?dnames= would name must pass what a save
+::  there passes (+dname-ok:ky): the route checked the leaf alone, and
+::  +dname-acts-of writes a name on every ancestor. A refused entry is
+::  blanked, which +dname-acts-of skips. The leaf's own name (the last
+::  entry, and ?dname=) is only held to the size cap.
+++  key-dname-args
+  |=  [k=key-row:ky now=@da args=(map @t @t) pax=path]
+  =/  m  (fiber:fiber:nexus ,(map @t @t))
+  ^-  form:m
+  =?  args  (gth (met 3 (~(gut by args) 'dname' '')) dname-cap:ky)
+    (~(del by args) 'dname')
+  =/  ds=(unit @t)  (~(get by args) 'dnames')
+  ?~  ds  (pure:m args)
+  =/  segs=(list @t)  (split-fas u.ds)
+  =/  n=@ud  (lent pax)
+  =/  i=@ud  1
+  =|  out=(list @t)
+  |-  ^-  form:m
+  ?:  |(?=(~ segs) (gth i n))
+    (pure:m (~(put by args) 'dnames' (rap 3 (join '/' (flop out)))))
+  ?:  =('' i.segs)  $(segs t.segs, i +(i), out ['' out])
+  ?:  =(i n)
+    $(segs t.segs, i +(i), out [?:((gth (met 3 i.segs) dname-cap:ky) '' i.segs) out])
+  =/  at=path  (scag i pax)
+  ;<  sens=?  bind:m  (page-sensitive at)
+  ;<  dest=?  bind:m
+    ?.  (tainted:ky k now)  (pure:(fiber:fiber:nexus ,?) &)
+    (taint-dest-at at)
+  $(segs t.segs, i +(i), out [?:((dname-ok:ky k now at i.segs sens dest) i.segs '') out])
 ::  +poke-dnames: apply +dname-acts-of, one writer poke each, in order.
 ++  poke-dnames
   |=  [args=(map @t @t) pax=path]
@@ -12723,7 +13109,17 @@
     ?:  cx  (pure:(fiber:fiber:nexus ,(unit path)) ~)
     (link-above (pax-of name))
   ?^  la  (pure:m [409 (link-above-msg u.la)])
-  ;<  ~  bind:m  (poke-eval [%make (pax-of name) src])
+  ?.  new
+    ;<  ~  bind:m  (poke-eval [%make (pax-of name) src])
+    (pure:m [200 ''])
+  ::  a create is checked again where it lands (%make-new), since an
+  ::  HTTP create of the same name can pass the peek above beside this
+  ::  one. So wait for the writer and read the page back: a page that
+  ::  holds another body was made first.
+  ;<  ~  bind:m  (poke-eval [%make-new (pax-of name) src ''])
+  ;<  ~  bind:m  writer-drain
+  ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of name))
+  ?.  =(src.ph `src)  (pure:m [409 'page exists'])
   (pure:m [200 ''])
 ::  +fs-mkdir / +fs-del: folder create / page-or-folder delete.
 ++  fs-mkdir
@@ -12736,13 +13132,76 @@
   ;<  ~  bind:m  (poke-eval [%mkdir (pax-of name)])
   (pure:m [200 ''])
 ++  fs-del
-  |=  name=@t
+  |=  [name=@t tree=?]
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
   ?.  (valid-name name)  (pure:m [400 'bad name'])
-  ;<  ~  bind:m  (poke-eval [%del (pax-of name)])
-  ;<  ~  bind:m  (move-grants (pax-of name) ~)
+  ;<  no=(unit [code=@ud msg=@t])  bind:m  (page-del-run (pax-of name) tree)
+  ?^  no  (pure:m u.no)
   (pure:m [200 ''])
+::  +page-del-run: POST /page-del and the lick %page-del. A folder goes
+::  with everything under it. A page goes alone (%del-page): the pages,
+::  folders and links under it stay, and its name is left a folder.
+::  `tree` takes those too, for a caller that has told its user so.
+::  The answer is ~, or why nothing was deleted.
+::
+::  A delete without `tree` of a name whose page was deleted on its own,
+::  with the pages it left still under it (+page-gone-kept), is that
+::  same delete again: a retry, a replayed offline queue, a second
+::  click. It is refused, so it never turns into the folder's delete.
+++  page-del-run
+  |=  [pax=path tree=?]
+  =/  m  (fiber:fiber:nexus ,(unit [code=@ud msg=@t]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  kept=(unit @ud)  bind:m
+    =/  n  (fiber:fiber:nexus ,(unit @ud))
+    ?:  tree  (pure:n ~)
+    ;<  ex=?  bind:n  (peek-exists:fio (rv up (weld /page pax)))
+    ?.  ex  (pure:n ~)
+    ;<  dv=view:nexus  bind:n  (peek:fio (rv up (weld /page pax)) ~)
+    ?.  ?=([%ball *] dv)  (pure:n ~)
+    ;<  lex=?  bind:n  (peek-exists:fio (rv up (weld /links pax)))
+    (pure:n (page-gone-kept ball.dv lex))
+  ?^  kept
+    %-  pure:m
+    :+  ~  409
+    %-  crip
+    ;:  weld  (slag 1 (spud pax))
+      " is a folder: its page was deleted on its own, and the "
+      (a-co:co u.kept)  ?:(=(1 u.kept) " page" " pages")
+      " under it stay. To delete the folder and all of them, send tree=1 with the delete"
+    ==
+  ;<  ~  bind:m  (poke-eval ?:(tree [%del pax] [%del-page pax]))
+  ::  a name still there is a page that left what was under it: the
+  ::  grants on that page's own grubs go, and the rest stay
+  ;<  left=?  bind:m  (peek-exists:fio (rv up (weld /page pax)))
+  ;<  ~  bind:m  (poke-eval [%acl-move-grants pax ~ left])
+  ;<  ~  bind:m  writer-drain
+  (pure:m ~)
+::  +page-gone-kept: how many pages are under a name whose page was
+::  deleted on its own (`page-gone`, written by %del-page), while that
+::  name holds no page and still has pages or links under it. ~ else.
+++  page-gone-kept
+  |=  [bl=ball:tarball lex=?]
+  ^-  (unit @ud)
+  =/  fils  ?~(fil.bl ~ contents.u.fil.bl)
+  ?:  (~(has by fils) %code)  ~
+  ?.  (~(has by fils) %'page-gone')  ~
+  =/  n=@ud  (lent (skim (collect-tree bl ~) |=([p=path page=?] page)))
+  ?:  &(=(0 n) !lex ?=(~ dir.bl))  ~
+  `n
+::  +arg-flag: a yes-or-no query flag. Absent, 0 or false is no, 1 or
+::  true is yes, and ~ is any other value: guessing what it meant could
+::  delete what the caller wanted kept.
+++  arg-flag
+  |=  [args=(map @t @t) k=@t]
+  ^-  (unit ?)
+  =/  v=(unit @t)  (~(get by args) k)
+  ?~  v  `|
+  ?:  |(=('1' u.v) =('true' u.v))  `&
+  ?:  |(=('0' u.v) =('false' u.v))  `|
+  ~
 ::  +fs-move: move/rename a page or a folder subtree (POST /page-move + lick
 ::  %page-move), answering how many pages moved. Display names are the HTTP
 ::  route's own (?dname= / ?dnames=).
@@ -12806,7 +13265,8 @@
   ?~  todo  (pure:m (flop done))
   ;<  ex=?  bind:m  (peek-exists:fio (rv up (weld /page i.todo)))
   ?:  ex  (pure:m (flop done))
-  ;<  ~  bind:m  (move-grants i.todo ~)
+  ;<  ~  bind:m  (poke-eval [%acl-move-grants i.todo ~ |])
+  ;<  ~  bind:m  writer-drain
   $(todo t.todo, done [i.todo done])
 ::  +prune-husks-in: %prune-husks, in the writer: +prune-husks's check
 ::  and delete of each folder, as one step
@@ -12897,7 +13357,9 @@
       %page-del
     =/  name=(unit @t)  (~(get by q) 'name')
     ?~  name  (pure:m [400 'missing name'])
-    (fs-del u.name)
+    =/  tree=(unit ?)  (arg-flag q 'tree')
+    ?~  tree  (pure:m [400 'tree: 1 or 0'])
+    (fs-del u.name u.tree)
       %beacon-rev
     ;<  t=@t  bind:m  beacon-token
     (pure:m [200 t])
@@ -14006,7 +14468,7 @@
       |-  ^-  form:m
       ?~  fg  (pure:m ~)
       ;<  *  bind:m
-        (share-folder-grant-in g.i.fg (grant-who g.i.fg) md.i.fg rel.i.recs |)
+        (share-folder-grant-do root g.i.fg (grant-who g.i.fg) md.i.fg rel.i.recs |)
       $(fg t.fg)
     $(recs t.recs)
   ;<  *  bind:m  (over-as-soft:io flag [[/ %json] b+&] [/ %json])
@@ -14026,11 +14488,126 @@
   ?:  (grp-name:ls nom)
     $(kids t.kids, acc [[(snoc pax nom) kid] acc])
   $(kids t.kids, acc (weld acc (all-groups (snoc pax nom) kid)))
+::  +page-folders: the folders of our page tree among the absolute grant
+::  paths `ps`, each by its path under /page: a dir below /page that has
+::  no code grub, or one that group `g` holds as a folder (its note names
+::  `g`) with a page made at its own name since. That path is the folder's
+::  line in the group list, and the page there is named by its code path
+::  (+share-groups-json). Not /page itself, which is no one folder.
+++  page-folders
+  |=  [g=@t ps=(list path)]
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sb=path  bind:m  self-base
+  =/  pre=path  (weld sb /page)
+  =|  out=(list path)
+  |-  ^-  form:m
+  ?~  ps  (pure:m (flop out))
+  =/  rel=path  (slag (lent pre) i.ps)
+  ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))  $(ps t.ps)
+  ;<  dx=?  bind:m  (peek-exists:fio (rv up (weld /page rel)))
+  ?.  dx  $(ps t.ps)
+  ;<  cx=?  bind:m  (peek-exists:fio (rf up (weld /page rel) %code))
+  ;<  sg=(map @t @t)  bind:m
+    ?.  cx  (pure:(fiber:fiber:nexus ,(map @t @t)) ~)
+    (read-share-grants rel)
+  ?:  &(cx !(~(has by sg) g))  $(ps t.ps)
+  $(ps t.ps, out [rel out])
+::  +folders-noted: the folders group `g` holds whole: each folder whose
+::  index its peek roads `rs` list and whose note names `g`
+++  folders-noted
+  |=  [sb=path g=@t rs=(set road:tarball)]
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  =/  fs=(list path)  (folders-granted sb rs)
+  =|  out=(list path)
+  |-  ^-  form:m
+  ?~  fs  (pure:m out)
+  ?~  i.fs  $(fs t.fs)
+  ;<  sg=(map @t @t)  bind:m  (read-share-grants i.fs)
+  $(fs t.fs, out ?.((~(has by sg) g) out [i.fs out]))
+::  +page-grant-bad: each of the absolute paths `ps` a group may not be
+::  granted, with why (none, ~). Each of these would be stored as a road on a dir,
+::  and a dir road reaches every grub under it: the sensitive pages and
+::  every page's owner-only grubs (share, sensitive), which a make road
+::  lets a member write, and so publish a page. A weir has no deny to
+::  take them back out. So: our whole page tree or a dir above it, and a
+::  path in it that names nothing (no page or folder there, and no
+::  page's code grub). A folder in it is shared as a folder share
+::  (+share-folder-grant-in), and a page by its code grub (+page-roads),
+::  once it is there.
+++  page-grant-bad
+  |=  ps=(list path)
+  =/  m  (fiber:fiber:nexus ,(list [p=path why=@t]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sb=path  bind:m  self-base
+  =/  pre=path  (weld sb /page)
+  =|  out=(list [p=path why=@t])
+  |-  ^-  form:m
+  ?~  ps  (pure:m (flop out))
+  ?:  =(i.ps (scag (lent i.ps) pre))
+    =/  why=@t
+      %-  crip
+      ;:  weld  "a grant on "  (spud i.ps)
+        " would reach every page, the sensitive ones too. Share a folder or a page in it"
+      ==
+    $(ps t.ps, out [[i.ps why] out])
+  =/  rel=path  (slag (lent pre) i.ps)
+  ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))  $(ps t.ps)
+  ;<  dx=?  bind:m  (peek-exists:fio (rv up (weld /page rel)))
+  ?:  dx  $(ps t.ps)
+  =/  cp=(unit path)  (code-page:ls rel)
+  ;<  cx=?  bind:m
+    ?~  cp  (pure:(fiber:fiber:nexus ,?) |)
+    (peek-exists:fio (rf up (weld /page u.cp) %code))
+  ?:  cx  $(ps t.ps)
+  =/  why=@t
+    (crip :(weld "nothing at " (slag 1 (spud rel)) " to share yet: make the folder first, then share it"))
+  $(ps t.ps, out [[i.ps why] out])
+::  +road-paths: the paths a group's roads list under, as a group list
+::  shows them: a dir road by its path (`dirs` no), a file road by its
+::  path and by the dir it is in (a page, listed by its dir) (`dirs` yes)
+++  road-paths
+  |=  [rs=(set road:tarball) files=?]
+  ^-  (set path)
+  %-  ~(gas in *(set path))
+  %-  zing
+  %+  turn  ~(tap in rs)
+  |=  r=road:tarball
+  ^-  (list path)
+  ?+  r  ~
+    [%& %| *]  ?:(files ~ ~[p.p.r])
+    [%& %& *]  ?.(files ~ ~[path.p.p.r (snoc path.p.p.r name.p.p.r)])
+  ==
+::  +index-lines: the lines among `ps` that are a group list's index
+::  lines (+index-line:ls). A page may be named dir-index, and its line
+::  is then the same text as its folder's index line. It is the index
+::  line when the group holds that folder (`noted`, +folders-noted),
+::  and the page's own line when it does not.
+++  index-lines
+  |=  [pre=path noted=(list path) ps=(list path)]
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =|  out=(list path)
+  |-  ^-  form:m
+  ?~  ps  (pure:m out)
+  =/  fo=(unit path)  (index-line:ls pre i.ps)
+  ?~  fo  $(ps t.ps)
+  ;<  pg=?  bind:m
+    (peek-exists:fio (rf up (weld /page (slag (lent pre) i.ps)) %code))
+  ?.  |(!pg ?=(^ (find ~[u.fo] noted)))  $(ps t.ps)
+  $(ps t.ps, out [i.ps out])
 ::  +page-roads: grant paths as roads. A page is granted by a file road on
 ::  its code grub, which is all a grantee opens (+share-file), so the grant
 ::  reaches neither the page's owner-only grubs (share, show, forms, the
-::  render cache) nor pages nested under it. Anything else, a folder, is
-::  a dir road: granting a folder is granting what is in it.
+::  render cache) nor pages nested under it. Anything else is a dir road.
+::  A folder of our page tree must not be stored as one: a group save
+::  shares it as a folder share instead (+handle-share-group-save), and
+::  one stored before that is made over on writer start
+::  (+narrow-folder-grants-in).
 ++  page-roads
   |=  ps=(list path)
   =/  m  (fiber:fiber:nexus ,(set road:tarball))
@@ -14062,10 +14639,11 @@
 ::  +narrow-page-grants: a page grant used to be a dir road on the page's
 ::  dir, which also reached its owner-only grubs and the pages nested under
 ::  it. On every writer start each dir road on one of our pages becomes the
-::  file road on its code grub (+page-roads), in every group. It only ever
-::  narrows: a folder's road stays, and so does every other road. Soft, so
-::  an install that refused the usergroup roads keeps its grants as they
-::  were.
+::  file road on its code grub (+page-roads), in every group, and each dir
+::  road on a folder of our page tree becomes the folder share it stands
+::  for (+narrow-folder-grants-in). It only ever narrows: every other road
+::  stays. Soft, so an install that refused the usergroup roads keeps its
+::  grants as they were.
 ::
 ::  The ships whose reads change hear of it (+share-tell-do, called here
 ::  and not through the writer's %share-tell, since this runs in the
@@ -14073,10 +14651,12 @@
 ::  was told of a folder that is not one: narrowed, it is told that
 ::  folder is gone and the page is shared.
 ++  narrow-page-grants
+  |=  root=@ud
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  h0=holds:ls  bind:m  holds-now
   ;<  ~  bind:m  narrow-page-grants-in
+  ;<  ~  bind:m  (narrow-folder-grants-in root)
   ;<  h1=holds:ls  bind:m  holds-now
   =/  d  (holds-diff:ls h0 h1)
   ?:  &(?=(~ add.d) ?=(~ del.d))  (pure:m ~)
@@ -14112,6 +14692,89 @@
   ;<  *  bind:m
     (ug-over [%& %& (weld ub rel.i.gs) %'how.weir'] [[/ %weir] nw])
   $(gs t.gs)
+::  +narrow-folder-grants-in: a folder granted from the group panel used
+::  to be a dir road on the folder. That road reaches the sensitive pages
+::  under it and every page's owner-only grubs, and as a make road lets a
+::  member write them. A weir has no deny, so each such road, in every
+::  group, becomes what /share-file stores for a folder (+folder-roads:ls:
+::  each page's code grub, less the sensitive ones, and each index), with
+::  the folder's note, so a page made in it later is granted (+grant-new).
+::  Run after +narrow-page-grants-in, so a dir road left below /page is a
+::  folder's or names nothing yet. One that names nothing stays, as a
+::  page's does, and is made over on the start after something is there.
+::  The weir goes first, in one write. A start cut short after it leaves
+::  index roads with no note, which +fix-folder-grants notes.
+++  narrow-folder-grants-in
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  ;<  ub=path  bind:m  ug-dir
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ub] ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  =/  pre=path  (weld sb /page)
+  =/  n=@ud  (lent pre)
+  =/  gs=(list [rel=path gb=ball:tarball])  (all-groups / ball.u.vw)
+  |-  ^-  form:m
+  ?~  gs  (pure:m ~)
+  =/  nm=tape  ?~(rel.i.gs "" (trip (rear rel.i.gs)))
+  =/  gname=@t  (crip (scag (sub (max 4 (lent nm)) 4) nm))
+  =/  fils  ?~(fil.gb.i.gs ~ contents.u.fil.gb.i.gs)
+  =/  hw  (~(get by fils) %'how.weir')
+  =/  w=(unit weir:nexus)
+    ?~  hw  ~
+    (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hw))))
+  ?~  w  $(gs t.gs)
+  ::  the dir roads below our /page, and whether each is a make road
+  =/  ds=(list [d=path ed=?])
+    %+  murn  ~(tap in (~(uni in peek.u.w) make.u.w))
+    |=  r=road:tarball
+    ^-  (unit [path ?])
+    ?.  ?=([%& %| *] r)  ~
+    ?.  &((gth (lent p.p.r) n) =(pre (scag n p.p.r)))  ~
+    `[p.p.r (~(has in make.u.w) r)]
+  ?~  ds  $(gs t.gs)
+  ;<  ~  bind:m  (narrow-folder-group root (weld ub rel.i.gs) gname n u.w ds)
+  $(gs t.gs)
+::  +narrow-folder-group: +narrow-folder-grants-in for one group, the
+::  dir roads `ds` of its weir `w`. `n` is how long our /page path is.
+++  narrow-folder-group
+  |=  [root=@ud gdir=path gname=@t n=@ud w=weir:nexus ds=(list [d=path ed=?])]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  nw=weir:nexus  w
+  =|  did=(list [f=path ed=?])
+  |-  ^-  form:m
+  ?^  ds
+    =/  frel=path  (slag n d.i.ds)
+    ;<  fv=view:nexus  bind:m  (peek:fio (rv up (weld /page frel)) ~)
+    ::  nothing there yet, or a page: the road stays
+    ?.  ?=([%ball *] fv)  $(ds t.ds)
+    ?:  (~(has by (ball-fils ball.fv ~)) %code)  $(ds t.ds)
+    ;<  fs=(set path)  bind:m  (tree-sens frel ball.fv)
+    =/  all=(list [p=path page=?])  (collect-tree ball.fv ~)
+    =/  rs  (folder-roads:ls d.i.ds all fs ed.i.ds)
+    =/  dr=road:tarball  [%& %| d.i.ds]
+    %=  $
+      ds   t.ds
+      did  [[frel ed.i.ds] did]
+      nw   :+  (~(uni in (~(del in make.nw) dr)) ;;((set road:tarball) make.rs))
+             poke.nw
+           (~(uni in (~(del in peek.nw) dr)) ;;((set road:tarball) peek.rs))
+    ==
+  ?:  =(nw w)  (pure:m ~)
+  ;<  ok=?  bind:m  (ug-over [%& %& gdir %'how.weir'] [[/ %weir] nw])
+  ?.  ok  (pure:m ~)
+  |-  ^-  form:m
+  ?~  did  (pure:m ~)
+  ::  at the road's mode, or the folder's own note when that is wider
+  ;<  sg=(map @t @t)  bind:m  (read-share-grants f.i.did)
+  =/  md=@t  ?:(|(ed.i.did =(`'edit' (~(get by sg) gname))) 'edit' 'read')
+  %-  (say 2 ~[leaf+"lattice: {(trip gname)} held a road on the whole folder {(spud f.i.did)}, now its pages and indexes"])
+  ;<  ~  bind:m  (folder-grant-do f.i.did gname md)
+  ;<  ~  bind:m  (write-dir-index root f.i.did)
+  $(did t.did)
 ::  +fix-folder-grants: a folder shared with a ship is two writes, the
 ::  group's weir (+ug-merge) and the folder's note (%folder-grant). A
 ::  crash or reload between them leaves roads no note covers, and an
@@ -14353,6 +15016,13 @@
 ::  or delete stands.
 ++  move-grants
   |=  [from=path to=(unit path)]
+  (move-grants-in from to |)
+::  +move-grants-in: +move-grants, which with `own` takes only the roads
+::  on the grubs of the page at `from` itself. A page deleted from over
+::  the pages under it leaves its folder, so a road on that folder, or
+::  on anything in it, stays.
+++  move-grants-in
+  |=  [from=path to=(unit path) own=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  sb=path  bind:m  self-base
@@ -14360,11 +15030,15 @@
   =/  n=@ud  (lent old)
   ::  dir roads and file roads alike (a page grant is a file road on its
   ::  code grub, +share-file)
+  ::  with `own`, the page's own grubs only (+page-own-grubs): its dir is
+  ::  a folder now, and the roads on the folder's grubs (its index) stay
   =/  under
     |=  r=road:tarball
     ?+  r  |
-      [%& %| *]  =(old (scag n p.p.r))
-      [%& %& *]  =(old (scag n path.p.p.r))
+      [%& %| *]  &(!own =(old (scag n p.p.r)))
+        [%& %& *]
+      ?.  own  =(old (scag n path.p.p.r))
+      &(=(old path.p.p.r) (lien page-own-grubs |=(g=@ta =(g name.p.p.r))))
     ==
   =/  re
     |=  rs=(set road:tarball)
@@ -14432,6 +15106,7 @@
   ::  so it refuses to change a nested one, which is the safe failure.
   =/  names=(list path)  (sort (turn (all-groups / ball.dn) head) aor)
   ;<  cns=(map @t (set path))  bind:m  read-code-named
+  ;<  sb=path  bind:m  self-base
   =|  out=(list json)
   |-  ^-  form:m
   ?~  names  (pure:m a+(flop out))
@@ -14445,20 +15120,54 @@
       (mole |.((sort ~(tap in ;;((set @p) (sang-noun:tarball sang.wv))) lth)))
     ~
   ;<  w=weir:nexus  bind:m  (ug-read-weir gdir)
-  =/  cn=(set path)  (~(gut by cns) base ~)
+  ::  a folder shared with the group whole is a line of its own, by its
+  ::  path, as a folder's road was: the line a save leaves out to unshare
+  ::  it (+folder-lines). Its index road is then no rule the list hides:
+  ::  it is listed too, as `<folder>/dir-index`, and a save that still
+  ::  holds it was read from a list that showed the folder (+folder-out:ls).
+  ;<  fo=[pk=(list @t) mk=(list @t)]  bind:m  (folder-lines sb base peek.w)
+  ::  a page at a shared folder's own name is listed by its code path,
+  ::  as the folder's line is by the plain one
+  =/  cn=(set path)
+    (~(uni in (~(gut by cns) base ~)) (~(gas in *(set path)) (turn pk.fo stab)))
   =/  pk  (ug-dirfold-paths cn peek.w)
   =/  mk  (ug-dirfold-paths cn make.w)
   =/  po  (ug-dirfold-paths ~ poke.w)
+  =/  ix=(list @t)  (turn pk.fo |=(t=@t (crip (weld (trip t) "/dir-index"))))
+  =/  less  |=([a=(list @t) b=(list @t)] (skip a |=(t=@t ?=(^ (find ~[t] b)))))
   =/  gj=json
     %-  pairs:enjs:format
     :~  ['name' s+base]
+        ['v' (numb:enjs:format 2)]
         ['ships' a+(turn ships |=(s=@p s+(scot %p s)))]
-        ['peek' a+(turn ps.pk |=(t=@t s+t))]
-        ['make' a+(turn ps.mk |=(t=@t s+t))]
+        ['peek' a+(turn :(weld (less pk.fo ps.pk) ix ps.pk) |=(t=@t s+t))]
+        ['make' a+(turn (weld (less mk.fo ps.mk) ps.mk) |=(t=@t s+t))]
         ['poke' a+(turn ps.po |=(t=@t s+t))]
-        ['opaque' (numb:enjs:format :(add opaque.pk opaque.mk opaque.po))]
+        :-  'opaque'
+        %-  numb:enjs:format
+        (sub :(add opaque.pk opaque.mk opaque.po) (min opaque.pk (lent pk.fo)))
     ==
   $(names t.names, out [gj out])
+::  +folder-lines: the folders a group holds whole, as the group list
+::  names them: each folder below our /page whose index road the group's
+::  peek roads `rs` hold and whose note names the group `g` (the folder
+::  itself, not the folders under it, which have an index road and no
+::  note). In `pk` by its absolute path, and in `mk` too when the note
+::  says edit.
+++  folder-lines
+  |=  [sb=path g=@t rs=(set road:tarball)]
+  =/  m  (fiber:fiber:nexus ,[pk=(list @t) mk=(list @t)])
+  ^-  form:m
+  =/  fs=(list path)  (folders-granted sb rs)
+  =|  out=[pk=(list @t) mk=(list @t)]
+  |-  ^-  form:m
+  ?~  fs  (pure:m out)
+  ?~  i.fs  $(fs t.fs)
+  ;<  sg=(map @t @t)  bind:m  (read-share-grants i.fs)
+  =/  md=(unit @t)  (~(get by sg) g)
+  ?~  md  $(fs t.fs)
+  =/  t=@t  (spat :(weld sb /page i.fs))
+  $(fs t.fs, out [[t pk.out] ?:(=('edit' u.md) [t mk.out] mk.out)])
 ::  +apply-share-notice: one inbox poke. Everything about it is defensive:
 ::  the payload is soft-cast (any ship can send anything), the path must be
 ::  under /apps, the mode must be one of ours, and %del from a foreign ship is
@@ -15113,7 +15822,7 @@
     ;<  dropped=(unit @ud)  bind:m  (drop-ban-groups (silt ~[who]))
     ?~  dropped  (pure:m ~)
     ;<  h1=holds:ls  bind:m  holds-now
-    ;<  ~  bind:m  (tell-holds h0 h1)
+    ;<  ~  bind:m  (tell-holds-do h0 h1)
     (pure:m `(add hit u.dropped))
   =/  gdir=path  (weld ub i.gs)
   ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
@@ -15135,6 +15844,7 @@
   |=  bans=banned:ls
   =/  m  (fiber:fiber:nexus ,(unit @ud))
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ;<  ub=path  bind:m  ug-dir
   ;<  dn=view:nexus  bind:m  (peek:fio [%& %| ub] ~)
   ?.  ?=([%ball *] dn)  (pure:m `0)
@@ -15161,7 +15871,7 @@
     =/  n  (fiber:fiber:nexus ,~)
     |-  ^-  form:n
     ?~  fs  (pure:n ~)
-    ;<  ~  bind:n  (poke-eval [%folder-ungrant i.fs i.gs])
+    ;<  ~  bind:n  (folder-ungrant-do up i.fs i.gs)
     $(fs t.fs)
   $(gs t.gs, hit +(hit))
 ::  +ban-road: where the banlist lives.
@@ -18178,6 +18888,9 @@
   ^-  form:m
   ?:  &(?=(^ key) !(key-sees-dir u.key dir))
     (send-err eyre-id 403 'outside this key\'s page scope')
+  ;<  dps=?  bind:m  (page-sensitive dir)
+  ?:  &(dps ?=(^ key) !sensitive.scope.u.key)
+    (send-err eyre-id 404 'not found')
   ;<  up=@ud  bind:m  nexus-up
   ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page dir)) ~)
   ?.  ?=([%ball *] dv)  (send-err eyre-id 404 'not found')
@@ -18186,8 +18899,10 @@
       (skim (collect-tree ball.dv ~) |=([p=path *] =(1 (lent p))))
     |=([a=[pax=path page=?] b=[pax=path page=?]] (aor (spat pax.a) (spat pax.b)))
   =|  out=(list json)
+  =/  saw=?  dps
   |-  ^-  form:m
   ?~  kids
+    ;<  ~  bind:m  (taint-if key &(saw ?=(^ key) sensitive.scope.u.key))
     %+  send-json  eyre-id
     %-  pairs:enjs:format
     %+  weld  hed
@@ -18206,11 +18921,13 @@
     ==
   ?.  page.i.kids
     ?:  &(?=(^ key) !(key-sees-dir u.key full))  $(kids t.kids)
-    $(kids t.kids, out [(row |) out])
+    ;<  fps=?  bind:m  (page-sensitive full)
+    ?:  &(fps ?=(^ key) !sensitive.scope.u.key)  $(kids t.kids)
+    $(kids t.kids, out [(row |) out], saw |(saw fps))
   ?:  &(?=(^ key) !(may-path:ky u.key %local full %read))  $(kids t.kids)
   ;<  ps=?  bind:m  (page-sensitive full)
   ?:  &(ps ?=(^ key) !sensitive.scope.u.key)  $(kids t.kids)
-  $(kids t.kids, out [(row &) out])
+  $(kids t.kids, out [(row &) out], saw |(saw ps))
 ::  +key-own-read: may a key read our own page at `rel` through a web
 ::  route? The web scope reaches other ships only. Our pages take the
 ::  pages scope, by its paths and sensitive clearance (page-source's
@@ -21855,10 +22572,10 @@
   ;<  ~  bind:m
     (put-file (rf up (weld /page (weld pax d)) %'dir-index') [/ %noun] (titles-cord:ls rows))
   $(dirs t.dirs, done +(done))
-::  +dir-index-pokes: a %dir-index for each folder (no code grub) among
-::  the absolute paths `ps` of a grant, under `pre` (our /page)
-++  dir-index-pokes
-  |=  [pre=path ps=(list path)]
+::  +dir-index-do: write dir-index for each folder (no code grub) among the
+::  absolute paths `ps` of a grant, under `pre` (our /page). Writer-only.
+++  dir-index-do
+  |=  [root=@ud pre=path ps=(list path)]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -21868,45 +22585,50 @@
   ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))  $(ps t.ps)
   ;<  dx=?  bind:m  (peek-exists:fio (rv up (weld /page rel)))
   ;<  cx=?  bind:m  (peek-exists:fio (rf up (weld /page rel) %code))
-  ;<  ~  bind:m  ?:(|(!dx cx) (pure:m ~) (poke-eval [%dir-index rel]))
+  ;<  ~  bind:m  ?:(|(!dx cx) (pure:m ~) (write-dir-index root rel))
   $(ps t.ps)
-::  +share-folder-with: /share-file on a folder. The ship gets what it would
-::  get from a share of each page in it (its code grub, for read or edit),
-::  and the folder's index and each subfolder's (+write-dir-index), read
-::  only. The folder notes the grant (%folder-grant), so a page made or
-::  moved in later is granted too (+grant-new), and one moved out loses it
-::  (+revoke-folder-grants). The ship hears of the folder by one share
-::  notice (%dir), sent by the writer (+tell-holds), so `notified` is |:
-::  nothing waits on an ack here.
+::  +share-folder-with: /share-file on a folder. Routed through /main.sig
+::  via +share-folder-grant so usergroup writes never race bans or saves.
 ++  share-folder-with
   |=  [eyre-id=@ta shp=@p mode=@t pax=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  ok=?  bind:m  (share-folder-grant shp mode pax)
-  ?.  ok  (ug-refused eyre-id)
+  ;<  st=?(%ok %banned %refused)  bind:m  (share-folder-grant shp mode pax)
+  ?:  ?=(%banned st)  (send-err eyre-id 403 'that ship is banned, unban it first')
+  ?.  ?=(%ok st)  (ug-refused eyre-id)
   %+  send-json  eyre-id
   (pairs:enjs:format ~[['ok' b+&] ['notified' b+|] ['folder' b+&]])
-::  +share-folder-grant: +share-folder-with's grant and notice, | when
-::  lattice may not write usergroups. An approved edit ask on a folder
-::  (/access-answer) grants through here too.
+::  +share-folder-grant: serialized folder grant through /main.sig. An
+::  approved edit ask on a folder (/access-answer) grants through here too.
 ++  share-folder-grant
   |=  [shp=@p mode=@t pax=path]
-  (share-folder-grant-in (crip (slag 1 (scow %p shp))) (silt ~[shp]) mode pax &)
-::  +share-folder-grant-in: +share-folder-grant for group `gname` with
-::  members `who`. `tell` is whether the ships that gain or lose a page
-::  hear of it: +carry-groups makes old shares again and tells no one.
-++  share-folder-grant-in
-  |=  [gname=@t who=(set @p) mode=@t pax=path tell=?]
+  =/  m  (fiber:fiber:nexus ,?(%ok %banned %refused))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  rid=@ta  bind:m  acl-rid
+  =/  gname=@t  (crip (slag 1 (scow %p shp)))
+  ;<  ~  bind:m  (poke-eval [%acl-share-folder rid gname (silt ~[shp]) mode pax &])
+  ;<  ~  bind:m  writer-drain
+  ;<  raw=(unit *)  bind:m  (acl-res-get up rid)
+  =/  res=(unit $%([%ok ~] [%banned ~] [%refused ~]))
+    ?~  raw  ~
+    (mole |.(;;($%([%ok ~] [%banned ~] [%refused ~]) u.raw)))
+  ?~  res  (pure:m %refused)
+  (pure:m -.u.res)
+::  +share-folder-grant-do: writer-only body of a folder share for group
+::  `gname` with members `who`. Runs inside /main.sig with no self-pokes.
+++  share-folder-grant-do
+  |=  [root=@ud gname=@t who=(set @p) mode=@t pax=path tell=?]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  sb=path  bind:m  self-base
-  ;<  ~  bind:m  (poke-eval [%dir-index pax])
+  ;<  ~  bind:m  (write-dir-index root pax)
   ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page pax)) ~)
-  =/  all=(list [p=path page=?])  ?.(?=([%ball *] dv) ~ (collect-tree ball.dv ~))
+  =/  all=(list [p=path page=?])
+    ?.  ?=([%ball *] dv)  ~
+    (skip (collect-tree ball.dv ~) |=([p=path page=?] ?=(~ p)))
   =/  at  |=(r=path :(weld sb /page pax r))
-  ::  a folder share never grants a sensitive page: that needs a share of
-  ::  its own (+tree-sens), as a folder rule never publishes one
   ;<  sens=(set path)  bind:m
     ?.  ?=([%ball *] dv)  (pure:(fiber:fiber:nexus ,(set path)) ~)
     (tree-sens pax ball.dv)
@@ -21916,19 +22638,15 @@
     |=([p=path page=?] ?.(&(page !(~(has in sens) p)) ~ `[%& %& (at p) %code]))
   =/  idx=(set road:tarball)
     %-  silt
+    ^-  (list road:tarball)
     :-  [%& %& (at ~) %'dir-index']
-    (murn all |=([p=path page=?] ?:(page ~ `[%& %& (at p) %'dir-index'])))
-  ::  what the ship holds by hand on each page under the folder is noted
-  ::  as the page's own grant (+own-infer:ls), so unsharing the folder
-  ::  later leaves it at its own mode
+    (turn ~(tap in (folder-subs:ls all)) |=(p=path `road:tarball`[%& %& (at p) %'dir-index']))
   ;<  ub=path  bind:m  ug-dir
   ;<  wr=weir:nexus  bind:m
     (ug-read-weir (snoc ub (crip (weld (trip gname) ".grp"))))
   ;<  own=(list [p=path md=@t])  bind:m
     ?.  ?=([%ball *] dv)  (pure:(fiber:fiber:nexus ,(list [p=path md=@t])) ~)
     (own-held ball.dv wr gname at)
-  ::  the ship hears of the folder, unless it held it already
-  ::  (+tell-holds), so its shared with me lists the folder as one entry
   ;<  h0=holds:ls  bind:m  holds-now
   ;<  ok=?  bind:m
     %:  ug-merge  gname
@@ -21937,51 +22655,37 @@
       ?.(=('edit' mode) ~ codes)
     ==
   ?.  ok  (pure:m |)
-  ;<  ~  bind:m  (poke-eval [%folder-grant pax gname mode])
+  ;<  ~  bind:m  (folder-grant-do pax gname mode)
   ;<  ~  bind:m
     =/  n  (fiber:fiber:nexus ,~)
     |-  ^-  form:n
     ?~  own  (pure:n ~)
-    ;<  ~  bind:n  (poke-eval [%grant-own (weld pax p.i.own) gname md.i.own])
+    ;<  ~  bind:n  (grant-own-do up (weld pax p.i.own) gname md.i.own)
     $(own t.own)
   ?.  tell  (pure:m &)
   ;<  h1=holds:ls  bind:m  holds-now
-  ;<  ~  bind:m  (tell-holds h0 h1)
+  ;<  ~  bind:m  (tell-holds-do h0 h1)
   (pure:m &)
-::  +share-page-with: /share-file's grant on a page and its notice. ~
-::  when lattice may not write usergroups, else whether the ship acked
-::  the notice. An approved edit ask on a page (/access-answer) grants
-::  through here too, so a group's grants keep their modes.
+::  +share-page-with: /share-file's grant on a page and its notice. Grant
+::  runs serialized in /main.sig; best-effort remote notice runs here in the
+::  HTTP fiber so /main.sig never blocks on a remote ship.
 ++  share-page-with
   |=  [shp=@p mode=@t pax=path]
-  =/  m  (fiber:fiber:nexus ,(unit ?))
+  =/  m  (fiber:fiber:nexus ,$%([%ok told=?] [%banned ~] [%refused ~]))
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  rid=@ta  bind:m  acl-rid
+  ;<  ~  bind:m  (poke-eval [%acl-share-page rid shp mode pax])
+  ;<  ~  bind:m  writer-drain
+  ;<  raw=(unit *)  bind:m  (acl-res-get up rid)
+  =/  res=(unit $%([%ok ~] [%banned ~] [%refused ~]))
+    ?~  raw  ~
+    (mole |.(;;($%([%ok ~] [%banned ~] [%refused ~]) u.raw)))
+  ?~  res  (pure:m [%refused ~])
+  ?:  ?=(%banned -.u.res)  (pure:m [%banned ~])
+  ?:  ?=(%refused -.u.res)  (pure:m [%refused ~])
   =/  pdir=path  (weld /page pax)
-  ::  absolute, the road the ACL pane shows and the peer's weir matches
-  ::  (see +handle-share-group-save). The page's code grub only, which is
-  ::  all the peer opens. A grant on the dir also handed the peer the
-  ::  page's owner-only grubs (share, show, forms, the render cache) and
-  ::  every page nested under it (security audit run-1, +page-roads).
   ;<  sb=path  bind:m  self-base
-  =/  croad=road:tarball  [%& %& (weld sb pdir) %code]
-  =/  gname=@t  (crip (slag 1 (scow %p shp)))
-  ;<  ok=?  bind:m
-    %-  ug-merge
-    :^    gname
-        (~(gas in *(set @p)) ~[shp])
-      (~(gas in *(set road:tarball)) ~[croad])
-    ?.  =('edit' mode)  ~
-    (~(gas in *(set road:tarball)) ~[croad])
-  ?.  ok  (pure:m ~)
-  ::  noted as the page's own grant, at the widest it was shared, so a
-  ::  folder's unshare or a move out leaves it (+ungrant:ls)
-  ;<  own=(map @t @t)  bind:m  (read-own-grants pax)
-  ;<  ~  bind:m
-    (poke-eval [%grant-own pax gname (mode-max:ls mode (~(gut by own) gname ''))])
-  ::  what the peer should OPEN: the page's code grub, not the dir. By its
-  ::  absolute path: they peek it on our ship, and +apply-share-notice
-  ::  drops a path not under /apps (every notice did, from the move to
-  ::  relative roads until this).
   =/  npax=path  (weld sb (snoc pdir %code))
   ;<  base=(unit path)  bind:m  (peer-base-cached shp)
   ;<  told=?  bind:m
@@ -21989,7 +22693,7 @@
       :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
       [%poke [/lattice %share-notice] `action:ls`[%add npax mode]]
     ~s5
-  (pure:m `told)
+  (pure:m [%ok told])
 ::  +own-held: the pages under a folder (`bl` its ball, `at` a page's
 ::  absolute dir) whose own grant in group `g` (`wr` its weir) changes as
 ::  the folder starts to share them (+own-infer:ls), with the new mode
@@ -21998,7 +22702,7 @@
   =/  m  (fiber:fiber:nexus ,(list [p=path md=@t]))
   ^-  form:m
   =/  ps=(list path)
-    (murn (collect-tree bl ~) |=([p=path page=?] ?:(page `p ~)))
+    (murn (collect-tree bl ~) |=([p=path page=?] ?:(&(?=(^ p) page) `p ~)))
   =|  out=(list [p=path md=@t])
   =|  sg=(map path (map @t @t))
   |-  ^-  form:m
@@ -22201,7 +22905,8 @@
     ;<  fv=view:nexus  bind:m  (peek:fio (rv up (weld /page frel)) ~)
     ?.  ?=([%ball *] fv)  $(over t.over)
     ;<  fs=(set path)  bind:m  (tree-sens frel ball.fv)
-    =/  all=(list [p=path page=?])  (collect-tree ball.fv ~)
+    =/  all=(list [p=path page=?])
+      (skip (collect-tree ball.fv ~) |=([p=path page=?] ?=(~ p)))
     =/  at  |=(r=path :(weld pre frel r))
     =/  codes=(set road:tarball)
       %-  silt
@@ -22209,8 +22914,9 @@
       |=([p=path page=?] ?.(&(page !(~(has in fs) p)) ~ `[%& %& (at p) %code]))
     =/  idx=(set road:tarball)
       %-  silt
+      ^-  (list road:tarball)
       :-  [%& %& (at ~) %'dir-index']
-      (murn all |=([p=path page=?] ?:(page ~ `[%& %& (at p) %'dir-index'])))
+      (turn ~(tap in (folder-subs:ls all)) |=(p=path `road:tarball`[%& %& (at p) %'dir-index']))
     ;<  *  bind:m  (ug-merge gname ~ (~(uni in codes) idx) ?.(ed.i.over ~ codes))
     ;<  ~  bind:m  (folder-grant-do frel gname ?:(ed.i.over 'edit' 'read'))
     ;<  ~  bind:m  (write-dir-index root frel)
@@ -22258,7 +22964,8 @@
   ?.  ?=([%ball *] dv)  (pure:m ~)
   ;<  sens=(set path)  bind:m  (tree-sens pax ball.dv)
   =/  rels=(list path)
-    (murn (collect-tree ball.dv ~) |=([p=path page=?] ?:(&(page !(~(has in sens) p)) `p ~)))
+    %+  murn  (collect-tree ball.dv ~)
+    |=([p=path page=?] ?:(&(?=(^ p) page !(~(has in sens) p)) `p ~))
   |-  ^-  form:m
   ?~  rels  (pure:m ~)
   ;<  ~  bind:m  (add-grant-via (weld pax i.rels) pax)
@@ -22313,7 +23020,8 @@
   ;<  up=@ud  bind:m  nexus-up
   ;<  sb=path  bind:m  self-base
   =/  code=road:tarball  [%& %& :(weld sb /page rel) %code]
-  =/  dir=path  (snip `path`rel)
+  =/  pdir=path  (snip `path`rel)
+  =/  dir=path  pdir
   =|  top=(map @t [d=path md=@t])
   |-  ^-  form:m
   ;<  gs=(map @t @t)  bind:m  (read-share-grants dir)
@@ -22322,11 +23030,16 @@
   ;<  ~  bind:m
     ?:  =(~ gs)  (pure:m ~)
     ;<  ~  bind:m  (add-grant-via rel dir)
+    ::  grant dir-index roads on any intermediate subfolders between dir and pdir
+    =/  sub-ixs=(list road:tarball)
+      %+  turn  (gulf (lent dir) (lent pdir))
+      |=(n=@ud `road:tarball`[%& %& :(weld sb /page (scag n pdir)) %'dir-index'])
+    =/  pk=(set road:tarball)  (silt ^-((list road:tarball) [code sub-ixs]))
     =/  l=(list [g=@t md=@t])  ~(tap by gs)
     |-  ^-  form:m
     ?~  l  (pure:m ~)
     ;<  *  bind:m
-      %:  ug-merge  g.i.l  ~  (silt ~[code])
+      %:  ug-merge  g.i.l  ~  pk
         ?.(=('edit' md.i.l) ~ (silt ~[code]))
       ==
     $(l t.l)
@@ -22335,14 +23048,14 @@
   ::  (+index-ups:ls), where a whole +write-dir-index of each folder above
   ::  wrote every folder under it again, a save's worth of ship time per
   ::  folder in a big shared tree
-  =/  dir=path  (snip `path`rel)
-  =/  ups=(list path)  (turn (gulf 0 (lent dir)) |=(n=@ud (scag n dir)))
+  =/  ups=(list path)  (turn (gulf 0 (lent pdir)) |=(n=@ud (scag n pdir)))
   =|  ixs=(set path)
+  =.  ixs  (~(gas in ixs) (turn ~(val by top) |=([d=path md=@t] d)))
   |-  ^-  form:m
   ?^  ups
     ;<  ix=?  bind:m  (peek-exists:fio (rf up (weld /page i.ups) %'dir-index'))
     $(ups t.ups, ixs ?.(ix ixs (~(put in ixs) i.ups)))
-  =/  todo=(list path)  (index-ups:ls dir ixs)
+  =/  todo=(list path)  (index-ups:ls pdir ixs)
   |-  ^-  form:m
   ?^  todo
     ;<  ~  bind:m  (write-dir-index-in root i.todo |)
@@ -22400,21 +23113,18 @@
     ;<  ~  bind:m  (notice-group i.l [%del our (snoc :(weld sb /page pax i.rels) %code)])
     $(l t.l)
   $(rels t.rels)
-::  +unshare-folder: the folder at `pax` is no longer shared with group
-::  `g`. Its rule goes first (%folder-ungrant), so a page made meanwhile
-::  is not granted again, then what the rule granted (+ungrant:ls): each
-::  page's code grub and each folder's index, out of the group's weir.
-::  The caller tells the ships that lost a page (+tell-holds), so their
-::  shared with me and its beacon drop it live.
-++  unshare-folder
-  |=  [g=@t pax=path]
+::  +unshare-folder-do: writer-only body of folder unshare for group `g`.
+::  Removes the folder's share-grants rule directly (no self-poke) and drops
+::  what the rule granted (+ungrant:ls) from the group's weir.
+++  unshare-folder-do
+  |=  [up=@ud g=@t pax=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  up=@ud  bind:m  nexus-up
   ;<  sb=path  bind:m  self-base
   ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page pax)) ~)
   ?.  ?=([%ball *] dv)  (pure:m ~)
-  =/  all=(list [p=path page=?])  (collect-tree ball.dv ~)
+  =/  all=(list [p=path page=?])
+    (skip (collect-tree ball.dv ~) |=([p=path page=?] ?=(~ p)))
   =/  vias
     |=  p=path
     ^-  (list path)
@@ -22426,10 +23136,8 @@
     |=  [p=path page=?]
     ?.  page  ~
     `[(weld pax p) (vias p) (fils-own (ball-fils ball.dv p))]
-  =/  subs=(list path)  (murn all |=([p=path page=?] ?:(page ~ `p)))
+  =/  subs=(list path)  ~(tap in (folder-subs:ls all))
   =/  dirs=(list path)  [pax (turn subs |=(p=path (weld pax p)))]
-  ::  the share-grants of the folder, the folders under it, and those
-  ::  above it (any of them may share with g too)
   =/  below=(map path (map @t @t))
     %-  ~(gas by *(map path (map @t @t)))
     %+  turn  ^-((list path) [~ subs])
@@ -22444,9 +23152,8 @@
     ;<  gs=(map @t @t)  bind:n  (read-share-grants dd)
     $(d dd, acc (~(put by acc) dd gs))
   =/  [pg=(list [rel=path md=@t]) dr=(list path)]  (ungrant:ls grants g pax pages dirs)
-  ;<  ~  bind:m  (poke-eval [%folder-ungrant pax g])
+  ;<  ~  bind:m  (folder-ungrant-do up pax g)
   =/  code  |=(r=path `road:tarball`[%& %& :(weld sb /page r) %code])
-  ::  a page left nothing loses its road, one left read its make road
   =/  codes=(list road:tarball)
     (murn pg |=([r=path md=@t] ?:(=('' md) `(code r) ~)))
   =/  reads=(list road:tarball)
@@ -22697,16 +23404,227 @@
   %-  holds-of:ls
   %+  turn  gs
   |=([g=@t who=(set @p) w=weir:nexus] [who (pages peek.w) (pages make.w) (whole g w)])
-::  +tell-holds: each ship told what it gained (%add) and lost (%del)
-::  between two +holds-now. The writer sends them (%share-tell), so the
-::  request that changed the grants answers at once, however many.
-++  tell-holds
+::  +tell-holds-do: writer-only version of +tell-holds. Sends share notices
+::  directly via +share-tell-do without poking /main.sig.
+++  tell-holds-do
   |=  [old=holds:ls new=holds:ls]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  d  (holds-diff:ls old new)
   ?:  &(?=(~ add.d) ?=(~ del.d))  (pure:m ~)
-  (poke-eval [%share-tell add.d del.d])
+  (share-tell-do add.d del.d)
+::  +folder-ungrant-do: writer-only helper to remove a group's folder grant.
+++  folder-ungrant-do
+  |=  [up=@ud pax=path gname=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  r=road:tarball  (rf up (weld /page pax) %'share-grants')
+  ;<  old=(map @t @t)  bind:m  (read-share-grants pax)
+  ?.  (~(has by old) gname)  (pure:m ~)
+  =/  new=(map @t @t)  (~(del by old) gname)
+  ?^  new  (put-file r [/lattice %eval-data] new)
+  ;<  *  bind:m  (cull-soft:io r)
+  (pure:m ~)
+::  +grant-own-do: writer-only helper to set or clear a page's own grant.
+++  grant-own-do
+  |=  [up=@ud pax=path gname=@t mode=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  |(=('' mode) (mode-ok:ls mode))  (pure:m ~)
+  =/  pdir=path  (weld /page pax)
+  ;<  cx=?  bind:m  (peek-exists:fio (rf up pdir %code))
+  ?.  cx  (pure:m ~)
+  =/  r=road:tarball  (rf up pdir %'own-grants')
+  ;<  old=(map @t @t)  bind:m  (read-own-grants pax)
+  =/  new=(map @t @t)
+    ?:  =('' mode)  (~(del by old) gname)
+    (~(put by old) gname mode)
+  ?:  =(new old)  (pure:m ~)
+  ?^  new  (put-file r [/lattice %eval-data] new)
+  ;<  *  bind:m  (cull-soft:io r)
+  (pure:m ~)
+::  +acl-rid: generate a fresh request id for serialized ACL writer results.
+++  acl-rid
+  =/  m  (fiber:fiber:nexus ,@ta)
+  ^-  form:m
+  ;<  eny=@uvJ  bind:m  get-entropy:io
+  (pure:m (scot %uv (end [3 16] eny)))
+::  +acl-res-put: store one serialized ACL writer outcome in /acl-res.
+++  acl-res-put
+  |=  [up=@ud rid=@ta val=*]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  r=road:tarball  (rf up / %'acl-res')
+  ;<  v=view:nexus  bind:m  (peek:fio r ~)
+  =/  cur=(list [@ta *])
+    ?.  ?=([%file *] v)  ~
+    (fall (mole |.(;;((list [@ta *]) (sang-noun:tarball sang.v)))) ~)
+  =/  next=(list [@ta *])
+    (scag 64 ^-((list [@ta *]) [[rid val] (skip cur |=([k=@ta *] =(k rid)))]))
+  (put-file r [/ %noun] next)
+::  +acl-res-get: read one serialized ACL writer outcome from /acl-res.
+++  acl-res-get
+  |=  [up=@ud rid=@ta]
+  =/  m  (fiber:fiber:nexus ,(unit *))
+  ^-  form:m
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up / %'acl-res') ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  =/  cur=(list [@ta *])
+    (fall (mole |.(;;((list [@ta *]) (sang-noun:tarball sang.v)))) ~)
+  |-  ^-  form:m
+  ?~  cur  (pure:m ~)
+  ?:  =(rid -.i.cur)  (pure:m `+.i.cur)
+  $(cur t.cur)
+::  +apply-acl-ban: ban `who`, strip from /ug/*, and strip from /forum/members/*
+::  atomically in /main.sig.
+++  apply-acl-ban
+  |=  [root=@ud rid=@ta who=@p]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  bans=banned:ls  bind:m  read-banned
+  ?:  (ban-full:ls bans who)
+    (acl-res-put up rid [%full ~])
+  ;<  ~  bind:m
+    (over:io (ban-road up) [[/lattice %banned] (~(put in bans) who)])
+  ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups who)
+  ;<  ~  bind:m  (strip-forum-rosters who)
+  (acl-res-put up rid [%ok n])
+::  +apply-acl-unban: drop ban groups, strip forum rosters, and unban `who`
+::  atomically in /main.sig.
+++  apply-acl-unban
+  |=  [root=@ud rid=@ta who=@p]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  bans=banned:ls  bind:m  read-banned
+  ;<  dropped=(unit @ud)  bind:m
+    =/  n  (fiber:fiber:nexus ,(unit @ud))
+    ?.  (~(has in bans) who)  (pure:n `0)
+    (drop-ban-groups (silt ~[who]))
+  ?~  dropped  (acl-res-put up rid [%refused ~])
+  ;<  ~  bind:m
+    ?.  (~(has in bans) who)  (pure:(fiber:fiber:nexus ,~) ~)
+    (strip-forum-rosters who)
+  ;<  ~  bind:m
+    (over:io (ban-road up) [[/lattice %banned] (~(del in bans) who)])
+  (acl-res-put up rid [%ok ~])
+::  +apply-acl-forum-member: invite or revoke a ship on a private forum board
+::  atomically in /main.sig, checking /banned right before adding.
+++  apply-acl-forum-member
+  |=  [root=@ud rid=@ta nom=@ta who=@p add=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  gname=@t  (forum-group-name nom)
+  ;<  ub=path  bind:m  ug-dir
+  =/  gdir=path  (snoc ub (crip (weld (trip gname) ".grp")))
+  ;<  cur=(set @p)  bind:m  (read-forum-members nom)
+  ?.  add
+    ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
+    =/  ships=(set @p)
+      ?.  ?=([%file *] wv)  ~
+      (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
+    ;<  ok=?  bind:m
+      ?.  (~(has in ships) who)  (pure:(fiber:fiber:nexus ,?) %.y)
+      (ug-over [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) who)])
+    ?.  ok  (acl-res-put up rid [%refused ~])
+    ;<  ~  bind:m  (write-forum-members nom (~(del in cur) who))
+    (acl-res-put up rid [%ok ~])
+  ;<  bans=banned:ls  bind:m  read-banned
+  ?:  (is-banned:ls bans who)
+    (acl-res-put up rid [%banned ~])
+  ;<  sb=path  bind:m  self-base
+  =/  bpath=path  (weld sb /forum/boards/[nom])
+  =/  roads=(set road:tarball)
+    (~(gas in *(set road:tarball)) ~[[%& %| (snoc bpath %pub)] [%& %| (snoc bpath %content)]])
+  ;<  ok=?  bind:m  (ug-merge gname (~(gas in *(set @p)) ~[who]) roads ~)
+  ?.  ok  (acl-res-put up rid [%refused ~])
+  ;<  ~  bind:m  (write-forum-members nom (~(put in cur) who))
+  (acl-res-put up rid [%ok ~])
+::  +apply-acl-group-del: delete one usergroup and its folder grants in /main.sig.
+++  apply-acl-group-del
+  |=  [root=@ud rid=@ta gname=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ub=path  bind:m  ug-dir
+  =/  gdir=path  (snoc ub (crip (weld (trip gname) ".grp")))
+  ;<  h0=holds:ls  bind:m  holds-now
+  ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
+  ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| gdir])
+  ?^  e  (acl-res-put up rid [%refused ~])
+  ;<  sb=path  bind:m  self-base
+  ;<  ~  bind:m
+    =/  fs=(list path)  (folders-granted sb peek.old)
+    |-  ^-  form:m
+    ?~  fs  (pure:m ~)
+    ;<  ~  bind:m  (folder-ungrant-do up i.fs gname)
+    $(fs t.fs)
+  ;<  h1=holds:ls  bind:m  holds-now
+  ;<  ~  bind:m  (tell-holds-do h0 h1)
+  (acl-res-put up rid [%ok ~])
+::  +apply-acl-share-page: share one page with a ship atomically in /main.sig.
+++  apply-acl-share-page
+  |=  [root=@ud rid=@ta shp=@p mode=@t pax=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  bans=banned:ls  bind:m  read-banned
+  ?:  (is-banned:ls bans shp)
+    (acl-res-put up rid [%banned ~])
+  =/  pdir=path  (weld /page pax)
+  ;<  sb=path  bind:m  self-base
+  =/  croad=road:tarball  [%& %& (weld sb pdir) %code]
+  =/  gname=@t  (crip (slag 1 (scow %p shp)))
+  ;<  ok=?  bind:m
+    %-  ug-merge
+    :^    gname
+        (~(gas in *(set @p)) ~[shp])
+      (~(gas in *(set road:tarball)) ~[croad])
+    ?.  =('edit' mode)  ~
+    (~(gas in *(set road:tarball)) ~[croad])
+  ?.  ok  (acl-res-put up rid [%refused ~])
+  ;<  own=(map @t @t)  bind:m  (read-own-grants pax)
+  ;<  ~  bind:m
+    (grant-own-do up pax gname (mode-max:ls mode (~(gut by own) gname '')))
+  (acl-res-put up rid [%ok ~])
+::  +apply-acl-share-folder: share one folder with a group atomically in /main.sig.
+++  apply-acl-share-folder
+  |=  [root=@ud rid=@ta gname=@t who=(set @p) mode=@t pax=path tell=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  bans=banned:ls  bind:m  read-banned
+  ?:  (lien ~(tap in who) |=(w=@p (is-banned:ls bans w)))
+    (acl-res-put up rid [%banned ~])
+  ;<  ok=?  bind:m  (share-folder-grant-do root gname who mode pax tell)
+  ?.  ok  (acl-res-put up rid [%refused ~])
+  (acl-res-put up rid [%ok ~])
+::  +apply-acl-unshare-file: unshare a page or folder from a ship in /main.sig.
+++  apply-acl-unshare-file
+  |=  [root=@ud rid=@ta shp=@p pax=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  pdir=path  (weld /page pax)
+  =/  gname=@t  (crip (slag 1 (scow %p shp)))
+  ;<  isp=?  bind:m  (peek-exists:fio (rf up pdir %code))
+  ;<  h0=holds:ls  bind:m  holds-now
+  ;<  ~  bind:m
+    ?.  isp  (unshare-folder-do up gname pax)
+    ;<  sb=path  bind:m  self-base
+    ;<  ~  bind:m  (grant-own-do up pax gname '')
+    ;<  fm=@t  bind:m  (folders-mode gname pax)
+    =/  r=(set road:tarball)  (silt ~[`road:tarball`[%& %& (weld sb pdir) %code]])
+    ;<  *  bind:m
+      ?:  =('edit' fm)  (pure:(fiber:fiber:nexus ,?) &)
+      ?:  =('read' fm)  (ug-settle gname ~ r)
+      (ug-drop gname r)
+    (pure:m ~)
+  ;<  h1=holds:ls  bind:m  holds-now
+  ;<  ~  bind:m  (tell-holds-do h0 h1)
+  (acl-res-put up rid [%ok ~])
 ::  +refresh-dir-index-above: each folder at or above `dir` that keeps an
 ::  index (+write-dir-index) writes it again
 ++  refresh-dir-index-above
@@ -22829,15 +23747,22 @@
     ::  a memory saved at the key of one in the trash is a new one (%save),
     ::  and the trash holds one memory a key: deleting the new one would
     ::  write over the deleted one, the copy its owner may still restore
+    ::  Only a copy the trash index lists is one the owner can find and
+    ::  restore. A trash grub with no row (a culled one a ship upgrade
+    ::  brought back, or the copy of a delete that died before its row) is
+    ::  no deleted note to protect: it is written over, and its older
+    ::  revisions stay in the grub's history. Refusing there left the key
+    ::  undeletable for good, and the route answered ok.
     ;<  held=?  bind:m  (peek-exists:fio troad)
-    ?:  held  (refuse "a delete: a deleted note is in the trash at {(spud key)}")
+    ;<  trash=know-index:lk  bind:m  (read-index tx)
+    ?:  &(held (~(has by trash) key))
+      (refuse "a delete: a deleted note is in the trash at {(spud key)}")
     ::  MOVE to the trash vault: write the trash copy first (duplicate-on-crash,
     ::  never lose), then cull the live grub, then swing the index rows.
     ;<  ~  bind:m  (ensure-dirs up tvbase key)
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] u.old)
     ;<  ~  bind:m  (gain:fio troad %.y)
     ;<  ~  bind:m  (cull:fio road)
-    ;<  trash=know-index:lk  bind:m  (read-index tx)
     (put-file tx [/lattice %know-index] (~(put by trash) key (to-index-entry:lk u.old)))
   ::
       %tag    (retag root key.act tag.act %.y)
@@ -22892,7 +23817,15 @@
     =/  road=road:tarball  (entry-road up vbase key)
     =/  troad=road:tarball  (entry-road up tvbase key)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry troad)
-    ?~  old  (refuse "a restore: it is not in the trash: {(spud key)}")
+    ?~  old
+      ::  prune a stale trash index row when troad is absent
+      ;<  held=?  bind:m  (peek-exists:fio troad)
+      ;<  ~  bind:m
+        ?:  held  (pure:m ~)
+        ;<  trash=know-index:lk  bind:m  (read-index tx)
+        ?.  (~(has by trash) key)  (pure:m ~)
+        (put-file tx [/lattice %know-index] (~(del by trash) key))
+      (refuse "a restore: it is not in the trash: {(spud key)}")
     ::  refuse to resurrect over a LIVE entry. The save/move/import writers already
     ::  cull the trash grub when a key goes live again, so this can't normally fire.
     ::  It's the last guard against a stale tomb clobbering live data.

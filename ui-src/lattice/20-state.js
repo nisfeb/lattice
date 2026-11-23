@@ -13,7 +13,9 @@
   // A parked tab (21-tabs.js) holds its own dirty buffer, so the live flag
   // alone misses work typed into any tab that is not in front, in any group.
   // A SKILL.md being edited in the Skills tab (95s-skills.js) counts too.
-  window.__latUnsaved = () => dirty === true
+  // A cell or field typed and not yet written is in no buffer: the view
+  // writes it first, and one it cannot write counts as unsaved.
+  window.__latUnsaved = () => !writerSync() || dirty === true
     || allTabs().some((t) => t !== activeTab && t.snap && t.snap.dirty)
     || skUnsaved();
   // Whether the user has typed since the current editor view was established.
@@ -45,7 +47,14 @@
   // asked to, so nothing here writes on its own: after any save already in
   // flight, unsaved text gets the question, with save as one answer.
   async function guardDirty() {
-    if (!dirty) return true;
+    //  a cell or a field being typed is in no buffer yet, and dirty says so
+    //  only after the view writes it. Written first. One it refuses is asked
+    //  about here, unless dirty makes the flush below ask for it too.
+    const synced = writerSync();
+    if (!dirty) {
+      return synced || askConfirm('the last edit to ' + (current || pname.value.trim() || 'this')
+        + ' could not be written. discard it?', 'discard');
+    }
     if (grubPath)
       return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
     const label = current || pname.value.trim() || 'this';
@@ -78,7 +87,8 @@
   // answers false at once, and so does everything with autosave off, after
   // waiting out a save already in flight (an explicit one, still landing).
   async function flushNoAsk() {
-    if (!dirty) return true;
+    const synced = writerSync();
+    if (!dirty) return synced;
     if (grubPath) return false;
     // save() coalesces concurrent calls by design. A save already in flight
     // just arms savePending and returns on the spot, so calling save() here
@@ -98,13 +108,13 @@
     //  about to succeed. Capped past tfetch's 30s, since a grub save holds
     //  `saving` with no timeout of its own.
     await waitSave();
-    if (!dirty) return true;
+    if (!dirty) return synced;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
     if (!saving && autosaveOn()) {
       if (mode === 'know') await saveKnow(); else await save();
     }
-    return !dirty;
+    return synced && !dirty;
   }
   async function waitSave() {
     const t0 = Date.now();
@@ -324,7 +334,9 @@
     try { u = new globalThis.URL(url, location.origin); } catch { return null; }
     const p = u.searchParams;
     if (u.pathname.endsWith('/page-del') && p.get('name'))
-      return { op: 'del', name: p.get('name') };
+      //  `tree` is what the user agreed to: the ship deletes a page alone
+      //  unless it is asked for the pages under it too
+      return { op: 'del', name: p.get('name'), ...(p.has('tree') && { tree: true }) };
     if (u.pathname.endsWith('/page-move') && p.get('from') && p.get('to'))
       return { op: 'move', from: p.get('from'), to: p.get('to') };
     // folder-new carries no content, so it is a structural op like del/move,

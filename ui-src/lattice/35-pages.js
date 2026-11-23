@@ -209,6 +209,8 @@
         return false;
       }
       if (!r.ok) {
+        //  no fresh read is coming: saves stop waiting for one
+        freshPending.delete(name);
         if (painted) return true;
         //  not written yet: a page of this ship the ship has no page for
         if (start && r.status === 404 && my === openSeq && await startable(name) && my === openSeq && tabStart(name))
@@ -218,6 +220,7 @@
       }
       d = await r.json();
     } catch {
+      freshPending.delete(name);
       if (painted) return true;
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
@@ -266,21 +269,25 @@
     // door. Only a response that is actually applied may be remembered.
     if (!d.link) pageCache.set(name, d);
     snapPage(name, d);
-    applyPage(name, d);
+    const keepErr = painted && current === name && d.body === shown && d.kind === curKind && !!status.style.color;
+    applyPage(name, d, false, keepErr);
     return true;
   }
   // a page's body without the render (page-source, no render=1): what a
   // painted open shows, or null
-  const bodyRead = async (name) => {
+  //  `o.gone` is set when the ship did not answer, as against one that
+  //  said no (a page deleted elsewhere)
+  const bodyRead = async (name, o = {}) => {
     try {
-      const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name));
+      const r = await tfetch(api + '/page-source?name=' + encodeURIComponent(name), {}, o.ms || 20000);
+      if (shipGone(r)) { o.gone = true; return null; }
       if (!r.ok) return null;
       const d = await r.json();
       if (typeof d.body !== 'string' || d.link) return null;
       return { body: d.body, kind: d.kind, rev: d.rev, share: d.share, comments: d.comments };
-    } catch { return null; }
+    } catch { o.gone = true; return null; }
   };
-  function applyPage(name, d, quiet) {
+  function applyPage(name, d, quiet, keepErr) {
     if (name !== current) writerNewDoc();
     shipDoc = null;      // the ship's render on show was another document's
     curFolder = null;
@@ -292,6 +299,11 @@
     //  be older than its text: no claim is made from it. The read that
     //  follows (or the next save's answer) sets the rev saves claim.
     curRev = quiet || !isRev(d.rev) ? null : d.rev;
+    //  the offline queue may claim it all the same (paintRev)
+    //  a paint with no rev (a tab's snapshot of a page not read fresh yet)
+    //  leaves what was known: that rev may be a little old for this text,
+    //  and the queue's claim only costs a kept copy for it, not their edit
+    if (isRev(d.rev)) paintRev.set(name, d.rev);
     if (quiet) shipText.delete(name); else { shipText.set(name, d.body); freshPending.delete(name); }
     refreshTexButton();
     src.value = d.body;
@@ -302,7 +314,7 @@
     everTyped = false;
     render(); syncSoon();
     markCurrent();
-    st(d.kind + ' · rev ' + d.rev);
+    if (!keepErr) st(d.kind + ' · rev ' + d.rev);
     exitRev();
     // after exitRev, which unlocks: a link with a read grant, or one shown
     // from its last-known copy, stays locked (30-tree.js linkRO). The tab
@@ -597,7 +609,10 @@
     const nd = nodes.find((n) => n.page && n.path === name);
     // not a link's: its text is the host's, read live, and the rev beside
     // a body here would be a base the next save claims falsely
-    if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
+    //  with the rev it was saved at, so the copy painted from it later
+    //  claims the rev of its text and not an older one
+    if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; if (isRev(rev)) nd.rev = rev; persistTree(); }
+    ownStashed.delete(name);
   };
   // an accidental tab close is the same data-loss shape as the grub-discard
   // guard up in openPage: a dirty edit, grub or page, exists only here
@@ -704,7 +719,9 @@
   //  `drawn`: how many Inbox names this create has drawn so far (below).
   //  `auto`: autosave asked (the table at autosave() says what that changes).
   async function save(kindOverride, fixed, drawn = 0, auto = false) {
-    if (!fixed) writerSync();     // a Writer page's text into src.value
+    //  a rich page's text into src.value. Refused, src.value lacks the
+    //  edit in progress and nothing is sent (writerSync has said so)
+    if (!fixed && !writerSync()) return;
     if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
     if (!fixed && viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     //  a field holding only a folder (a new page started in one) names
@@ -768,7 +785,10 @@
       }, creating);
       return 'queued';
     }
-    saving = true;
+    //  From here to the send nothing awaits, so no other save can start.
+    //  `saving` is set at the send itself, where a finally clears it: set
+    //  here, a return or a throw on the way there left it set for good,
+    //  and no save left the window again.
     st('saving…');
     // capture the exact body being sent: keystrokes landing during the round-trip
     // must NOT be marked clean, or the next refresh swaps the stale server copy
@@ -783,7 +803,6 @@
     // from the other merges.
     const rn = realName(name);
     if (!rn) {
-      saving = false;
       st('bad name — use at least one letter or digit', false);
       return;
     }
@@ -810,8 +829,8 @@
       }
       flushPending();
     };
-    if (!fixed && editLocked()) { saving = false; st(LOCK_NOTE, false); return failed(); }
-    if (tooBig(sent)) { saving = false; st(TOO_BIG, false); return failed(); }
+    if (!fixed && editLocked()) { st(LOCK_NOTE, false); return failed(); }
+    if (tooBig(sent)) { st(TOO_BIG, false); return failed(); }
     const base = creating ? null : baseFor(name, curRev);
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1&by=' + winId : casQ(name, base)) + dnameQ(rnc)
@@ -822,6 +841,7 @@
     const sentSeq = offSeq();
     casHold.delete(name);       // a save on purpose tries again
     paintCas();
+    saving = true;
     try {
       if (!(jobWait && !creating && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -982,9 +1002,17 @@
     if (!isRev(rev)) return isRev(k) ? k : null;
     return isRev(k) ? Math.max(rev, k) : rev;
   };
+  //  With no rev of its own the save claims what the queued edit of the
+  //  page claims, else the rev of the copy painted, and asks for no refusal:
+  //  the page may have moved on since that copy (a read that failed while
+  //  the ship was away), and the ship then keeps the other text where it
+  //  would have written over it.
   const casQ = (name, rev) => {
+    if (linkOf(name)) return '';
     const b = baseFor(name, rev);
-    return linkOf(name) ? '' : '&by=' + winId + (isRev(b) ? '&base=' + b + '&cas=1' : '');
+    if (isRev(b)) return '&by=' + winId + '&base=' + b + '&cas=1';
+    const soft = isRev(qClaim.get(name)) ? qClaim.get(name) : paintRev.get(name);
+    return '&by=' + winId + (isRev(soft) ? '&base=' + soft : '');
   };
   //  a page-save's answer, read while the save still holds the writer slot
   const takeRev = async (name, w) => {
@@ -1009,6 +1037,10 @@
   }
   casBar.querySelector('#castheirs').onclick = async () => {
     const name = current;
+    //  text typed since the copy was kept is in no copy
+    if (editorText() !== cfKept.get(name) && editorText() !== (shipText.get(name) || '\n')
+        && !(await askConfirm('some of your text is in no copy. show theirs and drop it?', 'drop it'))) return;
+    cfKept.delete(name);
     casHold.delete(name);
     dirty = false;
     paintCas();
@@ -1031,14 +1063,24 @@
   // the fresh read lands. Autosave waits for it (up to 15 s); the rev to
   // claim only ever comes from a fresh answer.
   const freshPending = new Map();
+  // the rev of the copy last painted for a page, fresh or not, for the
+  // offline queue alone (queueEdit, 08-offline.js). A live save never
+  // claims it. A queued edit does when the editor read no rev: its claim
+  // is not refused, it only tells the ship to keep the other text if the
+  // page has moved, and a rev that is a little old costs a kept copy
+  // where one that is missing costs their edit.
+  const paintRev = new Map();
   // The fresh answer `d` for `name`, painted as `painted`. Its rev is now
   // the one to claim. Text typed on the paint meanwhile is an edit of
   // `painted`: a change made elsewhere since merges into it if it can, or
   // else the typed text is kept as a conflicts/ page, held in the editor.
-  function reconcileFresh(name, painted, d) {
+  async function reconcileFresh(name, painted, d) {
     freshPending.delete(name);
+    // a queued or stashed edit in IndexedDB outranks a boot read from the ship
+    if (await offGet(name)) return;
     if (!d || typeof d.body !== 'string' || typeof painted !== 'string') return;
     if (current !== name || mode === 'know' || grubPath) return;
+    if (wrLive() && wr.editing && wr.editing()) return;
     curRev = isRev(d.rev) ? d.rev : null;
     shipText.set(name, d.body);
     if (d.body === (painted || '\n')) return;   // an empty paint is the ship's one newline
@@ -1058,7 +1100,7 @@
     casHold.set(name, isRev(d.rev) ? d.rev : null);
     paintCas();
     keepAside({ name, kind, body: mine }, keptName('mine', name)).then((alt) => {
-      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
+      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); cfKept.set(name, mine); }
       st(name + ' changed elsewhere, so your text was not saved over it. '
         + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
     });
@@ -1085,8 +1127,53 @@
   // of which was lost); an edit apart from theirs merges and is saved on
   // their rev; anything else keeps our text as a page of its own under
   // conflicts/ and shows theirs. `here`: the editor still shows it.
+  // `base` is the rev the refused save claimed, as it was sent.
+  //  A settle reads, merges and saves, and it holds the writer's turn for
+  //  all of it. An autosave of text typed meanwhile used to go out beside
+  //  it, be refused on the old rev, and settle against the merged text as
+  //  its base, which put the typed buffer over the other writer's edit.
+  //  Now that autosave waits, and is sent when the settle ends.
   async function settleStale(name, kind, sent, base, here) {
-    const th = await bodyRead(name);
+    while (saving) await new Promise((r) => setTimeout(r, 50));
+    saving = true;
+    try { await settleRun(name, kind, sent, base, here); } finally { saving = false; }
+  }
+  //  the editor's text replaced with the caret kept on the text it was in:
+  //  a change before it moves it along, one after it leaves it alone
+  const srcSwap = (text) => {
+    const old = src.value, a = src.selectionStart, b = src.selectionEnd, d = text.length - old.length;
+    let p = 0;
+    while (p < old.length && p < text.length && old[p] === text[p]) p++;
+    src.value = text;
+    src.setSelectionRange(a > p ? Math.max(p, a + d) : a, b > p ? Math.max(p, b + d) : b);
+  };
+  //  A settle is bounded: its three requests share SETTLE_MS, and one that
+  //  gets no answer in time ends it with the text queued, as a save does
+  //  when the ship is gone. It holds the writer's turn, so a request left
+  //  hanging would stop every save, Ctrl+S and flush until the tab ended.
+  const SETTLE_MS = 30000;
+  //  the text this editor holds for the page, written from its view first
+  const editorText = () => { writerSync(); return src.value; };
+  //  what the conflicts/ copies hold, per page: the bar's "Show theirs"
+  //  asks before it drops text no copy has
+  const cfKept = new Map();
+  async function settleRun(name, kind, sent, base, here, until = Date.now() + SETTLE_MS, tries = 0) {
+    const left = () => Math.max(1, until - Date.now());
+    //  the ship did not answer: what was refused is queued on the rev it
+    //  claimed, and the replay keeps their text if the page moved on
+    const gone = async () => {
+      if (!(await enqueueSave(name, kind, sent, false, null, base))) return;
+      if (here() && src.value === sent) dirty = false;
+      else tabLanded('page', name, sent);
+    };
+    const nog = { ms: left() };
+    const th = await bodyRead(name, nog);
+    if (!th && nog.gone) return gone();
+    //  shipText is the text at the newest rev this window knows. That is
+    //  the claimed rev, unless another save or settle of this page landed
+    //  after the claim was sent: then the base text is asked for by rev
+    const known = pageRevs.get(name);
+    const moved = isRev(known) && isRev(base) && known > base;
     //  the ship's head now outranks any rev this window had for the page:
     //  a save answer's rev can be a guess, and a claim past the head (a
     //  page deleted elsewhere is at 0) is refused for ever, retries and
@@ -1096,19 +1183,31 @@
     if (th && th.body === (sent || '\n')) { knowRev(name, th.rev); res = { rev: th.rev, body: sent, how: 'saved' }; }
     if (th && !res && isRev(base)) {
       let mb = null;
-      let bt = shipText.get(name);
+      let bt = moved ? null : shipText.get(name);
+      //  the head is this window's own stash, replayed by another window:
+      //  the text the editor built on, and no one else's change
+      if (th.body === ownStashed.get(name)) bt = th.body;
       if (typeof bt !== 'string') {
         try {
-          const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base);
+          const r = await tfetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base, {}, left());
+          if (shipGone(r)) return gone();
           if (r.ok) bt = (await r.json()).body;
-        } catch {}
+        } catch { return gone(); }
       }
       if (typeof bt === 'string') mb = merge3(bt, sent, th.body);
       if (typeof mb === 'string') {
-        const r = await fetch(api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
-          + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);
-        let j = null;
-        if (r && r.ok) { try { j = await r.json(); } catch {} }
+        let r = null, j = null;
+        try {
+          r = await tfetch(api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
+            + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }, left());
+        } catch { return gone(); }
+        if (shipGone(r)) return gone();
+        if (r.ok) { try { j = await r.json(); } catch {} }
+        //  the page moved again while this ran: read it once more and
+        //  merge onto that, a few times at most
+        if (r.status === 409 && tries < 3 && /^: stale/.test(await errText(r))) {
+          return settleRun(name, kind, sent, base, here, until, tries + 1);
+        }
         //  the ship still holding what this window last knew is no change
         //  made elsewhere: the claim was only behind
         if (j && isRev(j.rev)) {
@@ -1120,30 +1219,54 @@
     //  a real conflict: our text is kept as a page of its own, and stays
     //  in the editor too (unsaved edits are never replaced), with autosave
     //  standing down and a bar offering theirs or ours over theirs
-    let alt = null;
-    if (th && !res) {
-      alt = await keepAside({ name, kind, body: sent }, keptName('mine', name));
-      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
-    }
-    if (!res) {
-      casHold.set(name, th && isRev(th.rev) ? th.rev : null);
+    const hold = async (text, rev, keep) => {
+      let alt = null;
+      if (keep) {
+        alt = await keepAside({ name, kind, body: text }, keptName('mine', name));
+        if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); cfKept.set(name, text); }
+      }
+      casHold.set(name, rev);
       st(name + ' changed elsewhere, so your text was not saved over it. '
         + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
       if (here()) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
       paintCas();
-      return;
-    }
+    };
+    //  the copy holds what the editor holds now, which is more than was
+    //  sent when text was typed while this ran
+    if (!res) { await hold(here() ? editorText() : sent, th && isRev(th.rev) ? th.rev : null, !!th); return; }
     patchLocal(name, null, res.body, res.rev);
-    for (const t of allTabs())
-      if (t.kind === 'page' && t.key === name && t.snap && t.snap.body === sent)
-        Object.assign(t.snap, { body: res.body, rev: res.rev, dirty: false });
-    if (here() && src.value === sent) {
-      if (res.body !== sent) { src.value = res.body; render(); refreshPreview(); }
-      curRev = res.rev;
-      dirty = false;
-      cerr.textContent = 'saved'; cerr.className = 'ok';
+    //  The page's buffer, the editor's or a parked tab's, held `sent` when
+    //  the save left. Still holding it, it takes what was saved. Typed
+    //  into since, it lacks a change merged in from elsewhere, and its
+    //  next save would claim the new rev and write over that change. So
+    //  it is rebased onto the merged text. Where that cannot be done (it
+    //  now touches what they changed) it is a conflict like any other:
+    //  kept aside, and held from saving until the bar is answered.
+    const rebase = (text) => (text === sent ? res.body : res.body === sent ? text : merge3(sent, text, res.body));
+    const apart = [];
+    for (const t of allTabs()) {
+      if (t.kind !== 'page' || t.key !== name || !t.snap) continue;
+      const nb = rebase(t.snap.body);
+      if (typeof nb !== 'string') { apart.push(t.snap.body); continue; }
+      Object.assign(t.snap, t.snap.body === sent ? { dirty: false } : {}, { body: nb, rev: res.rev });
     }
-    st(res.how, res.how === 'saved');
+    if (here()) {
+      //  a rich view holds keystrokes its buffer lacks, and its remount
+      //  below would drop them: written first. What it refuses cannot be
+      //  rebased, so it is kept as a conflict.
+      const ok = writerSync();
+      const was = src.value, nb = rebase(was);
+      if (!ok || typeof nb !== 'string') apart.push(was);
+      else {
+        if (nb !== was) { srcSwap(nb); render(); refreshPreview(); }
+        curRev = res.rev;
+        if (was === sent) { dirty = false; cerr.textContent = 'saved'; cerr.className = 'ok'; }
+        //  a rebuilt rich view re-arms nothing: the rebased text still waits
+        else if (dirty && autosaveOn()) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 2000); }
+      }
+    }
+    for (const text of apart) await hold(text, res.rev, true);
+    if (!apart.length) st(res.how, res.how === 'saved');
   }
 
   let autoTimer = null;
@@ -1155,11 +1278,16 @@
   //  A page hidden (a phone locked, another app in front) or let go may
   //  never run the debounce: what waits on it is written now, through
   //  autosave and every rule it has.
+  //  A save that waits for its page's fresh read sends nothing, and the
+  //  tab may never run again to send it: the text goes into the offline
+  //  queue instead (autosave(true), stashSave in 08-offline.js). Back in
+  //  front, the editor owns it again and that copy is dropped.
   const flushHidden = (e) => {
-    if (e.type === 'visibilitychange' && !document.hidden) return;
+    if (e.type === 'visibilitychange' && !document.hidden) { unstash(); return; }
+    writerSync();
     if (!dirty) return;
     clearTimeout(autoTimer);
-    autosave();
+    autosave(true);
   };
   document.addEventListener('visibilitychange', flushHidden);
   window.addEventListener('pagehide', flushHidden);
@@ -1170,7 +1298,8 @@
     clearTimeout(autoTimer);
     autoTimer = setTimeout(autosave, 2000);
   });
-  async function autosave() {
+  //  `hiding`: true from flushHidden alone (a timer passes nothing)
+  async function autosave(hiding) {
     // GRUB MODE IS EXPLICIT-SAVE ONLY. Autosaving a lattice page is fine. It is
     // your own note and the editor has always worked that way. Autosaving
     // another app's source is not. A half-typed edit to calendar.html would go
@@ -1179,7 +1308,11 @@
     // The 2s debounce still fires. It just reports instead of writing, so the
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
-    writerSync();
+    //  Refused: the buffer lacks the edit in progress, but holds every edit
+    //  already written, and those must not wait on a field that is in use
+    //  (a phone may end the tab). So it goes out, or into the queue, as it
+    //  stands, and the page stays unsaved with the reason shown (`whole`).
+    const whole = writerSync();
     if (curFolder || !dirty || viewingRev !== null) return;
     if (!current && mode === 'know') return;
     // a move in flight may be carrying this page away: the save goes to
@@ -1207,7 +1340,12 @@
     // painted from an older copy and not yet read fresh: wait for that read
     // (it may find a change made elsewhere), then save on its rev
     const fp = mode !== 'know' && freshPending.get(current);
-    if (fp && Date.now() - fp.at < 15000) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 500); return; }
+    if (fp && Date.now() - fp.at < 15000) {
+      if (hiding === true && autosaveOn() && !linkOf(current) && !editLocked() && !casHold.has(current))
+        stashSave(current, curKind || pkind.value, src.value, curRev);
+      clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 500);
+      return;
+    }
     if (fp) freshPending.delete(current);
     // a link whose save was refused as stale: no more writes until the
     // user picks one of the bar's ways out, or saves on purpose (Ctrl+S)
@@ -1229,7 +1367,6 @@
     // behind it. Coalesce to one trailing save instead.
     //  never over an explicit save already waiting: that one names its kind
     if (saving) { if (!savePending) savePending = true; return; }
-    saving = true;
     // the document this autosave owns. If the user navigates mid-flight,
     // `current` moves; everything below acts on `target`, not the new current.
     //  and what it is: a group coming to the front (28-splits.js) can
@@ -1246,6 +1383,8 @@
         '&type=' + tkind + linkBase(target) + casQ(target, trev);
     let w = { gone: true };
     const sentSeq = offSeq();
+    const tbase = baseFor(target, trev);     // the rev this save claims
+    saving = true;     // at the send, as in save(): nothing awaits before it
     try {
       if (!(jobWait && !know && !linkOf(target)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -1263,14 +1402,14 @@
         flushPending();
         return;
       }
-      if (here() && src.value === sent) dirty = false;
+      if (here() && src.value === sent) { if (whole) dirty = false; else st(wrWhy, false); }
       else tabLanded(tk, target, sent);
       flushPending();
       return;
     }
     if (!know && r.status === 409) {
       const why = await errText(r);
-      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, baseFor(target, trev), here);
+      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, tbase, here);
       else st('autosave failed' + why, false);
       flushPending();
       return;
@@ -1284,13 +1423,14 @@
     if (!here()) tabLanded(tk, target, sent, vr && vr.rev);
     // live-editor state only if the editor is still on the doc we autosaved
     if (here()) {
-      if (src.value === sent) dirty = false;   // typed during the request? stay dirty
+      if (src.value === sent && whole) dirty = false;   // typed during the request? stay dirty
       if (!know && vr && isRev(vr.rev)) curRev = vr.rev;
       // the conflict verdict must be the LAST word, not clobbered by the
       // ordinary confirmation a line later
       if (vr && vr.conflicted)
         st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
-      else st('autosaved');
+      else if (whole) st('autosaved');
+      else st(wrWhy, false);
       if (!know && !CONTENT()) setTimeout(checkErrors, 800);
     }
     flushPending();
@@ -1327,7 +1467,6 @@
     await savesSettled(false);
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
     if (t.snap !== s || !s.dirty || !allTabs().includes(t)) return;
-    saving = true;
     const name = t.key;
     const sent = s.body;
     const kind = s.kind || s.pkind;
@@ -1339,6 +1478,10 @@
     //  behind a folder job a page's save queues instead of going out, as
     //  the live editor's does (jobWait, 08-offline.js)
     const sentSeq = offSeq();
+    const sbase = baseFor(name, s.rev);     // the rev this save claims
+    //  set at the send, as in save(). Set above the stand-down for a held
+    //  or oversized page, that return left it set for good.
+    saving = true;
     try {
       if (!(jobWait && !know && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -1362,7 +1505,7 @@
     if (!know && w.r.status === 409) {
       const why = await errText(w.r);
       if (/^: stale/.test(why)) {
-        await settleStale(name, kind, sent, baseFor(name, s.rev),
+        await settleStale(name, kind, sent, sbase,
           () => t === activeTab && current === name && mode !== 'know' && !grubPath);
       } else st('autosave of ' + name + ' failed' + why, false);
       flushPending();

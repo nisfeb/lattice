@@ -27,6 +27,17 @@
   //  inertly: nothing in it loads or runs while it is cleaned.
   const TEX_DROP = 'script,style,iframe,frame,object,embed,video,audio,source,track,form,base,meta,link,svg';
   const TEX_SRC = ['src', 'srcset', 'poster', 'action', 'formaction', 'data', 'background'];
+  const texBadStyle = (val) => {
+    const s = String(val || '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\\([0-9a-f]{1,6})\s?/gi, (_, h) => {
+      const c = parseInt(h, 16);
+      return c > 0 && c <= 0x10ffff ? String.fromCodePoint(c) : '';
+    }).replace(/\\(.)/g, '$1');
+    return /@import|(?:url|image-set|expression)\s*\(/i.test(s);
+  };
+  const texBadQuery = (v) => {
+    const h = v.split('#')[0], q = h.indexOf('?');
+    return q >= 0 && h.slice(q + 1) !== 'data';
+  };
   function cleanTexHtml(html) {
     const t = document.createElement('template');
     t.innerHTML = html;
@@ -39,8 +50,11 @@
         const v = a.value.replace(/[\u0000-\u0020]/g, '').replace(/\\/g, '/');
         const abs = /^[a-z][a-z0-9+.-]*:|^\/\//i.test(v);
         const bad = n.startsWith('on')
+          || n === 'ping'
+          || n === 'srcset'
+          || (n === 'style' && texBadStyle(a.value))
           || ((n === 'href' || n === 'xlink:href') && abs && !/^(https?|mailto):/i.test(v))
-          || (TEX_SRC.includes(n) && abs);
+          || (TEX_SRC.includes(n) && (abs || texBadQuery(v)));
         if (bad) e.removeAttribute(a.name);
       }
     }

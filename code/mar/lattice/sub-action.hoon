@@ -4,7 +4,7 @@
 ::  know-action and pub-action this is NOT drivable from an HTTP body: add one
 ::  (copy know-action's) if a client ever needs to.
 ::
-/<  lp  /lib/lattice-pub.hoon
+/<  lp  /lib/lattice-pub-types.hoon
 =,  format
 |_  act=sub-action:lp
 ++  grad  %noun

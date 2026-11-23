@@ -576,11 +576,21 @@ jobs:
       # for the shipless reader's loopback, so it needs no ship either.
       - name: browser unit test - reader loading line (no ship)
         run: CHROME="$(command -v google-chrome)" node scripts/ui-reader-loading.mjs
+      # ui-races drives the built app.js against lib/stub-ship.mjs, which
+      # holds answers back to force the orders a save can lose text in, so
+      # it needs no ship either.
+      - name: browser unit test - editor save races (no ship)
+        run: CHROME="$(command -v google-chrome)" node scripts/ui-races.mjs
       # ui-sheet-grid loads the built sheet.js into a blank page and drives
       # the spreadsheet grid with the mouse and the keyboard, so it needs no
       # ship either.
       - name: browser unit test - spreadsheet grid (no ship)
         run: CHROME="$(command -v google-chrome)" node scripts/ui-sheet-grid.mjs
+      # ui-writer-view loads the built writer.js into a blank page and drives
+      # the Writer editor with the mouse, the keyboard and the clipboard, so
+      # it needs no ship either.
+      - name: browser unit test - Writer editor view (no ship)
+        run: CHROME="$(command -v google-chrome)" node scripts/ui-writer-view.mjs
       # ui-map-view loads the built map.js into a page on a stub origin
       # that also answers the tile route, and draws, drags and imports on
       # the map with the mouse, so it needs no ship either.

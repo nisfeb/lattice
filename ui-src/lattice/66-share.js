@@ -428,23 +428,31 @@
         row.appendChild(b);
       };
       // a grant named by the page's code path (the Rune client's old shape)
-      // is listed that way, and is the same grant
-      const names = (x) => x === path || x === path + '/code';
+      // is listed that way, and is the same grant. A page at a folder's own
+      // path is granted by its code path alone: the plain path is that
+      // folder's line, and toggling it would share or unshare the folder.
+      // The folder's `/dir-index` line stays in the list as it came.
+      const sole = !curFolder && (g.peek.includes(path + '/dir-index')
+        || nodes.some((x) => !x.page && x.path === target));
+      const grant = sole ? path + '/code' : path;
+      // a folder grant is only its plain path, never a page-only /code grant
+      // at the same path
+      const names = curFolder ? (x) => x === path : (x) => x === grant || x === path + '/code';
       const canRead = g.peek.some(names);
       const canEdit = g.make.some(names);
       mk('read', canRead, () => {
         if (canRead) {
           // dropping read drops edit. Edit without read cannot be exercised
-          g.peek = g.peek.filter((x) => !names(x));
+          g.peek = g.peek.filter((x) => !names(x) && !(curFolder && x === path + '/dir-index'));
           g.make = g.make.filter((x) => !names(x));
-        } else g.peek.push(path);
+        } else g.peek.push(grant);
         permSave(g);
       });
       mk('edit', canEdit, () => {
         if (canEdit) g.make = g.make.filter((x) => !names(x));
         else {
-          if (!g.peek.includes(path)) g.peek.push(path);   // edit implies read
-          g.make.push(path);
+          if (!g.peek.some(names)) g.peek.push(grant);   // edit implies read
+          g.make.push(grant);
         }
         permSave(g);
       });

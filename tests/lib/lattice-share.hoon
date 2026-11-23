@@ -896,6 +896,95 @@
     (expect-eq !>(|) !>((host-full:ls many ~bus /apps/new)))
     (expect-eq !>(|) !>((host-full:ls (slag 1 many) ~nec /apps/new)))
   ==
+::  the cap is per family: a planet's moons fill one budget between them,
+::  and so do all comets, so no family can evict every other host
+++  test-host-full-family
+  =/  moons=(list @p)
+    ~[~doznec-wicdev-wisryt ~marnec-wicdev-wisryt ~binnec-wicdev-wisryt ~litnec-wicdev-wisryt]
+  =/  comet-a=@p  ~doznec--dozzod-dozzod-dozzod-doznec--dozzod-dozzod-dozzod-dozzod
+  =/  comet-b=@p  ~marnec--dozzod-dozzod-dozzod-doznec--dozzod-dozzod-dozzod-dozzod
+  ::  the four moons hold +host-cap entries between them
+  =/  many=shared:ls
+    %+  turn  (gulf 1 host-cap:ls)
+    |=(i=@ud `entry:ls`[(snag (mod i 4) moons) /apps/(scot %ud i) 'read' ~2024.1.1])
+  =/  comets=shared:ls
+    %+  turn  (gulf 1 host-cap:ls)
+    |=(i=@ud `entry:ls`[comet-a /apps/(scot %ud i) 'read' ~2024.1.1])
+  ;:  weld
+    ::  every moon is full, a fifth one too, and so is their planet
+    (expect-eq !>(&) !>((host-full:ls many (snag 0 moons) /apps/new)))
+    (expect-eq !>(&) !>((host-full:ls many ~signec-wicdev-wisryt /apps/new)))
+    (expect-eq !>(&) !>((host-full:ls many ~wicdev-wisryt /apps/new)))
+    ::  a re-share of an entry the moon itself holds still lands
+    (expect-eq !>(|) !>((host-full:ls many (snag 0 moons) /apps/'4')))
+    ::  but not a path only a sibling moon holds: that is a new entry
+    (expect-eq !>(&) !>((host-full:ls many (snag 0 moons) /apps/'1')))
+    ::  another planet, and another planet's moon, are not full
+    (expect-eq !>(|) !>((host-full:ls many ~sampel-palnet /apps/new)))
+    (expect-eq !>(|) !>((host-full:ls many ~doznec-sampel-palnet /apps/new)))
+    ::  one under the cap is not full
+    (expect-eq !>(|) !>((host-full:ls (slag 1 many) (snag 0 moons) /apps/new)))
+    ::  all comets share one budget
+    (expect-eq !>(&) !>((host-full:ls comets comet-b /apps/new)))
+    (expect-eq !>(|) !>((host-full:ls comets ~nec /apps/new)))
+  ==
+::  a folder share is file roads only: each page's code that is not
+::  sensitive, each folder's index, and never a dir road
+++  test-folder-roads
+  =/  at=path  /apps/lattice/page/work
+  =/  all=(list [p=path page=?])
+    ~[[/plain &] [/secret &] [/sub |] [/sub/deep &] [/sub/hid &]]
+  =/  sens=(set path)  (sy ~[/secret /sub/hid])
+  =/  code  |=(p=path `*`[%& %& (weld at p) %code])
+  =/  ix    |=(p=path `*`[%& %& (weld at p) %'dir-index'])
+  =/  rd  (folder-roads:ls at all sens |)
+  =/  ed  (folder-roads:ls at all sens &)
+  ;:  weld
+    %+  expect-eq
+      !>(`(set *)`(sy ~[(code /plain) (code /sub/deep) (ix ~) (ix /sub)]))
+    !>(peek.rd)
+    (expect-eq !>(`(set *)`~) !>(make.rd))
+    ::  edit writes the pages, never an index
+    (expect-eq !>(peek.rd) !>(peek.ed))
+    (expect-eq !>(`(set *)`(sy ~[(code /plain) (code /sub/deep)])) !>(make.ed))
+    ::  no dir road, and nothing of a sensitive page
+    (expect !>((levy ~(tap in peek.ed) |=(r=* ?=([%& %& *] r)))))
+    (expect !>(!(~(has in peek.ed) (code /secret))))
+    (expect !>(!(~(has in peek.ed) (code /sub/hid))))
+    (expect !>(!(~(has in peek.ed) `*`[%& %| at])))
+    ::  no road reaches a sensitive page, by the rule the grants are read with
+    (expect !>(!(lien ~(tap in peek.ed) |=(r=* (grant-covers:ls r (weld at /secret) |)))))
+    (expect !>(!(lien ~(tap in make.ed) |=(r=* (grant-covers:ls r (weld at /secret) &)))))
+    ::  an empty folder is its index alone
+    (expect-eq !>(`(set *)`(sy ~[(ix ~)])) !>(peek:(folder-roads:ls at ~ ~ &)))
+    (expect-eq !>(`(set *)`~) !>(make:(folder-roads:ls at ~ ~ &)))
+  ==
+::  a group save unshares a folder when its last page went, or its line did
+::  a folder line is taken out only by a save that was shown it: one that
+::  holds its index line (`seen`). A list read before the folder was
+::  shared, or before folder lines were listed, leaves it shared.
+++  test-folder-out
+  ;:  weld
+    (expect !>((folder-out:ls & | | | |)))
+    (expect !>((folder-out:ls & & & | &)))
+    (expect !>(!(folder-out:ls & & & | |)))
+    (expect !>(!(folder-out:ls & & & & &)))
+    (expect !>(!(folder-out:ls & & | | &)))
+    (expect !>(!(folder-out:ls | | | | |)))
+    (expect !>((folder-out:ls | | & | &)))
+    (expect !>(!(folder-out:ls | | & | |)))
+    (expect !>(!(folder-out:ls | | & & &)))
+  ==
+::  the index line the group list gives with each folder line
+++  test-index-line
+  =/  pre=path  /apps/x/page
+  ;:  weld
+    (expect-eq !>(`(unit path)``/a/b) !>((index-line:ls pre /apps/x/page/a/b/dir-index)))
+    (expect-eq !>(`(unit path)`~) !>((index-line:ls pre /apps/x/page/dir-index)))
+    (expect-eq !>(`(unit path)`~) !>((index-line:ls pre /apps/x/page/a/b)))
+    (expect-eq !>(`(unit path)`~) !>((index-line:ls pre /apps/x/page/a/code)))
+    (expect-eq !>(`(unit path)`~) !>((index-line:ls pre /apps/y/a/dir-index)))
+  ==
 ++  test-pax-ok
   ;:  weld
     (expect-eq !>(&) !>((pax-ok:ls /apps/lattice/page/a/code)))
@@ -1106,5 +1195,56 @@
     (expect-eq !>(~) !>((code-page:ls /reports/article)))
     (expect-eq !>(~) !>((code-page:ls /code)))
     (expect-eq !>(~) !>((code-page:ls /reports/article/data)))
+  ==
+::  +folder-roads excludes root page [~ &] and grants dir-index to dual-role subfolders
+++  test-folder-roads-dual-role
+  =/  at=path  /apps/x/page/docs
+  =/  all=(list [p=path page=?])
+    :~  [~ &]
+        [/sub &]
+        [/sub/child &]
+        [/sub/deep/leaf &]
+        [/empty |]
+    ==
+  =/  rd  (folder-roads:ls at all ~ |)
+  =/  ed  (folder-roads:ls at all ~ &)
+  =/  cd  |=(r=path [%& %& (weld at r) %code])
+  =/  ix  |=(r=path [%& %& (weld at r) %'dir-index'])
+  ;:  weld
+    ::  at/code is never granted by a folder share
+    (expect !>(!(~(has in peek.rd) (cd ~))))
+    (expect !>(!(~(has in make.ed) (cd ~))))
+    ::  dual-role subfolders get both code and dir-index roads
+    (expect !>((~(has in peek.rd) (cd /sub))))
+    (expect !>((~(has in peek.rd) (ix /sub))))
+    (expect !>((~(has in peek.rd) (ix /sub/deep))))
+    (expect !>((~(has in peek.rd) (ix /empty))))
+    (expect !>((~(has in peek.rd) (ix ~))))
+    ::  dir-index stays read-only even in edit mode
+    (expect !>(!(~(has in make.ed) (ix /sub))))
+    (expect !>((~(has in make.ed) (cd /sub/child))))
+  ==
+::  +holds-trim keeps a page sharing the same path as a shared folder
+++  test-holds-trim-same-path-page
+  =/  ps=(map path @t)
+    %-  my
+    :~  [/apps/x/page/foo/'dir-index' 'read']
+        [/apps/x/page/foo/code 'read']
+        [/apps/x/page/foo/bar/code 'read']
+    ==
+  =/  tr=(map path @t)  (holds-trim:ls ps)
+  ;:  weld
+    (expect-eq !>(`'read') !>((~(get by tr) /apps/x/page/foo/'dir-index')))
+    (expect-eq !>(`'read') !>((~(get by tr) /apps/x/page/foo/code)))
+    (expect-eq !>(~) !>((~(get by tr) /apps/x/page/foo/bar/code)))
+  ==
+::  +ask-note never splits a multibyte UTF-8 character
+++  test-ask-note-utf8
+  =/  pad=@t  (crip (reap 279 'a'))
+  =/  note=@t  (cat 3 pad 'é')
+  =/  cut=@t  (ask-note:ls note)
+  ;:  weld
+    (expect-eq !>(279) !>((met 3 cut)))
+    (expect-eq !>(pad) !>(cut))
   ==
 --

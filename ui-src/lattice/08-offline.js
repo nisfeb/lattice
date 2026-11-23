@@ -146,14 +146,23 @@
     return d.invoke(cmd, args || {});
   };
 
+  //  The rev each queued edit claims, by page, as far as this window has
+  //  seen the queue: a live save that has no rev of its own claims it
+  //  (casQ, 35-pages.js), as the replay of that edit would. Kept in step
+  //  wherever the queue is read, written or emptied of a page.
+  const qClaim = new Map();
+  const qSee = (q) => {
+    if (q && q.name && !q.op && q.kind !== 'know' && !q.isNew && isRev(qBase(q))) qClaim.set(q.name, qBase(q));
+    return q;
+  };
   const offGet = async (name) => {
-    if (!qrust()) return idbGet(name);
+    if (!qrust()) return qSee(await idbGet(name));
     //  one file, not the whole queue: this runs on every page open
-    try { return (await qcall('queue_get', { name })) || null; } catch { return null; }
+    try { return qSee((await qcall('queue_get', { name })) || null); } catch { return null; }
   };
   const offAll = async () => {
-    if (!qrust()) return idbAll();
-    try { return (await qcall('queue_list')) || []; } catch { return []; }
+    if (!qrust()) return (await idbAll()).map(qSee);
+    try { return ((await qcall('queue_list')) || []).map(qSee); } catch { return []; }
   };
   //  the one that must never lie: it reports whether the edit is really down
   const offPut = async (rec) => {
@@ -164,6 +173,7 @@
     return ok;
   };
   const offDel = async (name) => {
+    qClaim.delete(name);
     if (!qrust()) await idbDel(name);
     else { try { await qcall('queue_del', { name }); } catch {} }
     // a queue entry leaves the queue because it LANDED (or was dropped with
@@ -187,6 +197,7 @@
     let v = null;
     try { v = await offGet(q.name); } catch {}
     const kept = !!v && !sameRec(v, q);
+    if (!v) qClaim.delete(q.name);
     //  the create it rode on has landed, so the newer text is a plain edit
     if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: null, bv: 1 });
     if (kept) offKept = true;
@@ -440,7 +451,23 @@
   //  the rev a queued edit claims, null for none. A record from before
   //  `bv` used 0 for no claim; now 0 is a page's first rev
   const qBase = (q) => (isRev(q.baseRev) && (q.bv || q.baseRev) ? q.baseRev : null);
-  async function enqueueSave(name, kind, body, isNew, rn, rev = curRev, drawn = false) {
+  //  The record itself, put in place of the one queued for the page.
+  //  -> whether it is down, and the rev it claims.
+  //
+  //  The claim is the rev of the copy the edit was made on, because the
+  //  ship keeps the other side's text only for an edit that claims a rev
+  //  the page has moved past. With no claim it writes over whatever is
+  //  there. So, in order: the rev the editor read (`rev`), the rev the
+  //  edit already queued for the page forked from (this one is typed on
+  //  top of it, on a paint that claims nothing), the rev of the copy that
+  //  was painted (paintRev, 35-pages.js: a page opened while the ship is
+  //  away is never read fresh). The first two used to be all there was,
+  //  and the second was dropped for the first, so a page opened or
+  //  reopened offline replayed with no claim.
+  //  An edit with none of the three is `blind`, and the replay gets the
+  //  other side kept another way (blindClaim).
+  //  `stash`: flushHidden's copy (stashSave below).
+  async function queueEdit(name, kind, body, isNew, rn, rev, drawn, stash) {
     // the queue coalesces by name, and the 2s autosave calls this WITHOUT
     // the create flag — overwriting a queued create as a plain edit would
     // route the replay around the 409 create protection and let an offline
@@ -449,15 +476,57 @@
     // the same way.
     let prev = null;
     try { prev = await offGet(name); } catch {}
+    const create = !!isNew || !!(prev && prev.isNew);
     //  behind a job the timed-out writes still land, so a base would only
     //  flag our own text as a conflict: no base claim, as a live save
     //  so does a replay: the editor's rev is from before the replayed text
-    if (tooBig(body)) { st(TOO_BIG, false); return false; }
-    const queued = await offPut({ name, kind, body, baseRev: jobWait || replaying || !isRev(rev) ? null : rev, bv: 1,
-      isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(), ...qStamp(),
+    //  A replay on the wire carries this page's record when there is one
+    //  queued for it: the editor's rev is from before that text, so no
+    //  claim. An edit of another page has its own editor's rev.
+    const none = jobWait || (replaying && !!prev);
+    const from = isRev(rev) ? baseFor(name, rev)
+      : prev && !prev.isNew && isRev(qBase(prev)) ? qBase(prev) : baseFor(name, paintRev.get(name));
+    const base = none || !isRev(from) ? null : from;
+    const queued = await offPut({ name, kind, body, baseRev: base, bv: 1,
+      ...(base === null && !none && !create && !(prev && !prev.isNew && !prev.blind) && { blind: 1 }),
+      //  a real queued edit stays one: this window's drain passes a stash by
+      ...(stash && (!prev || prev.stash) && { stash: 1 }),
+      isNew: create, queuedAt: Date.now(), ...qStamp(),
       drawn: !!drawn || !!(prev && prev.drawn),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
+    if (queued) { if (isRev(base)) qClaim.set(name, base); else qClaim.delete(name); }
+    return { queued, base };
+  }
+  // The open page's unsaved text, put in the queue without a word: the
+  // page is being hidden or let go while its save waits for a fresh read
+  // (flushHidden, 35-pages.js), and a phone may never run this tab again.
+  // The next launch replays it. This window does not (ownStash): while it
+  // lives, the editor still holds the text and saves it itself, and a
+  // replay beside that would be a second writer. Back in front, the copy
+  // is dropped (unstash).
+  let stashed = false;
+  //  the text this window put in the queue as a stash, by page: another
+  //  window may replay it, and then the page's head is this window's own
+  //  text, not a change by someone else (settleRun)
+  const ownStashed = new Map();
+  const ownStash = (q) => !!q.stash && q.win === winId;
+  async function stashSave(name, kind, body, rev) {
+    if (tooBig(body)) return;
+    stashed = true;
+    ownStashed.set(name, body);
+    const { queued, base } = await queueEdit(name, kind, body, false, null, rev, false, true);
+    //  the boot snapshot too: the next launch paints from it
+    if (queued) snapPage(name, { body, kind, rev: base });
+  }
+  async function unstash() {
+    if (!stashed) return;
+    stashed = false;
+    for (const q of await offAll()) if (ownStash(q)) await offDone(q);
+  }
+  async function enqueueSave(name, kind, body, isNew, rn, rev = curRev, drawn = false) {
+    if (tooBig(body)) { st(TOO_BIG, false); return false; }
+    const { queued, base } = await queueEdit(name, kind, body, isNew, rn, rev, drawn, false);
     const job = saveStalled();
     if (!queued) {
       st(NOT_SAVED, false);
@@ -466,7 +535,7 @@
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
-    snapPage(name, { body, kind, rev: isRev(rev) ? rev : null });
+    snapPage(name, { body, kind, rev: base });
     st(job ? JOB_NOTE : 'saved offline — ' + offCount + ' waiting to sync');
     // truthy either way: 'job' tells the editor which words to show
     return job ? 'job' : true;
@@ -512,7 +581,13 @@
       hay = hay.slice(i + ndl.length);
     }
   }
-  const moveBody = (b, from, to) => (from ? rwWiki(rwRoot(b, '/' + from, '/' + to), from, to) : b);
+  //  A path literal follows the move only in a page of code (hoon, a
+  //  folder's index). In the kinds below the body is the writer's own
+  //  text, where the same bytes are prose and stay as written, as the ship
+  //  does (+move-code, +content-builders). Wikilinks follow in every kind.
+  const PROSE = new Set(['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'geojson', 'scad']);
+  const moveBody = (b, from, to, kind) => (from
+    ? rwWiki(PROSE.has(kind) ? b : rwRoot(b, '/' + from, '/' + to), from, to) : b);
   async function enqueueOp(rec) {
     const stamp = qStamp();
     // mkdir affects no queued save (it carries no content), so the
@@ -521,7 +596,7 @@
     if (rec.op !== 'mkdir') {
       for (const q of await offAll()) {
         if (q.kind === 'know') continue;
-        if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
+        if (rec.op === 'del' && (rec.tree ? under(q.name, rec.name) : q.name === rec.name)) await offDel(q.name);
         if (rec.op === 'move' && under(q.name, rec.from)) {
           await offDel(q.name);
           // drop the CAS claim: a save rebased by a move cannot know the
@@ -535,18 +610,18 @@
           //  rather than written at the new name if the move is refused
           //  a page the user moved has a name the user gave: not drawn
           await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: null, bv: 1,
-            body: moveBody(q.body || '', rec.from, rec.to), via: stamp.id, from: q.name, drawn: false });
+            body: moveBody(q.body || '', rec.from, rec.to, q.kind), via: stamp.id, from: q.name, drawn: false });
         }
       }
       for (const k of [...pageCache.keys()])
-        if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
+        if (rec.op === 'del' && !rec.tree ? k === rec.name : under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
       // the boot snapshot names one page. If that page was just deleted or moved
       // away, the snapshot is stale: the next boot would paint a body whose name
       // no longer resolves in the tree (it reads as "my change reverted"). Drop
       // it so the boot defers to the network instead of painting a ghost.
       try {
         const p = JSON.parse(localStorage.appPage || 'null');
-        if (p && p.name && under(p.name, rec.op === 'del' ? rec.name : rec.from))
+        if (p && p.name && (rec.op === 'del' && !rec.tree ? p.name === rec.name : under(p.name, rec.op === 'del' ? rec.name : rec.from)))
           localStorage.removeItem('appPage');
       } catch {}
     }
@@ -779,7 +854,7 @@
       //  400 rather than a dropped bad record.
       if (o.op !== 'del' && o.op !== 'move' && o.op !== 'mkdir') { await opDel(o._k); continue; }
       const u = o.op === 'del'
-        ? api + '/page-del?name=' + encodeURIComponent(o.name)
+        ? api + '/page-del?name=' + encodeURIComponent(o.name) + (o.tree ? '&tree=1' : '')
         : o.op === 'mkdir'
           ? api + '/folder-new?name=' + encodeURIComponent(o.name)
           : api + '/page-move?from=' + encodeURIComponent(o.from) +
@@ -883,7 +958,31 @@
   // uploads, wrong for replay: a rejected part falls back to per-item
   // saves so a bad record is isolated and kept aside (review gap 3).
   const BATCH_MAX = 4 * 1024 * 1024;
+  //  An edit of a copy whose rev was never known (`blind`, queueEdit) has
+  //  no rev to claim, and the ship writes an edit with no claim over
+  //  whatever it holds. Whether the page changed since cannot be told, so
+  //  the offline policy applies: the edit lands and the other text is
+  //  kept. The ship keeps it for a claim of any rev the page is not at,
+  //  so the page is read and a rev beside its own is claimed: the one
+  //  before it, which a page never returns to. The ship treats a body the
+  //  same as its own as no conflict. -> false when the ship is away.
+  async function blindClaim(q) {
+    let r = null;
+    try { r = await tfetch(api + '/page-source?name=' + encodeURIComponent(q.name), {}, 20000); } catch {}
+    if (shipGone(r)) return false;
+    let d = null;
+    if (r.ok) { try { d = await r.json(); } catch {} }
+    if (d && isRev(d.rev) && !d.link) { q.baseRev = d.rev > 0 ? d.rev - 1 : d.rev + 1; q.bv = 1; }
+    return true;
+  }
+  //  A replayed edit this window queued landed at `it.rev`, and the window's
+  //  buffer for the page holds that text or text typed on top of it. So
+  //  that is the rev its next save claims. Left at the rev from before
+  //  the outage, the next offline edit was flagged against our own text.
+  //  Not another window's record: this one's buffer may not hold it.
+  const landedRev = (q, it) => { if (q && it && q.win === winId) knowRev(q.name, it.rev); };
   async function drainEdits(edits, conflicts) {
+    for (const q of edits) if (q.blind && !(await blindClaim(q))) return false;
     const parts = [];
     let cur = [], bytes = 0;
     for (const q of edits) {
@@ -911,8 +1010,10 @@
         // is named so it can be recovered from history. Apply-and-flag,
         // never silently drop either side
         try {
-          for (const it of ((await r.json()).items || []))
+          ((await r.json()).items || []).forEach((it) => {
             if (it.conflicted) conflicts.push(it.kept || it.name);
+            landedRev(part.find((q) => q.name === it.name), it);
+          });
         } catch {}
         for (const q of part) await offDone(q);
         continue;
@@ -938,6 +1039,7 @@
           try {
             const j = await one.json();
             if (j.conflicted) conflicts.push(j.kept || q.name);
+            landedRev(q, j);
           } catch {}
         // refused as stale or as nothing-goes-there (a link's host moved
         // on, a link where a page was), or as a bad or too large body: the
@@ -972,7 +1074,7 @@
 
   async function drainQueue(proven) {
     const ops = (await opAll()).filter((o) => !isStuck(o));
-    const first = (await offAll()).filter((q) => !isStuck(q));
+    const first = (await offAll()).filter((q) => !isStuck(q) && !ownStash(q));
     if (!first.length && !ops.length) return;
     // a proven-live caller already has a round-trip that answered, so the
     // ship being gone is disproved before the first phase even runs. Clear
@@ -990,7 +1092,7 @@
     let knows = [];
     const saves = async () => {
       const wait = new Set((await opAll()).map((o) => o.id).filter(Boolean));
-      return (await offAll()).filter((q) => !isStuck(q) && !(q.via && wait.has(q.via)));
+      return (await offAll()).filter((q) => !isStuck(q) && !ownStash(q) && !(q.via && wait.has(q.via)));
     };
     const landed = await drainOps(ops, first, conflicts)
       && await (async () => {

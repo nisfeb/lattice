@@ -10,7 +10,7 @@
 ::  json deliberately omits import/import-trashed (they carry a whole know-entry
 ::  and only ever arrive as a noun dart, never as HTTP json).
 ::
-/<  lk  /lib/lattice-know.hoon
+/<  lk  /lib/lattice-know-types.hoon
 =,  format
 |_  act=know-action:lk
 ++  grad  %noun

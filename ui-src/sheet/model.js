@@ -62,7 +62,10 @@ function cellText(src, ps) {
 export function dateSerial(iso, nullDate) {
   const m = /^(-?\d{4,})-(\d\d)-(\d\d)(?:T(\d\d):(\d\d):(\d\d(?:\.\d+)?))?/.exec(iso || '');
   if (!m) return null;
-  const day = Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000;
+  //  year 1 is year 1, not 1901
+  const d = new Date(0);
+  d.setUTCFullYear(+m[1], +m[2] - 1, +m[3]);
+  const day = d.getTime() / 86400000;
   const frac = m[4] ? (+m[4] * 3600 + +m[5] * 60 + +m[6]) / 86400 : 0;
   return day - nullDate + frac;
 }
@@ -133,6 +136,11 @@ function parseCell(src, el, nullDate) {
     } else c.keep += src.slice(k.start, k.end);
   }
   c.text = cellText(src, ps);
+  //  where the paragraphs are in the source. A cell rewritten for its
+  //  style, its place or its formula copies them from there, so a
+  //  hyperlink or a span inside is kept. Only new content (+setCell)
+  //  drops them.
+  if (ps.length) c.ps = ps.map((k) => [k.start, k.end]);
   if (c.vt === 'string') c.v = c.sv !== undefined && !c.err ? c.sv : c.text;
   if (c.vt && c.vt !== 'string' && c.vt !== 'boolean' && (c.v === null || Number.isNaN(c.v))) c.v = 0;
   delete c.sv;
@@ -202,15 +210,34 @@ export function parseFods(text, limits) {
 export const rowCount = (sheet) => sheet.rows.reduce((n, r) => n + r.rep, 0);
 const cellCount = (row) => row.cells.reduce((n, c) => n + c.rep, 0);
 
+//  where each row run starts. A formula over a column reads every row
+//  of it, so the run holding a row is found by bisection over this list
+//  and not by a walk of the runs. The list is made again when the runs
+//  change: whatever splits, adds, removes or resizes a run bumps
+//  sheet.ver (+bumpRows).
+function rowStarts(sheet) {
+  const { rows } = sheet;
+  let ix = sheet.ix;
+  if (!ix || ix.ver !== sheet.ver || ix.n !== rows.length) {
+    const at = new Array(rows.length);
+    let end = 0;
+    for (let i = 0; i < rows.length; i++) { at[i] = end; end += rows[i].rep; }
+    ix = { ver: sheet.ver, n: rows.length, at, end };
+    sheet.ix = ix;
+  }
+  return ix;
+}
+export const bumpRows = (sheet) => { sheet.ver = (sheet.ver || 0) + 1; };
 //  the run holding row r: [index, first row of the run], or null past the end
 function rowRun(sheet, r) {
-  let at = 0;
-  for (let i = 0; i < sheet.rows.length; i++) {
-    const n = sheet.rows[i].rep;
-    if (r < at + n) return [i, at];
-    at += n;
+  const { at, end } = rowStarts(sheet);
+  if (!(r >= 0 && r < end)) return null;
+  let lo = 0, hi = at.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (at[mid] <= r) lo = mid; else hi = mid - 1;
   }
-  return null;
+  return [lo, at[lo]];
 }
 function cellRun(row, c) {
   let at = 0;
@@ -261,7 +288,7 @@ export function ownRow(sheet, r) {
     const last = sheet.rows[sheet.rows.length - 1] || null;
     if (r > have) sheet.rows.push(blankRow(last, r - have));
     sheet.rows.push(blankRow(last, 1));
-    sheet.ver = (sheet.ver || 0) + 1;
+    bumpRows(sheet);
     return sheet.rows[sheet.rows.length - 1];
   }
   const [i, at] = rr;
@@ -276,7 +303,7 @@ export function ownRow(sheet, r) {
   parts.push(mine);
   if (after) parts.push(cloneRow(row, after));
   sheet.rows.splice(i, 1, ...parts);
-  sheet.ver = (sheet.ver || 0) + 1;
+  bumpRows(sheet);
   return mine;
 }
 
@@ -316,9 +343,25 @@ export function setCell(sheet, r, c, val) {
   cell.f = val.f ?? null;
   cell.text = val.text ?? '';
   cell.err = !!val.err;
+  //  the text of a formula that could not be read (book.js +enter). Not
+  //  saved: in the file it is a text cell.
+  cell.bad = !!val.bad;
+  cell.unsure = false;
   if (val.cur !== undefined) cell.cur = val.cur;
   if (cell.vt !== 'currency') delete cell.cur;
   cell.rich = false;
+  cell.ps = null;
+  cell.dirty = true;
+  return cell;
+}
+//  +setUnsure: the formula at (r, c) has a value that is not right (its
+//  calculation stopped at a bound). It is still shown, but saved with no
+//  value, so a file never carries it as if computed.
+export function setUnsure(sheet, r, c) {
+  const row = ownRow(sheet, r);
+  const cell = row && ownCell(row, c);
+  if (!cell || !cell.f) return null;
+  cell.unsure = true;
   cell.dirty = true;
   return cell;
 }
@@ -354,6 +397,11 @@ export function extent(sheet) {
 
 // ── serializing ──────────────────────────────────────────────────────────
 
+//  an attribute value as written. A line break or a tab in one is a
+//  character reference: a reader turns a literal one into a space (XML
+//  1.0, 3.3.3), which would change the text inside a formula.
+export const attrText = (s) => escAttr(s).replace(/\t/g, '&#9;').replace(/\n/g, '&#10;').replace(/\r/g, '&#13;');
+
 //  the text of a cell as <text:p> elements, as LibreOffice writes it:
 //  one per line, runs of spaces as text:s, tabs as text:tab
 function textPs(t) {
@@ -388,12 +436,13 @@ function textPs(t) {
 function cellXml(doc, cell, ind) {
   const name = cell.covered ? 'table:covered-table-cell' : 'table:table-cell';
   let a = '';
-  const put = (k, v) => { a += ` ${k}="${escAttr(String(v))}"`; };
+  const put = (k, v) => { a += ` ${k}="${attrText(String(v))}"`; };
   if (cell.st) put('table:style-name', cell.st);
   for (const [k, raw] of cell.attrs) if (k === 'table:content-validation-name') a += ` ${k}="${raw}"`;
   if (cell.rep > 1) put('table:number-columns-repeated', cell.rep);
   if (cell.f) put('table:formula', cell.f);
-  if (cell.vt) {
+  const unsure = cell.unsure && cell.f;
+  if (cell.vt && !unsure) {
     put('office:value-type', cell.vt);
     if (cell.vt === 'string') {
       if (cell.f) put('office:string-value', cell.err ? '' : cell.v ?? '');
@@ -411,7 +460,7 @@ function cellXml(doc, cell, ind) {
   for (const [k, raw] of cell.attrs) {
     if (!VALUE_ATTRS.has(k) && k !== 'table:content-validation-name') a += ` ${k}="${raw}"`;
   }
-  const ps = textPs(cell.text);
+  const ps = unsure ? [] : cell.ps ? cell.ps.map(([s, e]) => doc.text.slice(s, e)) : textPs(cell.text);
   if (!ps.length && !cell.keep) return `<${name}${a}/>`;
   const pad = '\n' + ' '.repeat(ind + 1);
   return `<${name}${a}>${cell.keep ? pad + cell.keep : ''}${ps.map((p) => pad + p).join('')}\n${' '.repeat(ind)}</${name}>`;

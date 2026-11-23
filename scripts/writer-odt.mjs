@@ -70,6 +70,16 @@ for (const f of files) {
   const back = await importOdt(ab(z));
   check(`${stem} export imports again`, back.text && !parseFodt(back.text).error, back.error);
 }
+{
+  //  root attributes a producer wrote in single quotes, one holding a
+  //  double quote: the export and the import write them in double quotes
+  const src = readFileSync(join(corpus, '01-paragraphs.fodt'), 'utf8')
+    .replace('<office:document ', `<office:document xmlns:q='u"v&amp;w' `).replace(/office:version="([^"]*)"/, "office:version='$1'");
+  const e = exportOdt(src);
+  const back = e.blob ? await importOdt(ab(await blobBytes(e.blob))) : e;
+  check('a single-quoted root attribute holding a double quote exports and imports again', !!back.text && !parseFodt(back.text).error, back.error);
+  check('  with its value', (back.text || '').includes('xmlns:q="u&quot;v&amp;w"'), (back.text || '').slice(0, 300));
+}
 
 // ---------------------------------------------------------------- 4
 {
@@ -150,6 +160,45 @@ z.close()`, withPics]);
   check('its master-page reference follows', t.includes('<style:header><text:p text:style-name="MP1_1">head'));
   check("content.xml's own P1 is untouched", t.includes('<text:p text:style-name="P1">body') && /style:name="P1" style:family="paragraph"><style:text-properties fo:font-weight="bold"/.test(t));
   check('a name that does not clash is kept', t.includes('style:page-layout-name="pm1"') && t.includes('style:name="pm1"'));
+
+  //  the same name in other scopes: a master page, a common style, a
+  //  style of another family, a list style. Only the automatic paragraph
+  //  style both files define is renamed, and only what refers to it
+  const content2 = `<?xml version="1.0" encoding="UTF-8"?><office:document-content ${NS}><office:automatic-styles>`
+    + '<style:style style:name="P1" style:family="paragraph" style:master-page-name="P1"><style:text-properties fo:font-weight="bold"/></style:style>'
+    + '<style:style style:name="T1" style:family="paragraph"/><text:list-style style:name="L1"/>'
+    + '</office:automatic-styles><office:body><office:text><text:p text:style-name="P1">body</text:p></office:text></office:body></office:document-content>';
+  const styles2 = `<?xml version="1.0" encoding="UTF-8"?><office:document-styles ${NS}><office:styles><style:style style:name="P1" style:family="text"/><style:style style:name="Base" style:family="paragraph"/></office:styles><office:automatic-styles>`
+    + '<style:style style:name="P1" style:family="paragraph" style:parent-style-name="P1" style:list-style-name="L1"><style:text-properties fo:font-style="italic"/></style:style>'
+    + '<style:style style:name="T1" style:family="text"><style:text-properties fo:font-style="italic"/></style:style>'
+    + '<style:style style:name="L1" style:family="paragraph" style:parent-style-name="Base"/>'
+    + `<text:list-style style:name='L1'/><style:page-layout style:name="pm1"/></office:automatic-styles>`
+    + '<office:master-styles><style:master-page style:name="P1" style:page-layout-name="pm1" style:next-style-name="P1"><style:header>'
+    + `<text:p text:style-name = 'P1'>head <text:span text:style-name="P1">common</text:span> <text:span text:style-name="T1">auto</text:span></text:p>`
+    + '<text:list text:style-name="L1"><text:list-item><text:p text:style-name="L1">item</text:p></text:list-item></text:list>'
+    + '</style:header></style:master-page></office:master-styles></office:document-styles>';
+  r = await importOdt(await (zipStored([['mimetype', MIME], ['content.xml', content2], ['styles.xml', styles2]])).arrayBuffer());
+  const t2 = r.text || '';
+  check('names shared across scopes import', t2 && !r.error && !parseFodt(t2).error, r.error);
+  check('the clashing automatic paragraph style is renamed, its parent left alone', t2.includes('<style:style style:name="MP1_1" style:family="paragraph" style:parent-style-name="P1" style:list-style-name="ML1_1">'), t2.slice(0, 900));
+  check('the master page keeps its name, and the name of the next', t2.includes('<style:master-page style:name="P1" style:page-layout-name="pm1" style:next-style-name="P1">'));
+  check("  so content.xml's reference to it still holds", t2.includes('style:master-page-name="P1"'));
+  check('a paragraph in the header follows the rename', /<text:p text:style-name ?= ?"MP1_1">head /.test(t2));
+  check('a span naming the common text style of that name does not', t2.includes('<text:span text:style-name="P1">common</text:span>'));
+  check('a text style named like a paragraph style of content.xml is not renamed', t2.includes('<style:style style:name="T1" style:family="text">') && t2.includes('<text:span text:style-name="T1">auto</text:span>'));
+  check('a list style both define is renamed with the list that uses it', t2.includes('<text:list-style style:name="ML1_1"/>') && t2.includes('<text:list text:style-name="ML1_1">'));
+  check('  and the paragraph style of the same name is not', t2.includes('<style:style style:name="L1" style:family="paragraph" style:parent-style-name="Base"/>') && t2.includes('<text:p text:style-name="L1">item</text:p>'));
+  const defs = [...t2.slice(t2.indexOf('<office:automatic-styles>'), t2.indexOf('</office:automatic-styles>')).matchAll(/<(style:style|text:list-style) style:name=["']([^"']*)["'](?: style:family="([^"]*)")?/g)].map((m) => m[1] + ' ' + (m[3] || '') + ' ' + m[2]);
+  check('no two automatic styles of one kind share a name', new Set(defs).size === defs.length, defs.join(', '));
+
+  //  export: an automatic style a master page names in single quotes goes
+  //  into styles.xml with it, as one named in double quotes does
+  const flat = (q) => `<?xml version="1.0" encoding="UTF-8"?><office:document ${NS} office:mimetype="${MIME}"><office:automatic-styles><style:style style:name="MP1" style:family="paragraph"/><style:page-layout style:name="pm1"/></office:automatic-styles>`
+    + `<office:master-styles><style:master-page style:name="Standard" style:page-layout-name=${q}pm1${q}><style:header><text:p text:style-name=${q}MP1${q}>h</text:p></style:header></style:master-page></office:master-styles>`
+    + '<office:body><office:text><text:p>b</text:p></office:text></office:body></office:document>';
+  const inStyles = async (q) => { const z = new TextDecoder().decode(await blobBytes(exportOdt(flat(q)).blob)); const at = z.indexOf('<office:document-styles'); return at >= 0 && z.slice(at, z.indexOf('</office:document-styles>')).includes('<style:style style:name="MP1"'); };
+  check('an exported styles.xml holds the style its header uses', await inStyles('"'));
+  check("  and when the header names it in single quotes", await inStyles("'"));
 
   //  Basic: a module listed many times is read once, and what Basic holds
   //  counts toward the document cap

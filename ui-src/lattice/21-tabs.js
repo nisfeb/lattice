@@ -112,6 +112,11 @@
     if (dirty && !mine &&
         !(await askConfirm('discard unsaved changes to ' + label + '?', 'discard')))
       return false;
+    //  an edit the rich editor could not write is in no buffer, so the
+    //  snap would not hold it and parking would drop it unasked
+    if (mine && !writerSync() &&
+        !(await askConfirm('the last edit to ' + label + ' could not be written. discard it?', 'discard')))
+      return false;
     t.snap = mine ? snapNow() : null;
     if (mine) gGhostKeep(t);
     // the buffer lives in the snap now. The next open's own guardDirty must
@@ -406,6 +411,8 @@
     // a page never saved, with text: its first save names it, and only
     // the live editor can make that save (parkDoc's flush)
     if (dirty && mine && !t.key && t.kind === 'page') return false;
+    // an edit the rich editor could not write: the slow way asks (parkDoc)
+    if (mine && !writerSync()) return false;
     if (mine) { t.snap = snapNow(); gGhostKeep(t); }
     dirty = false;
     clearTimeout(autoTimer);

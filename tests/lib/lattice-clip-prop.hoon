@@ -46,7 +46,7 @@
     ?+  which  "script"
       %1  "style"
       %2  "iframe"
-      %3  "form"
+      %3  "template"
     ==
   (crip :(weld "<p>zzkeep</p><" nm ">zzqqxx" inner "</" nm ">"))
 ::
@@ -97,8 +97,9 @@
 ::
 ::  ── C4: executable content stays dropped ────────────────────────────────────
 ::
-::  +drop-tag drops <script>/<style>/<iframe>/<form> together with their
-::  content. The archived markdown is later rendered, so content that escaped
+::  +drop-tag drops <script>/<style>/<iframe>/<template> together with their
+::  content. (A <form> is no longer dropped: it holds the article on many
+::  pages. Its text is prose, and its controls go on their own.) The archived markdown is later rendered, so content that escaped
 ::  from inside a <script> would be a stored payload in whatever renders it.
 ::
 ::  Stated one-sided on purpose. "the payload is gone" is a property; "and the

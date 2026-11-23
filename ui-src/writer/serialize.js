@@ -166,11 +166,13 @@ class Writer {
     const start = n.attrs.src ? n.attrs.src[0] : null;
     let out = open('table:table', n.attrs.xattrs);
     let prev;
-    if (n.attrs.pre) {
+    const w = n.firstChild ? n.firstChild.childCount : 1;
+    //  the column declarations it came with, while its rows are as wide
+    //  as they were under them: a copy of some of its columns is not
+    if (n.attrs.pre && n.attrs.pre.cols === w) {
       out += n.attrs.pre.text;
       prev = n.attrs.pre.end;
     } else {
-      const w = n.firstChild ? n.firstChild.childCount : 1;
       out += '\n' + ' '.repeat(indent + 1) + (w > 1
         ? `<table:table-column table:number-columns-repeated="${w}"/>` : '<table:table-column/>');
       prev = -1;
@@ -354,8 +356,11 @@ function text(t, ws) {
     } else {
       let j = i;
       while (j < t.length && t[j] !== ' ' && t[j] !== '\t' && t[j] !== '\n' && t[j] !== '\r' && t[j] !== '\v') j++;
-      out += escText(t.slice(i, j));
-      ws.prevSpace = false; ws.atStart = false;
+      //  a run of nothing but characters XML cannot hold writes nothing,
+      //  so it is not text between the spaces around it
+      const e = escText(t.slice(i, j));
+      out += e;
+      if (e) { ws.prevSpace = false; ws.atStart = false; }
       i = j;
     }
   }
@@ -374,10 +379,11 @@ export function unbalanced(doc) {
     for (const m of n.attrs.raw.matchAll(PAIR)) {
       const el = m[1];
       const an = NAME[el] || 'text:name';
-      const v = new RegExp(`\\s${an}="([^"]*)"`).exec(m[2]);
+      //  the raw XML is as the file wrote it, in either kind of quote
+      const v = new RegExp(`\\s${an}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(m[2]);
       if (!v) continue;
       const kind = el.replace(/-(start|end)$/, '');
-      const k = kind + ' "' + decode(v[1]) + '"';
+      const k = kind + ' "' + decode(v[1] ?? v[2]) + '"';
       count.set(k, (count.get(k) || 0) + (el.endsWith('-end') ? -1 : 1));
     }
     return false;

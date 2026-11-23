@@ -522,4 +522,309 @@
     %+  expect-eq  !>(`(unit @ud)``2)
     !>((coalesce-victim ~[[3 (add t0 ~m2) 'w-b'] [2 (add t0 ~m1) 'w-b'] [1 t0 'w-a']] ~m5))
   ==
+::  the sensitive mark fails closed: any case of the key, a quoted key or
+::  value, CRLF, a value that is not plainly a no, and a block that is
+::  odd or has no closing fence all leave the entry sensitive
+++  test-sensitive-closed
+  =/  s  |=(b=@t (sensitive [b ~2026.1.1 ~ ~]))
+  ;:  weld
+    (expect !>((s '---\0aSensitive: yes\0a---\0ax')))
+    (expect !>((s '---\0aSENSITIVE: True\0a---\0ax')))
+    (expect !>((s '---\0asensitive: "yes"\0a---\0ax')))
+    (expect !>((s '---\0asensitive: \'yes\'\0a---\0ax')))
+    (expect !>((s '---\0a"sensitive": yes\0a---\0ax')))
+    (expect !>((s '---\0d\0aSensitive: "Yes"\0d\0a---\0d\0ax')))
+    (expect !>((s '--- \0asensitive: yes\0a---\0ax')))
+    (expect !>((s '---\0asensitive: yes # keep\0a---\0ax')))
+    (expect !>((s '---\0asensitive: maybe\0a---\0ax')))
+    (expect !>((s '---\0asensitive: no\0asensitive: yes\0a---\0ax')))
+    (expect !>((s '---\0atags:\0a  - a\0asensitive: yes\0a---\0ax')))
+    (expect !>((s '---\0asensitive: yes\0astray words\0a---\0ax')))
+    (expect !>((s '---\0asensitive: yes\0ano closing fence')))
+    ::  a plain no, and a line that is not in a block at the top
+    (expect !>(!(s '---\0asensitive: No\0a---\0ax')))
+    (expect !>(!(s '---\0asensitive: "false"\0a---\0ax')))
+    (expect !>(!(s '---\0asensitive:\0a---\0ax')))
+    (expect !>(!(s 'sensitive: yes')))
+    (expect !>(!(s 'x\0a---\0asensitive: yes\0a---')))
+    (expect !>(!(s '---\0aa: b\0a---\0asensitive: yes')))
+  ==
+::  a front-matter rewrite never lowers the mark, whatever the block's shape
+++  test-rewrite-keeps-sensitive
+  =/  s  |=(b=@t (sensitive [b ~2026.1.1 ~ ~]))
+  =/  shapes=(list @t)
+    :~  '---\0d\0asensitive: yes\0d\0a---\0d\0asecret'
+        '---\0aSensitive: yes\0a---\0asecret'
+        '---\0asensitive: "yes"\0a---\0asecret'
+        '---\0asensitive: yes\0astray words\0a---\0asecret'
+        '---\0asensitive: yes\0asecret with no closing fence'
+        '---\0atags:\0a  - a\0asensitive: yes\0a---\0asecret'
+    ==
+  ^-  tang
+  %-  zing
+  ^-  (list tang)
+  %+  turn  shapes
+  |=  b=@t
+  ^-  tang
+  ;:  weld
+    (expect !>((s b)))
+    (expect !>((s (front-set b 'verified' '2026-11-22'))))
+    (expect !>((s (front-set (front-set b 'verified' '2026-11-22') 'verified-by' 'k'))))
+    (expect !>((s (front-set b 'superseded-by' '/a/b'))))
+    (expect !>((s (front-set b 'superseded-by' ''))))
+    (expect !>((s (front-set (front-set b 'source' 'user') 'kept' '2026-11-22'))))
+    (expect !>((s (raise-sens b))))
+    ::  the secret is still there, to the byte
+    (expect !>(?=(^ (find "secret" (trip (front-set b 'verified' '2026-11-22'))))))
+  ==
+::  +front reads the shapes +sensitive does: CRLF, and a key in any case
+++  test-front-shapes
+  ;:  weld
+    (expect-eq !>([`(list [k=@t v=@t])`~[['author' 'a'] ['sensitive' 'yes']] 'x']) !>((front '---\0d\0aAuthor: a\0d\0asensitive:\09yes\0d\0a---\0d\0ax')))
+    (expect-eq !>(`(unit @t)``'/a') !>((meta-get meta:(front '---\0aSuperseded-By: /a\0a---\0ax') 'superseded-by')))
+    ::  a rule under a rule is no empty block: the rule under it is text
+    (expect-eq !>([`(list [k=@t v=@t])`~ '---\0a---\0ax']) !>((front '---\0a---\0ax')))
+    ::  two rules with prose between them are body, not front matter
+    (expect-eq !>([`(list [k=@t v=@t])`~ '---\0aIntro line\0a---\0arest']) !>((front '---\0aIntro line\0a---\0arest')))
+    ::  a list, a comment and a continued value do not stop a block
+    (expect-eq !>('x') !>(rest:(front '---\0atags:\0a  - a\0a- b\0a# c\0at: |\0a  two\0a\0a---\0ax')))
+  ==
+::  +front-set changes the one field's line and passes every other byte
+++  test-front-set-bytes
+  =/  y=@t  '---\0atags:\0a  - a\0a  - b\0a# a comment\0atitle: |\0a  two\0a  lines\0a---\0ax\0a'
+  ;:  weld
+    %+  expect-eq
+      !>('---\0atags:\0a  - a\0a  - b\0a# a comment\0atitle: |\0a  two\0a  lines\0averified: 2026-11-22\0a---\0ax\0a')
+    !>((front-set y 'verified' '2026-11-22'))
+    %+  expect-eq  !>('---\0aa: 1\0averified: new\0ab:  2\0a---\0ax')
+    !>((front-set '---\0aa: 1\0aVerified: old\0ab:  2\0a---\0ax' 'verified' 'new'))
+    %+  expect-eq  !>('---\0aa: 1\0a---\0ax')
+    !>((front-set '---\0aa: 1\0asuperseded-by: /o\0a---\0ax' 'superseded-by' ''))
+    (expect-eq !>(y) !>((front-set y 'superseded-by' '')))
+    %+  expect-eq  !>('---\0d\0aa: 1\0d\0averified: d\0d\0a---\0d\0ax\0d\0a')
+    !>((front-set '---\0d\0aa: 1\0d\0a---\0d\0ax\0d\0a' 'verified' 'd'))
+    (expect-eq !>('---\0averified: d\0a---\0aplain') !>((front-set 'plain' 'verified' 'd')))
+    (expect-eq !>('plain') !>((front-set 'plain' 'superseded-by' '')))
+    (expect-eq !>('---\0averified: d\0a---\0a---\0a---\0ax') !>((front-set '---\0a---\0ax' 'verified' 'd')))
+    %+  expect-eq  !>('---\0averified: d\0a---\0a---\0aIntro line\0a---\0arest')
+    !>((front-set '---\0aIntro line\0a---\0arest' 'verified' 'd'))
+    ::  a value cannot add a line
+    (expect-eq !>('---\0averified-by: ab\0a---\0ax') !>((front-set 'x' 'verified-by' 'a\0d\0ab')))
+    ::  and it reads back
+    (expect-eq !>(`(unit @t)``'d') !>((meta-get meta:(front (front-set y 'verified' 'd')) 'verified')))
+    (expect-eq !>('x\0a') !>(rest:(front (front-set y 'verified' 'd'))))
+    (expect-eq !>(`(unit @t)`~) !>((meta-get meta:(front (front-set (front-set y 'kept' 'd') 'kept' '')) 'kept')))
+  ==
+::  an empty superseded-by line names no successor: the entry is live
+++  test-empty-superseded-by
+  =/  e=know-entry  ['---\0asuperseded-by:\0a---\0athe fact' ~2026.1.1 ~ ~]
+  ;:  weld
+    (expect-eq !>(`(unit @t)`~) !>((superseded e)))
+    (expect-eq !>(`(unit @t)``'/a') !>((superseded ['---\0asuperseded-by: /a\0a---\0ax' ~2026.1.1 ~ ~])))
+    (expect-eq !>(1) !>((lent (search ~[[/k e]] ~ 'fact' |))))
+    (expect-eq !>(|) !>(sup:(row-of /k e)))
+  ==
+::  a quoted query returns every entry that holds the phrase, also when
+::  the phrase is made of no ranked word: punctuation, stop words, part
+::  of a word, or text in the front matter
+++  test-phrase-search-keeps-matches
+  =/  es=(list [key=path e=know-entry])
+    :~  [/a ['we use C++ here' ~2026.1.1 ~ ~]]
+        [/b ['to be or not to be' ~2026.1.1 ~ ~]]
+        [/c ['the released build' ~2026.1.1 ~ ~]]
+        [/d ['---\0aauthor: sam\0a---\0anotes' ~2026.1.1 ~ ~]]
+        [/e ['nothing relevant' ~2026.1.1 ~ ~]]
+        [/f ['the build was released, and a released build ships' ~2026.1.1 ~ ~]]
+    ==
+  =/  ks  |=(q=@t (turn (search es ~ q |) |=(h=hit key.h)))
+  ;:  weld
+    (expect-eq !>(`(list path)`~[/a]) !>((ks '"C++"')))
+    (expect-eq !>(`(list path)`~[/b]) !>((ks '"to be"')))
+    (expect-eq !>(`(list path)`~[/c /f]) !>((sort (ks '"relea"') aor)))
+    (expect-eq !>(`(list path)`~[/d]) !>((ks '"author: sam"')))
+    (expect-eq !>(`(list path)`~) !>((ks '"absent phrase"')))
+    ::  an entry found only verbatim is a full match, not a weak one
+    (expect-eq !>(`(list @ud)`~[100]) !>((turn (search es ~ '"C++"' |) |=(h=hit strength.h))))
+    ::  ranked matches still come first, in rank order
+    (expect-eq !>(2) !>((lent (ks '"released build"'))))
+    ::  an unquoted query is ranked only
+    (expect-eq !>(`(list path)`~) !>((ks 'relea')))
+    ::  the snippet is the line that holds the phrase
+    (expect-eq !>('we use C++ here') !>((snippet 'first line\0awe use C++ here\0alast' '"c++"')))
+  ==
+::  a word in a script past ASCII is a term, and typographic punctuation
+::  and a no-break space separate words as their ASCII twins do
+++  test-non-ascii-terms
+  =/  es=(list [key=path e=know-entry])
+    :~  [/n ['Привет мир' ~2026.1.1 ~ ~]]
+        [/o ['an “alpha” entry' ~2026.1.1 ~ ~]]
+    ==
+  ;:  weld
+    (expect-eq !>(`(list @t)`~['привет' 'мир']) !>((terms 'привет мир')))
+    (expect-eq !>(`(list @t)`~['café' 'über']) !>((terms 'Café über')))
+    (expect-eq !>(`(list @t)`~['alpha' 'beta' 'gamma']) !>((terms '“alpha”—beta… gamma')))
+    (expect-eq !>(`(list @t)`~['alpha' 'beta']) !>((terms 'alpha\c2\a0beta')))
+    (expect-eq !>(`(list @t)`~['日本語' 'メモ']) !>((terms '日本語、メモ。')))
+    ::  a word past ASCII is not stemmed: its last bytes are no suffix
+    (expect-eq !>(`(list @t)`~['ぁぁぁぁ']) !>((terms 'ぁぁぁぁ')))
+    (expect-eq !>(`(list path)`~[/n]) !>((turn (search es ~ 'мир' |) |=(h=hit key.h))))
+    (expect-eq !>(`(list path)`~[/o]) !>((turn (search es ~ 'alpha' |) |=(h=hit key.h))))
+  ==
+::  a long line with no ASCII in it still gives a snippet, cut between
+::  characters
+++  test-snippet-non-ascii
+  =/  line=@t  (crip (zing (reap 100 "日")))
+  =/  s=tape  (trip (snippet line 'zeta'))
+  ;:  weld
+    (expect !>((gth (lent s) 100)))
+    (expect-eq !>("日") !>((scag 3 s)))
+    (expect-eq !>("...") !>((slag (sub (lent s) 3) s)))
+    (expect-eq !>(0) !>((mod (sub (lent s) 3) 3)))
+    (expect-eq !>("ab") !>((flop (drop-high (flop ~['a' 'b' `@tD`0xe6 `@tD`0x97])))))
+    (expect-eq !>("日") !>((flop (drop-high (flop (weld "日" ~[`@tD`0xe6 `@tD`0x97]))))))
+  ==
+::  a block with a stray line in it is still front matter, as it was
+::  before CRLF support: the odd line is skipped and the fields are read.
+::  So an entry stays superseded, and a save keeps its fields.
+++  test-front-odd-line
+  =/  olds=(list @t)
+    :~  '---\0acreated: 2025-01-01\0asource: user\0asuperseded-by: /new/key\0atags: [\0a  a\0a]\0a---\0aold prose'
+        '---\0acreated: 2025-01-01\0asource: user\0asuperseded-by: /new/key\0asummary: a long value\0acontinued on the next line\0a---\0aold prose'
+        '---\0acreated: 2025-01-01\0asource: user\0asuperseded-by: /new/key\0adraft\0a---\0aold prose'
+    ==
+  ^-  tang
+  %-  zing
+  ^-  (list tang)
+  %+  turn  olds
+  |=  b=@t
+  =/  e=know-entry  [b ~2026.1.1 ~ ~]
+  =/  st=@t  (stamp `e 'new prose' 'key1' 'agent' ~2026.11.22 |)
+  ;:  weld
+    (expect-eq !>(`(unit @t)``'/new/key') !>((superseded e)))
+    (expect-eq !>('user') !>((source-of e)))
+    (expect-eq !>('old prose') !>(rest:(front b)))
+    (expect-eq !>(`(unit @t)``'/new/key') !>((superseded [st ~2026.1.1 ~ ~])))
+    (expect-eq !>(`(unit @t)``'2025-01-01') !>((meta-get meta:(front st) 'created')))
+    (expect-eq !>('new prose') !>(rest:(front st)))
+  ==
+::  a save over an entry passes its block through, every byte of it but
+::  the lines of the fields the save sets
+++  test-stamp-keeps-block
+  =/  old=know-entry
+    ['---\0acreated: 2025-01-02\0atags:\0a  - a\0a  - b\0a# note\0aauthor: someone\0a---\0aold fact' ~2026.1.1 ~ ~]
+  =/  st=@t  (stamp `old 'new fact' 'k' 'agent' ~2026.10.4 |)
+  ;:  weld
+    %+  expect-eq
+      !>('---\0acreated: 2025-01-02\0atags:\0a  - a\0a  - b\0a# note\0aauthor: k\0asource: agent\0averified: 2026-10-04\0averified-by: k\0a---\0anew fact')
+    !>(st)
+    ::  a closing fence at the very end gets its line end
+    %+  expect-eq  !>('---\0aa: 1\0acreated: 2026-01-01\0averified: 2026-10-04\0a---\0anew')
+    !>((stamp `['---\0aa: 1\0a---' ~2026.1.1 ~ ~] 'new' '' '' ~2026.10.4 |))
+    ::  CRLF stays CRLF
+    %+  expect-eq  !>('---\0d\0aa: 1\0d\0acreated: 2026-01-01\0d\0averified: 2026-10-04\0d\0a---\0d\0anew')
+    !>((stamp `['---\0d\0aa: 1\0d\0a---\0d\0aold' ~2026.1.1 ~ ~] 'new' '' '' ~2026.10.4 |))
+    ::  an entry with no front matter gets a block, as before
+    %+  expect-eq  !>('---\0acreated: 2026-01-01\0averified: 2026-10-04\0a---\0anew')
+    !>((stamp `['old' ~2026.1.1 ~ ~] 'new' '' '' ~2026.10.4 |))
+  ==
+::  prose that opens with a rule is not front matter, colon or not, and a
+::  save keeps any block of its own that holds what the stamp cannot
+++  test-front-prose-colon
+  =/  sent=@t  '---\0aNote: intro\0a---\0arest'
+  ;:  weld
+    (expect-eq !>([`(list [k=@t v=@t])`~ '---\0asee http://x for it\0a---\0abody']) !>((front '---\0asee http://x for it\0a---\0abody')))
+    (expect-eq !>([`(list [k=@t v=@t])`~ '---\0aIntro line\0a---\0arest']) !>((front '---\0aIntro line\0a---\0arest')))
+    ::  a block of its own is kept whole when it names a field the
+    ::  stamp does not write and the entry did not have
+    (expect-eq !>(sent) !>((prose-of sent ~)))
+    (expect !>(?=(^ (find "Note: intro" (trip (stamp ~ (prose-of sent ~) 'k' 'agent' ~2026.10.4 |))))))
+    ::  one of the stamp's own fields only, or the entry's block sent
+    ::  back as it was read, is the stamp's to write
+    (expect-eq !>('rest') !>((prose-of '---\0aauthor: me\0averified: x\0a---\0arest' ~)))
+    =/  old=know-entry  ['---\0atags:\0a  - a\0acreated: 2025-01-01\0a---\0aold' ~2026.1.1 ~ ~]
+    (expect-eq !>('new') !>((prose-of '---\0atags:\0a  - a\0acreated: 2025-01-01\0a---\0anew' `old)))
+    (expect-eq !>('plain') !>((prose-of 'plain' ~)))
+  ==
+::  a rule right under the opening one does not close the block: the
+::  reader before CRLF support read on, and the mark it saw still counts
+++  test-sensitive-line-two
+  =/  s  |=(b=@t (sensitive [b ~2026.1.1 ~ ~]))
+  ;:  weld
+    (expect !>((s '---\0a---\0asensitive: yes\0a---\0abody')))
+    (expect !>((s '---\0a--- \0asensitive: yes\0a---\0abody')))
+    (expect !>((s '---\0a---\09\0asensitive: yes\0a---\0abody')))
+    (expect !>((s (front-set '---\0a---\0asensitive: yes\0a---\0abody' 'verified' 'd'))))
+    (expect-eq !>(`(unit @t)``'/x') !>((superseded ['---\0a---\0asuperseded-by: /x\0a---\0abody' ~2026.1.1 ~ ~])))
+  ==
+::  an entry the reader before CRLF support read as superseded still is
+::  (a block it closed at a line of four dashes)
+::  an entry only the reader before CRLF support reads as superseded stays
+::  superseded through a keyed save
+++  test-stamp-keeps-superseded-v1
+  =/  old=know-entry
+    ['---\0asuperseded-by: /up/supnew\0acreated: 2020-01-01\0a---x\0abody' ~2026.1.1 ~ ~]
+  =/  st=@t  (stamp `old 'edited body' 'bob' '' ~2026.10.4 |)
+  ;:  weld
+    (expect-eq !>(`(unit @t)``'/up/supnew') !>((superseded old)))
+    (expect-eq !>(`(unit @t)``'/up/supnew') !>((superseded [st ~2026.1.1 ~ ~])))
+    %+  expect-eq  !>(`(unit @t)``'/y')
+    !>((superseded [(stamp `['---\0asuperseded-by: /y\0a----\0ax' ~2026.1.1 ~ ~] 'p' '' '' ~2026.10.4 &) ~2026.1.1 ~ ~]))
+    ::  a live entry stays live
+    (expect-eq !>(`(unit @t)`~) !>((superseded [(stamp `['---\0acreated: 2020-01-01\0a---x\0abody' ~2026.1.1 ~ ~] 'p' 'bob' '' ~2026.10.4 |) ~2026.1.1 ~ ~])))
+  ==
+++  test-superseded-like-before
+  ;:  weld
+    (expect-eq !>(`(unit @t)``'/x') !>((superseded ['---\0asuperseded-by: /x\0a----\0abody' ~2026.1.1 ~ ~])))
+    (expect-eq !>(`(unit @t)``'/x') !>((superseded ['---\0asuperseded-by: /x\0a---x\0abody' ~2026.1.1 ~ ~])))
+    (expect-eq !>(`(unit @t)`~) !>((superseded ['---\0asuperseded-by: /x\0abody, never closed' ~2026.1.1 ~ ~])))
+    (expect-eq !>(`(unit @t)`~) !>((superseded ['x\0a---\0asuperseded-by: /x\0a---' ~2026.1.1 ~ ~])))
+  ==
+::  +front-put: clearing last key drops fences; updating deduplicates repeated keys
+++  test-front-put-empty-and-dedup
+  ;:  weld
+    (expect-eq !>('hello') !>((front-put '---\0aauthor: a\0a---\0ahello' 'author' '')))
+    (expect-eq !>('---\0aauthor: c\0a---\0ahello') !>((front-put '---\0aauthor: a\0aauthor: b\0a---\0ahello' 'author' 'c')))
+    (expect-eq !>('---\0aauthor: c\0akeep: yes\0a---\0ahello') !>((front-put '---\0aauthor: a\0akeep: yes\0aauthor: b\0a---\0ahello' 'author' 'c')))
+  ==
+::  +recall-json with k=0 must not leak linked[].via from unshown hits
+++  test-recall-json-k-zero
+  =/  es=(map path know-entry)
+    %-  my
+    :~  [/secret ['---\0asensitive: yes\0a---\0azebra quokka, see [[/pub]]' ~2026.1.1 ~ ~]]
+        [/pub ['public note' ~2026.1.1 ~ ~]]
+    ==
+  =/  hs  (search ~(tap by es) ~ 'zebra quokka' |)
+  =/  out=tape  (trip (en:json:html (recall-json es hs 'zebra quokka' 0)))
+  ;:  weld
+    (expect !>(?=(~ (find "/secret" out))))
+    (expect !>(?=(~ (find "/pub" out))))
+  ==
+::  +key-save-check raises sensitive on new entries written by a tainted key
+++  test-key-save-check-tainted-new
+  =/  r1  (key-save-check ~ & & 'plain body')
+  =/  r2  (key-save-check ~ & | 'plain body')
+  ;:  weld
+    (expect !>(&(?=(%& -.r1) (sens-text p.r1))))
+    (expect-eq !>([%& 'plain body']) !>(r2))
+  ==
+::  +lint-run detects supersession cycles in bad-super
+++  test-lint-supersede-cycles
+  =/  es=(list [path know-entry])
+    :~  [/a ['---\0asuperseded-by: /b\0a---\0aa' ~2026.1.1 ~ ~]]
+        [/b ['---\0asuperseded-by: /a\0a---\0ab' ~2026.1.1 ~ ~]]
+        [/c ['---\0asuperseded-by: /a\0a---\0ac' ~2026.1.1 ~ ~]]
+        [/self ['---\0asuperseded-by: /self\0a---\0as' ~2026.1.1 ~ ~]]
+        [/ok1 ['---\0asuperseded-by: /ok2\0a---\0ao1' ~2026.1.1 ~ ~]]
+        [/ok2 ['live target' ~2026.1.1 ~ ~]]
+    ==
+  =/  bad=(set path)
+    (silt (turn bad-super:(lint-run es ~2026.2.1) |=([k=path *] k)))
+  ;:  weld
+    (expect !>((~(has in bad) /a)))
+    (expect !>((~(has in bad) /b)))
+    (expect !>((~(has in bad) /c)))
+    (expect !>((~(has in bad) /self)))
+    (expect !>(!(~(has in bad) /ok1)))
+    (expect !>(!(~(has in bad) /ok2)))
+  ==
 --
