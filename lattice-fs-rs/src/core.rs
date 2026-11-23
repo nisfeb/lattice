@@ -682,13 +682,22 @@ impl GrubberyFs {
         } else {
             self.proj.kind_for_ext(ext)
         };
+        // An existing file in the vtree already knows its exact projection rel
+        // (for example a child page `a/a` inside a pure folder `a` keeps rel
+        // `a/a`, while page `a` with children keeps rel `a`).
+        if let Some(VEntry { kind: VKind::File, node: Some(n) }) = s.vt.get(path) {
+            return (n.rel.clone(), kind);
+        }
         if !parent.is_empty() {
             let parent_leaf = parent.rsplit('/').next().unwrap();
             if stem == parent_leaf {
-                if let Some(VEntry { kind: VKind::Dir, node: Some(n) }) =
-                    s.vt.get(&format!("/{}", parent))
-                {
-                    if n.is_page {
+                let parent_vpath = format!("/{parent}");
+                if let Some(VEntry { kind: VKind::Dir, node }) = s.vt.get(&parent_vpath) {
+                    let is_page = node.as_ref().is_some_and(|n| n.is_page);
+                    let under = format!("{parent_vpath}/");
+                    let has_children =
+                        s.vt.keys().any(|k| k.starts_with(&under) && !s.scratch.contains_key(k));
+                    if is_page || has_children {
                         return (parent.to_string(), kind);
                     }
                 }
@@ -1654,6 +1663,19 @@ fn apply_swap(s: &mut State, snap: Snapshot) {
                 cache_take(&mut cache, &mut bytes, &n.rel);
                 body_rev.remove(&n.rel);
                 claim_rev.remove(&n.rel);
+                // If a lagging snapshot still listed a page-only-deleted file
+                // `<dir>/<leaf>.<ext>`, keep its parent dir as a pure folder.
+                if gone.kind == VKind::File {
+                    let dir = format!("/{}", n.rel);
+                    if path.rsplit_once('/').is_some_and(|(d, _)| d == dir) {
+                        if let Some(VEntry { kind: VKind::Dir, node: Some(dn) }) = vt.get_mut(&dir)
+                        {
+                            if dn.rel == n.rel && dn.is_page {
+                                demote_to_pure_dir(dn);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1702,6 +1724,17 @@ fn apply_swap(s: &mut State, snap: Snapshot) {
     s.since = since;
     s.beacon_seen = beacon;
     s.warm = true;
+}
+
+/// Turn a page-with-children directory node into a pure folder node once its
+/// own page body has been removed via page-only delete.
+fn demote_to_pure_dir(n: &mut Node) {
+    n.is_dir = true;
+    n.is_page = false;
+    n.kind.clear();
+    n.size = 0;
+    n.readonly = false;
+    n.rev = None;
 }
 
 /// Build the virtual tree from a node list (port of the Python _build). A rel
@@ -1862,7 +1895,8 @@ impl GrubberyFs {
     }
 
     fn unlink_in(&self, parent: u64, name: &str) -> Result<(), i32> {
-        let (path, rel) = {
+        let page_only = self.proj.page_only_delete();
+        let (path, rel, had_others) = {
             let mut s = self.st.lock().unwrap();
             let parent_path = path_of(&s, parent).ok_or(libc::ENOENT)?;
             let path = join(&parent_path, name);
@@ -1875,22 +1909,25 @@ impl GrubberyFs {
                 return Ok(());
             }
             let (rel, _) = self.rel_kind_of(&s, &path);
-            // rm of one file must never take other pages with it. The page is
-            // held: its file leaves the listing now, and its delete goes once
-            // nothing is under it. So `rm -r` of its folder works whichever
-            // side of its own file the pages under it sort.
-            if self.holds_others(&s, &path) {
+            let had_others = self.holds_others(&s, &path);
+            // rm of one file must never take other pages with it. On a ship
+            // without page-only delete, the page is held: its file leaves the
+            // listing now, and its delete goes once nothing is under it. So
+            // `rm -r` of its folder works whichever side of its own file the
+            // pages under it sort. On a ship with page-only delete, send the
+            // delete right away since descendant pages stay intact.
+            if had_others && !page_only {
                 s.held.insert(rel.clone());
                 s.vt.remove(&path);
                 s.to_ino.remove(&path);
                 s.cache_take(&rel);
                 return Ok(());
             }
-            (path, rel)
+            (path, rel, had_others)
         };
-        // Match release_held's invariant: ask the ship before a destructive
-        // delete so a child created remotely cannot be wiped silently.
-        if self.ship_holds_others(&rel).map_err(|e| e.errno)? {
+        // Match release_held's invariant on legacy ships: ask the ship before a
+        // destructive delete so a child created remotely cannot be wiped silently.
+        if !page_only && self.ship_holds_others(&rel).map_err(|e| e.errno)? {
             let mut s = self.st.lock().unwrap();
             s.held.insert(rel.clone());
             s.vt.remove(&path);
@@ -1907,14 +1944,31 @@ impl GrubberyFs {
             s.to_ino.remove(&path);
             // a page made again under this name must not read as this one
             s.cache_take(&rel);
-            // the page's own file inside the folder of its name: the folder
-            // went with it, so its rmdir has nothing left to send
-            if let Some(dir) =
-                path.rsplit_once('/').map(|(d, _)| d.to_string()).filter(|d| *d == format!("/{rel}"))
-            {
-                s.mutated(&dir, false);
-                s.vt.remove(&dir);
-                s.ghost_dirs.insert(dir, Instant::now());
+            // Check whether `path` was the page's own file inside the folder of
+            // its name (`/<rel>/<leaf>.<ext>`).
+            let own_dir = path
+                .rsplit_once('/')
+                .map(|(d, _)| d.to_string())
+                .filter(|d| *d == format!("/{rel}"));
+            if let Some(dir) = own_dir {
+                let under = format!("/{rel}/");
+                let still_has_others = s
+                    .vt
+                    .keys()
+                    .any(|k| k.starts_with(&under) && !s.scratch.contains_key(k));
+                if had_others || still_has_others {
+                    // Page-only delete kept descendant pages intact, leaving
+                    // this directory as a pure folder.
+                    if let Some(VEntry { kind: VKind::Dir, node: Some(n) }) = s.vt.get_mut(&dir) {
+                        demote_to_pure_dir(n);
+                    }
+                } else {
+                    // Nothing was under it, so the folder went with the page
+                    // and its rmdir has nothing left to send.
+                    s.mutated(&dir, false);
+                    s.vt.remove(&dir);
+                    s.ghost_dirs.insert(dir, Instant::now());
+                }
             }
         }
         self.release_held();
@@ -3012,6 +3066,10 @@ mod tests {
         panic_dump: AtomicBool,
         // rels for which needs_read_for_write() returns true (simulating links).
         needs_read_rels: Mutex<HashSet<String>>,
+        // Whether this fake ship advertises page-only delete.
+        page_only_del: AtomicBool,
+        // Folders left behind after a page-only delete (`page-gone` marker).
+        page_gone: Mutex<HashSet<String>>,
     }
 
     impl Fake {
@@ -3167,6 +3225,11 @@ mod tests {
             // never deadlock against each other.
             let mut nodes = self.nodes.lock().unwrap();
             let rev = match nodes.iter_mut().find(|n| n.rel == rel) {
+                Some(n) if n.is_dir => {
+                    // Creating a page at a pure folder's path turns it back into a page.
+                    *n = page(rel, kind, data.len() as u64);
+                    n.rev
+                }
                 Some(n) => {
                     n.size = data.len() as u64;
                     n.rev = n.rev.map(|r| r + 1);
@@ -3178,6 +3241,7 @@ mod tests {
                 }
             };
             drop(nodes);
+            self.page_gone.lock().unwrap().remove(rel);
             self.bodies.lock().unwrap().insert(rel.to_string(), data.to_vec());
             self.changed.lock().unwrap().insert(rel.to_string());
             Ok(rev)
@@ -3188,9 +3252,35 @@ mod tests {
         }
         fn delete(&self, rel: &str) -> Result<(), PErr> {
             self.log.lock().unwrap().push(format!("delete {rel}"));
+            if self.page_only_del.load(Ordering::SeqCst) {
+                let under = format!("{rel}/");
+                let mut nodes = self.nodes.lock().unwrap();
+                let has_kids = nodes.iter().any(|n| n.rel.starts_with(&under));
+                let mut gone = self.page_gone.lock().unwrap();
+                if has_kids && gone.contains(rel) {
+                    return Err(PErr::new(libc::EEXIST, "fake: page-gone-kept"));
+                }
+                if has_kids {
+                    // Page-only delete removes the page and leaves a pure folder.
+                    if let Some(n) = nodes.iter_mut().find(|n| n.rel == rel) {
+                        *n = vdir(rel);
+                    }
+                    gone.insert(rel.to_string());
+                } else {
+                    nodes.retain(|n| n.rel != rel);
+                    gone.remove(rel);
+                }
+                drop(gone);
+                drop(nodes);
+                self.bodies.lock().unwrap().remove(rel);
+                return Ok(());
+            }
             self.nodes.lock().unwrap().retain(|n| n.rel != rel);
             self.bodies.lock().unwrap().remove(rel);
             Ok(())
+        }
+        fn page_only_delete(&self) -> bool {
+            self.page_only_del.load(Ordering::SeqCst)
         }
         fn mv(&self, s: &str, d: &str) -> Result<(), PErr> {
             self.log.lock().unwrap().push(format!("mv {s} {d}"));
@@ -4733,6 +4823,212 @@ mod tests {
         wait_until("refresh_pending cleared after panic", || {
             !fs4.st.lock().unwrap().refresh_pending
         });
+    }
+
+    #[test]
+    fn page_only_del_unlinks_page_directly_and_keeps_pure_folder_and_children() {
+        let f = Fake::new(
+            vec![page("a", "md", 3), page("a/child", "md", 3)],
+            &[("a", "top"), ("a/child", "kid")],
+        );
+        f.page_only_del.store(true, Ordering::SeqCst);
+        let fs = warm_fs(f.clone());
+        let a_ino = ino_of(&fs, "/a");
+
+        // Unlink /a/a.md on a modern ship: sends delete directly, does not hold,
+        // demotes /a to a pure folder, keeps /a/child.md intact.
+        fs.unlink_in(a_ino, "a.md").unwrap();
+        assert_eq!(f.log(), vec!["delete a"]);
+        {
+            let s = fs.st.lock().unwrap();
+            assert!(s.held.is_empty(), "modern ship must not use s.held");
+            assert!(!s.vt.contains_key("/a/a.md"), "page file is gone");
+            assert!(s.vt.contains_key("/a/child.md"), "child page stays");
+            let dir = s.vt.get("/a").expect("/a stays as pure folder");
+            assert!(dir.kind == VKind::Dir);
+            let dn = dir.node.as_ref().expect("dir node present");
+            assert!(dn.is_dir && !dn.is_page, "/a must be demoted to pure folder");
+            assert!(
+                s.recent.get("/a/a.md").is_some_and(|(_, alive)| !alive),
+                "/a/a.md recorded as deleted in s.recent"
+            );
+            assert!(!s.ghost_dirs.contains_key("/a"), "/a is not a ghost dir");
+        }
+
+        // A lagging snapshot that still contains page "a" must not resurrect
+        // /a/a.md and must keep /a demoted to a pure folder.
+        {
+            let mut s = fs.st.lock().unwrap();
+            let lagging = build_vt(&[page("a", "md", 3), page("a/child", "md", 3)], |_| "md");
+            apply_swap(
+                &mut s,
+                Snapshot {
+                    vt: lagging,
+                    cache: HashMap::from([
+                        ("a".to_string(), b"top".to_vec()),
+                        ("a/child".to_string(), b"kid".to_vec()),
+                    ]),
+                    bytes: 6,
+                    since: None,
+                    beacon: None,
+                },
+            );
+            assert!(!s.vt.contains_key("/a/a.md"), "lagging swap must not resurrect /a/a.md");
+            assert!(!s.read_cache.contains_key("a"), "deleted body must not stay cached");
+            let dn = s.vt.get("/a").unwrap().node.as_ref().unwrap();
+            assert!(dn.is_dir && !dn.is_page, "lagging swap must keep /a as a pure folder");
+        }
+
+        // Unmount and remount against the same ship: /a is a pure folder with
+        // /a/child.md and no resurrected /a/a.md.
+        let fs_remount = warm_fs(f.clone());
+        {
+            let s = fs_remount.st.lock().unwrap();
+            assert!(!s.vt.contains_key("/a/a.md"), "remount must not resurrect /a/a.md");
+            assert!(s.vt.contains_key("/a/child.md"), "remount keeps /a/child.md");
+            let dn = s.vt.get("/a").unwrap().node.as_ref().unwrap();
+            assert!(dn.is_dir && !dn.is_page);
+        }
+    }
+
+    #[test]
+    fn page_only_del_rm_r_works_in_both_orders_without_409() {
+        // Order 1: parent file first, then child, then rmdir.
+        let f1 = Fake::new(
+            vec![page("a", "md", 3), page("a/child", "md", 3)],
+            &[("a", "top"), ("a/child", "kid")],
+        );
+        f1.page_only_del.store(true, Ordering::SeqCst);
+        let fs1 = warm_fs(f1.clone());
+        let a_ino = ino_of(&fs1, "/a");
+        fs1.unlink_in(a_ino, "a.md").unwrap();
+        // rmdir while child still exists returns ENOTEMPTY (never sends 409 delete).
+        assert_eq!(fs1.rmdir_in(1, "a"), Err(libc::ENOTEMPTY));
+        fs1.unlink_in(a_ino, "child.md").unwrap();
+        fs1.rmdir_in(1, "a").unwrap();
+        assert_eq!(f1.log(), vec!["delete a", "delete a/child", "delete a"]);
+        assert!(f1.nodes.lock().unwrap().is_empty(), "folder and page-gone marker are gone");
+        assert!(fs1.st.lock().unwrap().held.is_empty());
+
+        // Order 2: child first, then parent file, then rmdir.
+        let f2 = Fake::new(
+            vec![page("a", "md", 3), page("a/child", "md", 3)],
+            &[("a", "top"), ("a/child", "kid")],
+        );
+        f2.page_only_del.store(true, Ordering::SeqCst);
+        let fs2 = warm_fs(f2.clone());
+        let a_ino2 = ino_of(&fs2, "/a");
+        fs2.unlink_in(a_ino2, "child.md").unwrap();
+        fs2.unlink_in(a_ino2, "a.md").unwrap();
+        fs2.rmdir_in(1, "a").unwrap();
+        // When child went first, unlink of a.md took the empty folder too, so
+        // rmdir hits ghost_dirs and sends no duplicate delete.
+        assert_eq!(f2.log(), vec!["delete a/child", "delete a"]);
+        assert!(f2.nodes.lock().unwrap().is_empty());
+        assert!(fs2.st.lock().unwrap().held.is_empty());
+    }
+
+    #[test]
+    fn page_only_del_recreate_and_atomic_save_create_fresh_page_with_new_true() {
+        let dir = scratch_dir("pod-recreate");
+        let f = Fake::new(
+            vec![page("a", "md", 3), page("a/child", "md", 3)],
+            &[("a", "old"), ("a/child", "kid")],
+        );
+        f.page_only_del.store(true, Ordering::SeqCst);
+        let fs = quick(warm_fs(f.clone()), &dir);
+        let a_ino = ino_of(&fs, "/a");
+
+        // 1. Delete /a/a.md, then create and write /a/a.md -> fresh page "a" with new=true.
+        fs.unlink_in(a_ino, "a.md").unwrap();
+        assert!(fs.st.lock().unwrap().held.is_empty());
+        let (_, _, fh) = fs.create_in(a_ino, "a.md").unwrap();
+        assert!(fs.st.lock().unwrap().handles[&fh].new, "recreate must set new=true");
+        write_through(&fs, fh, b"hi\n");
+        fs.release_fh(fh).unwrap();
+        assert_eq!(ship_body(&f, "a"), b"hi\n");
+        assert!(f.log().contains(&"write a md hi\n new=true".to_string()), "{:?}", f.log());
+        assert!(!f.bodies.lock().unwrap().contains_key("a/a"), "must recreate a, not a/a");
+
+        // 2. Delete /a/a.md again, then touch /a/a.md (empty create) -> new=true cleanly.
+        fs.unlink_in(a_ino, "a.md").unwrap();
+        let (_, _, efh) = fs.create_in(a_ino, "a.md").unwrap();
+        assert!(fs.st.lock().unwrap().handles[&efh].new);
+        fs.release_fh(efh).unwrap();
+        assert!(f.log().contains(&"write a md  new=true".to_string()), "{:?}", f.log());
+
+        // 3. Delete /a/a.md again, then atomic-save via temp rename -> fresh page "a" with new=true.
+        fs.unlink_in(a_ino, "a.md").unwrap();
+        let (_, _, tfh) = fs.create_in(a_ino, "a.md~").unwrap();
+        write_through(&fs, tfh, b"atomic\n");
+        fs.release_fh(tfh).unwrap();
+        fs.rename_in(a_ino, "a.md~", a_ino, "a.md", RenameFlags::empty()).unwrap();
+        assert_eq!(ship_body(&f, "a"), b"atomic\n");
+        assert!(f.log().contains(&"write a md atomic\n new=true".to_string()), "{:?}", f.log());
+        assert!(!f.bodies.lock().unwrap().contains_key("a/a"), "atomic save must target a");
+
+        // 4. After remounting a pure folder /a with /a/child, touch /a/a.md still targets "a".
+        fs.unlink_in(a_ino, "a.md").unwrap();
+        let fs2 = quick(warm_fs(f.clone()), &dir);
+        let a_ino2 = ino_of(&fs2, "/a");
+        let (_, _, fh2) = fs2.create_in(a_ino2, "a.md").unwrap();
+        assert!(fs2.st.lock().unwrap().handles[&fh2].new);
+        write_through(&fs2, fh2, b"remounted\n");
+        fs2.release_fh(fh2).unwrap();
+        assert_eq!(ship_body(&f, "a"), b"remounted\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rel_kind_of_distinguishes_existing_child_page_and_empty_pure_folder() {
+        // Pure folder "a" holding an existing child page "a/a" and another child "a/kid",
+        // plus an empty pure folder "empty".
+        let f = Fake::new(
+            vec![
+                vdir("a"),
+                page("a/a", "md", 2),
+                page("a/kid", "md", 2),
+                vdir("empty"),
+            ],
+            &[("a/a", "aa"), ("a/kid", "kk")],
+        );
+        let fs = warm_fs(f.clone());
+        let s = fs.st.lock().unwrap();
+        assert_eq!(
+            fs.rel_kind_of(&s, "/a/a.md"),
+            ("a/a".into(), "md".into()),
+            "existing child page a/a inside pure folder a keeps its own rel"
+        );
+        assert_eq!(
+            fs.rel_kind_of(&s, "/empty/empty.md"),
+            ("empty/empty".into(), "md".into()),
+            "empty pure folder does not hijack empty/empty.md to parent rel"
+        );
+    }
+
+    #[test]
+    fn page_only_del_false_keeps_legacy_held_fallback_and_true_deletes_with_remote_child() {
+        // Legacy ship (page_only_del = false): holds when remote child exists.
+        let f_old = Fake::new(vec![page("demo", "md", 3)], &[("demo", "old")]);
+        let fs_old = warm_fs(f_old.clone());
+        f_old.nodes.lock().unwrap().push(page("demo/late", "md", 4));
+        f_old.bodies.lock().unwrap().insert("demo/late".into(), b"late".to_vec());
+        fs_old.unlink_in(1, "demo.md").unwrap();
+        assert!(f_old.log().is_empty(), "legacy ship must hold instead of deleting");
+        assert!(fs_old.st.lock().unwrap().held.contains("demo"));
+
+        // Modern ship (page_only_del = true): deletes demo directly and keeps demo/late.
+        let f_new = Fake::new(vec![page("demo", "md", 3)], &[("demo", "old")]);
+        f_new.page_only_del.store(true, Ordering::SeqCst);
+        let fs_new = warm_fs(f_new.clone());
+        f_new.nodes.lock().unwrap().push(page("demo/late", "md", 4));
+        f_new.bodies.lock().unwrap().insert("demo/late".into(), b"late".to_vec());
+        fs_new.unlink_in(1, "demo.md").unwrap();
+        assert_eq!(f_new.log(), vec!["delete demo"]);
+        assert!(fs_new.st.lock().unwrap().held.is_empty());
+        assert!(f_new.bodies.lock().unwrap().contains_key("demo/late"), "remote child survives");
+        assert!(!f_new.bodies.lock().unwrap().contains_key("demo"), "parent page is deleted");
     }
 }
 

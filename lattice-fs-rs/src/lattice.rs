@@ -3,6 +3,7 @@
 //! err via /x/…/err?data), the kind<->ext table, and the empty-body seed.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde_json::Value;
@@ -24,6 +25,10 @@ pub struct LatticeProjection {
     // a link is the server's cache rev, not the owner's, so a writer's
     // claim from it is never sent: only a claim in `bases` is.
     links: Mutex<HashSet<String>>,
+    // Whether the ship advertises page-only delete (`"page_only_del": true`
+    // in page-tree / page-dump responses). Defaults to false until a listing
+    // says otherwise.
+    page_only_del: AtomicBool,
 }
 
 impl LatticeProjection {
@@ -35,6 +40,7 @@ impl LatticeProjection {
             root: root.trim_matches('/').to_string(),
             bases: Mutex::new(HashMap::new()),
             links: Mutex::new(HashSet::new()),
+            page_only_del: AtomicBool::new(false),
         })
     }
 
@@ -61,12 +67,26 @@ impl LatticeProjection {
         path.strip_prefix(&format!("{}/", self.root)).map(str::to_string)
     }
 
-    /// Drop the read revs of a page and everything under it (a delete or a
-    /// move): a link made there later starts with no claim of its own.
+    /// Drop the read revs of a page and everything under it (a subtree delete):
+    /// a link made there later starts with no claim of its own.
     fn forget(&self, name: &str) {
         let under = format!("{name}/");
         self.bases.lock().unwrap().retain(|k, _| k != name && !k.starts_with(&under));
         self.links.lock().unwrap().retain(|k| k != name && !k.starts_with(&under));
+    }
+
+    /// Drop the read rev of a single page without touching descendants (used
+    /// when page-only delete leaves descendant links alive).
+    fn forget_one(&self, name: &str) {
+        self.bases.lock().unwrap().remove(name);
+        self.links.lock().unwrap().remove(name);
+    }
+
+    /// Record server capabilities advertised at the top level of page-tree and
+    /// page-dump JSON responses. Missing or non-bool values default to false.
+    fn note_capabilities(&self, v: &Value) {
+        let pod = v.get("page_only_del").and_then(|b| b.as_bool()).unwrap_or(false);
+        self.page_only_del.store(pod, Ordering::Release);
     }
 
     /// A move: the claims of `from` and everything under it go to `to`,
@@ -141,6 +161,7 @@ impl Projection for LatticeProjection {
             .get("nodes")
             .and_then(|n| n.as_array())
             .ok_or_else(|| PErr::new(libc::EIO, "page-tree: no nodes"))?;
+        self.note_capabilities(&v);
         self.note_links(nodes);
         let mut out = Vec::with_capacity(nodes.len());
         for n in nodes {
@@ -240,6 +261,7 @@ impl Projection for LatticeProjection {
             .filter(|t| !t.is_empty())
             .map(str::to_string);
         let (nodes, bodies) = parse_dump(&v)?;
+        self.note_capabilities(&v);
         if let Some(ns) = v.get("nodes").and_then(|n| n.as_array()) {
             self.note_links(ns);
         }
@@ -345,9 +367,18 @@ impl Projection for LatticeProjection {
     }
 
     fn delete(&self, rel: &str) -> Result<(), PErr> {
-        self.t.post("/apps/lattice/page-del", &[("name", &self.full(rel))], b"")?;
-        self.forget(&self.full(rel));
+        let name = self.full(rel);
+        self.t.post("/apps/lattice/page-del", &[("name", &name)], b"")?;
+        if self.page_only_delete() {
+            self.forget_one(&name);
+        } else {
+            self.forget(&name);
+        }
         Ok(())
+    }
+
+    fn page_only_delete(&self) -> bool {
+        self.page_only_del.load(Ordering::Acquire)
     }
 
     fn mv(&self, src: &str, dst: &str) -> Result<(), PErr> {
@@ -728,7 +759,6 @@ mod tests {
     // ---------- the nexus routes, over a scripted transport ----------
 
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
@@ -1225,5 +1255,101 @@ mod tests {
         p.dump().unwrap();
         assert!(p.needs_read_for_write("l"), "a link must fetch via page-source on writable open");
         assert!(!p.needs_read_for_write("local"), "a local page can open from cache");
+    }
+
+    #[test]
+    fn page_only_del_capability_parses_from_page_tree_and_page_dump() {
+        // Starts false until a ship response advertises page_only_del: true.
+        let (_, p) = lp(
+            "",
+            vec![
+                ok(r#"{"nodes":[],"page_only_del":true}"#),
+                ok(r#"{"nodes":[],"page_only_del":false}"#),
+                ok(r#"{"nodes":[]}"#),
+                ok(r#"{"nodes":[],"page_only_del":"yes"}"#),
+            ],
+        );
+        assert!(!p.page_only_delete(), "defaults to false before any listing");
+        p.list().unwrap();
+        assert!(p.page_only_delete(), "page-tree page_only_del: true enables capability");
+        p.list().unwrap();
+        assert!(!p.page_only_delete(), "page-tree page_only_del: false clears capability");
+        p.list().unwrap();
+        assert!(!p.page_only_delete(), "omitted page_only_del defaults to false");
+        p.list().unwrap();
+        assert!(!p.page_only_delete(), "non-bool page_only_del defaults to false");
+
+        // Same on page-dump, plus 404 fallback to page-tree.
+        let (_, p) = lp(
+            "",
+            vec![
+                ok(r#"{"nodes":[],"page_only_del":true}"#),
+                ok(r#"{"nodes":[],"page_only_del":false}"#),
+                ok(r#"{"nodes":[]}"#),
+                ok(r#"{"nodes":[],"page_only_del":1}"#),
+                bad(404),
+                ok(r#"{"nodes":[],"page_only_del":true}"#),
+            ],
+        );
+        assert!(!p.page_only_delete());
+        p.dump().unwrap();
+        assert!(p.page_only_delete(), "page-dump page_only_del: true enables capability");
+        p.dump().unwrap();
+        assert!(!p.page_only_delete(), "page-dump page_only_del: false clears capability");
+        p.dump().unwrap();
+        assert!(!p.page_only_delete(), "omitted page_only_del on dump defaults to false");
+        p.dump().unwrap();
+        assert!(!p.page_only_delete(), "non-bool page_only_del on dump defaults to false");
+        p.dump().unwrap();
+        assert!(p.page_only_delete(), "404 fallback to page-tree picks up page_only_del: true");
+    }
+
+    #[test]
+    fn page_only_delete_preserves_descendant_link_claims_while_legacy_clears_subtree() {
+        let src = r#"{"kind":"md","body":"child","rev":7,"link":{"host":"~nec","path":"/x"}}"#;
+        // Modern ship: deleting parent page "a" preserves descendant link "a/l".
+        let (rec, p) = lp(
+            "",
+            vec![
+                ok(r#"{"nodes":[{"path":"a","page":true,"kind":"md","body":"p"},
+                    {"path":"a/l","page":true,"kind":"md","body":"child","rev":7,
+                     "link":{"host":"~nec","path":"/x","mode":"edit"}}],
+                    "page_only_del":true}"#),
+                ok(src),
+                ok("{}"),
+                ok("{}"),
+            ],
+        );
+        p.dump().unwrap();
+        assert!(p.page_only_delete());
+        p.read("a/l").unwrap();
+        p.delete("a").unwrap();
+        assert!(p.needs_read_for_write("a/l"), "descendant link must remain tracked");
+        p.write("a/l", "md", b"edited", false).unwrap();
+        assert_eq!(
+            rec.log()[3],
+            r#"POST /apps/lattice/page-save?name=a/l&type=md&base=7 "edited""#,
+            "descendant link claim must survive page-only delete of parent"
+        );
+
+        // Legacy ship: deleting "a" clears the whole subtree including "a/l".
+        let (rec, p) = lp(
+            "",
+            vec![
+                ok(r#"{"nodes":[{"path":"a","page":true,"kind":"md","body":"p"},
+                    {"path":"a/l","page":true,"kind":"md","body":"child","rev":7,
+                     "link":{"host":"~nec","path":"/x","mode":"edit"}}]}"#),
+                ok(src),
+                ok("{}"),
+                ok("{}"),
+            ],
+        );
+        p.dump().unwrap();
+        assert!(!p.page_only_delete());
+        p.read("a/l").unwrap();
+        p.delete("a").unwrap();
+        assert!(!p.needs_read_for_write("a/l"), "legacy subtree delete clears descendant link");
+        p.write("a/l", "md", b"fresh", false).unwrap();
+        assert_eq!(rec.log()[3], r#"POST /apps/lattice/page-save?name=a/l&type=md "fresh""#);
     }
 }

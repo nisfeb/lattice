@@ -123,6 +123,14 @@ pub trait Projection: Send + Sync {
     fn delete(&self, rel: &str) -> Result<(), PErr>;
     fn mv(&self, src: &str, dst: &str) -> Result<(), PErr>;
 
+    /// Whether `delete(rel)` deletes only the page at `rel` while keeping
+    /// descendant pages intact (leaving `rel` as a pure folder). Older ships
+    /// delete the entire subtree, so the core falls back to holding the page
+    /// until all descendants are gone. Default: false.
+    fn page_only_delete(&self) -> bool {
+        false
+    }
+
     /// Block, calling `on_event` for external changes and for the health of
     /// the watch stream itself. Delegates to the transport. The core trusts
     /// a live stream over its TTL clock, so `Up`/`Down` matter as much as
@@ -261,6 +269,7 @@ mod tests {
         assert_eq!(p.kind_for_ext("MD"), "md");
         assert_eq!(p.kind_for_ext("Txt"), "text");
         assert_eq!(p.kind_for_ext("LATEX"), "tex");
+        assert!(!p.page_only_delete(), "default capability is false for legacy ships");
     }
 
     #[test]

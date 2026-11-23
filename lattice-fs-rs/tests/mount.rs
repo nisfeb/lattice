@@ -840,3 +840,72 @@ fn a_decomposed_name_finds_the_composed_page() {
         assert_eq!(pages, vec!["caf\u{e9}".to_string(), "ok".to_string()]);
     });
 }
+
+/// On a ship advertising `page_only_del: true`, unlinking a parent page's own
+/// file sends the delete right away, keeps descendants intact, leaves the dir
+/// as a pure folder, survives remount without resurrection, supports `rm -r`
+/// in any order, and allows recreating the page cleanly.
+#[test]
+fn page_only_del_ship_deletes_parent_immediately_and_supports_rm_r_and_recreate() {
+    // 1. Direct page-only delete, remount without resurrection, and recreate.
+    let ship = Ship::with(
+        &[
+            ("demo", "md", "parent\n"),
+            ("demo/child", "md", "child\n"),
+            ("again", "md", "old\n"),
+            ("again/kid", "md", "kid\n"),
+        ],
+        &[],
+    );
+    ship.page_only_del.store(true, std::sync::atomic::Ordering::SeqCst);
+    let s = ship.clone();
+    with_mount("pod-direct", &ship, 30, move |mnt| {
+        fs::remove_file(mnt.join("demo/demo.md")).unwrap();
+        assert_eq!(deletes(&s), ["delete demo"]);
+        assert!(!s.has("demo") && s.has("demo/child"));
+        assert_eq!(names(&mnt.join("demo")), ["child.md"]);
+
+        // Recreating a page-only-deleted file writes a fresh page with new=true.
+        fs::remove_file(mnt.join("again/again.md")).unwrap();
+        assert!(!s.has("again") && s.has("again/kid"));
+        fs::write(mnt.join("again/again.md"), "fresh\n").unwrap();
+        assert_eq!(s.body("again").as_deref(), Some(&b"fresh\n"[..]));
+        assert!(!s.has("again/again"));
+    });
+    // Remounting sees demo as a pure folder with child.md and no demo.md.
+    let s2 = ship.clone();
+    with_mount("pod-remount", &ship, 30, move |mnt| {
+        assert_eq!(names(&mnt.join("demo")), ["child.md"]);
+        assert!(!s2.has("demo") && s2.has("demo/child"));
+    });
+
+    // 2. `rm -r` and `remove_dir_all` clean up the folder and page-gone marker.
+    for rm in [true, false] {
+        let ship = Ship::with(
+            &[
+                ("demo", "md", "parent\n"),
+                ("demo/alpha", "md", "a\n"),
+                ("demo/zeta", "md", "z\n"),
+                ("other", "md", "o\n"),
+            ],
+            &[],
+        );
+        ship.page_only_del.store(true, std::sync::atomic::Ordering::SeqCst);
+        let s = ship.clone();
+        with_mount(&format!("pod-rm-r-{rm}"), &ship, 30, move |mnt| {
+            if rm {
+                let out = std::process::Command::new("rm")
+                    .arg("-r")
+                    .arg(mnt.join("demo"))
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "rm -r: {}", String::from_utf8_lossy(&out.stderr));
+            } else {
+                fs::remove_dir_all(mnt.join("demo")).unwrap();
+            }
+            assert!(!s.has("demo") && !s.has("demo/alpha") && !s.has("demo/zeta") && s.has("other"));
+            assert!(s.dirs.lock().unwrap().is_empty(), "empty pure folder removed on rmdir");
+            assert!(s.page_gone.lock().unwrap().is_empty(), "page-gone marker cleared");
+        });
+    }
+}
