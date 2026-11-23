@@ -269,7 +269,8 @@
     // door. Only a response that is actually applied may be remembered.
     if (!d.link) pageCache.set(name, d);
     snapPage(name, d);
-    applyPage(name, d);
+    const keepErr = painted && current === name && d.body === shown && d.kind === curKind && !!status.style.color;
+    applyPage(name, d, false, keepErr);
     return true;
   }
   // a page's body without the render (page-source, no render=1): what a
@@ -286,7 +287,7 @@
       return { body: d.body, kind: d.kind, rev: d.rev, share: d.share, comments: d.comments };
     } catch { o.gone = true; return null; }
   };
-  function applyPage(name, d, quiet) {
+  function applyPage(name, d, quiet, keepErr) {
     if (name !== current) writerNewDoc();
     shipDoc = null;      // the ship's render on show was another document's
     curFolder = null;
@@ -313,7 +314,7 @@
     everTyped = false;
     render(); syncSoon();
     markCurrent();
-    st(d.kind + ' · rev ' + d.rev);
+    if (!keepErr) st(d.kind + ' · rev ' + d.rev);
     exitRev();
     // after exitRev, which unlocks: a link with a read grant, or one shown
     // from its last-known copy, stays locked (30-tree.js linkRO). The tab

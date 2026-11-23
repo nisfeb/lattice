@@ -382,7 +382,8 @@ try {
   check('a read link can\'t be typed in', await d.evaluate(() =>
     document.getElementById('src').readOnly && document.getElementById('src').value === '# ro'));
   await d.keyboard.down('Control'); await d.click(KEEP); await d.keyboard.up('Control');
-  await until(d, () => document.querySelector('.dtab.on')?.dataset.key === 'notes/keep');
+  await until(d, () => document.querySelector('.dtab.on')?.dataset.key === 'notes/keep'
+    && document.getElementById('src').value !== '# ro');
   await d.click('.dtab[data-key="notes/ro"]');
   await until(d, () => document.getElementById('src').value === '# ro');
   await d.focus('#src');

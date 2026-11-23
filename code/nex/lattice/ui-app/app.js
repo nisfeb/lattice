@@ -6711,7 +6711,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     if (!d.link) pageCache.set(name, d);
     snapPage(name, d);
-    applyPage(name, d);
+    const keepErr = painted && current === name && d.body === shown && d.kind === curKind && !!status.style.color;
+    applyPage(name, d, false, keepErr);
     return true;
   }
   const bodyRead = async (name, o = {}) => {
@@ -6724,7 +6725,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       return { body: d.body, kind: d.kind, rev: d.rev, share: d.share, comments: d.comments };
     } catch { o.gone = true; return null; }
   };
-  function applyPage(name, d, quiet) {
+  function applyPage(name, d, quiet, keepErr) {
     if (name !== current) writerNewDoc();
     shipDoc = null;      // the ship's render on show was another document's
     curFolder = null;
@@ -6741,7 +6742,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     everTyped = false;
     render(); syncSoon();
     markCurrent();
-    st(d.kind + ' · rev ' + d.rev);
+    if (!keepErr) st(d.kind + ' · rev ' + d.rev);
     exitRev();
     src.readOnly = linkRO(name);
     paintLock();         // and read-only while another window edits it
