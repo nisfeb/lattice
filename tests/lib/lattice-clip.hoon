@@ -321,6 +321,21 @@
     (yes (has "after" (m 'a<svg x="1"/>after')))
     (yes (has "after" (m 'a<svg a/>after</svg>')))
   ==
+::  a quoted value that holds a blank and then `word=` is one value: the
+::  tag is still written as an empty element
+++  test-self-closed-quoted
+  ;:  weld
+    (yes (has "X" (m 'a<svg title="a b=c"/>X<svg>y</svg>Z')))
+    (yes (has "Z" (m 'a<svg title="a b=c"/>X<svg>y</svg>Z')))
+    (yes (has "X" (m 'a<svg style="fill: none; stroke=1"/>X<svg>y</svg>Z')))
+    (yes (has "X" (m 'a<svg title=\'q r=s\'/>X<svg>y</svg>Z')))
+    (yes (has "X" (m 'a<svg title="a=b"/>X<svg>y</svg>Z')))
+    (yes (has "X" (m 'a<svg title="a/b c=d" />X<svg>y</svg>Z')))
+    ::  an unquoted value or an unterminated quote ends in the `/`
+    (no (has "hidden" (m 'a<svg x = y/>hidden</svg>c')))
+    (no (has "hidden" (m 'a<svg title="a b=c/>hidden</svg>c')))
+    (no (has "hidden" (m 'a<svg title="q" x=y/>hidden</svg>c')))
+  ==
 ::  a tag whose closing tag is not there is looked for once. Each such
 ::  tag looked again through the rest, which made a page of them take
 ::  minutes.

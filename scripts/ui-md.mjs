@@ -196,6 +196,18 @@ has('a 500 character url still links', '[a](https://e.com/' + 'p'.repeat(482) + 
 has('an 800 character url (signed links) still links', '[a](https://e.com/?' + 'q=1&'.repeat(200) + ')', '<a href="https://e.com/?q=1&amp;q=1');
 has('so does an image with one', '![a](https://e.com/?' + 'q=1&'.repeat(200) + ')', 'image from another site: a');
 has('a bracket before the closing paren stays in the address', '[a](https://e.com/x])', 'href="https://e.com/x]"');
+// the paren holds at most 4,096 characters of the source, a title and its
+// quotes or the & of a query string counted as written (+link-scan-cap)
+{
+  const at = (n, mk) => { const g = mk(n); return '[a](' + g + ')'; };
+  const url = (n) => 'https://e.com/' + 'p'.repeat(n - 14);
+  const ttl = (n) => 'https://e.com/' + 'p'.repeat(n - 14 - 4) + ' "t"';
+  const amp = (n) => 'https://e.com/?' + 'p'.repeat(n - 15 - 4 * 100) + 'q=1&'.repeat(100);
+  for (const [nm, mk] of [['plain', url], ['titled', ttl], ['with & in it', amp]]) {
+    has('a ' + nm + ' paren of 4,096 characters links', at(4096, mk), '<a href="https://e.com/');
+    hasnt('a ' + nm + ' paren of 4,097 characters does not', at(4097, mk), '<a ');
+  }
+}
 hasnt('a paren 5000 characters on is no link', '[a](https://e.com/' + 'p'.repeat(5000) + ')', '<a ');
 {
   const f = '```\n' + '>'.repeat(40) + '\n' + '> '.repeat(35) + 'x\n```';

@@ -1653,6 +1653,16 @@
         make+(ar:dejs:format so:dejs:format)
     ==
   ?:  ?=(%| -.pr)  (send-err eyre-id 400 'expected {ships, peek, make}')
+  ::  `v`: 2 says the lists are every line the client showed, so a line
+  ::  absent from them is removed, a folder's index line or not. Without
+  ::  it (an older client) a save removes nothing it was not shown.
+  =/  vv=(unit @t)
+    ?.  ?=([%o *] u.jon)  ~
+    =/  x=(unit json)  (~(get by p.u.jon) 'v')
+    ?~  x  ~
+    ?.(?=([%n *] u.x) `'bad' `p.u.x)
+  ?:  &(?=(^ vv) !?=(?(%'1' %'2') u.vv))  (send-err eyre-id 400 'v: 2 or leave it out')
+  =/  v2=?  =(vv `'2')
   =/  ships=(list (unit @p))  (turn ships.p.pr |=(t=@t (slaw %p t)))
   ?:  (lien ships |=(u=(unit @p) ?=(~ u)))
     ::  a typo'd ship silently dropped = someone believes they granted
@@ -1693,17 +1703,35 @@
   ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
   =/  pre=path  (weld sb /page)
   ::  an index line (<folder>/dir-index) grants nothing of its own. The
-  ::  list gives one with each folder line (+share-groups-json), so a save
-  ::  that holds it was read from a list that showed that folder (`seen`).
+  ::  list gives one with each folder line (+share-groups-json). Without
+  ::  `v`, a save that holds it was read from a list that showed that
+  ::  folder (`seen`). A page may be named dir-index: its line is the same
+  ::  text, and is an index line only when the group holds the folder
+  ;<  noted=(list path)  bind:m  (folders-noted sb u.gname peek.old)
+  ;<  idxs=(list path)  bind:m  (index-lines pre noted (weld u.pkp u.mkp))
   =/  seen=(set path)
-    (~(gas in *(set path)) (murn (weld u.pkp u.mkp) |=(p=path (index-line:ls pre p))))
-  =/  idx  |=(p=path ?=(^ (index-line:ls pre p)))
+    (~(gas in *(set path)) (murn idxs |=(p=path (index-line:ls pre p))))
+  =/  idx  |=(p=path ?=(^ (find ~[p] idxs)))
   =/  pkp=(list path)  (skip u.pkp idx)
   =/  mkp=(list path)  (skip u.mkp idx)
   ::  no grant may be a road on our whole page tree or a dir above it, or
-  ::  on a path in it that names nothing yet (+page-grant-bad)
-  ;<  bad=(unit @t)  bind:m  (page-grant-bad (weld pkp mkp))
-  ?^  bad  (send-err eyre-id 400 u.bad)
+  ::  on a path in it that names nothing yet (+page-grant-bad). A save
+  ::  adding one is refused. One the group already held is dropped, so a
+  ::  stored road cannot block a save that revokes
+  ::  A page the group holds by its code road is not looked at again: it
+  ::  was let in, and a stale one grants nothing. Only a dir road held,
+  ::  or a line the save adds, is checked, which also keeps a save of a
+  ::  list of many held pages from a peek for each.
+  =/  all=(set road:tarball)  (~(uni in peek.old) make.old)
+  =/  olds=(set path)  (~(uni in (road-paths all &)) (road-paths all |))
+  =/  held=(set path)  (~(dif in (road-paths all &)) (road-paths all |))
+  ;<  bads=(list [p=path why=@t])  bind:m
+    (page-grant-bad (skip (weld pkp mkp) |=(p=path (~(has in held) p))))
+  =/  fresh=(list [p=path why=@t])  (skip bads |=([p=path why=@t] (~(has in olds) p)))
+  ?^  fresh  (send-err eyre-id 400 why.i.fresh)
+  =/  gone  |=(p=path (lien bads |=([q=path why=@t] =(p q))))
+  =/  pkp=(list path)  (skip pkp gone)
+  =/  mkp=(list path)  (skip mkp gone)
   ::  ABSOLUTE, as the grantee's weir matches them. A group weir is read
   ::  as written into each member's weir under /sys/ames/ships, so a
   ::  relative road there is relative to the peer's dir and grants
@@ -1735,8 +1763,8 @@
     |=  [f=path p=path]
     =/  a=path  (weld pre f)
     &((gth (lent p) (lent a)) =(a (scag (lent a) p)))
-  ;<  noted=(list path)  bind:m  (folders-noted sb u.gname peek.old)
   =/  keep=(list path)
+    ?:  v2  ~
     %+  skip  noted
     |=  f=path
     ?|  (~(has in named) f)
@@ -1806,7 +1834,7 @@
           (page-roads-under sb i.fs peek.weir)
           (~(has by sg) u.gname)
           (~(has in named) i.fs)
-          (~(has in seen) i.fs)
+          |(v2 (~(has in seen) i.fs))
         ==
       $(fs t.fs)
     ;<  ~  bind:m  (unshare-folder u.gname i.fs)
@@ -1831,7 +1859,14 @@
   ;<  ~  bind:m  (dir-index-pokes pre pkp)
   ;<  h1=holds:ls  bind:m  holds-now
   ;<  ~  bind:m  (tell-holds h0 h1)
-  (send-ok eyre-id)
+  ?~  bads  (send-ok eyre-id)
+  ::  lines the group held that may not be granted any more were left out
+  %+  send-json  eyre-id
+  %-  pairs:enjs:format
+  :~  ['ok' b+&]
+      :-  'removed'
+      a+(turn bads |=([p=path why=@t] (pairs:enjs:format ~[['path' s+(spat p)] ['why' s+why]])))
+  ==
 ::  +handle-link-make: POST /link-make?host=&path=&to=. The shared-with-me
 ::  entry [host path] becomes a link at <to>. The host is peeked once,
 ::  with a short deadline, for the page's kind, body and rev: kind is frozen
@@ -13114,7 +13149,7 @@
     ;:  weld  (slag 1 (spud pax))
       " is a folder: its page was deleted on its own, and the "
       (a-co:co u.kept)  ?:(=(1 u.kept) " page" " pages")
-      " under it stay. tree=1 deletes them too"
+      " under it stay. To delete the folder and all of them, send tree=1 with the delete"
     ==
   ;<  ~  bind:m  (poke-eval ?:(tree [%del pax] [%del-page pax]))
   ::  a name still there is a page that left what was under it: the
@@ -14469,8 +14504,8 @@
   ?~  i.fs  $(fs t.fs)
   ;<  sg=(map @t @t)  bind:m  (read-share-grants i.fs)
   $(fs t.fs, out ?.((~(has by sg) g) out [i.fs out]))
-::  +page-grant-bad: why a group may not be granted one of the absolute
-::  paths `ps`, or ~. Each of these would be stored as a road on a dir,
+::  +page-grant-bad: each of the absolute paths `ps` a group may not be
+::  granted, with why (none, ~). Each of these would be stored as a road on a dir,
 ::  and a dir road reaches every grub under it: the sensitive pages and
 ::  every page's owner-only grubs (share, sensitive), which a make road
 ::  lets a member write, and so publish a page. A weir has no deny to
@@ -14481,20 +14516,21 @@
 ::  once it is there.
 ++  page-grant-bad
   |=  ps=(list path)
-  =/  m  (fiber:fiber:nexus ,(unit @t))
+  =/  m  (fiber:fiber:nexus ,(list [p=path why=@t]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  sb=path  bind:m  self-base
   =/  pre=path  (weld sb /page)
+  =|  out=(list [p=path why=@t])
   |-  ^-  form:m
-  ?~  ps  (pure:m ~)
+  ?~  ps  (pure:m (flop out))
   ?:  =(i.ps (scag (lent i.ps) pre))
-    %-  pure:m
-    :-  ~
-    %-  crip
-    ;:  weld  "a grant on "  (spud i.ps)
-      " would reach every page, the sensitive ones too. Share a folder or a page in it"
-    ==
+    =/  why=@t
+      %-  crip
+      ;:  weld  "a grant on "  (spud i.ps)
+        " would reach every page, the sensitive ones too. Share a folder or a page in it"
+      ==
+    $(ps t.ps, out [[i.ps why] out])
   =/  rel=path  (slag (lent pre) i.ps)
   ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))  $(ps t.ps)
   ;<  dx=?  bind:m  (peek-exists:fio (rv up (weld /page rel)))
@@ -14504,8 +14540,43 @@
     ?~  cp  (pure:(fiber:fiber:nexus ,?) |)
     (peek-exists:fio (rf up (weld /page u.cp) %code))
   ?:  cx  $(ps t.ps)
-  %-  pure:m
-  `(crip :(weld "nothing at " (slag 1 (spud rel)) " to share yet: make the folder first, then share it"))
+  =/  why=@t
+    (crip :(weld "nothing at " (slag 1 (spud rel)) " to share yet: make the folder first, then share it"))
+  $(ps t.ps, out [[i.ps why] out])
+::  +road-paths: the paths a group's roads list under, as a group list
+::  shows them: a dir road by its path (`dirs` no), a file road by its
+::  path and by the dir it is in (a page, listed by its dir) (`dirs` yes)
+++  road-paths
+  |=  [rs=(set road:tarball) files=?]
+  ^-  (set path)
+  %-  ~(gas in *(set path))
+  %-  zing
+  %+  turn  ~(tap in rs)
+  |=  r=road:tarball
+  ^-  (list path)
+  ?+  r  ~
+    [%& %| *]  ?:(files ~ ~[p.p.r])
+    [%& %& *]  ?.(files ~ ~[path.p.p.r (snoc path.p.p.r name.p.p.r)])
+  ==
+::  +index-lines: the lines among `ps` that are a group list's index
+::  lines (+index-line:ls). A page may be named dir-index, and its line
+::  is then the same text as its folder's index line. It is the index
+::  line when the group holds that folder (`noted`, +folders-noted),
+::  and the page's own line when it does not.
+++  index-lines
+  |=  [pre=path noted=(list path) ps=(list path)]
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =|  out=(list path)
+  |-  ^-  form:m
+  ?~  ps  (pure:m out)
+  =/  fo=(unit path)  (index-line:ls pre i.ps)
+  ?~  fo  $(ps t.ps)
+  ;<  pg=?  bind:m
+    (peek-exists:fio (rf up (weld /page (slag (lent pre) i.ps)) %code))
+  ?.  |(!pg ?=(^ (find ~[u.fo] noted)))  $(ps t.ps)
+  $(ps t.ps, out [i.ps out])
 ::  +page-roads: grant paths as roads. A page is granted by a file road on
 ::  its code grub, which is all a grantee opens (+share-file), so the grant
 ::  reaches neither the page's owner-only grubs (share, show, forms, the
@@ -15044,6 +15115,7 @@
   =/  gj=json
     %-  pairs:enjs:format
     :~  ['name' s+base]
+        ['v' (numb:enjs:format 2)]
         ['ships' a+(turn ships |=(s=@p s+(scot %p s)))]
         ['peek' a+(turn :(weld (less pk.fo ps.pk) ix ps.pk) |=(t=@t s+t))]
         ['make' a+(turn (weld (less mk.fo ps.mk) ps.mk) |=(t=@t s+t))]

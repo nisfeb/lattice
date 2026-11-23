@@ -412,6 +412,22 @@
     ::  past the cap it is text, as in the browser
     (yes !(has "<a href" (r (crip :(weld "[t](https://x.example/" (reap 5.000 'a') ")")))))
   ==
+::  the ( ) of a link holds at most 4,096 characters of the source, a title
+::  and the & of a query counted as written (the browser's preview counts
+::  the same: scripts/ui-md.mjs)
+++  test-link-cap-counts-source
+  =/  at
+    |=  [n=@ud tail=tape]
+    ^-  tape
+    (r (crip :(weld "[a](https://e.com/" (reap (sub n (add 14 (lent tail))) 'p') tail ")")))
+  ;:  weld
+    (yes (has "<a href=\"https://e.com/" (at 4.096 "")))
+    (yes !(has "<a href" (at 4.097 "")))
+    (yes (has "<a href=\"https://e.com/" (at 4.096 " \"t\"")))
+    (yes !(has "<a href" (at 4.097 " \"t\"")))
+    (yes (has "<a href=\"https://e.com/" (at 4.096 "?q=1&q=1&q=1")))
+    (yes !(has "<a href" (at 4.097 "?q=1&q=1&q=1")))
+  ==
 ::  a reference label's scan stops where another link starts, as the
 ::  ( ) scan does: a run of "[a][" costs one pass
 ++  test-open-refs-bounded

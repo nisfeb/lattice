@@ -104,7 +104,10 @@
   //  a "](" as well, so the looks of a run of "[a](" do not overlap.
   //  and the address never holds "](", the next link's opener (the ship's
   //  +find-stop)
-  const PAREN = '\\((?=(?:[^)\\]]|\\](?!\\())' + '{0,' + LSCAN + '}\\))((?:[^)\\s\\]]|\\](?!\\())+)(?:\\s[^)]*)?\\)';
+  //  The text has been escaped by now, so the count takes an entity as
+  //  the one character it was (the ship counts the source).
+  const ENT = '&(?:amp|lt|gt|quot);';
+  const PAREN = '\\((?=(?:[^)\\]&]|' + ENT + '|&(?!(?:amp|lt|gt|quot);)|\\](?!\\())' + '{0,' + LSCAN + '}\\))((?:[^)\\s\\]]|\\](?!\\())+)(?:\\s[^)]*)?\\)';
   //  an image's alt stops at the next "![", a link's text at the next "["
   const IMG_RE = new RegExp('!\\[((?:[^\\]!]|!(?!\\[)){0,' + SCAN + '})\\]' + PAREN, 'g');
   const LINK_RE = new RegExp('\\[([^\\]\\[]{1,' + SCAN + '})\\]' + PAREN, 'g');
