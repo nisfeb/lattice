@@ -885,6 +885,8 @@ struct ShipSession {
     find: Option<TextEdit>,
     find_at: usize,
     pics: HashMap<String, rune::Image>,
+    /// Bumped whenever non-tile page images in `pics` change, to invalidate memoized readers.
+    pics_gen: u64,
     /// Insertion order of non-tile page images in `pics`, used to cap cached textures.
     pics_order: std::collections::VecDeque<String>,
     /// Pictures asked for that did not come.
@@ -1234,6 +1236,7 @@ impl Default for ShipSession {
             find: None,
             find_at: 0,
             pics: HashMap::new(),
+            pics_gen: 0,
             pics_order: std::collections::VecDeque::new(),
             pics_failed: std::collections::HashSet::new(),
             pics_asked: std::collections::HashSet::new(),
@@ -4571,6 +4574,7 @@ const MAX_PAGE_PICS: usize = 64;
 
 fn insert_pic(s: &mut App, src: String, img: rune::Image) {
     if !src.starts_with("tile:") {
+        s.pics_gen = s.pics_gen.wrapping_add(1);
         if let Some(pos) = s.pics_order.iter().position(|k| k == &src) {
             s.pics_order.remove(pos);
         }
@@ -4664,20 +4668,27 @@ fn take_pics(s: &mut App) -> bool {
 }
 
 /// A Markdown page as the reader shows it: wiki links, ghost links, and
-/// the pictures had so far.
-fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
-    let pics = s.pics.clone();
-    let src = md::wikilinks(&md::html_shown(&md::shallow(body)), &|n| ghost(s, n));
-    // what find matches is marked, the current one apart from the rest
-    let mut marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = match s.find.as_ref().filter(|_| found) {
-        Some(q) => find_in(&src, &q.text).into_iter().enumerate().map(|(i, m)| (m, if i == s.find_at { rune_kit::Highlight::current() } else { rune_kit::Highlight::new() })).collect(),
-        None => Vec::new(),
-    };
-    // the heading the outline last went to, marked so it can be brought into view and seen
-    if let Some(h) = s.outline_at.and_then(|i| outline::outline(&src, "md").into_iter().nth(i)).filter(|h| !h.words.is_empty()) {
-        marks.push((vec![h.words], rune_kit::Highlight::new().key("md-outline")));
-    }
-    Markdown::new(src).selectable(true).on_link_tx(follow).on_link_secondary(|s: &mut App, url, p, _| s.link_menu = Some((url.to_owned(), p))).images(move |src| pics.get(src).cloned()).highlights(marks).style(page_style(k)).build(k)
+/// the pictures had so far. Memoized by `id` so virtual-scroll commits in
+/// the sidebar tree (or unrelated chrome updates) never re-parse or rebuild
+/// the open page's Markdown element tree.
+fn reader(id: &str, body: &str, s: &App, k: &Kit, found: bool) -> El {
+    let style = page_style(k);
+    let find_key = s.find.as_ref().filter(|_| found).map(|q| (q.text.as_str(), s.find_at));
+    let version = (body, &s.names, &s.other.1, s.pics_gen, found, find_key, s.outline_at, &style);
+    rune::memo(id, version, || {
+        let pics = s.pics.clone();
+        let src = md::wikilinks(&md::html_shown(&md::shallow(body)), &|n| ghost(s, n));
+        // what find matches is marked, the current one apart from the rest
+        let mut marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = match s.find.as_ref().filter(|_| found) {
+            Some(q) => find_in(&src, &q.text).into_iter().enumerate().map(|(i, m)| (m, if i == s.find_at { rune_kit::Highlight::current() } else { rune_kit::Highlight::new() })).collect(),
+            None => Vec::new(),
+        };
+        // the heading the outline last went to, marked so it can be brought into view and seen
+        if let Some(h) = s.outline_at.and_then(|i| outline::outline(&src, "md").into_iter().nth(i)).filter(|h| !h.words.is_empty()) {
+            marks.push((vec![h.words], rune_kit::Highlight::new().key("md-outline")));
+        }
+        Markdown::new(src).selectable(true).on_link_tx(follow).on_link_secondary(|s: &mut App, url, p, _| s.link_menu = Some((url.to_owned(), p))).images(move |src| pics.get(src).cloned()).highlights(marks).style(style.clone()).build(k)
+    })
 }
 
 /// How a page's Markdown is set to be read. rune-kit's own style is a chat message's, with
@@ -8163,8 +8174,8 @@ fn split_view(d: usize, s: &App, k: &Kit) -> El {
         .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close this group").on_press(move |s: &mut App| close_group(s, d)).build(k).key(format!("g{d}-close")));
     let beside = s.cache.get(name).and_then(|p| group.view.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev)).map(|(_, _, v)| v);
     let shown = match (s.cache.get(name), beside) {
-        (Some(p), _) if p.kind == "md" => reader(&p.body, s, k, false),
-        (_, Some(Beside::Read(md))) => reader(md, s, k, false),
+        (Some(p), _) if p.kind == "md" => reader(&format!("reader-group-{d}"), &p.body, s, k, false),
+        (_, Some(Beside::Read(md))) => reader(&format!("reader-group-{d}"), md, s, k, false),
         (_, Some(Beside::Sheet(sheets, at, _))) => beside_sheet(d, sheets, *at, s, k),
         (_, Some(Beside::Map(feats))) => beside_map(feats, k),
         // any other kind is its source, coloured
@@ -15178,15 +15189,19 @@ fn page_body(s: &App, k: &Kit) -> El {
         return web_view(p, s, k);
     }
     let shown = if let Some(body) = read_md(s, p) {
-        reader(body, s, k, true)
+        reader("reader-main", body, s, k, true)
     } else {
         // other kinds draw as their source, coloured, until each has a native view
         let shown = source_shown(&p.body);
-        let mut spans = code_spans(&p.kind, shown, k);
-        if s.find.is_some() && !s.memory {
-            spans.extend(source_matches(s).into_iter().enumerate().map(|(i, r)| Span::new(r.start, r.end).bg(k.c.text_accent.alpha(if i == s.find_at { 0.55 } else { 0.22 }), 1.0)));
-        }
-        rune::rich(shown.to_owned(), spans).font(k.ty.mono).color(c.text_base).wrap().selectable(true)
+        let style = page_style(k);
+        let find_key = s.find.as_ref().filter(|_| !s.memory).map(|q| (q.text.as_str(), s.find_at));
+        rune::memo("reader-source", (&p.kind, shown, s.memory, find_key, &style), || {
+            let mut spans = code_spans(&p.kind, shown, k);
+            if s.find.is_some() && !s.memory {
+                spans.extend(source_matches(s).into_iter().enumerate().map(|(i, r)| Span::new(r.start, r.end).bg(k.c.text_accent.alpha(if i == s.find_at { 0.55 } else { 0.22 }), 1.0)));
+            }
+            rune::rich(shown.to_owned(), spans).font(k.ty.mono).color(c.text_base).wrap().selectable(true)
+        })
     };
     let mut page = col().w_full().max_w(760.0).padding(28.0).gap(12.0);
     if let Some((tags, updated)) = s.know_meta.get(&p.name).filter(|_| s.memory) {
@@ -16092,6 +16107,22 @@ mod tests {
         assert!(s.preview_html.is_empty(), "first keystroke on an empty page still debounces");
         poll(&mut s, 2.20, &mut tx);
         assert_eq!(s.preview_html, "# Hi");
+    }
+
+    #[test]
+    fn reader_memo_tracks_page_pics_not_map_tiles() {
+        let mut s = sample("welcome");
+        let cache = rune::ImageCache::new(std::sync::Arc::new(|| {}));
+        assert_eq!(s.pics_gen, 0);
+        insert_pic(&mut s, "tile:1/2/3".into(), cache.rgba(1, 1, vec![0, 0, 0, 255]));
+        assert_eq!(s.pics_gen, 0, "map tiles must not invalidate memoized Markdown readers");
+        insert_pic(&mut s, "https://example.test/a.png".into(), cache.rgba(1, 1, vec![255, 0, 0, 255]));
+        assert_eq!(s.pics_gen, 1, "page images bump pics_gen so memoized readers refresh");
+        // render two frames with an unchanged page and verify the memoized reader mounts cleanly
+        let mut rt = rune::Runtime::new(s, view, (1000.0, 700.0), rune::Env::default());
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        assert!(rt.elements().iter().any(|e| e.key.as_deref() == Some("reader")));
     }
 
     #[test]
