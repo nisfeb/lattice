@@ -448,8 +448,8 @@ impl TabGroup {
 enum Op {
     /// A core rule an agent key wrote was kept or untagged: what to say.
     Cored(String),
-    /// An empty folder was made.
-    FolderMade(String),
+    /// An empty folder was made, with any display names typed.
+    FolderMade(String, Vec<(String, String)>),
     /// The bookmarks were changed: what to say, and the list as it now stands.
     Marks(String, Vec<api::Bookmark>),
     /// A deleted memory was brought back from the trash.
@@ -461,8 +461,8 @@ enum Op {
     /// A shared page was moved into the tree as a link: where, and whose it is. And a link moved back.
     Linked(String, String),
     Unlinked(String),
-    Created(String),
-    Renamed(String, String),
+    Created(String, Vec<(String, String)>),
+    Renamed(String, String, Vec<(String, String)>),
     Deleted(String),
     /// A page's share mode was set, or a folder's.
     Shared(String, String),
@@ -619,8 +619,11 @@ struct ShipSession {
     prompt: Option<Prompt>,
     /// Changes sent to the ship, each answered in its turn: none drops another's answer (`inturn`).
     op_req: inturn::InTurn<Result<Op, String>>,
-    /// The rendered page beside the source while editing.
+    /// The rendered page beside the source while editing, debounced so held keys do not rebuild it on every repeat.
     preview: bool,
+    preview_text: String,
+    preview_seen: String,
+    preview_at: f64,
     files: Files,
     query: TextEdit,
     /// The page on screen, and the text being edited when `editing`.
@@ -1065,6 +1068,9 @@ impl Default for ShipSession {
             prompt: None,
             op_req: inturn::InTurn::default(),
             preview: true,
+            preview_text: String::new(),
+            preview_seen: String::new(),
+            preview_at: 0.0,
             files: Files::default(),
             query: TextEdit::new(""),
             open: None,
@@ -2135,16 +2141,16 @@ fn confirm(s: &mut App) {
             return;
         }
         let copy = Page { name: rn.name.clone(), body: from.body.clone(), kind: from.kind.clone(), rev: 0 };
-        s.dnames.extend(rn.shown());
+        let shown = rn.shown();
         match s.conn.clone() {
-            Some(c) => s.op_req.request((c, copy), |(c, copy)| {
+            Some(c) => s.op_req.request((c, copy, shown), |(c, copy, shown)| {
                 // made by its first save, with the kind and the text of the page it copies
                 c.save_as(&copy, None, true)?;
-                Ok(Op::Created(copy.name))
+                Ok(Op::Created(copy.name, shown))
             }),
             None => {
                 let name = copy.name.clone();
-                applied(s, Op::Created(name.clone()));
+                applied(s, Op::Created(name.clone(), shown));
                 s.cache.insert(name.clone(), Page { rev: 1, ..copy });
                 s.open = None;
                 open_page(s, &name);
@@ -2175,47 +2181,46 @@ fn confirm(s: &mut App) {
         Some(Some(rn)) => rn,
         None => api::RealName { name: String::new(), dname: String::new(), dnames: String::new() },
     };
-    // a move onto a page that is there is not made: the question stays, with what was typed
+    // a move onto a page or folder that is there (or inside itself) is not made: the question stays, with what was typed
     if let Prompt::Rename(from, _) = &p {
-        if rn.name != *from && !under(&s.names, &rn.name).is_empty() {
+        if rn.name != *from && is_under(&rn.name, from) {
+            s.note = "cannot move a folder into itself".into();
+            s.prompt = Some(p);
+            return;
+        }
+        if rn.name != *from && (!under(&s.names, &rn.name).is_empty() || !under(&s.dirs, &rn.name).is_empty()) {
             s.note = format!("there is a page or folder at {} already", rn.name);
             s.prompt = Some(p);
             return;
         }
     }
+    let shown = if s.memory { Vec::new() } else { rn.shown() };
     let op = match p {
-        Prompt::New(_) => Op::Created(rn.name.clone()),
+        Prompt::New(_) => Op::Created(rn.name.clone(), shown),
         Prompt::NewFolder(_) if s.memory => return,
         Prompt::NewFolder(_) if s.offline.is_some() => {
             s.note = "a new folder needs the ship, which does not answer".into();
             return;
         }
         Prompt::NewFolder(_) if rn.name.is_empty() => return,
-        Prompt::NewFolder(_) => Op::FolderMade(rn.name.clone()),
-        Prompt::Rename(from, _) if rn.name != from || !rn.dnames.is_empty() => Op::Renamed(from, rn.name.clone()),
+        Prompt::NewFolder(_) => Op::FolderMade(rn.name.clone(), shown),
+        Prompt::Rename(from, _) if rn.name != from || !rn.dnames.is_empty() || (!s.memory && s.dnames.contains_key(&from)) => Op::Renamed(from, rn.name.clone(), shown),
         Prompt::Delete(name) => Op::Deleted(name),
         _ => return,
     };
-    // the names show at once, and the next dump says what the ship kept
-    if !s.memory {
-        if let Op::Renamed(from, _) = &op {
-            s.dnames.remove(from);
-        }
-        s.dnames.extend(rn.shown());
-    }
     let memory = s.memory;
     // with the ship away a page's delete, move or making waits on this device, as a save does
-    if s.offline.is_some() && !memory && matches!(op, Op::Created(_) | Op::Renamed(..) | Op::Deleted(_)) {
+    if s.offline.is_some() && !memory && matches!(op, Op::Created(..) | Op::Renamed(..) | Op::Deleted(_)) {
         if s.conn.is_none() {
             return;
         }
-        if matches!(&op, Op::Created(n) if s.names.contains(n)) {
+        if matches!(&op, Op::Created(n, _) if s.names.contains(n)) {
             s.note = "there is a page of that name".into();
             return;
         }
         // a page made away is a save that waits as a new page, with the heading a page starts with
         let made = match &op {
-            Op::Created(n) => Some(Page { name: n.clone(), body: format!("# {}\n", if rn.dname.is_empty() { n.rsplit('/').next().unwrap_or(n) } else { rn.dname.as_str() }), kind: "md".into(), rev: 0 }),
+            Op::Created(n, _) => Some(Page { name: n.clone(), body: format!("# {}\n", if rn.dname.is_empty() { n.rsplit('/').next().unwrap_or(n) } else { rn.dname.as_str() }), kind: "md".into(), rev: 0 }),
             _ => None,
         };
         // a page's delete takes the page alone, and a folder's all in it: as the ship does with the one request the window sends at once
@@ -2223,7 +2228,7 @@ fn confirm(s: &mut App) {
         // put into what the files hold now: another window on this ship keeps what waits there too
         let kept = change_waiting(s, |ops, saves| match (&op, &made) {
             (_, Some(made)) => api::enqueue(saves, made, None, true, 0),
-            (Op::Renamed(a, b), _) => api::enqueue_op(ops, saves, api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
+            (Op::Renamed(a, b, _), _) => api::enqueue_op(ops, saves, api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
             (Op::Deleted(n), _) => api::enqueue_op(ops, saves, if page { api::QueuedOp::DelPage(n.clone()) } else { api::QueuedOp::Del(n.clone()) }),
             _ => unreachable!("matched above"),
         });
@@ -2241,21 +2246,26 @@ fn confirm(s: &mut App) {
     // a page goes alone, a folder (a name with no page) with all in it
     let page = matches!(&op, Op::Deleted(n) if s.names.contains(n));
     match s.conn.clone() {
-        Some(c) => s.op_req.request((c, op), move |(c, op)| {
-            match &op {
-                Op::Created(n) if memory => c.know_save(&format!("/{n}"), &format!("{}\n", n.rsplit('/').next().unwrap_or(n)))?,
-                Op::Deleted(n) if memory => c.know_delete(&format!("/{n}"))?,
-                Op::Renamed(a, b) if memory => c.know_move(&format!("/{a}"), &format!("/{b}"))?,
-                Op::Created(_) => c.create_as(&rn)?,
-                Op::FolderMade(_) => c.folder_new(&rn)?,
-                Op::Renamed(a, _) => c.rename_as(a, &rn)?,
-                Op::Deleted(n) if page => c.delete(n)?,
-                Op::Deleted(n) => c.delete_tree(n)?,
-                Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Posted(..) | Op::SentRemote(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) | Op::Linked(..) | Op::Unlinked(..) | Op::Forgot(..) => {}
+        Some(c) => {
+            if let Op::Renamed(a, b, _) = &op {
+                s.note = format!("moving {a} to {b}\u{2026}");
             }
-            Ok(op)
-        }),
+            s.op_req.request((c, op), move |(c, op)| {
+                match &op {
+                    Op::Created(n, _) if memory => c.know_save(&format!("/{n}"), &format!("{}\n", n.rsplit('/').next().unwrap_or(n)))?,
+                    Op::Deleted(n) if memory => c.know_delete(&format!("/{n}"))?,
+                    Op::Renamed(a, b, _) if memory => c.know_move(&format!("/{a}"), &format!("/{b}"))?,
+                    Op::Created(..) => c.create_as(&rn)?,
+                    Op::FolderMade(..) => c.folder_new(&rn)?,
+                    Op::Renamed(a, _, _) => c.rename_as(a, &rn)?,
+                    Op::Deleted(n) if page => c.delete(n)?,
+                    Op::Deleted(n) => c.delete_tree(n)?,
+                    Op::Shared(n, mode) => c.share(n, mode)?,
+                    Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Posted(..) | Op::SentRemote(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) | Op::Linked(..) | Op::Unlinked(..) | Op::Forgot(..) => {}
+                }
+                Ok(op)
+            });
+        }
         None => applied(s, op),
     }
 }
@@ -2289,7 +2299,7 @@ fn applied(s: &mut App, op: Op) {
     if s.conn.is_some() && !s.memory {
         let waits = |at: &str| s.queue.keys().any(|k| api::queued_know(k).is_none() && is_under(k, at));
         let goes = match &op {
-            Op::Renamed(a, b) if a != b && waits(a) => Some(api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: String::new(), dnames: String::new() }),
+            Op::Renamed(a, b, _) if a != b && waits(a) => Some(api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: String::new(), dnames: String::new() }),
             // a page goes alone, and the saves of the pages under it still wait: the ship keeps those pages (`+page-del-run`). A folder takes all in it
             Op::Deleted(n) if s.names.contains(n) => s.queue.contains_key(n).then(|| api::QueuedOp::DelPage(n.clone())),
             Op::Deleted(n) if waits(n) => Some(api::QueuedOp::Del(n.clone())),
@@ -2302,7 +2312,10 @@ fn applied(s: &mut App, op: Op) {
         }
     }
     match op {
-        Op::Created(n) => {
+        Op::Created(n, shown) => {
+            if !s.memory {
+                s.dnames.extend(shown);
+            }
             if s.conn.is_none() || s.memory {
                 let title = n.rsplit('/').next().unwrap_or(&n).to_owned();
                 s.cache.insert(n.clone(), Page { name: n.clone(), body: format!("# {title}\n"), kind: "md".into(), rev: 1 });
@@ -2316,8 +2329,8 @@ fn applied(s: &mut App, op: Op) {
             open_page(s, &n);
             s.note = "created".into();
         }
-        Op::Renamed(a, b) => {
-            // a page, or a folder and every page under it
+        Op::Renamed(a, b, shown) => {
+            // a page, or a folder and every page and empty subfolder under it
             let was_folder = !s.names.contains(&a);
             for old in under(&s.names, &a) {
                 let new = format!("{b}{}", &old[a.len()..]);
@@ -2335,6 +2348,26 @@ fn applied(s: &mut App, op: Op) {
                 }
                 s.names.retain(|x| *x != old);
                 s.names.push(new);
+            }
+            if !s.memory {
+                let remap_map = |m: &mut HashMap<String, String>| {
+                    let moved: Vec<(String, String)> = m.keys().filter(|k| is_under(k, &a)).map(|k| (k.clone(), format!("{b}{}", &k[a.len()..]))).collect();
+                    for (old, new) in moved {
+                        if let Some(v) = m.remove(&old) {
+                            m.insert(new, v);
+                        }
+                    }
+                };
+                for d in &mut s.dirs {
+                    if is_under(d, &a) {
+                        *d = format!("{b}{}", &d[a.len()..]);
+                    }
+                }
+                remap_map(&mut s.dnames);
+                s.dnames.remove(&b);
+                s.dnames.extend(shown);
+                remap_map(&mut s.shares);
+                remap_map(&mut s.dshares);
             }
             // every tab that held one of them holds it still, by its new name
             let moved = |name: &str| is_under(name, &a).then(|| format!("{b}{}", &name[a.len()..]));
@@ -2427,7 +2460,10 @@ fn applied(s: &mut App, op: Op) {
             (s.note, s.marks, s.marks_bad) = (say, Some(list), false);
             return;
         }
-        Op::FolderMade(n) => {
+        Op::FolderMade(n, shown) => {
+            if !s.memory {
+                s.dnames.extend(shown);
+            }
             if !s.dirs.contains(&n) {
                 s.dirs.push(n.clone());
             }
@@ -4606,23 +4642,25 @@ fn page_style(k: &Kit) -> rune_kit::MarkdownStyle {
 /// nothing moves as it is typed. Plain text has none.
 fn code_spans(kind: &str, text: &str, k: &Kit) -> Vec<Span> {
     let theme = SyntaxTheme::from_kit(k);
-    if !code::knows(kind) {
-        let lang = match kind {
-            "md" => Some("markdown"),
-            "geojson" => Some("json"),
-            "html" | "fods" | "fodt" | "svg" => Some("html"),
-            "text" => None,
-            other => Some(other),
-        };
-        return theme.spans(&syntax::highlight(lang, text), 0);
-    }
-    // the last page coloured is kept, so a frame that changes nothing reads nothing again
+    // the last page coloured is kept for every kind, so frames that do not change text never re-lex
     thread_local! {
-        static LAST: std::cell::RefCell<(String, String, Vec<syntax::Highlight>)> = const { std::cell::RefCell::new((String::new(), String::new(), Vec::new())) };
+        static LAST: std::cell::RefCell<(String, String, std::rc::Rc<[syntax::Highlight]>)> = std::cell::RefCell::new((String::new(), String::new(), std::rc::Rc::from([])));
     }
     LAST.with_borrow_mut(|last| {
         if last.0 != kind || last.1 != text {
-            *last = (kind.to_owned(), text.to_owned(), code::highlight(kind, text).into_iter().map(|(r, s)| (r, syntax::Paint::Kind(s))).collect());
+            let hl: std::rc::Rc<[syntax::Highlight]> = if code::knows(kind) {
+                code::highlight(kind, text).into_iter().map(|(r, s)| (r, syntax::Paint::Kind(s))).collect::<Vec<_>>().into()
+            } else {
+                let lang = match kind {
+                    "md" => Some("markdown"),
+                    "geojson" => Some("json"),
+                    "html" | "fods" | "fodt" | "svg" => Some("html"),
+                    "text" => None,
+                    other => Some(other),
+                };
+                syntax::highlight(lang, text)
+            };
+            *last = (kind.to_owned(), text.to_owned(), hl);
         }
         theme.spans(&last.2, 0)
     })
@@ -4901,11 +4939,17 @@ fn pane_tab(s: &mut App, tab: rpane::Tab) {
 /// The open page's headings: those of what is being typed while
 /// editing, and of the page as it stands otherwise.
 fn outline_of(s: &App) -> Vec<outline::Heading> {
-    match &s.open {
-        Some(p) if s.editing => outline::outline(&s.edit.text, &p.kind),
-        Some(p) => outline::outline(&p.body, &p.kind),
-        None => Vec::new(),
+    let Some(p) = &s.open else { return Vec::new() };
+    let text = if s.editing { s.edit.text.as_str() } else { p.body.as_str() };
+    thread_local! {
+        static LAST: std::cell::RefCell<(String, String, Vec<outline::Heading>)> = const { std::cell::RefCell::new((String::new(), String::new(), Vec::new())) };
     }
+    LAST.with_borrow_mut(|last| {
+        if last.0 != p.kind || last.1 != text {
+            *last = (p.kind.clone(), text.to_owned(), outline::outline(text, &p.kind));
+        }
+        last.2.clone()
+    })
 }
 
 /// Goes to a heading: the caret to its line while editing, and the
@@ -5362,6 +5406,9 @@ fn start_edit(s: &mut App) {
             vim_start(s);
         }
     }
+    s.preview_text = s.edit.text.clone();
+    s.preview_seen = s.edit.text.clone();
+    s.preview_at = 0.0;
     s.editing = true;
 }
 
@@ -5374,6 +5421,9 @@ fn flip_mode(s: &mut App) {
         s.rich = false;
         s.note.clear();
         vim_start(s);
+        s.preview_text = s.edit.text.clone();
+        s.preview_seen = s.edit.text.clone();
+        s.preview_at = 0.0;
     } else {
         match md::exact(&body) {
             Some(d) => {
@@ -5406,38 +5456,71 @@ fn heading(e: &mut TextEdit, level: usize) {
 }
 
 /// How the rich field draws what stays as text: headings larger with their
-/// `#` dimmed, and fenced code coloured by its language.
+/// `#` dimmed, and fenced code coloured by its language. Cached by text and
+/// block structure so cursor/hover/blink frames never re-lex code blocks.
 fn rich_spans(e: &TextEdit, k: &Kit) -> Vec<Span> {
-    let theme = SyntaxTheme::from_kit(k);
-    let mut out = Vec::new();
     let paras = e.paragraphs();
-    let mut i = 0;
-    while i < paras.len() {
-        let p = &paras[i];
-        let text = &e.text[p.range.clone()];
-        if p.block == Block::Code {
-            // a fence names its language on its first line
-            let lang = text.strip_prefix("```").map(str::trim).filter(|l| !l.is_empty());
-            let start = if text.starts_with("```") { p.range.end + 1 } else { p.range.start };
-            let mut end = p.range.end;
-            while i + 1 < paras.len() && paras[i + 1].block == Block::Code && !e.text[paras[i + 1].range.clone()].starts_with("```") {
+    let sig: Vec<(usize, usize, u8)> = paras
+        .iter()
+        .map(|p| {
+            let b = match p.block {
+                Block::Paragraph => 0,
+                Block::Code => 1,
+                _ => 2,
+            };
+            (p.range.start, p.range.end, b)
+        })
+        .collect();
+    // cache raw code-block highlights and heading ranges independently of theme colours
+    enum RichItem {
+        Heading(usize, usize, usize, f32),
+        Code(usize, std::rc::Rc<[syntax::Highlight]>),
+    }
+    thread_local! {
+        static LAST: std::cell::RefCell<(String, Vec<(usize, usize, u8)>, Vec<RichItem>)> = const { std::cell::RefCell::new((String::new(), Vec::new(), Vec::new())) };
+    }
+    let theme = SyntaxTheme::from_kit(k);
+    LAST.with_borrow_mut(|last| {
+        if last.0 != e.text || last.1 != sig {
+            let mut items = Vec::new();
+            let mut i = 0;
+            while i < paras.len() {
+                let p = &paras[i];
+                let text = &e.text[p.range.clone()];
+                if p.block == Block::Code {
+                    let lang = text.strip_prefix("```").map(str::trim).filter(|l| !l.is_empty());
+                    let start = if text.starts_with("```") { p.range.end + 1 } else { p.range.start };
+                    let mut end = p.range.end;
+                    while i + 1 < paras.len() && paras[i + 1].block == Block::Code && !e.text[paras[i + 1].range.clone()].starts_with("```") {
+                        i += 1;
+                        end = paras[i].range.end;
+                    }
+                    if let Some(code) = e.text.get(start.min(end)..end) {
+                        items.push(RichItem::Code(start.min(end), syntax::highlight(lang, code)));
+                    }
+                } else if p.block == Block::Paragraph {
+                    let hashes = text.len() - text.trim_start_matches('#').len();
+                    if (1..=3).contains(&hashes) && text[hashes..].starts_with(' ') {
+                        let size = [22.0, 18.0, 15.0][hashes - 1];
+                        items.push(RichItem::Heading(p.range.start, hashes, p.range.end, size));
+                    }
+                }
                 i += 1;
-                end = paras[i].range.end;
             }
-            if let Some(code) = e.text.get(start.min(end)..end) {
-                out.extend(theme.spans(&syntax::highlight(lang, code), start.min(end)));
-            }
-        } else if p.block == Block::Paragraph {
-            let hashes = text.len() - text.trim_start_matches('#').len();
-            if (1..=3).contains(&hashes) && text[hashes..].starts_with(' ') {
-                let size = [22.0, 18.0, 15.0][hashes - 1];
-                out.push(Span::new(p.range.start, p.range.start + hashes).size(size).color(k.c.text_faint));
-                out.push(Span::new(p.range.start + hashes, p.range.end).size(size).weight(600.0));
+            *last = (e.text.clone(), sig, items);
+        }
+        let mut out = Vec::new();
+        for item in &last.2 {
+            match item {
+                RichItem::Heading(start, hashes, end, size) => {
+                    out.push(Span::new(*start, *start + *hashes).size(*size).color(k.c.text_faint));
+                    out.push(Span::new(*start + *hashes, *end).size(*size).weight(600.0));
+                }
+                RichItem::Code(offset, hl) => out.extend(theme.spans(hl, *offset)),
             }
         }
-        i += 1;
-    }
-    out
+        out
+    })
 }
 
 /// The rich editor's formatting bar.
@@ -6227,6 +6310,20 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         s.link_open = None;
     }
     if s.editing {
+        // debounce live Markdown preview so held keys (like Backspace) never rebuild the full
+        // preview tree on every key repeat
+        if !s.rich && s.preview {
+            const PREVIEW_DEBOUNCE: f64 = 0.15;
+            if s.edit.text != s.preview_seen {
+                s.preview_seen = s.edit.text.clone();
+                s.preview_at = clock + PREVIEW_DEBOUNCE;
+                tx.wake_after(std::time::Duration::from_millis(160));
+            }
+            if s.preview_text != s.edit.text && clock >= s.preview_at {
+                s.preview_text = s.edit.text.clone();
+                changed = true;
+            }
+        }
         if clock >= s.next_auto {
             tx.wake_after(std::time::Duration::from_secs_f64(AUTOSAVE_AFTER));
         }
@@ -7585,7 +7682,8 @@ fn make_from_template(s: &mut App) {
         }
         None => {
             s.tmpl = None;
-            applied(s, Op::Created(rn.name));
+            let shown = rn.shown();
+            applied(s, Op::Created(rn.name, shown));
         }
     }
 }
@@ -12590,12 +12688,16 @@ fn tree_menu_items(dir: bool) -> Vec<(&'static str, &'static str)> {
 }
 
 /// The name a rename or a move starts from, with the part to change marked so typing replaces it:
-/// the last part for a rename, and the folder before it for a move.
+/// the last part for a rename, and the folder before `/` for a move (keeping `/<name>` intact).
 fn tree_menu_edit(path: &str, mv: bool) -> TextEdit {
     let mut t = TextEdit::new(path);
     t.focused = true;
-    let at = path.rfind('/').map_or(0, |i| i + 1);
-    if mv { t.set_selection(0, at) } else { t.set_selection(at, path.len()) }
+    let slash = path.rfind('/');
+    if mv {
+        t.set_selection(0, slash.unwrap_or(0));
+    } else {
+        t.set_selection(slash.map_or(0, |i| i + 1), path.len());
+    }
     t
 }
 
@@ -13803,6 +13905,9 @@ fn merge_theirs(s: &mut App) {
         Some(d) => rich_edit(d, &mut s.seps),
         None => TextEdit::new(m.text.clone()),
     };
+    s.preview_text = s.edit.text.clone();
+    s.preview_seen = s.edit.text.clone();
+    s.preview_at = 0.0;
     s.edit.focused = true;
     // the caret stays on the line it was on, where that line still is
     // ponytail: the editor is given the merged text as a new text, so undo does not reach back across a merge. The merge made as one edit of the old text is the fix
@@ -14318,7 +14423,14 @@ struct Thread {
 
 /// What is said when the ship did not do what was asked.
 fn not_done(s: &mut App, e: &str) {
-    if api::gone(e) {
+    if api::timed_out(e) {
+        // a slow operation (like moving a large folder) timing out does not mean the ship is offline:
+        // do not flip into offline mode or queue conflicting moves; refresh to see what landed
+        s.note = "not done: the ship took too long to answer; refreshing to check what landed".into();
+        if s.conn.is_some() && !s.memory {
+            load_tree(s);
+        }
+    } else if api::gone(e) {
         s.offline.get_or_insert_with(String::new);
         s.note = "not done: that needs the ship, and it does not answer".into();
     } else {
@@ -14883,8 +14995,7 @@ fn fill_editor(s: &App, label: &str, spans: Vec<Span>, k: &Kit) -> El {
         .caret(c.text_base, selection_of(k))
         .spans(spans)
         .on_edit(|s: &mut App| &mut s.edit)
-        .on_input_key(editor_key)
-        .animate_edit_layout();
+        .on_input_key(editor_key);
     // as tall as its room even when the page is short, and scrolled inside when it is longer
     let view = col().key(FIELD_SCROLL).w_full().shrink().min_h(inner).max_h(inner);
     let view = if s.prefs.no_wrap {
@@ -15000,7 +15111,17 @@ fn page_body(s: &App, k: &Kit) -> El {
         let source = fill_editor(s, "Page source", marks, &editor_kit(k, &s.prefs.font));
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
-            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(md::html_shown(&md::shallow(&s.edit.text))).style(page_style(k)).build(k));
+            let raw = if s.preview_text.is_empty() && s.preview_at == 0.0 && !s.edit.text.is_empty() { s.edit.text.as_str() } else { s.preview_text.as_str() };
+            thread_local! {
+                static PREVIEW_SRC: std::cell::RefCell<(String, String)> = const { std::cell::RefCell::new((String::new(), String::new())) };
+            }
+            let md_src = PREVIEW_SRC.with_borrow_mut(|last| {
+                if last.0 != raw {
+                    *last = (raw.to_owned(), md::html_shown(&md::shallow(raw)));
+                }
+                last.1.clone()
+            });
+            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(md_src).style(page_style(k)).build(k));
             panes = panes.child(col().key("preview").grow(1.0).min_w(0.0).h_full().min_h(0.0).child(shown).scroll(ScrollSpec { stick_bottom: false }));
         }
         return panes;
@@ -15313,7 +15434,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // the name it was given when there is one, with its path beside it
     let named = path.and_then(|p| s.dnames.get(p).filter(|_| !s.memory && s.remote.is_none()).map(|d| format!("{d}  ({p})")));
     let title = if s.settings.is_some() { "Settings" } else if s.forum.is_some() { "Forum" } else if s.inbox { "Inbox" } else if s.shared_open { "Browser" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
-    let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending() || s.drain_req.is_pending();
+    let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending() || s.drain_req.is_pending() || s.op_req.is_pending();
     let mut layer = Vec::new();
     let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox;
     let remote = s.remote.as_ref().filter(|_| page);
@@ -15351,7 +15472,14 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             }).build(&k).key("mode"));
         }
         if !s.rich && is_md {
-            trailing = trailing.child(Button::new(if s.preview { "Hide preview" } else { "Preview" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| s.preview ^= true).build(&k).key("preview-toggle"));
+            trailing = trailing.child(Button::new(if s.preview { "Hide preview" } else { "Preview" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
+                s.preview ^= true;
+                if s.preview {
+                    s.preview_text = s.edit.text.clone();
+                    s.preview_seen = s.edit.text.clone();
+                    s.preview_at = 0.0;
+                }
+            }).build(&k).key("preview-toggle"));
         }
         trailing = trailing
             .child(Switch::new(!s.prefs.no_autosave).label("Autosave").on_toggle(|s: &mut App| {
@@ -15813,9 +15941,75 @@ mod tests {
         assert_eq!(tree_menu_items(false).iter().map(|i| i.0).collect::<Vec<_>>(), ["rename", "move", "download", "delete"]);
         assert_eq!(tree_menu_items(true).iter().map(|i| i.0).collect::<Vec<_>>(), ["rename", "move", "delete"]);
         assert_eq!(tree_menu_edit("notes/plans/today", false).selected(), "today");
-        assert_eq!(tree_menu_edit("notes/plans/today", true).selected(), "notes/plans/");
+        assert_eq!(tree_menu_edit("notes/plans/today", true).selected(), "notes/plans");
         assert_eq!(tree_menu_edit("today", false).selected(), "today");
         assert_eq!(tree_menu_edit("today", true).selected(), "");
+        // typing a destination folder replaces only the prefix before '/', keeping '/today'
+        let mut mv = tree_menu_edit("inbox/today", true);
+        mv.insert("projects/work");
+        assert_eq!(mv.text, "projects/work/today");
+        // deleting the selected prefix leaves '/today', which real_name normalizes to root 'today'
+        let mut root = tree_menu_edit("inbox/today", true);
+        root.insert("");
+        assert_eq!(api::real_name(&root.text).map(|r| r.name).as_deref(), Some("today"));
+    }
+
+    #[test]
+    fn rename_guards_dirs_dnames_and_timeout_offline_state() {
+        let mut s = sample("welcome");
+        s.dirs.push("empty-box".into());
+        s.dirs.push("archive/old".into());
+        s.dnames.insert("archive".into(), "Archive".into());
+        s.dnames.insert("archive/old".into(), "Old".into());
+        // moving onto an existing empty folder is refused without mutating dnames
+        s.prompt = Some(Prompt::Rename("welcome".into(), TextEdit::new("Empty Box")));
+        confirm(&mut s);
+        assert!(s.prompt.is_some(), "collision with empty folder keeps the prompt open");
+        assert!(!s.dnames.contains_key("empty-box"), "refused move must not pollute dnames");
+        // moving a folder into itself is refused
+        s.prompt = Some(Prompt::Rename("archive".into(), TextEdit::new("archive/sub")));
+        confirm(&mut s);
+        assert!(s.prompt.is_some());
+        assert!(s.note.contains("into itself"));
+        // renaming a folder updates s.dirs and child dnames
+        s.prompt = Some(Prompt::Rename("archive".into(), TextEdit::new("Vault")));
+        confirm(&mut s);
+        assert!(s.prompt.is_none());
+        assert!(s.dirs.contains(&"vault/old".to_owned()) && !s.dirs.contains(&"archive/old".to_owned()));
+        assert_eq!(s.dnames.get("vault").map(String::as_str), Some("Vault"));
+        assert_eq!(s.dnames.get("vault/old").map(String::as_str), Some("Old"));
+        assert!(!s.dnames.contains_key("archive"));
+        // a client timeout from a slow move must not flip the app offline
+        not_done(&mut s, "https://ship.example/apps/lattice/page-move: timed out");
+        assert!(s.offline.is_none(), "read timeout must not put the app in offline mode");
+        assert!(s.note.contains("too long"));
+        // a real 502 still marks offline
+        not_done(&mut s, "502: bad gateway");
+        assert!(s.offline.is_some());
+    }
+
+    #[test]
+    fn live_preview_debounces_rapid_edits() {
+        let mut s = sample("welcome");
+        start_edit(&mut s);
+        if s.rich {
+            flip_mode(&mut s);
+        }
+        s.preview = true;
+        let orig = s.edit.text.clone();
+        assert_eq!(s.preview_text, orig);
+        let mut tx = Tx::default();
+        // rapid backspaces advance the deadline without rebuilding preview_text
+        s.edit.text.pop();
+        poll(&mut s, 1.00, &mut tx);
+        assert_eq!(s.preview_text, orig, "preview waits while typing continues");
+        s.edit.text.pop();
+        poll(&mut s, 1.05, &mut tx);
+        assert_eq!(s.preview_text, orig, "second keystroke pushes debounce window forward");
+        // once typing pauses past 150ms, preview catches up
+        let after = s.edit.text.clone();
+        poll(&mut s, 1.25, &mut tx);
+        assert_eq!(s.preview_text, after, "preview catches up after typing pauses");
     }
 
     #[test]
