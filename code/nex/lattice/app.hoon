@@ -11003,7 +11003,10 @@
       sacts
       ^-  (list eval-action:le)
       =/  mk  (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))
-      ?:((isl ~) mk [[%mkdir to] mk])
+      ::  a single plain page creates its dir atomically inside %move-make (+write-page),
+      ::  so skipping a bare [%mkdir to] ahead of it avoids leaving a stray empty folder
+      ::  if the move is interrupted or observed mid-flight
+      ?:(|((isl ~) &(=(~ dirs) =(~[`path`~] rels))) mk [[%mkdir to] mk])
       lacts
       dacts
       ducts
