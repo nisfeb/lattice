@@ -394,6 +394,23 @@ fn exercise(mnt: &Path, ship: &Ship) {
     assert!(names(mnt).contains(&".edited.md.swp".to_string()), "but it is listed");
     assert_eq!(ship.body("edited").unwrap(), b"version two\n", "the page is untouched");
 
+    // macOS AppleDouble sidecars (._*) carry binary non-UTF-8 bytes even when
+    // their name ends in .md. They must stay in scratch and never reach the ship.
+    let sidecar_bytes: &[u8] = &[0x00, 0x05, 0x16, 0x07, 0x00, 0x02, 0xff, 0xfe, 0x80];
+    let log_before = ship.log().len();
+    fs::write(mnt.join("._test.md"), sidecar_bytes).unwrap();
+    assert_eq!(fs::read(mnt.join("._test.md")).unwrap(), sidecar_bytes);
+    assert!(!ship.has("._test"), "macOS AppleDouble sidecar must never become a page");
+    assert!(!ship.has("._test.md"));
+    fs::remove_file(mnt.join("._test.md")).unwrap();
+    assert_eq!(
+        ship.log()[log_before..].len(),
+        0,
+        "creating, reading, and removing ._test.md must never touch the ship"
+    );
+    fs::write(mnt.join("after-sidecar.md"), "still saving\n").unwrap();
+    assert_eq!(ship.body("after-sidecar").unwrap(), b"still saving\n");
+
     // VS Code's atomic save: write a temp, then rename it ONTO the existing
     // page. create=true here would 409 and every save of this shape would fail.
     fs::write(mnt.join("edited.md.tmp"), "version three\n").unwrap();

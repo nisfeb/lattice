@@ -1319,7 +1319,14 @@ fn invalidate(s: &mut State) {
 /// all-digit name), and an emacs autosave like `#notes#`. Without this rule
 /// both became bare hoon pages on the ship.
 fn is_scratch(name: &str, kind_for: impl Fn(&str) -> String) -> bool {
-    if name.ends_with('~') || is_probe_or_autosave(name) {
+    // macOS AppleDouble sidecars (`._*`) and Finder metadata (`.DS_Store`)
+    // carry binary bytes and must never become pages even when their names
+    // end in a recognized page extension like `._test.md`.
+    if name.starts_with("._")
+        || name == ".DS_Store"
+        || name.ends_with('~')
+        || is_probe_or_autosave(name)
+    {
         return true;
     }
     match name.rsplit_once('.') {
@@ -2838,6 +2845,19 @@ mod tests {
     }
 
     #[test]
+    fn macos_sidecars_stay_scratch_even_with_page_extensions() {
+        for sidecar in ["._test.md", "._note.txt", "._code.hoon", "._page.gmi", ".DS_Store"] {
+            assert!(is_scratch(sidecar, t_kind), "{sidecar} must be scratch");
+            assert!(
+                !refuse_as_scratch(sidecar, t_kind),
+                "{sidecar} must stay silently in scratch without failing macOS callers"
+            );
+        }
+        assert!(!is_scratch("note.md", t_kind), "ordinary pages are unaffected");
+        assert!(!is_scratch("_underscore.md", t_kind), "leading underscore without dot is a page");
+    }
+
+    #[test]
     fn libreoffice_document_is_a_page_and_its_lock_and_temp_are_scratch() {
         // LibreOffice keeps a lock file beside the document while it is
         // open and saves through a temp it renames over the document.
@@ -2945,6 +2965,7 @@ mod tests {
             stem in "[a-zA-Z0-9 ._-]*",
             ext in proptest::sample::select(vec!["md", "gmi", "html", "txt", "js", "css", "hoon", "tex", "latex", "scad"]),
         ) {
+            prop_assume!(!stem.starts_with("._"));
             let name = format!("{stem}.{ext}");
             prop_assert!(!is_scratch(&name, t_kind), "{} is a real page file", name);
         }

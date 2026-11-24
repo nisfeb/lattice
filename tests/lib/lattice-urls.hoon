@@ -343,4 +343,28 @@
     (expect-eq !>(&) !>((subresource:lu `'style')))
     (expect-eq !>(&) !>((subresource:lu `'')))
   ==
+::  +valid-utf8: accepts valid RFC 3629 UTF-8 and rejects binary/invalid bytes.
+++  test-valid-utf8
+  ;:  weld
+    (expect-eq !>(&) !>((valid-utf8:lu '')))
+    (expect-eq !>(&) !>((valid-utf8:lu 'hello world\0a')))
+    ::  2-byte (U+00E9 'e' with acute), 3-byte (U+2014), 4-byte (U+1F600)
+    (expect-eq !>(&) !>((valid-utf8:lu `@t`0xa9c3)))
+    (expect-eq !>(&) !>((valid-utf8:lu `@t`0x94.80e2)))
+    (expect-eq !>(&) !>((valid-utf8:lu `@t`0x8098.9ff0)))
+    ::  lone continuation, 0xff/0xfe (AppleDouble binary sidecar bytes)
+    (expect-eq !>(|) !>((valid-utf8:lu `@t`0x80)))
+    (expect-eq !>(|) !>((valid-utf8:lu `@t`0xfeff.0716.0500)))
+    ::  overlong 2-byte (0xc0 0x80), 3-byte (0xe0 0x80 0xaf), 4-byte (0xf0 0x80 0x80 0xaf)
+    (expect-eq !>(|) !>((valid-utf8:lu `@t`0x80c0)))
+    (expect-eq !>(|) !>((valid-utf8:lu `@t`0xaf.80e0)))
+    (expect-eq !>(|) !>((valid-utf8:lu `@t`0xaf80.80f0)))
+    ::  UTF-16 surrogate (U+D800 = 0xed 0xa0 0x80) and above U+10FFFF (0xf4 0x90 0x80 0x80)
+    (expect-eq !>(|) !>((valid-utf8:lu `@t`0x80.a0ed)))
+    (expect-eq !>(|) !>((valid-utf8:lu `@t`0x8080.90f4)))
+    ::  truncated multi-byte sequences
+    (expect-eq !>(|) !>((valid-utf8:lu `@t`0xc3)))
+    (expect-eq !>(|) !>((valid-utf8:lu `@t`0x80e2)))
+    (expect-eq !>(|) !>((valid-utf8:lu `@t`0x98.9ff0)))
+  ==
 --

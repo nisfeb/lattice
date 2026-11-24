@@ -1178,6 +1178,8 @@
   ?:  (gth (lent items) 200)  (send-err eyre-id 400 'batch too large (max 200)')
   ?.  (levy items |=([nam=@t *] (valid-name nam)))
     (send-err eyre-id 400 'bad page name in batch')
+  ?.  (levy items |=([* * bod=@t *] (valid-utf8:lu bod)))
+    (send-err eyre-id 400 'body is not valid UTF-8')
   ::  a map page is checked as a single save checks it (+save-src)
   =/  bad-map=(unit @t)
     =/  todo  items
@@ -1435,6 +1437,7 @@
   ?.  (valid-name name)  [%| 400 'bad name']
   =/  is-index=?  =(%index ptype)
   ?:  &(?!(is-index) =('' raw))  [%| 400 'missing body']
+  ?.  (valid-utf8:lu raw)  [%| 400 'body is not valid UTF-8']
   ::  a map page must be a FeatureCollection within /lib/lattice-geojson's
   ::  caps, so no save leaves a body that cannot be drawn
   =/  bad-map=(unit @t)  ?.(=(%geojson ptype) ~ (gj-check:lgj raw))
@@ -12859,6 +12862,7 @@
   =/  body-row=(list [@t json])
     ?:  (gth bsize dump-inline-max)  ~
     ?:  ?~(since | (lth da.cs u.since))  ~
+    ?.  (valid-utf8:lu body)  ~
     ~[['body' s+body]]
   ::  the share mode, so a client opening a page needs no page-source
   ::  round trip to learn it. Absent is %private, the common case.
@@ -12881,7 +12885,8 @@
   |=  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
   ^-  (list [@t json])
   =/  n=(unit @t)  (fils-dname fils)
-  ?~(n ~ ~[['dname' s+u.n]])
+  ?:  |(?=(~ n) !(valid-utf8:lu u.n))  ~
+  ~[['dname' s+u.n]]
 ::  +dname-acts: the %dname actions that carry the display names of `dirs`
 ::  (relative to the moved tree's ball) to the same rels under `to`. Pure.
 ++  dname-acts
