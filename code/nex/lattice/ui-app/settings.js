@@ -325,6 +325,7 @@
           say('connect-status', 'connected as ' + ship);
           $('code').value = '';
           refreshConn();
+          if (o.listen) refreshStack();
         } catch (err) { say('connect-status', String(err), 'err'); }
       });
     });
