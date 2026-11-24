@@ -2186,13 +2186,17 @@ pub fn gone(error: &str) -> bool {
     }
 }
 
-/// Whether an error is a client-side request timeout (as opposed to an HTTP status or refused connection).
+/// Whether an error is a client-side read timeout after the request reached the ship
+/// (as opposed to an HTTP status, refused connection, or connect/TLS handshake timeout).
 pub fn timed_out(error: &str) -> bool {
     let has_status = error.split_once(':').and_then(|(code, _)| code.parse::<u16>().ok()).is_some();
     if has_status {
         return false;
     }
     let lower = error.to_ascii_lowercase();
+    if lower.contains("connection failed") || lower.contains("connecting") || lower.contains("handshake") {
+        return false;
+    }
     lower.contains("timed out") || lower.contains("timeout")
 }
 
@@ -4854,8 +4858,11 @@ mod tests {
         let r = real_name("Trips/2026/Barcelona & Back!").unwrap();
         assert_eq!(r.shown(), vec![("trips".to_owned(), "Trips".to_owned()), ("trips/2026/barcelona-back".to_owned(), "Barcelona & Back!".to_owned())]);
         assert_eq!(r.query(), "&dname=Barcelona%20%26%20Back%21&dnames=Trips%2F%2FBarcelona%20%26%20Back%21");
-        assert!(timed_out("https://ship.example/apps/lattice/page-move: timed out"));
+        assert!(timed_out("https://ship.example/apps/lattice/page-move: Network Error: timed out reading response"));
         assert!(timed_out("request Timeout"));
+        assert!(!timed_out("https://ship.example/apps/lattice/page-move: Connection Failed: Connect error: connection timed out"));
+        assert!(!timed_out("https://ship.example/apps/lattice/page-move: Connection Failed: native_tls handshake timed out"));
+        assert!(!timed_out("SOCKS proxy: timed out connecting after 5000ms"));
         assert!(!timed_out("504: gateway timeout"));
         assert!(!timed_out("connection refused"));
     }

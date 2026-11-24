@@ -655,6 +655,10 @@ is "move into a new folder"       200 "$(sc -X POST "$B/page-move?from=$R/sub-fo
 sleep 1
 is "the folder the move made has its display name" "New Dir" "$(field page-dump "$R/new-dir" dname)"
 is "the moved page has none"      "<none>" "$(field page-dump "$R/new-dir/more" dname)"
+# moving a single plain page into a nested destination whose parents do not exist yet
+is "move into nested new folders" 200 "$(sc -X POST "$B/page-move?from=$R/new-dir/more&to=$R/deep/nested/leaf")"
+sleep 1
+is "nested moved page landed"     "true" "$(field page-dump "$R/deep/nested/leaf" page)"
 # nested folder-new names every new segment
 is "nested folder-new"            200 "$(sc -X POST "$B/folder-new?name=$R/alpha-one/beta-two&dnames=%2FAlpha%20One%2FBeta%20Two&dname=Beta%20Two")"
 sleep 1
