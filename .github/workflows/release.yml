@@ -560,8 +560,8 @@ jobs:
           #  what changed in the desktop app since the previous release,
           #  which is what the update offer shows as its notes
           prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_SHA^" 2>/dev/null || true)
-          git log --no-merges --format='- %s' ${prev:+"$prev..$GITHUB_SHA"} \
-            -- desktop lattice-fs-rs | head -n 40 > "$RUNNER_TEMP/notes.txt"
+          git log -n 40 --no-merges --format='- %s' ${prev:+"$prev..$GITHUB_SHA"} \
+            -- desktop lattice-fs-rs > "$RUNNER_TEMP/notes.txt"
           [ -s "$RUNNER_TEMP/notes.txt" ] || echo "Maintenance release." > "$RUNNER_TEMP/notes.txt"
           version=$(node -p "require('./desktop/tauri.conf.json').version")
           node scripts/updater-manifest.mjs "$version" \
@@ -597,8 +597,8 @@ jobs:
             exit 0
           fi
           prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_SHA^" 2>/dev/null || true)
-          git log --no-merges --format='- %s' ${prev:+"$prev..$GITHUB_SHA"} \
-            -- rune-ui | head -n 40 > "$RUNNER_TEMP/rune-notes.txt"
+          git log -n 40 --no-merges --format='- %s' ${prev:+"$prev..$GITHUB_SHA"} \
+            -- rune-ui > "$RUNNER_TEMP/rune-notes.txt"
           [ -s "$RUNNER_TEMP/rune-notes.txt" ] || echo "Maintenance release." > "$RUNNER_TEMP/rune-notes.txt"
           rune=$(sed -n 's/^version = "\(.*\)"/\1/p' rune-ui/Cargo.toml | head -1)
           node scripts/updater-manifest.mjs "$rune" \

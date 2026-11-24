@@ -124,6 +124,8 @@ pub fn mount_config() -> fuser::Config {
     config.mount_options = vec![
         fuser::MountOption::FSName("lattice".to_string()),
         fuser::MountOption::DefaultPermissions,
+        #[cfg(target_os = "macos")]
+        fuser::MountOption::CUSTOM("noappledouble".to_string()),
     ];
     config.acl = fuser::SessionACL::Owner;
     config

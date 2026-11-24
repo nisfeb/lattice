@@ -303,4 +303,56 @@
     ?:  =("http://" (scag 7 o))  (slag 7 o)
     o
   !=(a (cass (trip u.host)))
+::  +valid-utf8: is `t` well-formed UTF-8 (RFC 3629)?
+::
+::    Rejects invalid byte sequences (lone continuations, overlong encodings,
+::    UTF-16 surrogates, code points past U+10FFFF, truncated sequences) so
+::    binary payloads cannot break UTF-8 JSON responses such as /page-dump.
+::
+++  valid-utf8
+  |=  t=@t
+  ^-  ?
+  =/  n=@ud  (met 3 t)
+  =/  i=@ud  0
+  |-  ^-  ?
+  ?:  (gte i n)  &
+  =/  b0=@ud  (cut 3 [i 1] t)
+  ?:  (lth b0 0x80)
+    $(i +(i))
+  ?:  &((gte b0 0xc2) (lte b0 0xdf))
+    ?:  (gte +(i) n)  |
+    =/  b1=@ud  (cut 3 [+(i) 1] t)
+    ?.  &((gte b1 0x80) (lte b1 0xbf))  |
+    $(i (add i 2))
+  ?:  &((gte b0 0xe0) (lte b0 0xef))
+    ?:  (gte (add i 2) n)  |
+    =/  b1=@ud  (cut 3 [+(i) 1] t)
+    =/  b2=@ud  (cut 3 [(add i 2) 1] t)
+    ?.  &((gte b2 0x80) (lte b2 0xbf))  |
+    ?:  =(b0 0xe0)
+      ?.  &((gte b1 0xa0) (lte b1 0xbf))  |
+      $(i (add i 3))
+    ?:  =(b0 0xed)
+      ?.  &((gte b1 0x80) (lte b1 0x9f))  |
+      $(i (add i 3))
+    ?.  &((gte b1 0x80) (lte b1 0xbf))  |
+    $(i (add i 3))
+  ?:  &((gte b0 0xf0) (lte b0 0xf4))
+    ?:  (gte (add i 3) n)  |
+    =/  b1=@ud  (cut 3 [+(i) 1] t)
+    =/  b2=@ud  (cut 3 [(add i 2) 1] t)
+    =/  b3=@ud  (cut 3 [(add i 3) 1] t)
+    ?.  ?&  (gte b2 0x80)  (lte b2 0xbf)
+            (gte b3 0x80)  (lte b3 0xbf)
+        ==
+      |
+    ?:  =(b0 0xf0)
+      ?.  &((gte b1 0x90) (lte b1 0xbf))  |
+      $(i (add i 4))
+    ?:  =(b0 0xf4)
+      ?.  &((gte b1 0x80) (lte b1 0x8f))  |
+      $(i (add i 4))
+    ?.  &((gte b1 0x80) (lte b1 0xbf))  |
+    $(i (add i 4))
+  |
 --
