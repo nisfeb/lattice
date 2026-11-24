@@ -43,6 +43,7 @@ pub fn chord(ctrl: bool, shift: bool, key: &str) -> Option<&'static str> {
         (_, "-") | (_, "_") => "zoom-out",
         (false, "0") => "zoom-reset",
         (true, "r") => "reload",
+        (false, ",") => "open-manager",
         (true, "i") if cfg!(debug_assertions) => "devtools",
         (false, "q") => "quit",
         _ => return None,
@@ -66,6 +67,10 @@ static ZOOM: std::sync::Mutex<f64> = std::sync::Mutex::new(1.0);
 pub fn run(app: &AppHandle, id: &str) {
     if id == "quit" {
         app.exit(0);
+        return;
+    }
+    if id == "open-manager" {
+        let _ = commands::show_manager(app, Some("connection"));
         return;
     }
     let Some(w) = app.get_webview_window("workspace") else { return };
@@ -164,6 +169,7 @@ mod tests {
         assert_eq!(chord(true, false, "0"), Some("zoom-reset"));
         assert_eq!(chord(false, false, "F5"), Some("reload"));
         assert_eq!(chord(true, true, "r"), Some("reload"));
+        assert_eq!(chord(true, false, ","), Some("open-manager"));
         assert_eq!(chord(true, false, "q"), Some("quit"));
         assert_eq!(chord(true, true, "i"), cfg!(debug_assertions).then_some("devtools"));
     }
