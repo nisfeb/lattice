@@ -45,6 +45,7 @@ PARAMS = {
     'on-file:path.rail': '/page/*',
     'forum-put:bdir': '/forum/boards/*',
     'write-eval-seen:pdir': '/page/*',
+    'write-eval-err:pdir': '/page/*',
     'pub-save-page:pax.u.or': '/pub/vault/*',
     'apply-pub-in:pax.u.or': '/pub/vault/*',
     'pub-drop-dead:pax.u.or': '/pub/vault/*',
