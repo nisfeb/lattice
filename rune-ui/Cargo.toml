@@ -2,7 +2,7 @@
 name = "lattice-rune"
 # the release it goes out in: release.yml refuses a tag that this does not match, and the app offers
 # itself whatever release names a later one (`src/update.rs`)
-version = "1.0.44"
+version = "1.0.45"
 edition = "2024"
 publish = false
 description = "An experimental native client for lattice, drawn with Rune. Not the shipped desktop app."
