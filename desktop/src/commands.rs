@@ -15,6 +15,29 @@ pub fn dlog(msg: &str) {
     }
 }
 
+/// Human-readable reason when Eyre accepted the +code but Lattice is absent.
+fn missing_stack_reason(ship: &str, st: &crate::stack::Stack, kept_previous: Option<&str>) -> String {
+    let mut missing = Vec::new();
+    if !st.mcp {
+        missing.push("%mcp");
+    }
+    if !st.grubbery {
+        missing.push("%grubbery");
+    }
+    if !st.lattice {
+        missing.push("lattice");
+    }
+    let list = missing.join(", ");
+    match kept_previous {
+        Some(prev) if !prev.is_empty() => format!(
+            "{ship} accepted your +code, but Lattice is not installed there (missing: {list}). Your previous connection to {prev} was kept."
+        ),
+        _ => format!(
+            "{ship} accepted your +code, but Lattice is not installed there (missing: {list})."
+        ),
+    }
+}
+
 /// Log the Rust side in, remember the url, open the workspace, get the
 /// manager out of the way. Async: the blocking login and the cookie-settle
 /// poll in open_workspace must run off the main thread (a main-thread wait
@@ -48,14 +71,37 @@ pub async fn connect(
     dlog(&format!("connect: logging in at {url}"));
     // whose queue a legacy URL key is: the cookie stored for that URL before
     // this connect replaces it (queue::key_after_connect)
-    let key_ship = {
-        let old = config::load(&app);
-        crate::session::cookie_for(&old.queue_key).and_then(|c| crate::session::ship_of(&c))
-    };
+    let old = config::load(&app);
+    let key_ship = crate::session::cookie_for(&old.queue_key)
+        .and_then(|c| crate::session::ship_of(&c));
     let cookie = crate::session::login(&url, &code)?;
     let ship = crate::session::ship_of(&cookie).ok_or("login: no urbauth cookie")?;
     let at = crate::session::store(&url, &cookie)?;
     dlog(&format!("connect: ship {ship}, cookie stored at {}", at.display()));
+    // Verify Lattice is actually bound on the ship before navigating away from
+    // the local manager page, otherwise WebKit lands on a blank page with no
+    // recovery controls (issue #494).
+    let missing_lattice = crate::stack::lattice_present(&url) == Some(false);
+    if missing_lattice {
+        let st = crate::stack::probe(&url);
+        if st.error.is_none() && !st.lattice {
+            if !old.url.is_empty() && old.url != url {
+                let prev = if old.ship.is_empty() { old.url.as_str() } else { old.ship.as_str() };
+                return Err(missing_stack_reason(&ship, &st, Some(prev)));
+            }
+            // First-run setup (or reconnecting the same bare ship): save the
+            // connection so the manager's Ship software section can install
+            // missing layers, and stay on the local manager page.
+            let ship_for_cfg = ship.clone();
+            config::update(&app, move |cfg| {
+                cfg.queue_key = crate::queue::key_after_connect(cfg, &ship_for_cfg, key_ship.as_deref());
+                cfg.url = url;
+                cfg.ship = ship_for_cfg;
+            })?;
+            show_manager(&app, Some("connection"))?;
+            return Ok(ship);
+        }
+    }
     let ship_for_cfg = ship.clone();
     config::update(&app, move |cfg| {
         //  a ship SWITCH must not inherit the previous ship's queue directory —
@@ -2036,5 +2082,18 @@ mod schedule_change_tests {
         let u = super::backup_dest_url("http://127.0.0.1:26500", "a&b=c/d e");
         assert!(u.starts_with("http://127.0.0.1:26500/.lattice-bridge/start?k="), "{u}");
         assert!(u.ends_with("&to=/apps/lattice/app?backup=a%26b%3Dc%2Fd%20e"), "{u}");
+    }
+
+    #[test]
+    fn missing_stack_reason_names_absent_layers_and_preserved_ship() {
+        let bare = crate::stack::Stack { checked: true, ..Default::default() };
+        let msg = super::missing_stack_reason("~nec", &bare, Some("~zod"));
+        assert!(msg.contains("~nec") && msg.contains("%mcp, %grubbery, lattice"), "{msg}");
+        assert!(msg.contains("previous connection to ~zod was kept"), "{msg}");
+
+        let no_lat = crate::stack::Stack { checked: true, mcp: true, grubbery: true, ..Default::default() };
+        let msg2 = super::missing_stack_reason("~nec", &no_lat, None);
+        assert!(msg2.contains("missing: lattice"), "{msg2}");
+        assert!(!msg2.contains("previous connection"), "{msg2}");
     }
 }

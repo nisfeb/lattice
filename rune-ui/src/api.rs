@@ -940,7 +940,9 @@ pub fn login_refused(url: &str, status: u16) -> String {
 /// when it is there or cannot be told, and why not when it is plainly missing.
 pub fn lattice_missing(ship: &str, answer: &Result<String, String>) -> Option<String> {
     match answer {
-        Err(e) if e.starts_with("404") => Some(format!("{ship} took the code, but lattice does not answer there. It needs grubbery installed, and lattice on it")),
+        Err(e) if e.starts_with("404") || (e.starts_with("307") && !e.contains("/~/login")) => {
+            Some(format!("{ship} took the code, but lattice does not answer there. It needs grubbery installed, and lattice on it"))
+        }
         _ => None,
     }
 }
@@ -4644,6 +4646,11 @@ mod tests {
         assert!(login_refused("https://zod.test", 502).contains("error of its own"));
         // the code was taken and lattice is not there
         let missing = lattice_missing("~zod", &Err("404: missing".into())).unwrap();
+        assert!(missing.contains("grubbery"), "{missing}");
+        let unbound = lattice_missing("~zod", &Err("307: the ship sent this elsewhere. Lattice may be starting".into())).unwrap();
+        assert!(unbound.contains("grubbery"), "{unbound}");
+        assert!(lattice_missing("~zod", &Err("307: /~/login".into())).is_none());
+        assert!(lattice_missing("~zod", &Err("500: boom".into())).is_none());
         assert!(missing.contains("~zod took the code") && missing.contains("grubbery"));
         // there, or not to be told: let through
         assert_eq!(lattice_missing("~zod", &Ok("{}".into())), None);

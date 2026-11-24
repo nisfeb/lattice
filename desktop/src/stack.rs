@@ -117,6 +117,15 @@ fn mcp_handshake(base: &str) -> Option<String> {
     Some(r.get("serverInfo")?.get("name")?.as_str()?.to_string())
 }
 
+/// Fast single-request check of whether Lattice itself is bound on `base`.
+/// Returns `Some(true)` when `/apps/lattice` answers with a bound status,
+/// `Some(false)` when Eyre reports it unbound (307/404), and `None` when the
+/// ship is unreachable (so offline launches still open the cached workspace).
+pub fn lattice_present(base: &str) -> Option<bool> {
+    let base = base.trim_end_matches('/');
+    get_status(crate::proxy::agent(), &format!("{base}/apps/lattice")).ok().map(bound)
+}
+
 pub fn probe(base: &str) -> Stack {
     let base = base.trim_end_matches('/');
     let agent = crate::proxy::agent();
@@ -212,6 +221,10 @@ mod tests {
         assert!(s.checked, "we tried");
         assert!(s.error.is_some(), "unreachable must be reported as unreachable");
         assert!(!s.grubbery && !s.lattice && !s.mcp);
+
+        assert_eq!(lattice_present(&bare.base), Some(false));
+        assert_eq!(lattice_present(&full.base), Some(true));
+        assert_eq!(lattice_present("http://127.0.0.1:1"), None);
     }
 
     #[test]

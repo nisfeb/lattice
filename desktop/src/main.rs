@@ -97,6 +97,8 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
     let item = |id: &str, label: &str, key: &str| MenuItemBuilder::with_id(id, label).accelerator(key).build(app);
     let mut lattice = SubmenuBuilder::new(app, "lattice")
+        .item(&item("open-manager", "Connection & mounts…", "Cmd+,")?)
+        .separator()
         .item(&item("reload", "Reload", "Cmd+Shift+R")?)
         .item(&item("zoom-in", "Zoom in", "Cmd+=")?)
         .item(&item("zoom-out", "Zoom out", "Cmd+-")?)
@@ -371,11 +373,22 @@ fn main() {
                 // first run: the single window opens on the connect page
                 commands::show_manager(&handle, None)?;
             } else {
-                // off-thread: bridge setup does network work that must not
-                // block the main loop
+                // off-thread: bridge setup and availability check do network
+                // work that must not block the main loop. Fall back to the
+                // local manager when the ship answers without Lattice or when
+                // opening the workspace fails (issue #494).
                 let h = handle.clone();
+                let startup_url = cfg.url.clone();
                 std::thread::spawn(move || {
-                    commands::open_workspace(&h, false, None).ok();
+                    if stack::lattice_present(&startup_url) == Some(false) {
+                        commands::dlog("startup: configured ship has no lattice, showing manager");
+                        commands::show_manager(&h, Some("connection")).ok();
+                        return;
+                    }
+                    if let Err(e) = commands::open_workspace(&h, false, None) {
+                        commands::dlog(&format!("startup: open_workspace failed ({e}), showing manager"));
+                        commands::show_manager(&h, Some("connection")).ok();
+                    }
                 });
             }
             spawn_backup_scheduler(handle.clone());
