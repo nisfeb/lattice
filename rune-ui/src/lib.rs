@@ -463,6 +463,9 @@ enum Op {
     Unlinked(String),
     Created(String, Vec<(String, String)>),
     Renamed(String, String, Vec<(String, String)>),
+    /// A move timed out waiting for the ship's answer: keep `(from, to)` so the next tree reload
+    /// remaps open pages, tabs, folders, and waiting saves if the move landed on the ship.
+    MoveTimedOut(String, String),
     Deleted(String),
     /// A page's share mode was set, or a folder's.
     Shared(String, String),
@@ -619,10 +622,13 @@ struct ShipSession {
     prompt: Option<Prompt>,
     /// Changes sent to the ship, each answered in its turn: none drops another's answer (`inturn`).
     op_req: inturn::InTurn<Result<Op, String>>,
+    /// Moves whose HTTP request hit a client read timeout while the ship may still finish them.
+    timed_out_moves: Vec<(String, String)>,
     /// The rendered page beside the source while editing, debounced so held keys do not rebuild it on every repeat.
     preview: bool,
     preview_text: String,
     preview_seen: String,
+    preview_html: String,
     preview_at: f64,
     files: Files,
     query: TextEdit,
@@ -1067,9 +1073,11 @@ impl Default for ShipSession {
             login_req: Latest::default(),
             prompt: None,
             op_req: inturn::InTurn::default(),
+            timed_out_moves: Vec::new(),
             preview: true,
             preview_text: String::new(),
             preview_seen: String::new(),
+            preview_html: String::new(),
             preview_at: 0.0,
             files: Files::default(),
             query: TextEdit::new(""),
@@ -2257,11 +2265,15 @@ fn confirm(s: &mut App) {
                     Op::Renamed(a, b, _) if memory => c.know_move(&format!("/{a}"), &format!("/{b}"))?,
                     Op::Created(..) => c.create_as(&rn)?,
                     Op::FolderMade(..) => c.folder_new(&rn)?,
-                    Op::Renamed(a, _, _) => c.rename_as(a, &rn)?,
+                    Op::Renamed(a, b, _) => match c.rename_as(a, &rn) {
+                        Ok(()) => {}
+                        Err(e) if api::timed_out(&e) => return Ok(Op::MoveTimedOut(a.clone(), b.clone())),
+                        Err(e) => return Err(e),
+                    },
                     Op::Deleted(n) if page => c.delete(n)?,
                     Op::Deleted(n) => c.delete_tree(n)?,
                     Op::Shared(n, mode) => c.share(n, mode)?,
-                    Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Posted(..) | Op::SentRemote(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) | Op::Linked(..) | Op::Unlinked(..) | Op::Forgot(..) => {}
+                    Op::MoveTimedOut(..) | Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Posted(..) | Op::SentRemote(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) | Op::Linked(..) | Op::Unlinked(..) | Op::Forgot(..) => {}
                 }
                 Ok(op)
             });
@@ -2291,6 +2303,69 @@ fn guarded<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 /// Whether a name is the page or folder at `path`, or is in that folder.
 fn is_under(name: &str, path: &str) -> bool {
     name == path || name.strip_prefix(path).is_some_and(|r| r.starts_with('/'))
+}
+
+/// Remaps trails, tabs, folder view, and open page after a rename/move from `a` to `b`.
+fn remap_moved_views(s: &mut App, a: &str, b: &str, was_folder: bool) {
+    let moved = |name: &str| is_under(name, a).then(|| format!("{b}{}", &name[a.len()..]));
+    let sess = &mut s.session;
+    for name in sess.trail.iter_mut().chain(sess.tabs.iter_mut().flat_map(|t| t.trail.iter_mut())).chain(sess.tgroups.iter_mut().flat_map(|g| g.tabs.iter_mut()).flat_map(|t| t.trail.iter_mut())) {
+        if let Some(new) = moved(name) {
+            *name = new;
+        }
+    }
+    if let Some(new) = s.folder.as_deref().and_then(moved) {
+        s.folder = Some(new);
+    }
+    // the page in front follows only when it was one of them. One being edited keeps its editor and what is typed in it, under its new name
+    match s.open.as_ref().and_then(|p| moved(&p.name)) {
+        Some(new) if s.editing => {
+            if let Some(p) = &mut s.open {
+                p.name = new.clone();
+            }
+            // its revision on the ship is no longer the one this edit began from: saves wait for the next read of the tree to say what it is. With the ship away there is no read to wait for, and a memory has no revision to hold to
+            if s.conn.is_some() && !s.memory {
+                if s.offline.is_none() {
+                    (s.moved_wait, s.moved_at) = (Some(new), 0.0);
+                } else if let Some(p) = &mut s.open {
+                    p.rev = 0;
+                }
+            }
+        }
+        Some(new) => {
+            s.open = None;
+            open_page(s, &new);
+        }
+        None if was_folder && !s.editing && s.open.is_none() => s.folder = Some(b.to_owned()),
+        None => {}
+    }
+}
+
+/// Checks moves that hit a client read timeout against the latest tree from the ship.
+/// Once the source is gone and the destination is present, remaps waiting saves, tabs,
+/// folder view, and open page so an autosave cannot recreate the old path.
+fn reconcile_timed_out_moves(s: &mut App) {
+    if s.timed_out_moves.is_empty() || s.memory {
+        return;
+    }
+    let pending = std::mem::take(&mut s.timed_out_moves);
+    let mut still = Vec::new();
+    for (a, b) in pending {
+        let src_gone = under(&s.names, &a).is_empty() && under(&s.dirs, &a).is_empty();
+        let dst_here = !under(&s.names, &b).is_empty() || !under(&s.dirs, &b).is_empty();
+        if src_gone && dst_here {
+            if s.conn.is_some() && s.queue.keys().any(|k| api::queued_know(k).is_none() && is_under(k, &a)) {
+                let goes = api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: String::new(), dnames: String::new() };
+                let _ = change_waiting(s, |_, saves| api::enqueue_op(&mut Vec::new(), saves, goes));
+            }
+            let was_folder = !s.names.contains(&b);
+            remap_moved_views(s, &a, &b, was_folder);
+            s.note = format!("moved {a} to {b}");
+        } else {
+            still.push((a, b));
+        }
+    }
+    s.timed_out_moves = still;
 }
 
 /// A change landed: follow it here, then read the tree again.
@@ -2369,40 +2444,19 @@ fn applied(s: &mut App, op: Op) {
                 remap_map(&mut s.shares);
                 remap_map(&mut s.dshares);
             }
-            // every tab that held one of them holds it still, by its new name
-            let moved = |name: &str| is_under(name, &a).then(|| format!("{b}{}", &name[a.len()..]));
-            let sess = &mut s.session;
-            for name in sess.trail.iter_mut().chain(sess.tabs.iter_mut().flat_map(|t| t.trail.iter_mut())).chain(sess.tgroups.iter_mut().flat_map(|g| g.tabs.iter_mut()).flat_map(|t| t.trail.iter_mut())) {
-                if let Some(new) = moved(name) {
-                    *name = new;
-                }
-            }
-            if let Some(new) = s.folder.as_deref().and_then(moved) {
-                s.folder = Some(new);
-            }
-            // the page in front follows only when it was one of them. One being edited keeps its editor and what is typed in it, under its new name
-            match s.open.as_ref().and_then(|p| moved(&p.name)) {
-                Some(new) if s.editing => {
-                    if let Some(p) = &mut s.open {
-                        p.name = new.clone();
-                    }
-                    // its revision on the ship is no longer the one this edit began from: saves wait for the next read of the tree to say what it is. With the ship away there is no read to wait for, and a memory has no revision to hold to
-                    if s.conn.is_some() && !s.memory {
-                        if s.offline.is_none() {
-                            (s.moved_wait, s.moved_at) = (Some(new), 0.0);
-                        } else if let Some(p) = &mut s.open {
-                            p.rev = 0;
-                        }
-                    }
-                }
-                Some(new) => {
-                    s.open = None;
-                    open_page(s, &new);
-                }
-                None if was_folder && !s.editing && s.open.is_none() => s.folder = Some(b),
-                None => {}
-            }
+            s.timed_out_moves.retain(|(f, t)| !(f == &a && t == &b));
+            remap_moved_views(s, &a, &b, was_folder);
             s.note = "renamed".into();
+        }
+        Op::MoveTimedOut(a, b) => {
+            if a != b && !s.memory && !s.timed_out_moves.iter().any(|(f, t)| f == &a && t == &b) {
+                s.timed_out_moves.push((a, b));
+            }
+            s.note = "not done: the ship took too long to answer; refreshing to check what landed".into();
+            if s.conn.is_some() && !s.memory {
+                load_tree(s);
+            }
+            return;
         }
         Op::Shared(n, mode) => {
             s.note = match mode.as_str() {
@@ -4938,15 +4992,15 @@ fn pane_tab(s: &mut App, tab: rpane::Tab) {
 
 /// The open page's headings: those of what is being typed while
 /// editing, and of the page as it stands otherwise.
-fn outline_of(s: &App) -> Vec<outline::Heading> {
-    let Some(p) = &s.open else { return Vec::new() };
+fn outline_of(s: &App) -> std::rc::Rc<[outline::Heading]> {
+    let Some(p) = &s.open else { return std::rc::Rc::from([]) };
     let text = if s.editing { s.edit.text.as_str() } else { p.body.as_str() };
     thread_local! {
-        static LAST: std::cell::RefCell<(String, String, Vec<outline::Heading>)> = const { std::cell::RefCell::new((String::new(), String::new(), Vec::new())) };
+        static LAST: std::cell::RefCell<(String, String, std::rc::Rc<[outline::Heading]>)> = std::cell::RefCell::new((String::new(), String::new(), std::rc::Rc::from([])));
     }
     LAST.with_borrow_mut(|last| {
         if last.0 != p.kind || last.1 != text {
-            *last = (p.kind.clone(), text.to_owned(), outline::outline(text, &p.kind));
+            *last = (p.kind.clone(), text.to_owned(), outline::outline(text, &p.kind).into());
         }
         last.2.clone()
     })
@@ -4955,7 +5009,8 @@ fn outline_of(s: &App) -> Vec<outline::Heading> {
 /// Goes to a heading: the caret to its line while editing, and the
 /// reader to it, marked, while reading.
 fn go_heading(s: &mut App, i: usize, tx: &mut Tx) {
-    let Some(h) = outline_of(s).into_iter().nth(i) else { return };
+    let heads = outline_of(s);
+    let Some(h) = heads.get(i) else { return };
     if s.editing {
         // the caret on the heading's line is what the field keeps in view
         s.edit.set_selection(h.at, h.at);
@@ -5370,6 +5425,14 @@ fn kept_by_orrery(s: &App) -> bool {
     s.open.as_ref().is_some_and(|p| p.name == ORRERY_MAP && p.kind == "geojson") && !s.memory && s.remote.is_none() && s.kept != Some(false)
 }
 
+/// Synchronizes the debounced live-preview buffer and rendered Markdown source with the editor.
+fn sync_preview(s: &mut App) {
+    s.preview_text = s.edit.text.clone();
+    s.preview_seen = s.edit.text.clone();
+    s.preview_html = md::html_shown(&md::shallow(&s.edit.text));
+    s.preview_at = 0.0;
+}
+
 fn start_edit(s: &mut App) {
     if no_node(s) {
         return;
@@ -5406,9 +5469,7 @@ fn start_edit(s: &mut App) {
             vim_start(s);
         }
     }
-    s.preview_text = s.edit.text.clone();
-    s.preview_seen = s.edit.text.clone();
-    s.preview_at = 0.0;
+    sync_preview(s);
     s.editing = true;
 }
 
@@ -5421,9 +5482,7 @@ fn flip_mode(s: &mut App) {
         s.rich = false;
         s.note.clear();
         vim_start(s);
-        s.preview_text = s.edit.text.clone();
-        s.preview_seen = s.edit.text.clone();
-        s.preview_at = 0.0;
+        sync_preview(s);
     } else {
         match md::exact(&body) {
             Some(d) => {
@@ -5459,29 +5518,19 @@ fn heading(e: &mut TextEdit, level: usize) {
 /// `#` dimmed, and fenced code coloured by its language. Cached by text and
 /// block structure so cursor/hover/blink frames never re-lex code blocks.
 fn rich_spans(e: &TextEdit, k: &Kit) -> Vec<Span> {
-    let paras = e.paragraphs();
-    let sig: Vec<(usize, usize, u8)> = paras
-        .iter()
-        .map(|p| {
-            let b = match p.block {
-                Block::Paragraph => 0,
-                Block::Code => 1,
-                _ => 2,
-            };
-            (p.range.start, p.range.end, b)
-        })
-        .collect();
-    // cache raw code-block highlights and heading ranges independently of theme colours
+    // cache raw code-block highlights and heading ranges independently of theme colours,
+    // keyed directly on text and block kinds so cursor-blink/hover frames skip e.paragraphs()
     enum RichItem {
         Heading(usize, usize, usize, f32),
         Code(usize, std::rc::Rc<[syntax::Highlight]>),
     }
     thread_local! {
-        static LAST: std::cell::RefCell<(String, Vec<(usize, usize, u8)>, Vec<RichItem>)> = const { std::cell::RefCell::new((String::new(), Vec::new(), Vec::new())) };
+        static LAST: std::cell::RefCell<(String, Vec<Block>, Vec<RichItem>)> = const { std::cell::RefCell::new((String::new(), Vec::new(), Vec::new())) };
     }
     let theme = SyntaxTheme::from_kit(k);
     LAST.with_borrow_mut(|last| {
-        if last.0 != e.text || last.1 != sig {
+        if last.0 != e.text || last.1.as_slice() != e.blocks() {
+            let paras = e.paragraphs();
             let mut items = Vec::new();
             let mut i = 0;
             while i < paras.len() {
@@ -5507,7 +5556,7 @@ fn rich_spans(e: &TextEdit, k: &Kit) -> Vec<Span> {
                 }
                 i += 1;
             }
-            *last = (e.text.clone(), sig, items);
+            *last = (e.text.clone(), e.blocks().to_vec(), items);
         }
         let mut out = Vec::new();
         for item in &last.2 {
@@ -6317,10 +6366,11 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             if s.edit.text != s.preview_seen {
                 s.preview_seen = s.edit.text.clone();
                 s.preview_at = clock + PREVIEW_DEBOUNCE;
-                tx.wake_after(std::time::Duration::from_millis(160));
+                tx.wake_at(s.preview_at);
             }
             if s.preview_text != s.edit.text && clock >= s.preview_at {
                 s.preview_text = s.edit.text.clone();
+                s.preview_html = md::html_shown(&md::shallow(&s.preview_text));
                 changed = true;
             }
         }
@@ -6841,6 +6891,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 let first = s.files.is_empty();
                 s.names = nodes.iter().filter(|n| n.page).map(|n| n.path.clone()).collect();
                 s.dirs = nodes.iter().filter(|n| !n.page).map(|n| n.path.clone()).collect();
+                reconcile_timed_out_moves(s);
                 let shut = shared_shut(s);
                 // whether the page in front had a row before this read: one just made or moved has none yet
                 let had = s.open.as_ref().is_some_and(|p| s.files.contains(&p.name));
@@ -12688,11 +12739,13 @@ fn tree_menu_items(dir: bool) -> Vec<(&'static str, &'static str)> {
 }
 
 /// The name a rename or a move starts from, with the part to change marked so typing replaces it:
-/// the last part for a rename, and the folder before `/` for a move (keeping `/<name>` intact).
+/// the last part for a rename, and the folder before `/` for a move (keeping `/<name>` intact,
+/// including on a top-level page seeded as `/<name>` with the caret at 0).
 fn tree_menu_edit(path: &str, mv: bool) -> TextEdit {
-    let mut t = TextEdit::new(path);
-    t.focused = true;
     let slash = path.rfind('/');
+    let seed = if mv && slash.is_none() { format!("/{path}") } else { path.to_owned() };
+    let mut t = TextEdit::new(seed);
+    t.focused = true;
     if mv {
         t.set_selection(0, slash.unwrap_or(0));
     } else {
@@ -13905,9 +13958,7 @@ fn merge_theirs(s: &mut App) {
         Some(d) => rich_edit(d, &mut s.seps),
         None => TextEdit::new(m.text.clone()),
     };
-    s.preview_text = s.edit.text.clone();
-    s.preview_seen = s.edit.text.clone();
-    s.preview_at = 0.0;
+    sync_preview(s);
     s.edit.focused = true;
     // the caret stays on the line it was on, where that line still is
     // ponytail: the editor is given the merged text as a new text, so undo does not reach back across a merge. The merge made as one edit of the old text is the fix
@@ -15111,17 +15162,7 @@ fn page_body(s: &App, k: &Kit) -> El {
         let source = fill_editor(s, "Page source", marks, &editor_kit(k, &s.prefs.font));
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
-            let raw = if s.preview_text.is_empty() && s.preview_at == 0.0 && !s.edit.text.is_empty() { s.edit.text.as_str() } else { s.preview_text.as_str() };
-            thread_local! {
-                static PREVIEW_SRC: std::cell::RefCell<(String, String)> = const { std::cell::RefCell::new((String::new(), String::new())) };
-            }
-            let md_src = PREVIEW_SRC.with_borrow_mut(|last| {
-                if last.0 != raw {
-                    *last = (raw.to_owned(), md::html_shown(&md::shallow(raw)));
-                }
-                last.1.clone()
-            });
-            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(md_src).style(page_style(k)).build(k));
+            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(s.preview_html.clone()).style(page_style(k)).build(k));
             panes = panes.child(col().key("preview").grow(1.0).min_w(0.0).h_full().min_h(0.0).child(shown).scroll(ScrollSpec { stick_bottom: false }));
         }
         return panes;
@@ -15475,9 +15516,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             trailing = trailing.child(Button::new(if s.preview { "Hide preview" } else { "Preview" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
                 s.preview ^= true;
                 if s.preview {
-                    s.preview_text = s.edit.text.clone();
-                    s.preview_seen = s.edit.text.clone();
-                    s.preview_at = 0.0;
+                    sync_preview(s);
                 }
             }).build(&k).key("preview-toggle"));
         }
@@ -15944,6 +15983,11 @@ mod tests {
         assert_eq!(tree_menu_edit("notes/plans/today", true).selected(), "notes/plans");
         assert_eq!(tree_menu_edit("today", false).selected(), "today");
         assert_eq!(tree_menu_edit("today", true).selected(), "");
+        // moving a top-level page seeds '/today' with caret at 0 so typing a folder moves instead of renaming
+        let mut top = tree_menu_edit("today", true);
+        assert_eq!(api::real_name(&top.text).map(|r| r.name).as_deref(), Some("today"));
+        top.insert("projects");
+        assert_eq!(top.text, "projects/today");
         // typing a destination folder replaces only the prefix before '/', keeping '/today'
         let mut mv = tree_menu_edit("inbox/today", true);
         mv.insert("projects/work");
@@ -15979,10 +16023,36 @@ mod tests {
         assert_eq!(s.dnames.get("vault").map(String::as_str), Some("Vault"));
         assert_eq!(s.dnames.get("vault/old").map(String::as_str), Some("Old"));
         assert!(!s.dnames.contains_key("archive"));
-        // a client timeout from a slow move must not flip the app offline
-        not_done(&mut s, "https://ship.example/apps/lattice/page-move: timed out");
+        // a timed-out move that later appears in the tree remaps open page, tabs, and folder
+        s.names.push("vault/doc".into());
+        s.open = Some(Page { name: "vault/doc".into(), body: "# Doc\n".into(), kind: "md".into(), rev: 1 });
+        s.editing = true;
+        s.tabs = vec![Tab { trail: vec!["vault/doc".into()], at: 0 }];
+        s.folder = Some("vault".into());
+        applied(&mut s, Op::MoveTimedOut("vault".into(), "kept".into()));
+        assert_eq!(s.timed_out_moves, vec![("vault".into(), "kept".into())]);
+        assert!(s.offline.is_none());
+        // before the ship finishes, nothing is remapped and the pending entry stays
+        reconcile_timed_out_moves(&mut s);
+        assert_eq!(s.open.as_ref().unwrap().name, "vault/doc");
+        assert_eq!(s.timed_out_moves.len(), 1);
+        // once the tree reload shows the destination and not the source, open/tabs/folder remap
+        s.names.retain(|n| n != "vault/doc");
+        s.dirs.retain(|d| !is_under(d, "vault"));
+        s.names.push("kept/doc".into());
+        reconcile_timed_out_moves(&mut s);
+        assert_eq!(s.open.as_ref().unwrap().name, "kept/doc");
+        assert_eq!(s.tabs[0].trail, vec!["kept/doc"]);
+        assert_eq!(s.folder.as_deref(), Some("kept"));
+        assert!(s.timed_out_moves.is_empty());
+        // a client read timeout from a slow move must not flip the app offline
+        not_done(&mut s, "https://ship.example/apps/lattice/page-move: Network Error: timed out reading response");
         assert!(s.offline.is_none(), "read timeout must not put the app in offline mode");
         assert!(s.note.contains("too long"));
+        // a connect timeout to an unreachable ship must still mark offline
+        not_done(&mut s, "https://ship.example/apps/lattice/page-move: Connection Failed: Connect error: connection timed out");
+        assert!(s.offline.is_some(), "connect timeout must put the app in offline mode");
+        s.offline = None;
         // a real 502 still marks offline
         not_done(&mut s, "502: bad gateway");
         assert!(s.offline.is_some());
@@ -15998,11 +16068,13 @@ mod tests {
         s.preview = true;
         let orig = s.edit.text.clone();
         assert_eq!(s.preview_text, orig);
+        let orig_html = s.preview_html.clone();
         let mut tx = Tx::default();
-        // rapid backspaces advance the deadline without rebuilding preview_text
+        // rapid backspaces advance the deadline without rebuilding preview_text or preview_html
         s.edit.text.pop();
         poll(&mut s, 1.00, &mut tx);
         assert_eq!(s.preview_text, orig, "preview waits while typing continues");
+        assert_eq!(s.preview_html, orig_html);
         s.edit.text.pop();
         poll(&mut s, 1.05, &mut tx);
         assert_eq!(s.preview_text, orig, "second keystroke pushes debounce window forward");
@@ -16010,6 +16082,16 @@ mod tests {
         let after = s.edit.text.clone();
         poll(&mut s, 1.25, &mut tx);
         assert_eq!(s.preview_text, after, "preview catches up after typing pauses");
+        assert_eq!(s.preview_html, md::html_shown(&md::shallow(&after)));
+        // starting from an empty page also debounces the first keystroke instead of bypassing preview_html
+        s.edit = TextEdit::new("");
+        sync_preview(&mut s);
+        assert!(s.preview_html.is_empty());
+        s.edit.text.push_str("# Hi");
+        poll(&mut s, 2.00, &mut tx);
+        assert!(s.preview_html.is_empty(), "first keystroke on an empty page still debounces");
+        poll(&mut s, 2.20, &mut tx);
+        assert_eq!(s.preview_html, "# Hi");
     }
 
     #[test]
