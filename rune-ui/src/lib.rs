@@ -499,8 +499,8 @@ enum Op {
     Commented(String),
     /// The owner's own comment landed on a page of theirs: what to say, the page, and the text, which is let go only now.
     Posted(String, String, String),
-    /// A comment went to another ship's page: the address, the text, and whether the host took it in the ship's five seconds.
-    SentRemote(String, String, bool),
+    /// A comment went to another ship's page: the address, the text, and how the host answered.
+    SentRemote(String, String, SentOutcome),
     /// A ship was let in to a page (edit or read, and whether it was told),
     /// or put out again.
     Granted(String, String, bool, bool),
@@ -2629,7 +2629,7 @@ fn applied(s: &mut App, op: Op) {
             load_comments(s);
             return;
         }
-        Op::SentRemote(url, body, told) => {
+        Op::SentRemote(url, body, outcome) => {
             sent_draft(s, &url, &body);
             let ours = current_actor(s);
             let sess = &mut s.session;
@@ -2638,16 +2638,14 @@ fn applied(s: &mut App, op: Op) {
                 return;
             };
             let (ship, key) = (t.ship.clone(), if t.key.is_empty() { format!("/{}", t.page.trim_start_matches('/')) } else { t.key.clone() });
-            sess.note = if told {
-                format!("sent to {ship}")
-            } else if sess.anon {
-                format!("sent to {ship}, but {ship} did not confirm its comment policy")
-            } else {
-                format!("{ship} has not said it took the comment yet")
+            sess.note = match outcome {
+                SentOutcome::Confirmed => format!("sent to {ship}"),
+                SentOutcome::PolicyUnknown => format!("sent to {ship}, but {ship} did not confirm its comment policy"),
+                SentOutcome::Unconfirmed => format!("{ship} has not said it took the comment yet"),
             };
             // how many like it were there already: it has shown when there is one more
             let had = like_ours(&t.list, &ours, &body);
-            t.sent = Some((body, told, had));
+            t.sent = Some((body, outcome, had));
             // the thread is read again, a moment after: the host writes the comment in a step of its own
             if let Some(c) = s.conn.clone() {
                 s.thread_req.request((c, url), |(c, url)| {
@@ -12225,7 +12223,7 @@ fn post_remote_comment(s: &mut App) {
         s.note = format!("sending to {}\u{2026}", t.ship);
         s.comment_req.request((c, t, body), |(c, t, body)| {
             let told = c.comment_remote(&t.ship, &t.page, &body)?;
-            Ok(Op::SentRemote(t.url, body, told))
+            Ok(Op::SentRemote(t.url, body, if told { SentOutcome::Confirmed } else { SentOutcome::Unconfirmed }))
         });
         return;
     }
@@ -12262,7 +12260,7 @@ fn post_remote_comment(s: &mut App) {
                     }
                 }
             }
-            Ok(Op::SentRemote(t.url, body, policy.is_some()))
+            Ok(Op::SentRemote(t.url, body, if policy.is_some() { SentOutcome::Confirmed } else { SentOutcome::PolicyUnknown }))
         });
     }
 }
@@ -12599,8 +12597,12 @@ fn thread_view(t: &Thread, s: &App, k: &Kit) -> El {
         list = list.child(text("No comments on this page yet.").font(k.ty.small).color(c.text_muted));
     }
     // what was sent from here and is not in the thread yet, said as the ship's reader says it
-    if let Some((body, told, _)) = &t.sent {
-        let said = if *told { format!("Sent. It shows here once {} has it, or after its owner's yes if comments from you are held.", t.ship) } else { format!("{} did not say it took this within five seconds. It may still arrive.", t.ship) };
+    if let Some((body, outcome, _)) = &t.sent {
+        let said = match outcome {
+            SentOutcome::Confirmed => format!("Sent. It shows here once {} has it, or after its owner's yes if comments from you are held.", t.ship),
+            SentOutcome::PolicyUnknown => format!("Sent to {}, though it did not confirm its comment policy. It shows here if accepted, or after its owner's yes if held.", t.ship),
+            SentOutcome::Unconfirmed => format!("{} did not say it took this within five seconds. It may still arrive.", t.ship),
+        };
         list = list.child(
             col().key("thread-sent").w_full().padding(8.0).gap(4.0).radius(k.radius.sm).border(1.0, c.border_weak)
                 .child(text(said).font(k.ty.small).color(c.text_muted).wrap())
@@ -14905,6 +14907,17 @@ struct AnonPageMeta {
     comet_full_until: Option<u64>,
 }
 
+/// Outcome of sending a comment to another ship's page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SentOutcome {
+    /// Host acknowledged taking the comment (and policy was confirmed if anonymous).
+    Confirmed,
+    /// Connected ship did not receive acknowledgement within its five-second window.
+    Unconfirmed,
+    /// Anonymous poke was acknowledged, but the host did not confirm its comment policy.
+    PolicyUnknown,
+}
+
 /// Another ship's page's public thread, and what this ship last sent to it.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Thread {
@@ -14923,8 +14936,8 @@ struct Thread {
     list: Vec<Comment>,
     /// The older ones are shown too: fifty are until asked.
     all: bool,
-    /// A comment sent from here that the thread does not show yet, whether the host took it, and how many like it the thread had.
-    sent: Option<(String, bool, usize)>,
+    /// A comment sent from here that the thread does not show yet, how the host answered, and how many like it the thread had.
+    sent: Option<(String, SentOutcome, usize)>,
 }
 
 /// What is said when the ship did not do what was asked.
@@ -18551,9 +18564,9 @@ mod tests {
         assert_eq!((t.url.as_str(), t.ship.as_str(), t.page.as_str(), t.list.len(), t.all, &t.sent), ("urb://~nec/notes/a", "~nec", "notes/a", 2, false, &None));
         assert!(s.note.contains("2 comments"));
         // what was sent from here stays said across a read of the same address, and goes with another page
-        s.thread.as_mut().unwrap().sent = Some(("mine".into(), true, 0));
+        s.thread.as_mut().unwrap().sent = Some(("mine".into(), SentOutcome::Confirmed, 0));
         urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: Vec::new() });
-        assert_eq!(thread_here(&s).unwrap().sent, Some(("mine".into(), true, 0)));
+        assert_eq!(thread_here(&s).unwrap().sent, Some(("mine".into(), SentOutcome::Confirmed, 0)));
         urb_got(&mut s, "urb://~nec/notes/b".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/b".into(), kind: "md".into(), body: "# B\n".into(), comments: Vec::new() });
         assert_eq!(thread_here(&s).unwrap().sent, None);
         // one of this ship's own pages has no such thread
