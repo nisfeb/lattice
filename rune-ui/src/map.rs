@@ -36,6 +36,8 @@ pub struct Feature {
     pub color: String,
     /// The glyph a point shows, or nothing for a plain dot.
     pub icon: &'static str,
+    /// Parsed Unix timestamp (seconds) from `properties.time`, when valid.
+    pub time_epoch: Option<i64>,
 }
 
 /// The icons a feature may name, each with its glyph, as on the web.
@@ -273,7 +275,8 @@ pub fn parse_cut(body: &str) -> Option<(Vec<Feature>, Cut)> {
         let p = &f["properties"];
         let props = p.as_object().map_or(Vec::new(), |o| o.iter().map(|(k, v)| (k.clone(), text(v))).filter(|(_, v)| !v.is_empty()).collect());
         let (kind, color, icon) = look(p);
-        out.push(Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g, at, corners: corners(&f["geometry"]), radius: p["radius"].as_f64().filter(|r| r.is_finite() && *r > 0.0 && *r <= 2e7).unwrap_or(0.0), kind, color, icon });
+        let time_epoch = p.get("time").and_then(Value::as_str).and_then(parse_time_epoch);
+        out.push(Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g, at, corners: corners(&f["geometry"]), radius: p["radius"].as_f64().filter(|r| r.is_finite() && *r > 0.0 && *r <= 2e7).unwrap_or(0.0), kind, color, icon, time_epoch });
     }
     let count = |g: &Geom| match g {
         Geom::Point(_) => 1,
@@ -626,9 +629,7 @@ pub fn circle(centre: [f64; 2], radius: f64) -> Vec<P> {
         .collect()
 }
 
-/// Whether a feature's time is a date lattice can read: a day, with a
-/// time of day and a zone if it likes, as `2026-11-17T09:30:00Z`.
-// ponytail: the web takes anything its Date.parse reads. This takes the form it writes
+/// Whether a feature's time is a strict ISO-8601 date/time (`2026-11-17T09:30:00Z`).
 pub fn time_ok(t: &str) -> bool {
     let num = |s: &str, n: usize, lo: u32, hi: u32| s.len() == n && s.bytes().all(|b| b.is_ascii_digit()) && s.parse::<u32>().is_ok_and(|v| (lo..=hi).contains(&v));
     let (day, rest) = t.split_at(t.find('T').unwrap_or(t.len()));
@@ -645,6 +646,171 @@ pub fn time_ok(t: &str) -> bool {
     let c: Vec<&str> = clock.split(':').collect();
     let secs = |s: &str| s.split_once('.').map_or(num(s, 2, 0, 59), |(a, f)| num(a, 2, 0, 59) && !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()));
     zone_ok && matches!(c.len(), 2 | 3) && num(c[0], 2, 0, 23) && num(c[1], 2, 0, 59) && c.get(2).is_none_or(|s| secs(s))
+}
+
+/// Whether `s` is a valid `#rgb` or `#rrggbb` hex color.
+pub fn hex_color_ok(s: &str) -> bool {
+    s.strip_prefix('#').is_some_and(|h| matches!(h.len(), 3 | 6) && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Current UTC time as `YYYY-MM-DDTHH:MM:SSZ`.
+pub fn now_iso() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (y, m, d) = crate::sheet::civil_from_days(days);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, (rem / 60) % 60, rem % 60)
+}
+
+/// Flexible date/time parser normalizing ISO, space-separated (`2026-11-17 09:30`),
+/// slash-separated (`2026/11/17`), and English month forms (`Nov 17, 2026`, `17 Nov 2026`)
+/// into canonical ISO-8601 (`YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SSZ`).
+pub fn parse_time(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if t.eq_ignore_ascii_case("now") {
+        return Some(now_iso());
+    }
+    if time_ok(t) {
+        return Some(t.to_owned());
+    }
+    // Space-separated or slash-separated YYYY-MM-DD [HH:MM[:SS]][Z|+-HH:MM]
+    let (date_part, time_part) = match t.split_once(['T', 't', ' ']) {
+        Some((d, rest)) if !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit() || b == b'-' || b == b'/') => (d, Some(rest.trim())),
+        _ => (t, None),
+    };
+    let valid_ymd = |y: i64, m: i64, d: i64| -> bool {
+        (0..=9999).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&d) && crate::sheet::civil_from_days(crate::sheet::days_from_civil(y, m, d)) == (y, m, d)
+    };
+    let norm_clock = |clock_raw: &str| -> Option<String> {
+        let c = clock_raw.trim();
+        let (hm, zone) = match c.find(['Z', 'z', '+', '-']) {
+            Some(i) => (&c[..i], &c[i..]),
+            None => (c, ""),
+        };
+        let zone = if zone.eq_ignore_ascii_case("z") {
+            "Z".to_owned()
+        } else if zone.is_empty() {
+            "Z".to_owned()
+        } else {
+            let (sign, rest) = zone.split_at(1);
+            let (zh, zm) = rest.split_once(':')?;
+            let (h, m): (u32, u32) = (zh.parse().ok()?, zm.parse().ok()?);
+            if h > 23 || m > 59 {
+                return None;
+            }
+            format!("{sign}{h:02}:{m:02}")
+        };
+        let parts: Vec<&str> = hm.trim().split(':').collect();
+        if !(2..=3).contains(&parts.len()) {
+            return None;
+        }
+        let h: u32 = parts[0].parse().ok()?;
+        let m: u32 = parts[1].parse().ok()?;
+        let s: u32 = parts.get(2).map_or(Some(0), |s| s.split('.').next()?.parse().ok())?;
+        if h > 23 || m > 59 || s > 59 {
+            return None;
+        }
+        Some(format!("T{h:02}:{m:02}:{s:02}{zone}"))
+    };
+    let sep = if date_part.contains('-') { '-' } else if date_part.contains('/') { '/' } else { '\0' };
+    if sep != '\0' {
+        let p: Vec<&str> = date_part.split(sep).collect();
+        if p.len() == 3 && p.iter().all(|x| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit())) {
+            let (y, m, d) = if p[0].len() == 4 {
+                (p[0].parse::<i64>().ok()?, p[1].parse::<i64>().ok()?, p[2].parse::<i64>().ok()?)
+            } else if p[2].len() == 4 && sep == '/' {
+                // MM/DD/YYYY
+                (p[2].parse::<i64>().ok()?, p[0].parse::<i64>().ok()?, p[1].parse::<i64>().ok()?)
+            } else {
+                return None;
+            };
+            if valid_ymd(y, m, d) {
+                let tail = match time_part {
+                    Some(c) if !c.is_empty() => norm_clock(c)?,
+                    _ => String::new(),
+                };
+                return Some(format!("{y:04}-{m:02}-{d:02}{tail}"));
+            }
+        }
+    }
+    // Month-name dates: "Nov 17, 2026" or "17 Nov 2026" (optional trailing HH:MM[:SS])
+    let month_of = |w: &str| -> Option<i64> {
+        let low = w.to_ascii_lowercase();
+        let low = low.trim_end_matches('.');
+        match low {
+            "jan" | "january" => Some(1),
+            "feb" | "february" => Some(2),
+            "mar" | "march" => Some(3),
+            "apr" | "april" => Some(4),
+            "may" => Some(5),
+            "jun" | "june" => Some(6),
+            "jul" | "july" => Some(7),
+            "aug" | "august" => Some(8),
+            "sep" | "sept" | "september" => Some(9),
+            "oct" | "october" => Some(10),
+            "nov" | "november" => Some(11),
+            "dec" | "december" => Some(12),
+            _ => None,
+        }
+    };
+    let words: Vec<&str> = t.split_whitespace().map(|w| w.trim_matches(',')).filter(|w| !w.is_empty()).collect();
+    if words.len() >= 3 {
+        let parsed = if let Some(m) = month_of(words[0]) {
+            words[1].parse::<i64>().ok().zip(words[2].parse::<i64>().ok()).map(|(d, y)| (y, m, d))
+        } else if let Some(m) = month_of(words[1]) {
+            words[0].parse::<i64>().ok().zip(words[2].parse::<i64>().ok()).map(|(d, y)| (y, m, d))
+        } else {
+            None
+        };
+        if let Some((y, m, d)) = parsed {
+            if valid_ymd(y, m, d) {
+                let tail = if words.len() > 3 { norm_clock(&words[3..].join(" "))? } else { String::new() };
+                return Some(format!("{y:04}-{m:02}-{d:02}{tail}"));
+            }
+        }
+    }
+    None
+}
+
+/// Parses a feature's `time` string into Unix epoch seconds for age filtering.
+pub fn parse_time_epoch(raw: &str) -> Option<i64> {
+    let iso = parse_time(raw)?;
+    let (day, rest) = iso.split_once('T').map_or((iso.as_str(), ""), |(d, r)| (d, r));
+    let mut parts = day.split('-');
+    let (y, m, d): (i64, i64, i64) = (parts.next()?.parse().ok()?, parts.next()?.parse().ok()?, parts.next()?.parse().ok()?);
+    let mut secs = crate::sheet::days_from_civil(y, m, d).checked_mul(86_400)?;
+    if !rest.is_empty() {
+        let (clock, zone) = match rest.find(['Z', '+', '-']) {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, ""),
+        };
+        let c: Vec<&str> = clock.split(':').collect();
+        let h: i64 = c.first()?.parse().ok()?;
+        let mi: i64 = c.get(1)?.parse().ok()?;
+        let s: i64 = c.get(2).and_then(|s| s.split('.').next()?.parse().ok()).unwrap_or(0);
+        secs += h * 3600 + mi * 60 + s;
+        if let Some(z) = zone.strip_prefix('+').or_else(|| zone.strip_prefix('-')) {
+            if let Some((zh, zm)) = z.split_once(':') {
+                let off = zh.parse::<i64>().ok()? * 3600 + zm.parse::<i64>().ok()? * 60;
+                if zone.starts_with('+') {
+                    secs -= off;
+                } else {
+                    secs += off;
+                }
+            }
+        }
+    }
+    Some(secs)
+}
+
+/// Whether a feature with `epoch` passes the active age filter `max_age_secs` relative to `now_secs`.
+pub fn matches_age(epoch: Option<i64>, max_age_secs: Option<u64>, now_secs: i64) -> bool {
+    let Some(limit) = max_age_secs else { return true };
+    let Some(ep) = epoch else { return false };
+    now_secs.saturating_sub(ep) <= limit as i64
 }
 
 /// The geometry of a shape drawn with these corners, each a longitude
@@ -847,7 +1013,15 @@ pub fn hit<'a>(feats: impl IntoIterator<Item = (usize, &'a Feature)>, cam: &Came
     for (i, f) in feats {
         for g in &f.geoms {
             let d = match g {
-                Geom::Point(p) => seg(cam.project(*p, w, h), cam.project(*p, w, h)),
+                Geom::Point(p) => {
+                    let pt_d = seg(cam.project(*p, w, h), cam.project(*p, w, h));
+                    if f.radius > 0.0 {
+                        let ring_d = path(&circle(lonlat(*p), f.radius)).1;
+                        pt_d.min(ring_d)
+                    } else {
+                        pt_d
+                    }
+                }
                 Geom::Line(l) => path(l).1,
                 Geom::Area(l) => {
                     let (r, near) = path(l);
@@ -892,6 +1066,121 @@ pub fn thin(line: &[P], max: usize) -> Vec<P> {
         out.extend(line.last());
     }
     out
+}
+
+/// Renders a GeoJSON map page to a self-contained HTML fragment with an inline
+/// SVG vector map, legend, and feature summary table for PDF export.
+pub fn render_html(body: &str, title: &str) -> Result<String, String> {
+    let feats = parse(body).ok_or_else(|| "this page is not a map".to_owned())?;
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    let (w, h) = (760.0f32, 480.0f32);
+    let cam = Camera::fit(&feats, w, h);
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\" style=\"width:100%;height:auto;border:1px solid #ccc;border-radius:4pt;background:#f8f9fa\">\n"
+    );
+    // Graticule
+    let step = cam.grid_step(w);
+    let (a, z) = (cam.unproject(0.0, 0.0, w, h), cam.unproject(w, h, w, h));
+    let lon0 = ((a[0] - 0.5) * 360.0 / step).floor() as i64;
+    let lon1 = ((z[0] - 0.5) * 360.0 / step).ceil() as i64;
+    for i in lon0..=lon1.min(lon0.saturating_add(40)) {
+        let x = cam.project(mercator(i as f64 * step, 0.0), w, h)[0];
+        if (0.0..=w).contains(&x) {
+            svg.push_str(&format!("<line x1=\"{x:.1}\" y1=\"0\" x2=\"{x:.1}\" y2=\"{h}\" stroke=\"#e2e6ea\" stroke-width=\"1\"/>\n"));
+        }
+    }
+    let mut lat = (-85.0 / step).ceil() * step;
+    let mut lines = 0;
+    while lat <= 85.0 && lines < 40 {
+        let y = cam.project(mercator(0.0, lat), w, h)[1];
+        if (0.0..=h).contains(&y) {
+            svg.push_str(&format!("<line x1=\"0\" y1=\"{y:.1}\" x2=\"{w}\" y2=\"{y:.1}\" stroke=\"#e2e6ea\" stroke-width=\"1\"/>\n"));
+            lines += 1;
+        }
+        lat += step;
+    }
+    for f in &feats {
+        let col = if hex_color_ok(&f.color) { f.color.as_str() } else { "#2e86c1" };
+        for g in &f.geoms {
+            match g {
+                Geom::Area(l) => {
+                    let pts: String = thin(l, 500)
+                        .into_iter()
+                        .map(|p| {
+                            let [x, y] = cam.project(p, w, h);
+                            format!("{x:.1},{y:.1}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    svg.push_str(&format!("<polygon points=\"{pts}\" fill=\"{col}\" fill-opacity=\"0.18\" stroke=\"{col}\" stroke-width=\"1.5\"/>\n"));
+                }
+                Geom::Line(l) => {
+                    let pts: String = thin(l, 500)
+                        .into_iter()
+                        .map(|p| {
+                            let [x, y] = cam.project(p, w, h);
+                            format!("{x:.1},{y:.1}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    svg.push_str(&format!("<polyline points=\"{pts}\" fill=\"none\" stroke=\"{col}\" stroke-width=\"2.2\"/>\n"));
+                }
+                Geom::Point(p) => {
+                    if f.radius > 0.0 {
+                        let pts: String = circle(lonlat(*p), f.radius)
+                            .into_iter()
+                            .map(|q| {
+                                let [x, y] = cam.project(q, w, h);
+                                format!("{x:.1},{y:.1}")
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        svg.push_str(&format!("<polygon points=\"{pts}\" fill=\"{col}\" fill-opacity=\"0.12\" stroke=\"{col}\" stroke-width=\"1.2\"/>\n"));
+                    }
+                    let [x, y] = cam.project(*p, w, h);
+                    svg.push_str(&format!("<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"5\" fill=\"{col}\" stroke=\"#fff\" stroke-width=\"1.5\"/>\n"));
+                    if !f.name.is_empty() {
+                        svg.push_str(&format!(
+                            "<text x=\"{:.1}\" y=\"{:.1}\" font-size=\"10\" font-family=\"system-ui,sans-serif\" fill=\"#222\">{}</text>\n",
+                            x + 8.0,
+                            y + 3.5,
+                            esc(&f.name)
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    svg.push_str("</svg>\n");
+    let mut out = format!("<h1>{}</h1>\n{svg}", esc(title));
+    let ks = kinds(&feats);
+    if !ks.is_empty() {
+        out.push_str("<p style=\"font-size:9.5pt;color:#444;margin-top:8pt\">");
+        for (idx, (k, n)) in ks.iter().enumerate() {
+            if idx > 0 {
+                out.push_str(" &middot; ");
+            }
+            let col = if k.is_empty() { "#2e86c1" } else { kind_color(k) };
+            let label = if k.is_empty() { "Unclassified" } else { k.as_str() };
+            out.push_str(&format!("<span style=\"display:inline-block;width:8pt;height:8pt;border-radius:4pt;background:{col};margin-right:3pt\"></span>{} ({n})", esc(label)));
+        }
+        out.push_str("</p>\n");
+    }
+    if !feats.is_empty() {
+        out.push_str("<table style=\"width:100%;font-size:9pt;margin-top:10pt\"><thead><tr><th>Name</th><th>Kind</th><th>Time</th><th>Note</th></tr></thead><tbody>\n");
+        for f in feats.iter().take(250) {
+            let time = f.props.iter().find(|(k, _)| k == "time").map_or("", |(_, v)| v.as_str());
+            out.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+                esc(&f.name),
+                esc(&f.kind),
+                esc(time),
+                esc(&f.note)
+            ));
+        }
+        out.push_str("</tbody></table>\n");
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1347,5 +1636,33 @@ mod tests {
         assert_eq!(shift(PAGE, 0, f64::NAN, 0.0), None);
         assert_eq!(shift(PAGE, 0, 0.0, f64::INFINITY), None);
         assert_eq!(set_corner(PAGE, 1, &[0], f64::NAN, 0.0), None);
+    }
+
+    #[test]
+    fn flexible_times_age_filter_ring_edge_hit_and_svg_pdf_work() {
+        assert_eq!(parse_time("2026-11-17 09:30").as_deref(), Some("2026-11-17T09:30:00Z"));
+        assert_eq!(parse_time("2026/11/17").as_deref(), Some("2026-11-17"));
+        assert_eq!(parse_time("Nov 17, 2026").as_deref(), Some("2026-11-17"));
+        assert_eq!(parse_time("17 Nov 2026 14:15").as_deref(), Some("2026-11-17T14:15:00Z"));
+        assert!(parse_time("now").is_some_and(|s| time_ok(&s)));
+        assert_eq!(parse_time("not a date"), None);
+        let ep = parse_time_epoch("2026-11-17T12:00:00Z").unwrap();
+        assert!(matches_age(Some(ep), Some(3600), ep + 1800));
+        assert!(!matches_age(Some(ep), Some(3600), ep + 7200));
+        assert!(!matches_age(None, Some(3600), ep));
+        assert!(matches_age(None, None, ep));
+        // Ring edge hit selects the point whose ring passes under the click.
+        let ring_doc = r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{"name":"Beacon","radius":50000,"time":"2026-11-17T12:00:00Z"}}]}"#;
+        let feats = parse(ring_doc).unwrap();
+        let (w, h) = (800.0, 600.0);
+        let cam = Camera { at: mercator(0.0, 0.0), scale: 80_000.0 };
+        let edge = circle([0.0, 0.0], 50_000.0)[0];
+        let [ex, ey] = cam.project(edge, w, h);
+        let [cx, cy] = cam.project(mercator(0.0, 0.0), w, h);
+        assert!((ex - cx).hypot(ey - cy) > 25.0, "ring edge is well away from center dot");
+        assert_eq!(hit(feats.iter().enumerate(), &cam, w, h, ex, ey), Some(0));
+        // SVG HTML rendering for PDF export.
+        let html = render_html(ring_doc, "My Map").unwrap();
+        assert!(html.contains("<svg ") && html.contains("Beacon") && html.contains("<h1>My Map</h1>"));
     }
 }

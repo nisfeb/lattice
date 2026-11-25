@@ -437,6 +437,55 @@ fn kml(root: &Node) -> Vec<Value> {
         put("kind", get("type").filter(|t| t.encode_utf16().count() <= 40));
         out.push(json!({"type": "Feature", "geometry": geometry, "properties": p}));
     }
+    let bbox_poly = |b: &Node| -> Option<Value> {
+        let (n, s, e, w) = (
+            parse_float(&b.first("north")?.text())?,
+            parse_float(&b.first("south")?.text())?,
+            parse_float(&b.first("east")?.text())?,
+            parse_float(&b.first("west")?.text())?,
+        );
+        Some(json!({"type": "Polygon", "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}))
+    };
+    for ov in root.each("GroundOverlay") {
+        let Some(geometry) = ov.first("LatLonBox").and_then(bbox_poly) else { continue };
+        let mut p = serde_json::Map::new();
+        if let Some(name) = said(ov, "name") {
+            p.insert("name".into(), name.into_owned().into());
+        }
+        if let Some(desc) = said(ov, "description") {
+            p.insert("note".into(), desc.into_owned().into());
+        }
+        if let Some(href) = ov.first("Icon").and_then(|ic| said(ic, "href")).filter(|u| u.starts_with("http://") || u.starts_with("https://")) {
+            p.insert("source".into(), href.into_owned().into());
+        }
+        p.insert("kind".into(), "overlay".into());
+        out.push(json!({"type": "Feature", "geometry": geometry, "properties": p}));
+    }
+    for nl in root.each("NetworkLink") {
+        let geometry = nl
+            .first("LatLonAltBox")
+            .and_then(bbox_poly)
+            .or_else(|| {
+                let view = nl.first("LookAt").or_else(|| nl.first("Camera"))?;
+                let lon = parse_float(&view.first("longitude")?.text())?;
+                let lat = parse_float(&view.first("latitude")?.text())?;
+                Some(json!({"type": "Point", "coordinates": [lon, lat]}))
+            });
+        let Some(geometry) = geometry else { continue };
+        let mut p = serde_json::Map::new();
+        if let Some(name) = said(nl, "name") {
+            p.insert("name".into(), name.into_owned().into());
+        }
+        if let Some(desc) = said(nl, "description") {
+            p.insert("note".into(), desc.into_owned().into());
+        }
+        let href = nl.first("Link").and_then(|l| said(l, "href")).or_else(|| nl.first("Url").and_then(|u| said(u, "href")));
+        if let Some(href) = href.filter(|u| u.starts_with("http://") || u.starts_with("https://")) {
+            p.insert("source".into(), href.into_owned().into());
+        }
+        p.insert("kind".into(), "link".into());
+        out.push(json!({"type": "Feature", "geometry": geometry, "properties": p}));
+    }
     out
 }
 
@@ -744,6 +793,24 @@ mod tests {
         // it lands in a page as shapes lattice draws
         let page = map::append("{\"type\":\"FeatureCollection\",\"features\":[]}", got).unwrap();
         assert_eq!(map::parse(&page).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn kml_ground_overlays_and_network_links_import_as_features() {
+        let src = r#"<kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+          <GroundOverlay><name>Chart</name><description>Radar</description><Icon><href>https://example.org/r.png</href></Icon>
+            <LatLonBox><north>41</north><south>40</south><east>-73</east><west>-74</west></LatLonBox></GroundOverlay>
+          <NetworkLink><name>Feed</name><Link><href>https://example.org/feed.kml</href></Link>
+            <LookAt><longitude>-73.5</longitude><latitude>40.5</latitude></LookAt></NetworkLink>
+        </Document></kml>"#;
+        let got = import("kml", src).unwrap().features;
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0]["geometry"]["type"], "Polygon");
+        assert_eq!(got[0]["properties"]["name"], "Chart");
+        assert_eq!(got[0]["properties"]["source"], "https://example.org/r.png");
+        assert_eq!(got[1]["geometry"]["type"], "Point");
+        assert_eq!(got[1]["properties"]["name"], "Feed");
+        assert_eq!(got[1]["properties"]["source"], "https://example.org/feed.kml");
     }
 
     #[test]
