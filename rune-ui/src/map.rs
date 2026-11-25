@@ -776,7 +776,14 @@ pub fn parse_time(raw: &str) -> Option<String> {
 }
 
 /// Parses a feature's `time` string into Unix epoch seconds for age filtering.
+/// ponytail: zone-less timestamps subtract `funcs::zone_secs()`, which caches today's local
+/// UTC offset once per session rather than computing the per-date DST offset (can differ by 1h
+/// across a DST boundary, only relevant right at an age-filter cutoff).
 pub fn parse_time_epoch(raw: &str) -> Option<i64> {
+    parse_time_epoch_with_zone(raw, crate::funcs::zone_secs() as i64)
+}
+
+fn parse_time_epoch_with_zone(raw: &str, local_zone_secs: i64) -> Option<i64> {
     let iso = parse_time(raw)?;
     let (day, rest) = iso.split_once('T').map_or((iso.as_str(), ""), |(d, r)| (d, r));
     let mut parts = day.split('-');
@@ -793,7 +800,7 @@ pub fn parse_time_epoch(raw: &str) -> Option<i64> {
         let s: i64 = c.get(2).and_then(|s| s.split('.').next()?.parse().ok()).unwrap_or(0);
         secs += h * 3600 + mi * 60 + s;
         if zone.is_empty() {
-            secs -= crate::funcs::zone_secs() as i64;
+            secs -= local_zone_secs;
         } else if let Some(z) = zone.strip_prefix('+').or_else(|| zone.strip_prefix('-')) {
             if let Some((zh, zm)) = z.split_once(':') {
                 let off = zh.parse::<i64>().ok()? * 3600 + zm.parse::<i64>().ok()? * 60;
@@ -1656,6 +1663,8 @@ mod tests {
         assert!(matches_age(None, None, ep));
         let local_ep = parse_time_epoch("2026-11-17T12:00").unwrap();
         assert_eq!(ep - local_ep, crate::funcs::zone_secs() as i64, "zoneless timestamp uses local offset");
+        assert_eq!(parse_time_epoch_with_zone("2026-11-17T12:00", 3600).unwrap(), ep - 3600, "UTC+1 local time is 1h earlier in UTC");
+        assert_eq!(parse_time_epoch_with_zone("2026-11-17T12:00", -18000).unwrap(), ep + 18000, "UTC-5 local time is 5h later in UTC");
         // Ring edge hit selects the point whose ring passes under the click.
         let ring_doc = r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{"name":"Beacon","radius":50000,"time":"2026-11-17T12:00:00Z"}}]}"#;
         let feats = parse(ring_doc).unwrap();
