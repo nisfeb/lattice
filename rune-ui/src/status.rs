@@ -36,6 +36,20 @@ pub fn bar(note: &str, offline: Option<&str>, waiting: usize, ship: Option<&str>
     Bar { said: (!note.is_empty() && !again).then(|| note.to_owned()), offline: offline_badge, waiting: waiting_badge }
 }
 
+/// A compact status-bar badge for a page's compile or parse error.
+pub fn issue_badge(issue: Option<&str>) -> Option<Badge> {
+    let raw = issue?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let short = if raw.chars().count() > 36 {
+        format!("{}...", raw.chars().take(33).collect::<String>().trim_end())
+    } else {
+        raw.to_owned()
+    };
+    Some(Badge { short, long: raw.to_owned() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +91,16 @@ mod tests {
         assert_eq!(bar(err, None, 0, Some("http://ship:8080")).said.as_deref(), Some(err));
         // and anything else said offline still shows
         assert_eq!(bar("done on this device, to send when the ship answers", Some(""), 1, Some("http://ship:8080")).said.as_deref(), Some("done on this device, to send when the ship answers"));
+    }
+
+    #[test]
+    fn issue_badge_truncates_long_errors_and_skips_empty() {
+        assert_eq!(issue_badge(None), None);
+        assert_eq!(issue_badge(Some("   ")), None);
+        let short = issue_badge(Some("OpenSCAD error")).unwrap();
+        assert_eq!((short.short.as_str(), short.long.as_str()), ("OpenSCAD error", "OpenSCAD error"));
+        let long = issue_badge(Some("LaTeX: pandoc failed with an unexpectedly long diagnostic message")).unwrap();
+        assert!(long.short.ends_with("...") && long.short.chars().count() <= 36);
+        assert!(long.long.contains("diagnostic message"));
     }
 }

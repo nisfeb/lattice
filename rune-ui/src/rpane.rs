@@ -24,6 +24,30 @@ pub enum Tab {
     Hist,
 }
 
+impl Tab {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tab::Page => "page",
+            Tab::Out => "out",
+            Tab::Back => "back",
+            Tab::Outline => "outline",
+            Tab::Comments => "comments",
+            Tab::Hist => "hist",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Tab {
+        match name {
+            "page" => Tab::Page,
+            "back" => Tab::Back,
+            "outline" => Tab::Outline,
+            "comments" => Tab::Comments,
+            "hist" => Tab::Hist,
+            _ => Tab::Out,
+        }
+    }
+}
+
 /// The pane's tabs, in the web client's order: what each shows, the key
 /// scripts press it by (the one its button in the header had, where it
 /// had one), its name and its icon.

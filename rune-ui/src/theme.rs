@@ -119,28 +119,182 @@ fn theme_look(t: &Value) -> Look {
     }
 }
 
-/// A colour as a stylesheet writes it, when it is plain hex: `#rgb` or `#rrggbb`.
-fn css_hex(v: &str) -> Option<Color> {
-    let h = v.trim().strip_prefix('#')?;
-    let six = match h.len() {
-        3 => h.chars().flat_map(|c| [c, c]).collect::<String>(),
-        6 => h.to_owned(),
-        _ => return None,
-    };
-    six.bytes().all(|b| b.is_ascii_hexdigit()).then(|| rune::color::hex(&format!("#{six}"))).flatten()
+/// A colour as a stylesheet writes it: `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`,
+/// `rgb()`/`rgba()`, `hsl()`/`hsla()`, or a standard CSS named colour.
+fn css_color(v: &str) -> Option<Color> {
+    let s = v.trim().trim_end_matches("!important").trim();
+    if let Some(h) = s.strip_prefix('#') {
+        let b = h.as_bytes();
+        if !b.iter().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let hex2 = |x: &str| u8::from_str_radix(x, 16).ok();
+        let (r, g, bl, a) = match h.len() {
+            3 => (hex2(&h[0..1])? * 17, hex2(&h[1..2])? * 17, hex2(&h[2..3])? * 17, 255),
+            4 => (hex2(&h[0..1])? * 17, hex2(&h[1..2])? * 17, hex2(&h[2..3])? * 17, hex2(&h[3..4])? * 17),
+            6 => (hex2(&h[0..2])?, hex2(&h[2..4])?, hex2(&h[4..6])?, 255),
+            8 => (hex2(&h[0..2])?, hex2(&h[2..4])?, hex2(&h[4..6])?, hex2(&h[6..8])?),
+            _ => return None,
+        };
+        return Some(rgb(r, g, bl).alpha(a as f32 / 255.0));
+    }
+    let lower = s.to_ascii_lowercase();
+    if let Some(inner) = lower.strip_prefix("rgb(").or_else(|| lower.strip_prefix("rgba(")).and_then(|x| x.strip_suffix(')')) {
+        let cleaned = inner.replace([',', '/'], " ");
+        let p: Vec<&str> = cleaned.split_whitespace().collect();
+        if p.len() == 3 || p.len() == 4 {
+            let chan = |t: &str| -> Option<u8> {
+                if let Some(pct) = t.strip_suffix('%') {
+                    let f: f32 = pct.parse().ok()?;
+                    Some((f.clamp(0.0, 100.0) * 2.55).round() as u8)
+                } else {
+                    let f: f32 = t.parse().ok()?;
+                    Some(f.clamp(0.0, 255.0).round() as u8)
+                }
+            };
+            let a = if p.len() == 4 {
+                if let Some(pct) = p[3].strip_suffix('%') {
+                    (pct.parse::<f32>().ok()? / 100.0).clamp(0.0, 1.0)
+                } else {
+                    p[3].parse::<f32>().ok()?.clamp(0.0, 1.0)
+                }
+            } else {
+                1.0
+            };
+            return Some(rgb(chan(p[0])?, chan(p[1])?, chan(p[2])?).alpha(a));
+        }
+        return None;
+    }
+    if let Some(inner) = lower.strip_prefix("hsl(").or_else(|| lower.strip_prefix("hsla(")).and_then(|x| x.strip_suffix(')')) {
+        let cleaned = inner.replace([',', '/'], " ");
+        let p: Vec<&str> = cleaned.split_whitespace().collect();
+        if p.len() == 3 || p.len() == 4 {
+            let hue_s = p[0].trim_end_matches("deg");
+            let h = hue_s.parse::<f32>().ok()?.rem_euclid(360.0);
+            let sat = (p[1].strip_suffix('%')?.parse::<f32>().ok()? / 100.0).clamp(0.0, 1.0);
+            let lit = (p[2].strip_suffix('%')?.parse::<f32>().ok()? / 100.0).clamp(0.0, 1.0);
+            let a = if p.len() == 4 {
+                if let Some(pct) = p[3].strip_suffix('%') {
+                    (pct.parse::<f32>().ok()? / 100.0).clamp(0.0, 1.0)
+                } else {
+                    p[3].parse::<f32>().ok()?.clamp(0.0, 1.0)
+                }
+            } else {
+                1.0
+            };
+            let c = (1.0 - (2.0 * lit - 1.0).abs()) * sat;
+            let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+            let m = lit - c / 2.0;
+            let (r1, g1, b1) = match h as u32 {
+                0..=59 => (c, x, 0.0),
+                60..=119 => (x, c, 0.0),
+                120..=179 => (0.0, c, x),
+                180..=239 => (0.0, x, c),
+                240..=299 => (x, 0.0, c),
+                _ => (c, 0.0, x),
+            };
+            let u = |v: f32| ((v + m).clamp(0.0, 1.0) * 255.0).round() as u8;
+            return Some(rgb(u(r1), u(g1), u(b1)).alpha(a));
+        }
+        return None;
+    }
+    const NAMED: &[(&str, [u8; 3])] = &[
+        ("aliceblue", [240, 248, 255]), ("antiquewhite", [250, 235, 215]), ("aqua", [0, 255, 255]),
+        ("azure", [240, 255, 255]), ("beige", [245, 245, 220]), ("bisque", [255, 228, 196]),
+        ("black", [0, 0, 0]), ("blue", [0, 0, 255]), ("blueviolet", [138, 43, 226]),
+        ("brown", [165, 42, 42]), ("cadetblue", [95, 158, 160]), ("chocolate", [210, 105, 30]),
+        ("coral", [255, 127, 80]), ("cornflowerblue", [100, 149, 237]), ("cornsilk", [255, 248, 220]),
+        ("crimson", [220, 20, 60]), ("cyan", [0, 255, 255]), ("darkblue", [0, 0, 139]),
+        ("darkcyan", [0, 139, 139]), ("darkgray", [169, 169, 169]), ("darkgreen", [0, 100, 0]),
+        ("darkgrey", [169, 169, 169]), ("darkorange", [255, 140, 0]), ("darkred", [139, 0, 0]),
+        ("darkslategray", [47, 79, 79]), ("darkslategrey", [47, 79, 79]), ("deepskyblue", [0, 191, 255]),
+        ("dimgray", [105, 105, 105]), ("dimgrey", [105, 105, 105]), ("dodgerblue", [30, 144, 255]),
+        ("firebrick", [178, 34, 34]), ("floralwhite", [255, 250, 240]), ("forestgreen", [34, 139, 34]),
+        ("fuchsia", [255, 0, 255]), ("gainsboro", [220, 220, 220]), ("ghostwhite", [248, 248, 255]),
+        ("gold", [255, 215, 0]), ("goldenrod", [218, 165, 32]), ("gray", [128, 128, 128]),
+        ("green", [0, 128, 0]), ("grey", [128, 128, 128]), ("honeydew", [240, 255, 240]),
+        ("hotpink", [255, 105, 180]), ("indianred", [205, 92, 92]), ("indigo", [75, 0, 130]),
+        ("ivory", [255, 255, 240]), ("khaki", [240, 230, 140]), ("lavender", [230, 230, 250]),
+        ("lightblue", [173, 216, 230]), ("lightgray", [211, 211, 211]), ("lightgrey", [211, 211, 211]),
+        ("lime", [0, 255, 0]), ("linen", [250, 240, 230]), ("magenta", [255, 0, 255]),
+        ("maroon", [128, 0, 0]), ("midnightblue", [25, 25, 112]), ("mintcream", [245, 255, 250]),
+        ("navy", [0, 0, 128]), ("oldlace", [253, 245, 230]), ("olive", [128, 128, 0]),
+        ("orange", [255, 165, 0]), ("orangered", [255, 69, 0]), ("orchid", [218, 112, 214]),
+        ("peru", [205, 133, 63]), ("pink", [255, 192, 203]), ("plum", [221, 160, 221]),
+        ("purple", [128, 0, 128]), ("rebeccapurple", [102, 51, 153]), ("red", [255, 0, 0]),
+        ("royalblue", [65, 105, 225]), ("saddlebrown", [139, 69, 19]), ("salmon", [250, 128, 114]),
+        ("seagreen", [46, 139, 87]), ("seashell", [255, 245, 238]), ("sienna", [160, 82, 45]),
+        ("silver", [192, 192, 192]), ("skyblue", [135, 206, 235]), ("slateblue", [106, 90, 205]),
+        ("slategray", [112, 128, 144]), ("slategrey", [112, 128, 144]), ("snow", [255, 250, 250]),
+        ("steelblue", [70, 130, 180]), ("tan", [210, 180, 140]), ("teal", [0, 128, 128]),
+        ("thistle", [216, 191, 216]), ("tomato", [255, 99, 71]), ("turquoise", [64, 224, 208]),
+        ("violet", [238, 130, 238]), ("wheat", [245, 222, 179]), ("white", [255, 255, 255]),
+        ("whitesmoke", [245, 245, 245]), ("yellow", [255, 255, 0]),
+    ];
+    if lower == "transparent" {
+        return Some(Color::TRANSPARENT);
+    }
+    NAMED.binary_search_by_key(&lower.as_str(), |(n, _)| *n).ok().map(|i| {
+        let [r, g, b] = NAMED[i].1;
+        rgb(r, g, b)
+    })
+}
+
+fn strip_css_comments(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(i) = rest.find("/*") {
+        out.push_str(&rest[..i]);
+        rest = match rest[i + 2..].find("*/") {
+            Some(j) => &rest[i + 2 + j + 2..],
+            None => "",
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+fn resolve_css_var(raw: &str, vars: &std::collections::HashMap<String, String>, depth: usize) -> Option<Color> {
+    if depth > 8 {
+        return None;
+    }
+    let s = raw.trim().trim_end_matches("!important").trim();
+    if let Some(inner) = s.strip_prefix("var(").and_then(|x| x.strip_suffix(')')) {
+        let (target, fallback) = match inner.split_once(',') {
+            Some((a, b)) => (a.trim(), Some(b.trim())),
+            None => (inner.trim(), None),
+        };
+        if let Some(key) = target.strip_prefix("--").map(|k| k.trim().to_ascii_lowercase())
+            && let Some(val) = vars.get(&key)
+            && let Some(c) = resolve_css_var(val, vars, depth + 1)
+        {
+            return Some(c);
+        }
+        return fallback.and_then(|fb| resolve_css_var(fb, vars, depth + 1));
+    }
+    css_color(s)
+}
+
+/// WCAG 2.x relative-luminance contrast ratio between two opaque colours.
+fn contrast_ratio(a: Color, b: Color) -> f32 {
+    let (la, lb) = (a.luminance(), b.luminance());
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
 }
 
 /// The look a published folder's `theme` stylesheet gives, from the variables the forum's own
 /// layout is drawn with (`code/lib/lattice-forum-render.hoon`): `--bg`, `--text`, `--muted`,
-/// `--accent`, `--on-accent`, `--link`, `--border`, `--border-soft` and `--raised`. Only a plain
-/// hex colour is taken. A variable set inside `@media (prefers-color-scheme: dark)` counts when
-/// the window is dark, and one inside any other `@` block never does. With no `--bg` and
-/// `--text` both, there is no look: half a theme would be drawn on the wrong ground.
+/// `--accent`, `--on-accent`, `--link`, `--border`, `--border-soft` and `--raised`. Supports hex,
+/// `rgb()`/`rgba()`, `hsl()`/`hsla()`, named CSS colours, and `var(--other, fallback)` references.
+/// A variable set inside `@media (prefers-color-scheme: dark)` counts when the window is dark,
+/// and one inside any other `@` block never does. With no `--bg` and `--text` both, or when
+/// either is translucent or too close in contrast to read, there is no look.
 pub fn css_look(css: &str, dark: bool) -> Look {
-    let mut vars: std::collections::HashMap<String, Color> = std::collections::HashMap::new();
+    let clean = strip_css_comments(css);
+    let mut raw_vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     // which blocks the text is inside: true for one whose variables count
     let mut inside: Vec<bool> = Vec::new();
-    let mut rest = css;
+    let mut rest = clean.as_str();
     let mut head = String::new();
     while let Some(at) = rest.find(['{', '}', ';']) {
         let (before, mark) = (&rest[..at], rest.as_bytes()[at]);
@@ -157,8 +311,9 @@ pub fn css_look(css: &str, dark: bool) -> Look {
                 head.push_str(before);
                 if !inside.is_empty() && inside.iter().all(|c| *c) {
                     if let Some((name, value)) = head.trim().strip_prefix("--").and_then(|d| d.split_once(':')) {
-                        if let Some(c) = css_hex(value.trim().trim_end_matches("!important")) {
-                            vars.insert(name.trim().to_lowercase(), c);
+                        let v = value.trim().trim_end_matches("!important").trim();
+                        if !v.is_empty() {
+                            raw_vars.insert(name.trim().to_lowercase(), v.to_owned());
                         }
                     }
                 }
@@ -170,8 +325,11 @@ pub fn css_look(css: &str, dark: bool) -> Look {
             _ => unreachable!(),
         }
     }
-    let named = |k: &str| vars.get(k).copied();
+    let named = |k: &str| raw_vars.get(k).and_then(|v| resolve_css_var(v, &raw_vars, 0));
     let (Some(bg), Some(text)) = (named("bg"), named("text")) else { return Look::default() };
+    if bg.a < 1.0 || text.a < 1.0 || contrast_ratio(bg, text) < 2.5 {
+        return Look::default();
+    }
     let accent = named("accent");
     Look {
         dark: Some(bg.luminance() < 0.4),
@@ -514,7 +672,7 @@ mod tests {
         assert_eq!((hex(day.bg).as_str(), hex(day.text).as_str(), hex(day.muted).as_str()), ("#fdf6e3", "#073642", "#657b83"));
         assert_eq!((hex(day.accent).as_str(), hex(day.link).as_str(), hex(day.raised).as_str()), ("#b58900", "#268bd2", "#eee8d5"));
         assert_eq!(day.dark, Some(false));
-        assert!(day.border.is_some() && hex(day.border) != "#010203", "a colour that is not plain hex is worked out, not taken");
+        assert_eq!(hex(day.border), "#010203", "rgb() colours are parsed directly");
         assert!(day.on_accent.is_some(), "the ink on the accent is worked out when the sheet has none");
         let night = css_look(css, true);
         assert_eq!((hex(night.bg).as_str(), hex(night.text).as_str(), night.dark), ("#002b36", "#eeeeee", Some(true)));
@@ -753,5 +911,40 @@ mod tests {
         let back: Worn = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
         assert_eq!(back, w);
         assert_eq!(serde_json::from_str::<Worn>("{}").unwrap(), Worn::default());
+    }
+
+    #[test]
+    fn css_look_parses_rgb_hsl_named_colours_and_var_references() {
+        let css = r#"
+            /* board theme with modern CSS colours and var() chains */
+            :root {
+                --base: rgb(250, 245, 235);
+                --ink: hsl(220, 25%, 15%);
+                --bg: var(--base);
+                --text: var(--ink);
+                --accent: rebeccapurple;
+                --link: var(--missing, steelblue);
+                --border: rgba(0 0 0 / 20%);
+                --loop-a: var(--loop-b);
+                --loop-b: var(--loop-a);
+                --raised: var(--loop-a);
+            }
+        "#;
+        let l = css_look(css, false);
+        assert_eq!(l.dark, Some(false));
+        assert_eq!(hex(l.bg), "#faf5eb");
+        assert_eq!(hex(l.accent), "#663399");
+        assert_eq!(hex(l.link), "#4682b4");
+        assert!(l.text.is_some() && l.border.is_some());
+        assert_eq!(l.raised, None, "cyclic var() terminates safely");
+    }
+
+    #[test]
+    fn css_look_rejects_transparent_or_unreadable_bg_and_text() {
+        assert_eq!(css_look(":root { --bg: #ffffff; --text: transparent; }", false), Look::default());
+        assert_eq!(css_look(":root { --bg: #0000; --text: #ffffff; }", false), Look::default());
+        assert_eq!(css_look(":root { --bg: #ffffff; --text: rgba(0, 0, 0, 0.5); }", false), Look::default());
+        assert_eq!(css_look(":root { --bg: #202020; --text: #262626; }", false), Look::default());
+        assert!(css_look(":root { --bg: #ffffff; --text: #111111; }", false).bg.is_some());
     }
 }
