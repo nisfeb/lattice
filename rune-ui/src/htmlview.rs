@@ -200,6 +200,7 @@ fn same_origin(url: &blitz_traits::net::Url, base: &str) -> bool {
         && url.host_str().is_some()
         && url.host_str() == b.host_str()
         && url.port_or_known_default() == b.port_or_known_default()
+        && url.path().starts_with("/apps/lattice/")
 }
 
 impl NetProvider for Net {
@@ -409,18 +410,29 @@ fn lay(page: &mut Page) {
     page.have.clear();
 }
 
-/// Document Y coordinate (in points) of `id`, summed up its ancestor layout boxes.
+/// Document Y coordinate (in points) of `id`, summed up its ancestor element layout boxes.
 fn node_abs_y(doc: &BaseDocument, mut id: blitz_dom::NodeId) -> f32 {
     let mut y = 0.0f32;
     let mut steps = 0usize;
     while steps < 4096 {
         let Some(node) = doc.get_node(id) else { break };
-        y += node.final_layout().location.y;
+        if node.element_data().is_some() {
+            y += node.final_layout().location.y;
+        }
         let Some(parent) = node.parent else { break };
         id = parent;
         steps += 1;
     }
     y.max(0.0)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn pct_decode(raw: &str) -> String {
@@ -430,9 +442,9 @@ fn pct_decode(raw: &str) -> String {
     while i < b.len() {
         if b[i] == b'%'
             && i + 2 < b.len()
-            && let Ok(v) = u8::from_str_radix(&raw[i + 1..i + 3], 16)
+            && let (Some(hi), Some(lo)) = (hex_nibble(b[i + 1]), hex_nibble(b[i + 2]))
         {
-            out.push(v);
+            out.push((hi << 4) | lo);
             i += 3;
             continue;
         }
@@ -469,13 +481,16 @@ fn anchor_y(doc: &BaseDocument, raw: &str) -> Option<f32> {
     None
 }
 
-/// Finds every text match of `query` in document order and returns each match's Y offset.
-fn find_y(doc: &BaseDocument, query: &str) -> Vec<f32> {
+/// Finds every text match of `query` in document order and returns each match's exact Y offset.
+/// Searches each inline formatting context's laid-out text (`inline_layout_data`), so matches split
+/// across inline tags (`hel<b>lo</b>`) are found and each hit gets its own laid-out line Y coordinate.
+fn find_y(doc: &BaseDocument, scale: f32, query: &str) -> Vec<f32> {
     let q = query.trim();
     if q.is_empty() {
         return Vec::new();
     }
     let fold = rune_kit::search::Fold::default();
+    let inv_scale = 1.0 / scale.max(1.0);
     let mut out = Vec::new();
     let mut stack = vec![doc.root_node().id];
     while let Some(id) = stack.pop() {
@@ -484,15 +499,26 @@ fn find_y(doc: &BaseDocument, query: &str) -> Vec<f32> {
             if matches!(&*el.name.local, "script" | "style" | "head" | "noscript" | "title") {
                 continue;
             }
-        }
-        if let Some(txt) = node.text_data() {
-            let hits = fold.find(&txt.content, q);
-            if !hits.is_empty() {
-                let y = node_abs_y(doc, node.parent.unwrap_or(id));
-                for _ in 0..hits.len() {
-                    out.push(y);
-                    if out.len() >= 2000 {
-                        return out;
+            if node.flags.is_inline_root()
+                && let Some(il) = el.inline_layout_data.as_deref()
+            {
+                let hits = fold.find(&il.text, q);
+                if !hits.is_empty() {
+                    let base_y = node_abs_y(doc, id) + il.block_offset;
+                    let lines: Vec<(std::ops::Range<usize>, f32)> = il
+                        .layout
+                        .lines()
+                        .map(|l| (l.text_range(), l.metrics().block_min_coord * inv_scale))
+                        .collect();
+                    for r in hits {
+                        let line_y = lines
+                            .iter()
+                            .find(|(lr, _)| r.start >= lr.start && r.start < lr.end)
+                            .map_or(0.0, |(_, y)| *y);
+                        out.push((base_y + line_y).max(0.0));
+                        if out.len() >= 2000 {
+                            return out;
+                        }
                     }
                 }
             }
@@ -648,9 +674,9 @@ fn serve(rx: &Receiver<Cmd>, own: &Sender<Cmd>, out: &Arc<Mutex<Vec<Out>>>, wake
         }
         if let Some(q) = find_new {
             find_q = q;
-            tell(Out::Found(find_y(&p.doc, &find_q)));
+            tell(Out::Found(find_y(&p.doc, p.ask.scale, &find_q)));
         } else if laid && !find_q.is_empty() {
-            tell(Out::Found(find_y(&p.doc, &find_q)));
+            tell(Out::Found(find_y(&p.doc, p.ask.scale, &find_q)));
         }
         if let Some(href) = anchor {
             if let Some(y) = anchor_y(&p.doc, &href) {
@@ -1173,8 +1199,8 @@ mod tests {
         let ys = found.unwrap();
         assert_eq!(ys.len(), 2, "finds both ascii and accented cafe: {ys:?}");
         assert!(ys[1] > ys[0] + 300.0, "{ys:?}");
-        // same-origin ship image is not held as outside content while foreign origin is held
-        let same_and_foreign = "<img src='/apps/lattice/logo.png'><img src='http://example.invalid/ext.png'>";
+        // same-origin ship image under /apps/lattice/ is allowed, while other paths (/~/) and foreign origins are held
+        let same_and_foreign = "<img src='/apps/lattice/logo.png'><img src='/~/login'><img src='http://example.invalid/ext.png'>";
         h.show(
             Ask {
                 key: Key { name: "orig".into(), rev: 1, text: 0 },
@@ -1189,11 +1215,40 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
             if let Some(Out::Laid { held, .. }) = h.take().into_iter().find(|o| matches!(o, Out::Laid { .. })) {
-                assert_eq!(held, 1, "only foreign-origin image is held, not ship same-origin");
+                assert_eq!(held, 2, "both /~/login and foreign-origin image are held, only /apps/lattice/ passes");
                 break;
             }
             assert!(std::time::Instant::now() < end);
             std::thread::yield_now();
         }
+        // pct_decode must not panic on non-ASCII char boundaries after '%'.
+        assert_eq!(pct_decode("%a\u{e9}"), "%a\u{e9}");
+        assert_eq!(pct_decode("sec%202"), "sec 2");
+
+        // find_y matches across inline tags (hel<b>lo</b>) and gives increasing Y down a long paragraph.
+        let filler = "word ".repeat(120);
+        let inline_html = format!("<body style='margin:0'><p>hel<b>lo</b> {filler} hel<i>lo</i></p></body>");
+        h.find("hello");
+        h.show(
+            Ask { key: Key { name: "inl".into(), rev: 1, text: 0 }, width: 200.0, scale: 1.0, dark: false, outside: false, ship: None },
+            Some(inline_html),
+        );
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut saw_laid = false;
+        let mut ys = None;
+        while !saw_laid || ys.is_none() {
+            for o in h.take() {
+                match o {
+                    Out::Laid { ask, .. } if ask.key.name == "inl" => saw_laid = true,
+                    Out::Found(v) if saw_laid => ys = Some(v),
+                    _ => {}
+                }
+            }
+            assert!(std::time::Instant::now() < end);
+            std::thread::yield_now();
+        }
+        let ys = ys.unwrap();
+        assert_eq!(ys.len(), 2, "matches split across inline tags: {ys:?}");
+        assert!(ys[1] > ys[0] + 40.0, "later hit in long paragraph gets larger Y: {ys:?}");
     }
 }

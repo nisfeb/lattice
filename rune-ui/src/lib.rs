@@ -1922,25 +1922,29 @@ fn sign_out_all(s: &mut App) {
 }
 
 /// Goes to another ship signed in: its tree, its tabs and its last page, as they were left.
-fn switch_ship(s: &mut App, url: &str) {
+/// Returns `true` when the target ship is now active.
+fn switch_ship(s: &mut App, url: &str) -> bool {
     if s.conn.as_ref().is_some_and(|c| c.url == url) {
         s.ships_open = false;
-        return;
+        return true;
     }
     // what is being typed is saved or kept first, as before any other page is opened. Kept, and sent by the watcher of the ships not in front: this window's own send would be let go of before its answer, and the same text sent again
     s.no_drain = true;
     let left = leave_edit(s);
     s.no_drain = false;
     if !left {
-        return;
+        return false;
     }
     if !api::ship_bring(url) {
         s.note = "that ship is not signed in on this computer any more".into();
-        return;
+        return false;
     }
     reset(s, true);
-    if let Some(c) = &s.conn {
-        s.note = format!("now on {}", c.ship());
+    if let Some((ship, ok)) = s.conn.as_ref().map(|c| (c.ship().to_owned(), c.url == url)) {
+        s.note = format!("now on {ship}");
+        ok
+    } else {
+        false
     }
 }
 
@@ -2205,10 +2209,12 @@ fn confirm(s: &mut App) {
         let dest = Page { name: rn.name.clone(), body: page.body.clone(), kind: page.kind.clone(), rev: 0 };
         s.note = format!("{} {} to {label}\u{2026}", if move_it { "moving" } else { "copying" }, page.name);
         s.op_req.request((src, dst, page, dest, move_it, label), |(src, dst, page, dest, move_it, label)| {
-            dst.save(&dest, None)?;
+            dst.save_as(&dest, None, true)?;
             if move_it {
                 if let Some(c) = src {
-                    c.delete(&page.name)?;
+                    if let Err(e) = c.delete(&page.name) {
+                        return Err(format!("copied to {label} as {}, but deleting {} here failed: {e}", dest.name, page.name));
+                    }
                 }
                 Ok(Op::Deleted(page.name))
             } else {
@@ -5148,15 +5154,21 @@ fn web_waiting(s: &App) -> bool {
 /// waits to be sent.
 fn status_bar(s: &App, k: &Kit, busy: bool) -> El {
     let c = &k.c;
-    let bar = status::bar(&s.note, s.offline.as_deref(), s.queue.len() + s.ops.len(), s.conn.as_ref().map(|c| c.url.as_str()));
+    let paused = s.queue.values().filter(|q| q.tries >= api::MAX_RETRIES).count();
+    let waiting = s.queue.len().saturating_sub(paused) + s.ops.len();
+    let bar = status::bar(&s.note, s.offline.as_deref(), waiting, s.conn.as_ref().map(|c| c.url.as_str()));
     let badge = |b: status::Badge, key: &str| text(b.short).key(key.to_owned()).role("status").label(b.long.clone()).help(b.long).font(k.ty.text_xsmall_medium).color(c.text_base).px(6.0).radius(k.radius.sm).fill(c.layer_02);
+    let paused_badge = (paused > 0).then(|| {
+        let long = format!("{paused} offline save{} paused after {} failures; save again or run Retry paused offline saves", if paused == 1 { "" } else { "s" }, api::MAX_RETRIES);
+        text(format!("{paused} paused")).key("paused-saves").role("status").label(long.clone()).help(long).font(k.ty.text_xsmall_medium).color(c.danger.icon).px(6.0).radius(k.radius.sm).fill(c.layer_02)
+    });
     let mut out = row().key("statusbar").role("status").label("Status").w_full().h(24.0).px(10.0).gap(8.0).center_y();
     if busy {
         out = out.child(Spinner::new().build(k));
     }
     // said even when there is nothing: the bar keeps its height, and the page does not jump as notes come and go
     out = out.child(text(bar.said.unwrap_or_default()).key("note").font(k.ty.small).color(c.text_muted).truncate().grow(1.0).min_w(0.0));
-    out.children(bar.offline.map(|b| badge(b, "offline"))).children(bar.waiting.map(|b| badge(b, "waiting-saves")))
+    out.children(bar.offline.map(|b| badge(b, "offline"))).children(bar.waiting.map(|b| badge(b, "waiting-saves"))).children(paused_badge)
 }
 
 /// The right pane: its tabs as icons, then what the one in front shows.
@@ -6006,7 +6018,11 @@ fn drain(s: &mut App) {
     // what waits is read again from its files: another window on this ship keeps its own there, and a window that was closed left its own there too
     (s.ops, s.queue) = (c.ops(), c.queue());
     let ready_saves = s.queue.values().filter(|q| q.tries < api::MAX_RETRIES).count();
+    let paused_saves = s.queue.len().saturating_sub(ready_saves);
     if ready_saves == 0 && s.ops.is_empty() {
+        if paused_saves > 0 && s.note.is_empty() {
+            s.note = format!("{paused_saves} offline save{} paused after {} failures; save again or run Retry paused offline saves", if paused_saves == 1 { "" } else { "s" }, api::MAX_RETRIES);
+        }
         return;
     }
     s.note = format!("sending {} saved on this device\u{2026}", ready_saves + s.ops.len());
@@ -11107,7 +11123,7 @@ fn ships_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
                 .radius(k.radius.sm)
                 .fill(if sh.front { c.layer_01 } else { rune::Color::TRANSPARENT })
                 .hover(c.hover)
-                .on_press(move |s: &mut App| switch_ship(s, &url))
+                .on_press(move |s: &mut App| { let _ = switch_ship(s, &url); })
                 .child(el().size(10.0, 10.0).radius(5.0).fill(rune::color::hex(&sh.colour.to_lowercase()).unwrap_or(c.border_base)))
                 .child(col().grow(1.0).min_w(0.0).gap(1.0).child(text(sh.name.clone()).font(k.ty.ui_medium).color(c.text_base).truncate()).child(text(said).font(k.ty.small).color(c.text_muted).truncate()))
                 .child({
@@ -13304,7 +13320,9 @@ fn open_hit(s: &mut App, i: usize, tab: bool) {
         && s.conn.as_ref().is_none_or(|c| &c.url != url)
     {
         let key = h.key.clone();
-        switch_ship(s, url);
+        if !switch_ship(s, url) {
+            return;
+        }
         s.land = Some(key.clone());
         open_page(s, &key);
         return;
@@ -15083,14 +15101,20 @@ fn web_page(s: &App) -> Option<&Page> {
 fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
     let mut changed = false;
     let (scale, dark) = s.web.env.get();
-    let ship = s.conn.as_ref().filter(|_| s.remote.is_none()).map(|c| (format!("{}/apps/lattice/", c.url.trim_end_matches('/')), c.cookie().to_owned()));
-    let ask = web_page(s).filter(|_| s.web.room > 0.0).map(|p| htmlview::Ask {
-        key: htmlview::Key { name: p.name.clone(), rev: p.rev, text: s.web.text },
-        width: htmlview::width_for(s.web.room),
-        scale: scale.clamp(1.0, 3.0),
-        dark,
-        outside: s.prefs.outside.contains(&p.name),
-        ship: ship.clone(),
+    let ask = web_page(s).filter(|_| s.web.room > 0.0).map(|p| {
+        let ship = s
+            .conn
+            .as_ref()
+            .filter(|_| s.remote.is_none() && !s.links.contains_key(&p.name))
+            .map(|c| (format!("{}/apps/lattice/", c.url.trim_end_matches('/')), c.cookie().to_owned()));
+        htmlview::Ask {
+            key: htmlview::Key { name: p.name.clone(), rev: p.rev, text: s.web.text },
+            width: htmlview::width_for(s.web.room),
+            scale: scale.clamp(1.0, 3.0),
+            dark,
+            outside: s.prefs.outside.contains(&p.name),
+            ship,
+        }
     });
     if let (Some(ask), Some(html)) = (&ask, &s.session.web.html) {
         if s.session.web.asked.as_ref() != Some(ask) {
