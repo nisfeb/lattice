@@ -367,6 +367,8 @@ enum Prompt {
     Token(TextEdit),
     /// A name for a copy of a page: the page as it stood, and the name.
     Duplicate(Page, TextEdit),
+    /// Copy or move a page to another signed-in ship: the page, candidate `(label, url)` ships, chosen index, whether to delete from source, and destination path.
+    SendShip { page: Page, targets: Vec<(String, String)>, picked: usize, move_it: bool, name: TextEdit },
     /// A note to go with an ask for edit on another ship's page.
     Ask(Shared, TextEdit),
     /// A tag to put on the memory in front.
@@ -553,6 +555,8 @@ struct AppGlobal {
     font_set: String,
     /// When each backup schedule was last tried by the clock, in seconds since 1970.
     bk_tried: HashMap<String, u64>,
+    /// Whether the Search tab scans every signed-in ship's cached pages.
+    search_all_ships: bool,
 }
 
 impl Default for AppGlobal {
@@ -590,6 +594,7 @@ impl Default for AppGlobal {
             #[cfg(not(target_arch = "wasm32"))]
             upd: Updater::new(),
             bk_tried: HashMap::new(),
+            search_all_ships: false,
         }
     }
 }
@@ -2177,6 +2182,41 @@ fn confirm(s: &mut App) {
         s.edit.focused = true;
         return;
     }
+    if let Prompt::SendShip { page, targets, picked, move_it, name } = &p {
+        let Some(rn) = api::real_name(&name.text) else {
+            s.note = "that name has nothing a path can keep".into();
+            s.prompt = Some(p);
+            return;
+        };
+        let Some((label, target_url)) = targets.get(*picked).cloned() else {
+            s.note = "no target ship chosen".into();
+            return;
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let target_conn = api::Conn::conn_for(&target_url);
+        #[cfg(target_arch = "wasm32")]
+        let target_conn: Option<Conn> = None;
+        let Some(dst) = target_conn else {
+            s.note = format!("{label} is not signed in or its session has ended");
+            return;
+        };
+        let src = s.conn.clone();
+        let (page, move_it) = (page.clone(), *move_it);
+        let dest = Page { name: rn.name.clone(), body: page.body.clone(), kind: page.kind.clone(), rev: 0 };
+        s.note = format!("{} {} to {label}\u{2026}", if move_it { "moving" } else { "copying" }, page.name);
+        s.op_req.request((src, dst, page, dest, move_it, label), |(src, dst, page, dest, move_it, label)| {
+            dst.save(&dest, None)?;
+            if move_it {
+                if let Some(c) = src {
+                    c.delete(&page.name)?;
+                }
+                Ok(Op::Deleted(page.name))
+            } else {
+                Ok(Op::Said(format!("copied {} to {label} as {}", page.name, dest.name)))
+            }
+        });
+        return;
+    }
     // a typed name becomes a path and the names to show (api::real_name)
     let typed = match &p {
         Prompt::New(t) | Prompt::Rename(_, t) | Prompt::NewFolder(t) => Some(t.text.clone()),
@@ -2209,10 +2249,6 @@ fn confirm(s: &mut App) {
     let op = match p {
         Prompt::New(_) => Op::Created(rn.name.clone(), shown),
         Prompt::NewFolder(_) if s.memory => return,
-        Prompt::NewFolder(_) if s.offline.is_some() => {
-            s.note = "a new folder needs the ship, which does not answer".into();
-            return;
-        }
         Prompt::NewFolder(_) if rn.name.is_empty() => return,
         Prompt::NewFolder(_) => Op::FolderMade(rn.name.clone(), shown),
         Prompt::Rename(from, _) if rn.name != from || !rn.dnames.is_empty() || (!s.memory && s.dnames.contains_key(&from)) => Op::Renamed(from, rn.name.clone(), shown),
@@ -2220,8 +2256,8 @@ fn confirm(s: &mut App) {
         _ => return,
     };
     let memory = s.memory;
-    // with the ship away a page's delete, move or making waits on this device, as a save does
-    if s.offline.is_some() && !memory && matches!(op, Op::Created(..) | Op::Renamed(..) | Op::Deleted(_)) {
+    // with the ship away a page's delete, move, new folder or making waits on this device, as a save does
+    if s.offline.is_some() && !memory && matches!(op, Op::Created(..) | Op::FolderMade(..) | Op::Renamed(..) | Op::Deleted(_)) {
         if s.conn.is_none() {
             return;
         }
@@ -2239,6 +2275,7 @@ fn confirm(s: &mut App) {
         // put into what the files hold now: another window on this ship keeps what waits there too
         let kept = change_waiting(s, |ops, saves| match (&op, &made) {
             (_, Some(made)) => api::enqueue(saves, made, None, true, 0),
+            (Op::FolderMade(n, _), _) => api::enqueue_op(ops, saves, api::QueuedOp::NewFolder { path: n.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
             (Op::Renamed(a, b, _), _) => api::enqueue_op(ops, saves, api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
             (Op::Deleted(n), _) => api::enqueue_op(ops, saves, if page { api::QueuedOp::DelPage(n.clone()) } else { api::QueuedOp::Del(n.clone()) }),
             _ => unreachable!("matched above"),
@@ -4757,6 +4794,8 @@ fn find_spans(s: &App, k: &Kit) -> Vec<Span> {
 enum FindIn {
     Editor,
     Reader,
+    #[cfg(not(target_arch = "wasm32"))]
+    Web,
     Sheet,
     Source,
     Nothing,
@@ -4764,10 +4803,9 @@ enum FindIn {
 
 fn find_where(s: &App) -> FindIn {
     let Some(p) = &s.open else { return FindIn::Nothing };
-    // a page drawn as a web page is pictures: there are no words in it to mark
     #[cfg(not(target_arch = "wasm32"))]
     if web_page(s).is_some() {
-        return FindIn::Nothing;
+        return FindIn::Web;
     }
     if s.editing {
         FindIn::Editor
@@ -4817,6 +4855,8 @@ fn find_count(s: &App) -> usize {
     match (find_where(s), &s.find, &s.open) {
         (FindIn::Editor, ..) => edit_matches(s).len(),
         (FindIn::Reader, Some(q), Some(p)) => find_in(&md::wikilinks(read_md(s, p).unwrap_or_default(), &|n| ghost(s, n)), &q.text).len(),
+        #[cfg(not(target_arch = "wasm32"))]
+        (FindIn::Web, ..) => s.web.find_ys.len(),
         (FindIn::Sheet, ..) => sheet_matches(s).len(),
         (FindIn::Source, ..) => source_matches(s).len(),
         _ => 0,
@@ -4851,6 +4891,12 @@ fn find_step(s: &mut App, by: isize, tx: &mut Tx) {
             }
         }
         FindIn::Reader => tx.scroll_into_view(Markdown::highlight_key(s.find_at)),
+        #[cfg(not(target_arch = "wasm32"))]
+        FindIn::Web => {
+            if let (Some(&y), Some(p)) = (s.web.find_ys.get(s.find_at), &s.open) {
+                tx.scroll_to_y(format!("web-scroll-{}", p.name), (y - 80.0).max(0.0));
+            }
+        }
         // the row of the cell is selected and brought into view
         FindIn::Sheet => {
             if let (Some(&(row, _)), Some(v)) = (sheet_matches(s).get(s.find_at), &mut s.sheet) {
@@ -4878,6 +4924,10 @@ fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
         .on_edit(|s: &mut App| s.find.as_mut().expect("find is open"))
         .on_change(|s: &mut App, tx| {
             s.find_at = 0;
+            #[cfg(not(target_arch = "wasm32"))]
+            if find_where(s) == FindIn::Web {
+                s.web.find_jump = true;
+            }
             tx.scroll_into_view(Markdown::highlight_key(0));
         })
         .on_key(|s: &mut App, ev: &KeyEvent, tx: &mut Tx| match ev.key {
@@ -5955,17 +6005,18 @@ fn drain(s: &mut App) {
     }
     // what waits is read again from its files: another window on this ship keeps its own there, and a window that was closed left its own there too
     (s.ops, s.queue) = (c.ops(), c.queue());
-    if s.queue.is_empty() && s.ops.is_empty() {
+    let ready_saves = s.queue.values().filter(|q| q.tries < api::MAX_RETRIES).count();
+    if ready_saves == 0 && s.ops.is_empty() {
         return;
     }
-    s.note = format!("sending {} saved on this device\u{2026}", s.queue.len() + s.ops.len());
+    s.note = format!("sending {} saved on this device\u{2026}", ready_saves + s.ops.len());
     let links: std::collections::HashSet<String> = s.links.keys().cloned().collect();
     s.drain_req.request((c, links), |(c, links)| {
         // one sender at a time, in this window and across them: the watcher of the ships not in front, a signing out, or another window may be part way through this ship's list
         let _held = api::send_lock();
         let _file = c.sending_lock();
         // each is read from the files just before it is sent, and taken out of them as soon as the ship has it, under the senders' lock. So what another sender sent is not sent again, and one that comes after this (a signing out sends what waits before it ends the session) finds nothing left of what went here
-        // the deletes and moves first, in the order made: what they meant for the saves was settled when they were put by
+        // the deletes, moves and new folders first, in the order made: what they meant for the saves was settled when they were put by
         let mut did = Vec::new();
         while let Some(op) = c.ops().first().cloned() {
             let r = c.send_op(&op);
@@ -5987,9 +6038,9 @@ fn drain(s: &mut App) {
                 return (did, Vec::new(), Some((api::BgSent::Op(op), e)));
             }
         }
-        // a save at or under a path a waiting delete or move changes goes after it
+        // a save at or under a path a waiting delete or move changes goes after it; paused saves (>= MAX_RETRIES) are skipped
         let ops = c.ops();
-        let mut all: Vec<(String, api::Queued)> = c.queue().into_iter().filter(|(name, _)| !api::held_by(&ops, name)).collect();
+        let mut all: Vec<(String, api::Queued)> = c.queue().into_iter().filter(|(name, q)| q.tries < api::MAX_RETRIES && !api::held_by(&ops, name)).collect();
         all.sort_by_key(|(_, q)| !q.is_new);
         let (mut out, mut unwritten) = (Vec::new(), None);
         for (name, q) in all {
@@ -5999,8 +6050,18 @@ fn drain(s: &mut App) {
             }
             let sent = c.send_queued(&name, &q);
             let stop = match &sent {
-                // a ship that is away, or a session it has ended, takes none of the rest either. Any other refusal is of this one save
-                api::Sent::Stop(why) => ship_away(why, links.contains(&name)) || why.starts_with("401"),
+                // a ship that is away, or a session it has ended, takes none of the rest either. Any other refusal is of this one save and increments its retry counter
+                api::Sent::Stop(why) => {
+                    let away = ship_away(why, links.contains(&name)) || why.starts_with("401");
+                    if !away && !api::gone(why) {
+                        let _ = c.change_waiting(|_, w| {
+                            if let Some(cur) = w.get_mut(&name).filter(|cur| *cur == &q) {
+                                cur.tries = cur.tries.saturating_add(1);
+                            }
+                        });
+                    }
+                    away
+                }
                 // the ship has it. One that cannot be taken out of the file stops the sending: read from there again, it would be sent without end
                 _ => match c.change_waiting(|_, w| api::drop_sent(w, &name, &q)) {
                     Err(e) => {
@@ -6071,6 +6132,7 @@ fn drained(s: &mut App, (did, out, unwritten): Drained) {
         let what = match &op {
             api::QueuedOp::Del(n) | api::QueuedOp::DelPage(n) => format!("the delete of {n}"),
             api::QueuedOp::Move { from, to, .. } => format!("the move of {from} to {to}"),
+            api::QueuedOp::NewFolder { path, .. } => format!("the new folder {path}"),
         };
         match r {
             Err(e) if !api::replay_drop(&e) => {
@@ -6098,6 +6160,8 @@ fn drained(s: &mut App, (did, out, unwritten): Drained) {
                 stopped = true;
                 if ship_away(&why, s.links.contains_key(&name)) {
                     s.offline.get_or_insert_with(String::new);
+                } else if q.tries.saturating_add(1) >= api::MAX_RETRIES {
+                    said.push(format!("{name} failed {} times and is paused ({why}); save it again or run Retry paused offline saves", api::MAX_RETRIES));
                 } else {
                     said.push(format!("{name} is still waiting: {why}"));
                 }
@@ -6802,7 +6866,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         // a ship that does not answer before anything was read: what was kept of it is read in its place
         let was_kept = s.offline.is_some();
         let r = match r {
-            Err(e) if s.names.is_empty() && api::gone(&e) => match s.conn.as_ref().and_then(api::Conn::kept_tree) {
+            Err(e) if s.names.is_empty() && s.dirs.is_empty() && api::gone(&e) => match s.conn.as_ref().and_then(api::Conn::kept_tree) {
                 Some((d, age)) => {
                     s.offline = Some(api::ago(age));
                     // a page asked for before this was known failed the same way: once is enough to say it
@@ -6843,8 +6907,11 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                         None => nodes.push(Node { path: name.clone(), page: true, kind: q.kind.clone(), rev: q.base.unwrap_or(0), body: Some(q.body.clone()), ..Node::default() }),
                     }
                 }
-                // what the ship gave is kept for a run when it does not answer: whenever it carried a text, or pages came or went
-                let news = nodes.iter().any(|n| n.body.is_some()) || nodes.iter().filter(|n| n.page).count() != s.names.len() || was_kept;
+                // what the ship gave is kept for a run when it does not answer: whenever it carried a text, or pages or empty folders came or went
+                let news = nodes.iter().any(|n| n.body.is_some())
+                    || nodes.iter().filter(|n| n.page).count() != s.names.len()
+                    || nodes.iter().filter(|n| !n.page).count() != s.dirs.len()
+                    || was_kept;
                 let keep = (s.offline.is_none() && news).then(|| nodes.clone());
                 s.since = since;
                 s.shares = nodes.iter().filter(|n| n.page && !n.share.is_empty()).map(|n| (n.path.clone(), n.share.clone())).collect();
@@ -10702,6 +10769,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("delete", "Delete"),
     ("share", "Share"),
     ("duplicate", "Duplicate this page"),
+    ("send-ship", "Send this page to another ship"),
     ("copy-link", "Copy a link to this page"),
     ("copy-name", "Copy this page's name"),
     ("download", "Download this page as a file"),
@@ -10725,6 +10793,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("theme", "Next theme"),
     ("sidebar", "Show or hide the tree"),
     ("reload", "Read again from the ship"),
+    ("retry-waiting", "Retry paused offline saves"),
     ("signout", "Sign out or close"),
 ];
 
@@ -10741,6 +10810,8 @@ fn usable(s: &App, id: &str) -> bool {
         "delete" => own,
         "download" | "copy-name" => page,
         "duplicate" | "copy-link" | "pdf" => own && !s.memory && !s.editing,
+        "send-ship" => own && !s.memory && !s.editing && s.ships.len() > 1 && !cfg!(target_arch = "wasm32"),
+        "retry-waiting" => s.conn.is_some() && s.queue.values().any(|q| q.tries >= api::MAX_RETRIES),
         "tex" => own && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "tex"),
         // a sheet, a document and a map are files of their own shape: their kind is not one to type over
         "kind" => own && !s.memory && !s.editing && s.open.as_ref().is_some_and(|p| PAGE_KINDS.contains(&p.kind.as_str()) && s.links.get(&p.name).is_none()),
@@ -10828,6 +10899,34 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "pdf" => ask_pdf(s, tx),
         "tex" => convert_tex(s),
         "duplicate" => ask_duplicate(s),
+        "send-ship" => {
+            let Some(p) = s.open.clone() else { return };
+            let cur_url = s.conn.as_ref().map(|c| c.url.as_str()).unwrap_or("");
+            let targets: Vec<(String, String)> = s
+                .ships
+                .iter()
+                .filter(|a| a.url != cur_url && !a.expired)
+                .map(|a| (if a.label.is_empty() { a.ship.clone() } else { format!("{} ({})", a.label, a.ship) }, a.url.clone()))
+                .collect();
+            if targets.is_empty() {
+                s.note = "no other signed-in ship is ready".into();
+                return;
+            }
+            let mut name = TextEdit::new(p.name.clone());
+            name.focused = true;
+            s.prompt = Some(Prompt::SendShip { page: p, targets, picked: 0, move_it: false, name });
+        }
+        "retry-waiting" => {
+            if let Err(e) = change_waiting(s, |_, q| {
+                for item in q.values_mut() {
+                    item.tries = 0;
+                }
+            }) {
+                s.note = format!("could not reset paused saves: {e}");
+                return;
+            }
+            drain(s);
+        }
         "copy-link" => {
             if let Some(link) = page_link(s) {
                 tx.copy(link.clone());
@@ -11074,7 +11173,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::ShipLabel(_, t) | Prompt::Kind(t) | Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
+                Prompt::ShipLabel(_, t) | Prompt::Kind(t) | Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::SendShip { name: t, .. } | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
                 Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) | Prompt::ShipOut(_) => unreachable!("it has no field of this kind"),
                 #[cfg(unix)]
                 Prompt::IdOut(..) | Prompt::IdIn(..) | Prompt::IdUse(..) => unreachable!("it has fields of its own"),
@@ -11119,6 +11218,41 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::Link(t) => ("Link the selection to", field(t, "https://"), "Link", ButtonVariant::Contrast),
         Prompt::Ask(_, t) => ("Ask for edit access", field(t, "A short note, if you like"), "Ask", ButtonVariant::Contrast),
         Prompt::Duplicate(_, t) => ("Duplicate this page as", field(t, "folder/name"), "Duplicate", ButtonVariant::Contrast),
+        Prompt::SendShip { targets, picked, move_it, name, .. } => {
+            let mut picks = row().w_full().gap(6.0).flex_wrap();
+            for (i, (label, _)) in targets.iter().enumerate() {
+                picks = picks.child(
+                    Button::new(label.clone())
+                        .control_size(ControlSize::Small)
+                        .variant(if i == *picked { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                        .on_press(move |s: &mut App| {
+                            if let Some(Prompt::SendShip { picked, .. }) = &mut s.prompt {
+                                *picked = i;
+                            }
+                        })
+                        .build(k)
+                        .key(format!("send-ship-{i}")),
+                );
+            }
+            let body = col()
+                .w_full()
+                .gap(10.0)
+                .child(text("Destination ship").font(k.ty.small_medium).color(k.c.text_muted))
+                .child(picks)
+                .child(field(name, "folder/name"))
+                .child(
+                    Switch::new(*move_it)
+                        .label("Move (delete from this ship after copying)")
+                        .on_toggle(|s: &mut App| {
+                            if let Some(Prompt::SendShip { move_it, .. }) = &mut s.prompt {
+                                *move_it = !*move_it;
+                            }
+                        })
+                        .build(k)
+                        .key("send-ship-move"),
+                );
+            ("Send to another ship", body, if *move_it { "Move" } else { "Copy" }, if *move_it { ButtonVariant::Danger } else { ButtonVariant::Contrast })
+        }
         // kept on the ship, which never shows it again. Typed in the clear here: it is pasted, not remembered
         Prompt::Publish(_, quiet) => (
             "Make this public?",
@@ -12966,6 +13100,30 @@ fn run_search(s: &mut App) {
     for (name, p) in knows {
         out.extend(search::hit(name, &p.body, &q, "knowledge", true));
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    if s.global.search_all_ships && s.session.ships.len() > 1 {
+        let cur_url = s.session.conn.as_ref().map(|c| c.url.as_str()).unwrap_or("");
+        for acct in &s.session.ships {
+            if acct.url == cur_url {
+                continue;
+            }
+            let label = if acct.label.is_empty() { acct.ship.clone() } else { acct.label.clone() };
+            for n in api::Conn::kept_nodes_for(&acct.url, &acct.ship) {
+                if !n.page {
+                    continue;
+                }
+                match n.body.as_deref() {
+                    Some(body) => {
+                        if let Some(mut h) = search::hit(&n.path, &search::text_of(&n.kind, body), &q, search::scope((!n.share.is_empty()).then_some(n.share.as_str())), false) {
+                            h.ship = Some((label.clone(), acct.url.clone()));
+                            out.push(h);
+                        }
+                    }
+                    None => s.session.sskipped += 1,
+                }
+            }
+        }
+    }
     search::sort(&mut out);
     s.sfound = out.len();
     out.truncate(search::MOST);
@@ -13142,6 +13300,15 @@ fn open_hit(s: &mut App, i: usize, tab: bool) {
         return;
     }
     s.search_at = Some(i);
+    if let Some((_, url)) = &h.ship
+        && s.conn.as_ref().is_none_or(|c| &c.url != url)
+    {
+        let key = h.key.clone();
+        switch_ship(s, url);
+        s.land = Some(key.clone());
+        open_page(s, &key);
+        return;
+    }
     if h.know != s.memory {
         flip(s);
     }
@@ -13177,6 +13344,36 @@ fn search_view(s: &App, k: &Kit) -> El {
         .w_full()
         .key("search-field");
     let mut out = col().key("search").role("search").label("Search").w_full().grow(1.0).min_h(0.0).gap(8.0).child(field);
+    if s.ships.len() > 1 && !cfg!(target_arch = "wasm32") {
+        out = out.child(
+            row()
+                .key("search-scope")
+                .w_full()
+                .gap(4.0)
+                .child(
+                    Button::new("This ship")
+                        .control_size(ControlSize::Small)
+                        .variant(if !s.global.search_all_ships { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                        .on_press(|s: &mut App| {
+                            s.global.search_all_ships = false;
+                            run_search(s);
+                        })
+                        .build(k)
+                        .key("search-one-ship"),
+                )
+                .child(
+                    Button::new("All ships")
+                        .control_size(ControlSize::Small)
+                        .variant(if s.global.search_all_ships { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                        .on_press(|s: &mut App| {
+                            s.global.search_all_ships = true;
+                            run_search(s);
+                        })
+                        .build(k)
+                        .key("search-all-ships"),
+                ),
+        );
+    }
     let said = if search::query(&s.squery.text).is_none() {
         "Type at least two letters".to_owned()
     } else if s.shits.is_empty() && s.sskipped == 0 {
@@ -13189,8 +13386,9 @@ fn search_view(s: &App, k: &Kit) -> El {
     out = out.child(text(said).key("search-sum").font(k.ty.small).color(k.c.text_muted).wrap());
     let mut rows = col().key("search-rows").w_full().gap(2.0);
     for (i, h) in s.shits.iter().enumerate() {
+        let ship_key = h.ship.as_ref().map_or("", |(_, u)| u.as_str());
         let mut r = col()
-            .key(format!("{}:{}", if h.know { "qk" } else { "q" }, h.key))
+            .key(format!("{}:{ship_key}:{}", if h.know { "qk" } else { "q" }, h.key))
             .role("button")
             .label(format!("{}, {}", h.key, h.scope))
             .w_full()
@@ -13205,6 +13403,7 @@ fn search_view(s: &App, k: &Kit) -> El {
                     .w_full()
                     .gap(6.0)
                     .center_y()
+                    .children(h.ship.as_ref().map(|(label, _)| text(label.clone()).font(k.ty.text_xsmall_medium).color(k.c.text_accent).px(4.0).radius(k.radius.sm).fill(k.c.layer_02)))
                     // who reads it: a private page and a public one must not look alike in a list
                     .child(text(h.scope).font(k.ty.text_xsmall_medium).color(if h.scope == "clearweb" { k.c.warning.icon } else if h.scope == "urbit" { k.c.text_accent } else { k.c.text_muted }).px(4.0).radius(k.radius.sm).fill(k.c.layer_02))
                     .child(text(h.key.clone()).font(k.ty.small_medium).color(k.c.text_base).truncate().grow(1.0).min_w(0.0)),
@@ -14864,6 +15063,10 @@ struct WebShow {
     text: u64,
     /// A page the engine failed on: it is read as a document.
     broken: Option<htmlview::Key>,
+    /// Active Find query sent to the Blitz page thread, its match Y offsets, and whether to jump on result.
+    find_query: String,
+    find_ys: Vec<f32>,
+    find_jump: bool,
 }
 
 /// The HTML page to show as a web page, when one is in front to be read and that is how it is wanted.
@@ -14880,20 +15083,37 @@ fn web_page(s: &App) -> Option<&Page> {
 fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
     let mut changed = false;
     let (scale, dark) = s.web.env.get();
-    let ask = web_page(s).filter(|_| s.web.room > 0.0).map(|p| htmlview::Ask { key: htmlview::Key { name: p.name.clone(), rev: p.rev, text: s.web.text }, width: htmlview::width_for(s.web.room), scale: scale.clamp(1.0, 3.0), dark, outside: s.prefs.outside.contains(&p.name) });
+    let ship = s.conn.as_ref().filter(|_| s.remote.is_none()).map(|c| (format!("{}/apps/lattice/", c.url.trim_end_matches('/')), c.cookie().to_owned()));
+    let ask = web_page(s).filter(|_| s.web.room > 0.0).map(|p| htmlview::Ask {
+        key: htmlview::Key { name: p.name.clone(), rev: p.rev, text: s.web.text },
+        width: htmlview::width_for(s.web.room),
+        scale: scale.clamp(1.0, 3.0),
+        dark,
+        outside: s.prefs.outside.contains(&p.name),
+        ship: ship.clone(),
+    });
     if let (Some(ask), Some(html)) = (&ask, &s.session.web.html) {
         if s.session.web.asked.as_ref() != Some(ask) {
             // a page let to load outside content is read afresh: what it held back is fetched as it is parsed
-            let new = s.session.web.asked.as_ref().is_none_or(|a| a.key != ask.key || a.outside != ask.outside);
+            let new = s.session.web.asked.as_ref().is_none_or(|a| a.key != ask.key || a.outside != ask.outside || a.ship != ask.ship);
             let body = new.then(|| s.session.open.as_ref().map(|p| p.body.clone())).flatten();
             if new {
                 s.session.web.laid = None;
                 s.session.web.bands.clear();
                 s.session.web.was.clear();
+                s.session.web.find_ys.clear();
                 (s.session.web.hot, s.session.web.held) = (false, 0);
             }
             html.show(ask.clone(), body);
             s.session.web.asked = Some(ask.clone());
+        }
+        let want_q = s.session.find.as_ref().map(|q| q.text.trim().to_owned()).unwrap_or_default();
+        if s.session.web.find_query != want_q {
+            s.session.web.find_query = want_q.clone();
+            if want_q.is_empty() {
+                s.session.web.find_ys.clear();
+            }
+            html.find(&want_q);
         }
     }
     // no HTML page is in front: the pictures of the last one are let go, not held under every other page
@@ -14901,9 +15121,13 @@ fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
         (s.web.asked, s.web.laid, s.web.painting) = (None, None, false);
         s.web.bands.clear();
         s.web.was.clear();
+        s.web.find_query.clear();
+        s.web.find_ys.clear();
+        s.web.find_jump = false;
     }
     let outs = s.web.html.as_ref().map(htmlview::Html::take).unwrap_or_default();
     let mut link = None;
+    let mut scroll_y: Option<f32> = None;
     for o in outs {
         changed = true;
         match o {
@@ -14940,9 +15164,18 @@ fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
                 (s.web.laid, s.web.painting) = (None, false);
                 s.web.bands.clear();
                 s.web.was.clear();
+                s.web.find_ys.clear();
                 s.note = "This page could not be drawn as a web page. It is shown as a document.".into();
             }
             htmlview::Out::Link(href) => link = Some(href),
+            htmlview::Out::ScrollTo(y) => scroll_y = Some(y),
+            htmlview::Out::Found(ys) => {
+                s.session.web.find_ys = ys;
+                if std::mem::take(&mut s.session.web.find_jump) && !s.session.web.find_ys.is_empty() {
+                    let idx = s.session.find_at.min(s.session.web.find_ys.len() - 1);
+                    scroll_y = Some((s.session.web.find_ys[idx] - 80.0).max(0.0));
+                }
+            }
         }
     }
     // a band of the turn before stays until the one that takes its place can be shown
@@ -14956,8 +15189,17 @@ fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
         s.web.bands.clear();
         s.web.was.clear();
     }
+    if let (Some(y), Some(p)) = (scroll_y, s.open.as_ref().filter(|_| ask.is_some())) {
+        tx.scroll_to_y(format!("web-scroll-{}", p.name), y.max(0.0));
+    }
     if let Some(href) = link.filter(|_| ask.is_some()) {
-        follow(s, &href, tx);
+        if href.starts_with('#') {
+            if let Some(html) = &s.session.web.html {
+                html.anchor(&href);
+            }
+        } else {
+            follow(s, &href, tx);
+        }
     }
     changed
 }
@@ -16464,9 +16706,9 @@ mod tests {
         s.open = Some(Page { name: "welcome".into(), body: body.into(), kind: "html".into(), rev: 9 });
         sync_sheet(&mut s);
         let p = s.open.clone().unwrap();
-        // drawn as a web page unless asked otherwise: find has no words to mark there, and what is held back is what the page's thread counts
+        // drawn as a web page unless asked otherwise: find searches the laid-out DOM, and what is held back is what the page's thread counts
         assert!(web_page(&s).is_some());
-        assert_eq!((find_where(&s), held_back(&s)), (FindIn::Nothing, 0));
+        assert_eq!((find_where(&s), held_back(&s)), (FindIn::Web, 0));
         s.prefs.html_plain = true;
         assert!(web_page(&s).is_none());
         assert_eq!(read_md(&s, &p), Some("# Notes\n\nFind **this** word. ![a](https://x.org/a.png)\n"));
