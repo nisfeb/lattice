@@ -275,13 +275,20 @@ fn resolve_css_var(raw: &str, vars: &std::collections::HashMap<String, String>, 
     css_color(s)
 }
 
+/// WCAG 2.x relative-luminance contrast ratio between two opaque colours.
+fn contrast_ratio(a: Color, b: Color) -> f32 {
+    let (la, lb) = (a.luminance(), b.luminance());
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
 /// The look a published folder's `theme` stylesheet gives, from the variables the forum's own
 /// layout is drawn with (`code/lib/lattice-forum-render.hoon`): `--bg`, `--text`, `--muted`,
 /// `--accent`, `--on-accent`, `--link`, `--border`, `--border-soft` and `--raised`. Supports hex,
 /// `rgb()`/`rgba()`, `hsl()`/`hsla()`, named CSS colours, and `var(--other, fallback)` references.
 /// A variable set inside `@media (prefers-color-scheme: dark)` counts when the window is dark,
-/// and one inside any other `@` block never does. With no `--bg` and `--text` both, there is no
-/// look: half a theme would be drawn on the wrong ground.
+/// and one inside any other `@` block never does. With no `--bg` and `--text` both, or when
+/// either is translucent or too close in contrast to read, there is no look.
 pub fn css_look(css: &str, dark: bool) -> Look {
     let clean = strip_css_comments(css);
     let mut raw_vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -320,6 +327,9 @@ pub fn css_look(css: &str, dark: bool) -> Look {
     }
     let named = |k: &str| raw_vars.get(k).and_then(|v| resolve_css_var(v, &raw_vars, 0));
     let (Some(bg), Some(text)) = (named("bg"), named("text")) else { return Look::default() };
+    if bg.a < 1.0 || text.a < 1.0 || contrast_ratio(bg, text) < 2.5 {
+        return Look::default();
+    }
     let accent = named("accent");
     Look {
         dark: Some(bg.luminance() < 0.4),
@@ -927,5 +937,14 @@ mod tests {
         assert_eq!(hex(l.link), "#4682b4");
         assert!(l.text.is_some() && l.border.is_some());
         assert_eq!(l.raised, None, "cyclic var() terminates safely");
+    }
+
+    #[test]
+    fn css_look_rejects_transparent_or_unreadable_bg_and_text() {
+        assert_eq!(css_look(":root { --bg: #ffffff; --text: transparent; }", false), Look::default());
+        assert_eq!(css_look(":root { --bg: #0000; --text: #ffffff; }", false), Look::default());
+        assert_eq!(css_look(":root { --bg: #ffffff; --text: rgba(0, 0, 0, 0.5); }", false), Look::default());
+        assert_eq!(css_look(":root { --bg: #202020; --text: #262626; }", false), Look::default());
+        assert!(css_look(":root { --bg: #ffffff; --text: #111111; }", false).bg.is_some());
     }
 }

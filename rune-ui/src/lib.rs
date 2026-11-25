@@ -821,9 +821,9 @@ struct ShipSession {
     /// The forum, when it is what shows.
     forum: Option<Forum>,
     forum_req: Latest<Result<ForumGot, String>>,
-    /// The board whose theme was looked for, and its stylesheet: empty when it has none.
-    board_theme: Option<(String, String)>,
-    board_theme_req: Latest<Result<(String, String), String>>,
+    /// The board whose theme was looked for, and its parsed light/dark looks.
+    board_theme: Option<(String, BoardTheme)>,
+    board_theme_req: Latest<Result<(String, (theme::Look, theme::Look)), (String, String)>>,
     /// The settings showing, when they are.
     settings: Option<Settings>,
     /// The ship's change stream: what its listener heard since the last look, what the stamps stood at, and the flag that stops a listener whose session ended.
@@ -3253,6 +3253,9 @@ fn sync_beside(s: &mut App) {
         };
         sess.tgroups[d].view = view.map(|v| (p.name.clone(), p.rev, v));
     }
+    if s.session.tgroups.iter().enumerate().any(|(d, g)| d != s.session.front_at && matches!(g.view, Some((_, _, Beside::Map(..))))) {
+        sync_tiles(s);
+    }
 }
 
 /// Keeps `s.sheet` in step with the open page, as +sync_map does for a map.
@@ -4542,12 +4545,16 @@ fn tile_key(style: &str, t: &map::Tile) -> String {
 /// there are many. The ship fetches each from Mapbox with the owner's
 /// token, so nothing is asked of a ship that has none.
 fn sync_tiles(s: &mut App) {
-    let (Some(c), Some(m)) = (s.conn.clone(), &s.map) else { return };
-    if !s.open.as_ref().is_some_and(|p| p.name == m.name) || s.editing {
-        return;
-    }
-    // another ship's map chooses the place: the tiles for it are fetched by this ship, with its own token, from the map's maker. That is content from outside, and waits to be allowed as a picture on such a page does
-    if s.remote.is_some() && !outside_ok(s) {
+    let Some(c) = s.conn.clone() else { return };
+    let front_map = s.map.as_ref().filter(|m| {
+        s.open.as_ref().is_some_and(|p| p.name == m.name)
+            && !s.editing
+            && m.fitted
+            // another ship's map chooses the place: the tiles for it are fetched by this ship, with its own token, from the map's maker. That is content from outside, and waits to be allowed as a picture on such a page does
+            && (s.remote.is_none() || outside_ok(s))
+    });
+    let has_parked_map = s.tgroups.iter().enumerate().any(|(d, g)| d != s.front_at && matches!(g.view, Some((_, _, Beside::Map(..)))));
+    if front_map.is_none() && !has_parked_map {
         return;
     }
     let Some(status) = &s.tile_status else {
@@ -4557,18 +4564,33 @@ fn sync_tiles(s: &mut App) {
         }
         return;
     };
-    if s.tiles_off.is_some() || !m.fitted {
+    if s.tiles_off.is_some() {
         return;
     }
     let Some(waker) = s.global.waker.clone() else { return };
-    let (cam, size, style, max) = (m.cam, m.size, m.style, status.max);
-    let want = map::tiles(&cam, size.0, size.1, max);
-    let keys: std::collections::HashSet<String> = want.iter().map(|t| tile_key(style, t)).collect();
+    let max = status.max;
+    let mut want: Vec<(&'static str, map::Tile)> = Vec::new();
+    if let Some(m) = front_map {
+        for t in map::tiles(&m.cam, m.size.0, m.size.1, max) {
+            want.push((m.style, t));
+        }
+    }
+    for (d, g) in s.tgroups.iter().enumerate() {
+        if d != s.front_at
+            && let Some((_, _, Beside::Map(feats, style))) = &g.view
+        {
+            let cam = map::Camera::fit(feats.iter(), 520.0, 340.0);
+            for t in map::tiles(&cam, 520.0, 340.0, max) {
+                want.push((*style, t));
+            }
+        }
+    }
+    let keys: std::collections::HashSet<String> = want.iter().map(|(style, t)| tile_key(style, t)).collect();
     if s.pics.len() > 160 {
         s.pics.retain(|k, _| !k.starts_with("tile:") || keys.contains(k));
         s.pics_asked.retain(|k| !k.starts_with("tile:") || keys.contains(k));
     }
-    for t in want {
+    for (style, t) in want {
         if s.tiles_flying >= 8 {
             break;
         }
@@ -5131,7 +5153,13 @@ fn page_issue(s: &App) -> Option<String> {
             (errs > 0).then(|| format!("{errs} OpenSCAD error{}", if errs == 1 { "" } else { "s" }))
         }
         "tex" => s.tex_why.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev).map(|(_, _, why)| format!("LaTeX: {why}")),
-        "geojson" => s.map.is_none().then(|| "Invalid GeoJSON".to_owned()),
+        "geojson" => s.map.is_none().then(|| {
+            let other_geojson = serde_json::from_str::<serde_json::Value>(&p.body)
+                .ok()
+                .and_then(|v| v.get("type").and_then(serde_json::Value::as_str).map(str::to_owned))
+                .is_some_and(|t| matches!(t.as_str(), "Feature" | "Point" | "MultiPoint" | "LineString" | "MultiLineString" | "Polygon" | "MultiPolygon" | "GeometryCollection"));
+            if other_geojson { "GeoJSON is not a FeatureCollection".to_owned() } else { "Invalid GeoJSON".to_owned() }
+        }),
         "fods" => match &s.sheet {
             None => Some("Invalid spreadsheet".to_owned()),
             Some(v) if !v.stale.is_empty() => Some(format!("{} formula error{}", v.stale.len(), if v.stale.len() == 1 { "" } else { "s" })),
@@ -5312,7 +5340,8 @@ fn show_page(s: &mut App, name: &str) {
     // a heading marked in the page before is not this page's
     s.outline_at = None;
     if s.pane == rpane::Tab::Page && s.inspector.is_open() {
-        // the Page tab follows the page: whether this one is marked sensitive
+        // the Page tab follows the page: readers/groups and whether this one is marked sensitive
+        load_groups(s);
         load_sens(s);
     }
     sync_pics(s);
@@ -6784,10 +6813,17 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     if let Some(r) = s.board_theme_req.take() {
         changed = true;
-        // a sheet that could not be read leaves the board in the window's own look
-        if let Ok((board, css)) = r {
-            if s.board_theme.as_ref().is_some_and(|t| t.0 == board) {
-                s.board_theme = Some((board, css));
+        // a sheet that could not be read leaves the board in the window's own look and retries on re-entry/refresh
+        match r {
+            Ok((board, (light, dark))) => {
+                if s.board_theme.as_ref().is_some_and(|t| t.0 == board) {
+                    s.board_theme = Some((board, BoardTheme::Ready(light, dark)));
+                }
+            }
+            Err((board, _)) => {
+                if s.board_theme.as_ref().is_some_and(|t| t.0 == board) {
+                    s.board_theme = Some((board, BoardTheme::Failed));
+                }
             }
         }
     }
@@ -6824,6 +6860,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
             (Ok(ForumGot::Board(b)), Some(f)) => {
                 (f.board, f.thread) = (Some(b), None);
+                if matches!(s.session.board_theme, Some((_, BoardTheme::Failed))) {
+                    s.session.board_theme = None;
+                }
                 if s.session.note.starts_with("reading ") {
                     s.session.note.clear();
                 }
@@ -9173,7 +9212,11 @@ fn tag_suggest(all: &[(String, usize)], typed: &str) -> Vec<String> {
 /// What is typed for a thread's tags with the word being typed made the tag picked.
 fn tag_complete(typed: &str, tag: &str) -> String {
     let part = |c: char| c == ',' || c.is_whitespace();
-    let kept = if typed.ends_with(part) { typed } else { &typed[..typed.rfind(part).map_or(0, |i| i + 1)] };
+    let kept = if typed.ends_with(part) {
+        typed
+    } else {
+        &typed[..typed.rfind(part).map_or(0, |i| i + typed[i..].chars().next().map_or(1, char::len_utf8))]
+    };
     format!("{kept}{tag} ")
 }
 
@@ -15619,39 +15662,66 @@ fn board_theme_page(s: &App, board: &str) -> Option<String> {
     theme::board_theme_names(board).into_iter().find(|n| s.files.get(n).and_then(|f| f.data.as_ref()).is_some_and(|d| d.kind == "css") && on_clearweb(s, n))
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum BoardTheme {
+    Loading,
+    Ready(theme::Look, theme::Look),
+    Failed,
+}
+
 /// Reads the theme of the board showing (local or remote), once for each board.
 fn board_theme_sync(s: &mut App) {
-    let Some(board) = board_showing(s).map(str::to_owned) else { return };
+    let Some(board) = board_showing(s).map(str::to_owned) else {
+        if matches!(s.board_theme, Some((_, BoardTheme::Failed))) {
+            s.board_theme = None;
+        }
+        return;
+    };
     if s.board_theme.as_ref().is_some_and(|t| t.0 == board) {
         return;
     }
-    s.board_theme = Some((board.clone(), String::new()));
+    s.board_theme = Some((board.clone(), BoardTheme::Loading));
     let Some(c) = s.conn.clone() else { return };
     if let Some((host, bname)) = board.strip_prefix('~').and_then(|rest| rest.split_once('/')) {
         let host = format!("~{host}");
         let names = theme::board_theme_names(bname);
         s.board_theme_req.request((c, board, host, names), |(c, board, host, names)| {
+            let mut failed: Option<String> = None;
             for path in names {
                 let addr = format!("urb://{host}/{path}");
-                if let Ok(api::Urb::Page { kind, body, .. }) = c.urb_read(&addr)
-                    && kind == "css"
-                    && !body.trim().is_empty()
-                {
-                    return Ok((board, body));
+                match c.urb_read(&addr) {
+                    Ok(api::Urb::Page { kind, body, .. }) if kind == "css" && !body.trim().is_empty() => {
+                        return Ok((board, (theme::css_look(&body, false), theme::css_look(&body, true))));
+                    }
+                    Ok(_) => {}
+                    Err(e) if e.starts_with("404") => {}
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
                 }
             }
-            Ok((board, String::new()))
+            if let Some(e) = failed {
+                Err((board, e))
+            } else {
+                Ok((board, (theme::Look::default(), theme::Look::default())))
+            }
         });
     } else if let Some(page) = board_theme_page(s, &board) {
-        s.board_theme_req.request((c, board, page), |(c, board, page)| c.page(&page).map(|p| (board, p.body)));
+        s.board_theme_req.request((c, board, page), |(c, board, page)| match c.page(&page) {
+            Ok(p) => Ok((board, (theme::css_look(&p.body, false), theme::css_look(&p.body, true)))),
+            Err(e) => Err((board, e)),
+        });
+    } else {
+        s.board_theme = Some((board, BoardTheme::Ready(theme::Look::default(), theme::Look::default())));
     }
 }
 
 /// The kit a board is drawn with: its own theme's, or the window's when it has none.
 fn board_kit(s: &App, k: &Kit) -> Option<Kit> {
     let board = board_showing(s)?;
-    let (_, css) = s.board_theme.as_ref().filter(|t| t.0 == board && !t.1.is_empty())?;
-    let look = theme::css_look(css, k.dark);
+    let (_, BoardTheme::Ready(light, dark)) = s.board_theme.as_ref().filter(|t| t.0 == board)? else { return None };
+    let look = if k.dark { *dark } else { *light };
     look.bg.is_some().then(|| kit_from(look, k.dark))
 }
 
@@ -18768,6 +18838,46 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tag_complete_handles_multibyte_whitespace_without_panicking() {
+        assert_eq!(tag_complete("alpha\u{00a0}be", "beta"), "alpha\u{00a0}beta ");
+        assert_eq!(tag_complete("alpha\u{3000}be", "beta"), "alpha\u{3000}beta ");
+        assert_eq!(tag_complete("alpha, be", "beta"), "alpha, beta ");
+    }
+
+    #[test]
+    fn page_issue_distinguishes_non_feature_collection_geojson() {
+        let mut s = init();
+        s.open = Some(Page { name: "g".into(), kind: "geojson".into(), body: r#"{"type":"Feature","geometry":null,"properties":{}}"#.into(), rev: 1 });
+        s.map = None;
+        assert_eq!(page_issue(&s).as_deref(), Some("GeoJSON is not a FeatureCollection"));
+        s.open = Some(Page { name: "g".into(), kind: "geojson".into(), body: "{not json".into(), rev: 1 });
+        assert_eq!(page_issue(&s).as_deref(), Some("Invalid GeoJSON"));
+    }
+
+    #[test]
+    fn board_theme_caches_parsed_looks_and_clears_failed_on_leave() {
+        let mut s = init();
+        let mut f = Forum::default();
+        f.board = Some(api::Board {
+            board: "~zod/general".into(),
+            title: "General".into(),
+            ..api::Board::default()
+        });
+        s.forum = Some(f);
+        let light = theme::css_look(":root { --bg: #faf5eb; --text: #111111; }", false);
+        let dark = theme::css_look(":root { --bg: #faf5eb; --text: #111111; } @media (prefers-color-scheme: dark) { :root { --bg: #111111; --text: #fafafa; } }", true);
+        s.board_theme = Some(("~zod/general".into(), BoardTheme::Ready(light, dark)));
+        assert!(board_kit(&s, &Kit::neutral(false)).is_some());
+        assert!(board_kit(&s, &Kit::neutral(true)).is_some());
+
+        // Failed remote theme clears on leaving the board so re-entering retries.
+        s.board_theme = Some(("~zod/general".into(), BoardTheme::Failed));
+        s.forum = None;
+        board_theme_sync(&mut s);
+        assert!(s.board_theme.is_none());
     }
 }
 
