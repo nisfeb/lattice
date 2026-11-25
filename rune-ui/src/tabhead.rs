@@ -16,4 +16,4 @@ line!(HIST, "lat-hist", "M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 3");
 
 /// The page menu's rows, in the web client's order: the command each
 /// runs (`COMMANDS` in `lib.rs`) and what it says. Delete is last.
-pub const MENU: [(&str, &str); 10] = [("copy-link", "Copy link"), ("copy-name", "Copy name"), ("duplicate", "Duplicate"), ("kind", "Change kind"), ("download", "Download"), ("pdf", "Export PDF"), ("tex", "Convert to HTML"), ("link-in", "Move into my pages"), ("link-back", "Move back to shared with me"), ("delete", "Delete")];
+pub const MENU: [(&str, &str); 12] = [("copy-link", "Copy link"), ("copy-name", "Copy name"), ("duplicate", "Duplicate"), ("kind", "Change kind"), ("wrap", "Toggle line wrap"), ("download", "Download"), ("pdf", "Export PDF"), ("tex", "Convert to HTML"), ("open-raw", "Open raw"), ("link-in", "Move into my pages"), ("link-back", "Move back to shared with me"), ("delete", "Delete")];
