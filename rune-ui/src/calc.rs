@@ -53,6 +53,10 @@ pub struct Ctx {
     pub r: usize,
     pub c: usize,
     pub depth: u8,
+    /// Scope for looking up unqualified names: `Some(sheet)` checks that sheet's local names
+    /// before workbook globals, while `None` (inside a workbook-global named expression)
+    /// resolves against workbook globals only.
+    pub scope: Option<usize>,
 }
 
 impl Rg {
@@ -71,7 +75,9 @@ impl Rg {
 
 enum NamedItem {
     Ref(Ref, usize),
-    Ast(Option<Rc<Node>>, usize),
+    /// Parsed expression AST (`None` for unsupported/multi-area names), home sheet for
+    /// unqualified cell refs, and the name's own scope (`Some(sheet)` or `None` for global).
+    Ast(Option<Rc<Node>>, usize, Option<usize>),
 }
 
 struct Entry {
@@ -490,14 +496,14 @@ impl<'a> Engine<'a> {
                 sheet::Named::Range { addr, home } => {
                     let item = match formula::parse_addrs(addr) {
                         Some(mut refs) if refs.len() == 1 => NamedItem::Ref(refs.remove(0), *home),
-                        _ => NamedItem::Ast(None, *home),
+                        _ => NamedItem::Ast(None, *home, k.0),
                     };
                     names.insert(k.clone(), item);
                 }
                 sheet::Named::Expr { expr, home } => {
                     let body = formula::body_of(expr).unwrap_or(expr.as_str());
                     let ast = formula::parse(body, Mode::Of).ok().map(Rc::new);
-                    names.insert(k.clone(), NamedItem::Ast(ast, *home));
+                    names.insert(k.clone(), NamedItem::Ast(ast, *home, k.0));
                 }
             }
         }
@@ -550,8 +556,8 @@ impl<'a> Engine<'a> {
 
     fn deps_of(&self, n: &Node, home: usize, out: &mut Vec<[usize; 5]>, wild: &mut bool) {
         let mut seen = HashSet::new();
-        let mut stack: Vec<(&Node, usize)> = vec![(n, home)];
-        while let Some((cur, h)) = stack.pop() {
+        let mut stack: Vec<(&Node, usize, Option<usize>)> = vec![(n, home, Some(home))];
+        while let Some((cur, h, scope)) = stack.pop() {
             match cur {
                 Node::Ref(r) => match self.range(r, h) {
                     Ok(V::Range(g)) => {
@@ -564,10 +570,10 @@ impl<'a> Engine<'a> {
                 },
                 Node::Name(name) => {
                     let low = name.to_lowercase();
-                    if !seen.insert((h, low)) {
+                    if !seen.insert((scope, low)) {
                         continue;
                     }
-                    match self.lookup_name(h, name) {
+                    match self.lookup_name(scope, name) {
                         Some(NamedItem::Ref(r, nh)) => match self.range(r, *nh) {
                             Ok(V::Range(g)) => {
                                 for si in g.s..=g.s2 {
@@ -577,26 +583,26 @@ impl<'a> Engine<'a> {
                             Ok(_) => {}
                             Err(Unsupported) => *wild = true,
                         },
-                        Some(NamedItem::Ast(Some(ast), nh)) => stack.push((ast, *nh)),
-                        Some(NamedItem::Ast(None, _)) => *wild = true,
+                        Some(NamedItem::Ast(Some(ast), nh, item_scope)) => stack.push((ast, *nh, *item_scope)),
+                        Some(NamedItem::Ast(None, _, _)) => *wild = true,
                         None => {}
                     }
                 }
-                Node::Paren(x) | Node::Un(_, x) | Node::Pct(x) => stack.push((x, h)),
+                Node::Paren(x) | Node::Un(_, x) | Node::Pct(x) => stack.push((x, h, scope)),
                 Node::Bin(_, l, r) => {
-                    stack.push((r, h));
-                    stack.push((l, h));
+                    stack.push((r, h, scope));
+                    stack.push((l, h, scope));
                 }
                 Node::Call(name, args) => {
                     for a in args {
-                        stack.push((a, h));
+                        stack.push((a, h, scope));
                     }
                     let rect = |n: &Node| match bare(n) {
                         Node::Ref(r) => match self.range(r, h) {
                             Ok(V::Range(g)) if g.single_sheet() => Some(g),
                             _ => None,
                         },
-                        Node::Name(nm) => match self.lookup_name(h, nm) {
+                        Node::Name(nm) => match self.lookup_name(scope, nm) {
                             Some(NamedItem::Ref(r, nh)) => match self.range(r, *nh) {
                                 Ok(V::Range(g)) if g.single_sheet() => Some(g),
                                 _ => None,
@@ -877,28 +883,31 @@ impl<'a> Engine<'a> {
         })
     }
 
-    /// Resolves a named range or expression: sheet-local takes priority over workbook-global.
-    fn lookup_name(&self, sheet: usize, name: &str) -> Option<&NamedItem> {
+    /// Resolves a named range or expression: sheet-local takes priority over workbook-global
+    /// when `scope` is `Some(sheet)`; `None` (inside a global expression) resolves globals only.
+    fn lookup_name(&self, scope: Option<usize>, name: &str) -> Option<&NamedItem> {
         let low = name.to_lowercase();
-        self.names.get(&(Some(sheet), low.clone())).or_else(|| self.names.get(&(None, low)))
+        scope
+            .and_then(|sheet| self.names.get(&(Some(sheet), low.clone())))
+            .or_else(|| self.names.get(&(None, low)))
     }
 
     #[inline(never)]
     fn eval_name(&mut self, name: &str, ctx: Ctx) -> Result<V, Unsupported> {
-        match self.lookup_name(ctx.s, name) {
+        match self.lookup_name(ctx.scope, name) {
             None => Ok(err("#NAME?")),
             Some(NamedItem::Ref(r, home)) => {
                 let (r, home) = (r.clone(), *home);
                 self.range(&r, home)
             }
-            Some(NamedItem::Ast(None, _)) => Err(Unsupported),
-            Some(NamedItem::Ast(Some(ast), home)) => {
-                let (ast, h) = (ast.clone(), *home);
+            Some(NamedItem::Ast(None, _, _)) => Err(Unsupported),
+            Some(NamedItem::Ast(Some(ast), home, item_scope)) => {
+                let (ast, h, sc) = (ast.clone(), *home, *item_scope);
                 self.count(1)?;
                 if ctx.depth > 32 {
                     Ok(err("Err:522"))
                 } else {
-                    self.ev(&ast, Ctx { s: h, depth: ctx.depth + 1, ..ctx })
+                    self.ev(&ast, Ctx { s: h, depth: ctx.depth + 1, scope: sc, ..ctx })
                 }
             }
         }
@@ -1023,7 +1032,7 @@ impl<'a> Engine<'a> {
 
     /// A formula's value for the cell it is in.
     fn evaluate(&mut self, ast: &Node, at: Key) -> Result<V, Unsupported> {
-        let ctx = Ctx { s: at.0, r: at.1, c: at.2, depth: 0 };
+        let ctx = Ctx { s: at.0, r: at.1, c: at.2, depth: 0, scope: Some(at.0) };
         let v = self.ev(ast, ctx)?;
         let v = self.one(v, ctx);
         // a reference to an empty cell shows 0. A function that hands back an empty cell is blank here
@@ -2631,10 +2640,12 @@ mod tests {
    <table:table-row>
     <table:table-cell office:value-type="float" office:value="1" calcext:value-type="float"><text:p>1</text:p></table:table-cell>
     <table:table-cell table:formula="of:=[.A1]*Rate" office:value-type="float" office:value="0" calcext:value-type="float"><text:p>0</text:p></table:table-cell>
+    <table:table-cell table:formula="of:=Total+[.A1]" office:value-type="float" office:value="0" calcext:value-type="float"><text:p>0</text:p></table:table-cell>
    </table:table-row>
   </table:table>
   <table:named-expressions>
    <table:named-expression table:name="Rate" table:expression="of:=5"/>
+   <table:named-expression table:name="Total" table:expression="of:=Rate*2"/>
    <table:named-range table:name="Multi" table:cell-range-address="$S1.$A$1:.$A$1 $S2.$A$1:.$A$1"/>
   </table:named-expressions>
  </office:spreadsheet></office:body>
@@ -2647,5 +2658,6 @@ mod tests {
         assert_eq!(sheet::parse(&g2.body)[1].rows[0][1], "60", "S2 uses its local Rate=20");
         let g3 = enter(&g2.body, 2, 0, 0, "3").unwrap();
         assert_eq!(sheet::parse(&g3.body)[2].rows[0][1], "15", "S3 falls back to global Rate=5");
+        assert_eq!(sheet::parse(&g3.body)[2].rows[0][2], "13", "global Total=Rate*2 resolves global Rate=5 (10+3), not S1 local Rate=10");
     }
 }

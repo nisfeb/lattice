@@ -1200,8 +1200,10 @@ fn escape(s: &str, out: &mut String) {
 /// A new spreadsheet page holding a CSV's cells: the web client's blank
 /// sheet with the rows in it. Plain numbers, booleans, dates, times,
 /// percentages, and currency values become typed cells with matching ODF
-/// number formats; leading-zero codes and `=` fields stay plain text so a
-/// field starting with `=` never runs as a formula.
+/// number formats; `=` fields stay plain text so a CSV cannot plant a formula,
+/// and leading-zero or >15-digit codes (including signed/decimal/padded forms)
+/// stay text so IDs and postal codes are not mangled (an intentional departure
+/// from the web client's `importCsv`, which passes `007` through `readTyped`).
 pub fn from_csv(src: &str) -> Result<String, String> {
     let rows = parse_csv(src);
     let cells: usize = rows.iter().map(Vec::len).sum();
@@ -1236,7 +1238,10 @@ pub fn from_csv(src: &str) -> Result<String, String> {
         out.push_str("    <table:table-row table:style-name=\"ro1\">\n");
         for v in row {
             let trimmed = v.trim();
-            let is_code = !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) && ((trimmed.len() > 1 && trimmed.starts_with('0')) || trimmed.len() > 15);
+            let body = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
+            let (whole, frac) = body.split_once('.').unwrap_or((body, ""));
+            let all_digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+            let is_code = !whole.is_empty() && all_digits(whole) && all_digits(frac) && ((whole.len() > 1 && whole.starts_with('0')) || body.len() > 15);
             if v.is_empty() {
                 out.push_str("     <table:table-cell/>\n");
             } else if let Some(n) = plain_number(v) {
@@ -1822,7 +1827,7 @@ mod tests {
 
     #[test]
     fn csv_parses_dates_percents_money_and_booleans_and_renders_html() {
-        let csv2 = "When,Share,Price,Done,Formula,Grouped,Plus,Dot,DateTime\n2026-11-17,50%,\"$1,200.50\",true,=1+1,\"1,234.5\",+5,.5,2024-1-5 10:30\n9:30,25%,-$5,false,'2026-11-17,1e5,007,3.,2024-01-05T10:30:15\n";
+        let csv2 = "When,Share,Price,Done,Formula,Grouped,Plus,Dot,DateTime,SignedCode,DecCode,PadCode\n2026-11-17,50%,\"$1,200.50\",true,=1+1,\"1,234.5\",+5,.5,2024-1-5 10:30,-007,0123.5, 007\n9:30,25%,-$5,false,'2026-11-17,1e5,007,3.,2024-01-05T10:30:15,+007,-0.5,0.5\n";
         let fods = from_csv(csv2).unwrap();
         let b = book(&fods).unwrap();
         assert_eq!(b.at(0, 1, 0).unwrap().vt, "date");
@@ -1834,11 +1839,17 @@ mod tests {
         assert_eq!(b.at(0, 1, 6).unwrap().vt, "float");
         assert_eq!(b.at(0, 1, 7).unwrap().vt, "float");
         assert_eq!(b.at(0, 1, 8).unwrap().vt, "date");
+        assert_eq!(b.at(0, 1, 9).unwrap().vt, "string");
+        assert_eq!(b.at(0, 1, 10).unwrap().vt, "string");
+        assert_eq!(b.at(0, 1, 11).unwrap().vt, "string");
         assert_eq!(b.at(0, 2, 0).unwrap().vt, "time");
         assert_eq!(b.at(0, 2, 4).unwrap().vt, "string");
         assert_eq!(b.at(0, 2, 5).unwrap().vt, "float");
         assert_eq!(b.at(0, 2, 6).unwrap().vt, "string");
         assert_eq!(b.at(0, 2, 8).unwrap().vt, "date");
+        assert_eq!(b.at(0, 2, 9).unwrap().vt, "string");
+        assert_eq!(b.at(0, 2, 10).unwrap().vt, "float");
+        assert_eq!(b.at(0, 2, 11).unwrap().vt, "float");
         let html = render_html(&fods, "Budget").unwrap();
         assert!(html.contains("<h1>Budget</h1>") && html.contains("$1,200.50") && html.contains("50.00%") && html.contains("2026-11-17"));
     }

@@ -3723,7 +3723,8 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
             };
             let color = if hits.contains(&(i, at)) { accent } else if v.stale.contains(&(v.at, i, at)) { warn } else { own };
             let raw_size = look.size.unwrap_or(font.size);
-            // Table rows are fixed at 28pt: clamp size and line height so text never clips vertically.
+            // Table rows are fixed at 28pt: clamp size and line height so single-line text fits
+            // cleanly and wrapped cells fit up to two lines (longer wrapped text clips below line two).
             let size = if look.wrap { raw_size.clamp(9.0, 11.5) } else { raw_size.clamp(9.0, 20.0) };
             let face = rune::TextStyle {
                 size,
