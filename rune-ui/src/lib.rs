@@ -860,7 +860,8 @@ struct ShipSession {
     orrery_up: Option<bool>,
     orrery_up_req: Latest<bool>,
     orrery_st: HashMap<String, orrery::Status>,
-    orrery_in: std::sync::Arc<std::sync::Mutex<Vec<(String, orrery::Status)>>>,
+    orrery_in: std::sync::Arc<std::sync::Mutex<Vec<(String, u64, orrery::Status)>>>,
+    orrery_seq: HashMap<String, u64>,
     orrery_inflight: std::collections::HashSet<String>,
     orrery_polls: HashMap<String, (u32, f64)>,
     orrery_facts: Option<(String, Option<orrery::BodyFacts>)>,
@@ -1276,6 +1277,7 @@ impl Default for ShipSession {
             orrery_up_req: Latest::default(),
             orrery_st: HashMap::new(),
             orrery_in: std::sync::Arc::default(),
+            orrery_seq: HashMap::new(),
             orrery_inflight: std::collections::HashSet::new(),
             orrery_polls: HashMap::new(),
             orrery_facts: None,
@@ -1526,6 +1528,7 @@ impl ShipSession {
         self.orrery_up_req.cancel();
         self.orrery_facts_req.cancel();
         self.orrery_in = std::sync::Arc::default();
+        self.orrery_seq.clear();
         self.orrery_inflight.clear();
         self.beacon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1717,13 +1720,15 @@ fn load_orrery_status(s: &mut App, path: &str, fresh: bool) {
     if !s.orrery_inflight.insert(path.to_owned()) {
         return;
     }
+    let seq = s.orrery_seq.get(path).copied().unwrap_or(0) + 1;
+    s.orrery_seq.insert(path.to_owned(), seq);
     let p = path.to_owned();
     let back = s.orrery_in.clone();
     let waker = s.global.waker.clone();
     spawn(move || {
         let st = c.orrery_status(&p);
         if let Ok(mut list) = back.lock() {
-            list.push((p, st));
+            list.push((p, seq, st));
         }
         if let Some(w) = waker {
             w();
@@ -1734,6 +1739,9 @@ fn load_orrery_status(s: &mut App, path: &str, fresh: bool) {
 /// Sends a page to orrery (`POST /apps/orrery/api/follow`), resetting poll state.
 fn send_to_orrery(s: &mut App, path: String, title: String, text: String) {
     let Some(c) = s.conn.clone() else { return };
+    let seq = s.orrery_seq.get(&path).copied().unwrap_or(0) + 1;
+    s.orrery_seq.insert(path.clone(), seq);
+    s.orrery_inflight.remove(&path);
     s.orrery_st.insert(path.clone(), orrery::Status::Queued);
     s.orrery_polls.insert(path.clone(), (0, 0.0));
     let back = s.orrery_in.clone();
@@ -1741,7 +1749,7 @@ fn send_to_orrery(s: &mut App, path: String, title: String, text: String) {
     spawn(move || {
         let st = c.orrery_send(&path, &title, &text);
         if let Ok(mut list) = back.lock() {
-            list.push((path, st));
+            list.push((path, seq, st));
         }
         if let Some(w) = waker {
             w();
@@ -7088,8 +7096,11 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
         }
     }
-    let orrery_done: Vec<(String, orrery::Status)> = s.orrery_in.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default();
-    for (path, st) in orrery_done {
+    let orrery_done: Vec<(String, u64, orrery::Status)> = s.orrery_in.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default();
+    for (path, seq, st) in orrery_done {
+        if s.orrery_seq.get(&path).copied() != Some(seq) {
+            continue;
+        }
         changed = true;
         s.orrery_inflight.remove(&path);
         let queued = st.is_queued();

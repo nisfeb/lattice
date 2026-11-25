@@ -79,13 +79,16 @@ impl View {
 }
 
 /// Normalizes a typed explorer path into `/apps/lattice/x...`.
-/// Refuses any path containing a `..` segment so relative hrefs cannot escape `/apps/lattice/x`.
+/// Refuses any path that could escape `/apps/lattice/x` under WHATWG URL parsing
+/// (dot segments including `%2e` variants, backslashes, encoded slashes, or control/whitespace chars).
 pub fn normalize_path(typed: &str) -> Result<String, String> {
     let t = typed.trim();
     let candidate = if t.is_empty() || t == "/x" || t == "/apps/lattice/x" || t == "/apps/lattice/x/" {
         "/apps/lattice/x".to_owned()
-    } else if t.starts_with("/apps/lattice/x/") {
+    } else if t.starts_with("/apps/lattice/x/") || t.starts_with("/apps/lattice/x?") {
         t.to_owned()
+    } else if t.starts_with("/apps/lattice/x") {
+        return Err("invalid explorer path".into());
     } else if let Some(rest) = t.strip_prefix("/x/") {
         format!("/apps/lattice/x/{rest}")
     } else if t.starts_with('~') {
@@ -93,9 +96,22 @@ pub fn normalize_path(typed: &str) -> Result<String, String> {
     } else {
         format!("/apps/lattice/x/{}", t.trim_start_matches('/'))
     };
-    let path_only = candidate.split(['?', '#']).next().unwrap_or(&candidate);
-    if path_only.split('/').any(|seg| seg == "..") || !path_only.starts_with("/apps/lattice/x") {
+    if candidate.bytes().any(|b| b <= 0x20 || b == 0x7f || b == b'\\') {
         return Err("invalid explorer path".into());
+    }
+    let path_only = candidate.split(['?', '#']).next().unwrap_or(&candidate);
+    if path_only != "/apps/lattice/x" && !path_only.starts_with("/apps/lattice/x/") {
+        return Err("invalid explorer path".into());
+    }
+    for seg in path_only.split('/') {
+        let low = seg.to_ascii_lowercase();
+        if low.contains("%2f") || low.contains("%5c") {
+            return Err("invalid explorer path".into());
+        }
+        let unescaped = low.replace("%2e", ".");
+        if unescaped == "." || unescaped == ".." {
+            return Err("invalid explorer path".into());
+        }
     }
     Ok(candidate)
 }
@@ -311,6 +327,12 @@ mod tests {
         assert!(normalize_path("/apps/lattice/x/../../../other").is_err());
         assert!(normalize_path("../secret").is_err());
         assert!(normalize_path(&resolve_href("/apps/lattice/x/~zod/page/", "../../../../other")).is_err());
+        assert!(normalize_path("/apps/lattice/x/%2e%2e/other").is_err());
+        assert!(normalize_path("/apps/lattice/x/.%2E/other").is_err());
+        assert!(normalize_path("/apps/lattice/x/%2e./other").is_err());
+        assert!(normalize_path(r"/apps/lattice/x/..\..\other").is_err());
+        assert!(normalize_path("/apps/lattice/x/.\n./other").is_err());
+        assert!(normalize_path("/apps/lattice/xfoo").is_err());
         let cs = crumbs_of("/apps/lattice/x/~zod/apps/lattice/page/");
         assert_eq!(cs.len(), 4);
         assert_eq!(cs[0], Crumb { label: "~zod".into(), href: "/apps/lattice/x/~zod/".into() });
