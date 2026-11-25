@@ -71,10 +71,21 @@ pub fn decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
+    let mut next_semi: Option<usize> = None;
+    let mut no_more_semi = false;
     while i < bytes.len() {
         if bytes[i] == b'&' {
-            if let Some(rel) = s[i + 1..].find(';') {
-                let ent = &s[i + 1..i + 1 + rel];
+            if !no_more_semi && next_semi.is_none_or(|p| p <= i) {
+                match s[i + 1..].find(';') {
+                    Some(rel) => next_semi = Some(i + 1 + rel),
+                    None => {
+                        no_more_semi = true;
+                        next_semi = None;
+                    }
+                }
+            }
+            if let Some(semi) = next_semi {
+                let ent = &s[i + 1..semi];
                 let decoded = if let Some(rest) = ent.strip_prefix("#x") {
                     if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_hexdigit()) {
                         u32::from_str_radix(rest, 16).ok().filter(|&n| n > 0 && n <= 0x10_ffff && !(0xd800..=0xdfff).contains(&n)).and_then(char::from_u32)
@@ -99,7 +110,7 @@ pub fn decode(s: &str) -> String {
                 };
                 if let Some(ch) = decoded {
                     out.push(ch);
-                    i += rel + 2;
+                    i = semi + 1;
                     continue;
                 }
             }
@@ -1120,7 +1131,7 @@ pub struct Doc {
     pub layout: PageLayout,
     pub tracking: bool,
     pub macros: bool,
-    pub base: BaseDoc,
+    pub base: std::sync::Arc<BaseDoc>,
 }
 
 fn is_zero_width(name: &str) -> bool {
@@ -1607,7 +1618,14 @@ pub fn parse_fodt(text: &str) -> Result<Doc, String> {
     let doc = root.elements().find(|e| e.name == "office:document").ok_or_else(|| "not a flat ODT document (no office:document)".to_owned())?;
     let body = doc.child("office:body");
     let otext = body.and_then(|b| b.child("office:text")).filter(|t| !t.empty).ok_or_else(|| "not a text document (no office:text)".to_owned())?;
-    let st = read_styles(text, doc);
+    let mut st = read_styles(text, doc);
+    // Ignore <office:automatic-styles> placed after <office:text> so head() never slices past head.len().
+    if st.auto_close.is_some_and(|c| c > otext.start) {
+        st.auto_close = None;
+    }
+    if st.auto_empty.is_some_and(|(s, e)| s >= otext.start || e > otext.start) {
+        st.auto_empty = None;
+    }
     let mut parser = Parser::new(text, &st);
     let mut blocks = parser.blocks(otext)?;
     if blocks.is_empty() {
@@ -1627,7 +1645,7 @@ pub fn parse_fodt(text: &str) -> Result<Doc, String> {
     let tail = text[otext.close_start..].to_owned();
     let layout = st.page_layout();
     let orig_unbalanced = unbalanced(&blocks);
-    let base = BaseDoc {
+    let base = std::sync::Arc::new(BaseDoc {
         src: text.to_owned(),
         head,
         tail,
@@ -1642,7 +1660,7 @@ pub fn parse_fodt(text: &str) -> Result<Doc, String> {
         tails: parser.tails,
         opens: parser.opens,
         orig_unbalanced,
-    };
+    });
     Ok(Doc { blocks, styles: st, layout, tracking, macros, base })
 }
 
@@ -1799,12 +1817,12 @@ impl<'a> FodtWriter<'a> {
         }
         let add: String = self.reg.added.concat();
         let st = &self.o.styles;
-        if let Some(close) = st.auto_close {
+        if let Some(close) = st.auto_close.filter(|&c| c <= h.len() && h.is_char_boundary(c)) {
             let ls = h[..close].rfind('\n').map_or(0, |p| p + 1);
             let at = if h[ls..close].bytes().all(|b| b == b' ' || b == b'\t') { ls } else { close };
             return format!("{}{}{}{}", &h[..at], if at == ls { "" } else { "\n" }, add, &h[at..]);
         }
-        if let Some((start, end)) = st.auto_empty {
+        if let Some((start, end)) = st.auto_empty.filter(|&(s, e)| s <= e && e <= h.len() && h.is_char_boundary(s) && h.is_char_boundary(e)) {
             return format!("{}<office:automatic-styles>\n{} </office:automatic-styles>{}", &h[..start], add, &h[end..]);
         }
         let insert_at = h.find("<office:master-styles").or_else(|| h.find("<office:body")).map(|p| {
@@ -1859,7 +1877,7 @@ impl<'a> FodtWriter<'a> {
     fn children_blocks(&mut self, blocks: &[Block], cont_start: Option<usize>, indent: usize, mut prev: Option<usize>) -> String {
         let mut out = String::new();
         for b in blocks {
-            if matches!(b, Block::Paragraph { placeholder: true, inlines, .. } if inlines.is_empty()) {
+            if matches!(b, Block::Paragraph { placeholder: true, page_break: false, inlines, .. } if inlines.is_empty()) {
                 continue;
             }
             let src = Self::block_src(b);
@@ -2950,7 +2968,8 @@ pub fn replace_inlines_text(inlines: &mut Vec<Inline>, new_text: &str) {
         Inline::Text { marks, .. } => *marks == uniform_marks,
         _ => true,
     });
-    if all_same_marks {
+    // Fast path when there are no opaque inlines and the entire block shares one mark set.
+    if all_same_marks && opaques.is_empty() {
         let mut next = Vec::new();
         for (li, line) in new_text.split('\n').enumerate() {
             if li > 0 {
@@ -2960,11 +2979,23 @@ pub fn replace_inlines_text(inlines: &mut Vec<Inline>, new_text: &str) {
                 next.push(Inline::Text { text: strip_not_xml(line), marks: uniform_marks.clone() });
             }
         }
-        next.extend(opaques);
         *inlines = next;
         return;
     }
-    // Mixed marks: diff common prefix and suffix on char boundaries so untouched formatted spans stay formatted!
+    let push_inserted = |out: &mut Vec<Inline>, text: &str, marks: &Marks| {
+        if text.is_empty() {
+            return;
+        }
+        for (li, line) in text.split('\n').enumerate() {
+            if li > 0 {
+                out.push(Inline::HardBreak { src: None, marks: marks.clone() });
+            }
+            if !line.is_empty() {
+                Parser::push_text(out, strip_not_xml(line), marks);
+            }
+        }
+    };
+    // Diff common prefix and suffix on char boundaries so formatted spans and opaque inlines stay in place!
     let old_bytes = old_text.as_bytes();
     let new_bytes = new_text.as_bytes();
     let mut pre = 0;
@@ -2998,9 +3029,7 @@ pub fn replace_inlines_text(inlines: &mut Vec<Inline>, new_text: &str) {
                     Parser::push_text(&mut out, text, &marks);
                 } else if off >= old_suf {
                     if !inserted_done {
-                        if !inserted.is_empty() {
-                            Parser::push_text(&mut out, strip_not_xml(inserted), &carry_marks);
-                        }
+                        push_inserted(&mut out, inserted, &carry_marks);
                         inserted_done = true;
                     }
                     Parser::push_text(&mut out, text, &marks);
@@ -3010,9 +3039,7 @@ pub fn replace_inlines_text(inlines: &mut Vec<Inline>, new_text: &str) {
                         Parser::push_text(&mut out, text[..pre - off].to_owned(), &marks);
                     }
                     if !inserted_done {
-                        if !inserted.is_empty() {
-                            Parser::push_text(&mut out, strip_not_xml(inserted), &carry_marks);
-                        }
+                        push_inserted(&mut out, inserted, &carry_marks);
                         inserted_done = true;
                     }
                     if end > old_suf {
@@ -3025,9 +3052,7 @@ pub fn replace_inlines_text(inlines: &mut Vec<Inline>, new_text: &str) {
                 let end = off + 1;
                 if end <= pre || off >= old_suf {
                     if off >= old_suf && !inserted_done {
-                        if !inserted.is_empty() {
-                            Parser::push_text(&mut out, strip_not_xml(inserted), &carry_marks);
-                        }
+                        push_inserted(&mut out, inserted, &carry_marks);
                         inserted_done = true;
                     }
                     out.push(Inline::HardBreak { src, marks });
@@ -3036,13 +3061,17 @@ pub fn replace_inlines_text(inlines: &mut Vec<Inline>, new_text: &str) {
             }
             Inline::OpaqueInline { src, raw, name, label, marks } => {
                 let len = label.len();
+                if off >= old_suf && !inserted_done {
+                    push_inserted(&mut out, inserted, &carry_marks);
+                    inserted_done = true;
+                }
                 out.push(Inline::OpaqueInline { src, raw, name, label, marks });
                 off += len;
             }
         }
     }
-    if !inserted_done && !inserted.is_empty() {
-        Parser::push_text(&mut out, strip_not_xml(inserted), &carry_marks);
+    if !inserted_done {
+        push_inserted(&mut out, inserted, &carry_marks);
     }
     *inlines = out;
 }
@@ -3333,7 +3362,13 @@ impl Doc {
     pub fn toggle_page_break(&mut self, path: &BlockPath) -> bool {
         let Some(b) = self.block_at_mut(path) else { return false };
         match b {
-            Block::Paragraph { src, page_break, .. } | Block::Heading { src, page_break, .. } => {
+            Block::Paragraph { src, page_break, placeholder, .. } => {
+                *src = None;
+                *page_break = !*page_break;
+                *placeholder = false;
+                true
+            }
+            Block::Heading { src, page_break, .. } => {
                 *src = None;
                 *page_break = !*page_break;
                 true
@@ -3345,9 +3380,19 @@ impl Doc {
     pub fn toggle_quote(&mut self, path: &BlockPath) -> bool {
         let body = self.styles.body_style();
         let Some(b) = self.block_at(path) else { return false };
+        let keep_level = match b {
+            Block::Heading { level, .. } => Some(*level),
+            _ => None,
+        };
         let was_quote = matches!(b, Block::Paragraph { quote: true, .. } | Block::Heading { quote: true, .. });
-        let next_style = if was_quote { body } else { Some("Quotations".into()) };
-        self.set_block_kind(path, None, next_style)
+        let next_style = if was_quote {
+            body
+        } else if self.styles.lookup("paragraph", "Quotations").is_some() {
+            Some("Quotations".into())
+        } else {
+            return false;
+        };
+        self.set_block_kind(path, keep_level, next_style)
     }
 
     pub fn insert_paragraph_after(&mut self, top_idx: usize) -> BlockPath {
@@ -3455,6 +3500,103 @@ impl Doc {
         self.blocks.remove(top_idx);
         true
     }
+
+    /// Whether the block at `path` can be deleted without leaving an empty document or empty table cell.
+    pub fn can_delete_block(&self, path: &BlockPath) -> bool {
+        match path {
+            BlockPath::Top(_) => self.blocks.len() > 1,
+            BlockPath::ListItem { path: lp, item, .. } => match self.block_at(lp) {
+                Some(Block::List { items, .. }) => {
+                    items.get(*item).is_some_and(|it| it.blocks.len() > 1) || items.len() > 1 || self.can_delete_block(lp)
+                }
+                _ => false,
+            },
+            BlockPath::TableCell { path: tp, row, col, .. } => match self.block_at(tp) {
+                Some(Block::Table { rows, .. }) => rows.get(*row).and_then(|r| r.cells.get(*col)).is_some_and(|c| c.blocks.len() > 1),
+                _ => false,
+            },
+            BlockPath::Section { path: sp, .. } => match self.block_at(sp) {
+                Some(Block::Section { blocks, .. }) => blocks.len() > 1 || self.can_delete_block(sp),
+                _ => false,
+            },
+        }
+    }
+
+    /// Deletes the block at `path` (never deleting an enclosing table/list/section when only a child block is selected).
+    pub fn delete_block(&mut self, path: &BlockPath) -> Option<BlockPath> {
+        match path {
+            BlockPath::Top(i) => {
+                if !self.delete_top_block(*i) {
+                    return None;
+                }
+                Some(BlockPath::Top((*i).min(self.blocks.len().saturating_sub(1))))
+            }
+            BlockPath::ListItem { path: lp, item, block } => {
+                let (item_blocks_len, list_len) = match self.block_at(lp) {
+                    Some(Block::List { items, .. }) => (items.get(*item).map_or(0, |it| it.blocks.len()), items.len()),
+                    _ => return None,
+                };
+                if item_blocks_len > 1 {
+                    if let Some(Block::List { src, items, .. }) = self.block_at_mut(lp) {
+                        *src = None;
+                        let it = &mut items[*item];
+                        it.src = None;
+                        if *block < it.blocks.len() {
+                            it.blocks.remove(*block);
+                            let nb = (*block).min(it.blocks.len() - 1);
+                            return Some(BlockPath::ListItem { path: lp.clone(), item: *item, block: nb });
+                        }
+                    }
+                    None
+                } else if list_len > 1 {
+                    if let Some(Block::List { src, items, .. }) = self.block_at_mut(lp) {
+                        *src = None;
+                        if *item < items.len() {
+                            items.remove(*item);
+                            let ni = (*item).min(items.len() - 1);
+                            return Some(BlockPath::ListItem { path: lp.clone(), item: ni, block: 0 });
+                        }
+                    }
+                    None
+                } else {
+                    self.delete_block(lp)
+                }
+            }
+            BlockPath::TableCell { path: tp, row, col, block } => {
+                let Some(Block::Table { src, rows, .. }) = self.block_at_mut(tp) else { return None };
+                let r = rows.get_mut(*row)?;
+                let c = r.cells.get_mut(*col)?;
+                if c.blocks.len() <= 1 || *block >= c.blocks.len() {
+                    return None;
+                }
+                *src = None;
+                r.src = None;
+                c.src = None;
+                c.blocks.remove(*block);
+                let nb = (*block).min(c.blocks.len() - 1);
+                Some(BlockPath::TableCell { path: tp.clone(), row: *row, col: *col, block: nb })
+            }
+            BlockPath::Section { path: sp, block } => {
+                let sec_len = match self.block_at(sp) {
+                    Some(Block::Section { blocks, .. }) => blocks.len(),
+                    _ => return None,
+                };
+                if sec_len > 1 {
+                    if let Some(Block::Section { src, blocks, .. }) = self.block_at_mut(sp) {
+                        *src = None;
+                        if *block < blocks.len() {
+                            blocks.remove(*block);
+                            let nb = (*block).min(blocks.len() - 1);
+                            return Some(BlockPath::Section { path: sp.clone(), block: nb });
+                        }
+                    }
+                    None
+                } else {
+                    self.delete_block(sp)
+                }
+            }
+        }
+    }
 }
 
 /// Top-level block index for any `BlockPath`.
@@ -3481,9 +3623,7 @@ mod tests {
     #[test]
     fn all_libreoffice_corpus_files_round_trip_byte_for_byte() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/writer/corpus");
-        if !dir.exists() {
-            return;
-        }
+        assert!(dir.exists(), "missing corpus dir: {}", dir.display());
         let mut checked = 0usize;
         let mut entries: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
         entries.sort_by_key(|e| e.file_name());
@@ -3504,9 +3644,7 @@ mod tests {
     #[test]
     fn hostile_files_are_refused_or_sanitized() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/writer/corpus/hostile");
-        if !dir.exists() {
-            return;
-        }
+        assert!(dir.exists(), "missing hostile dir: {}", dir.display());
         for name in ["doctype-entity.fodt", "billion-laughs.fodt", "external-entity.fodt", "deep-nesting.fodt", "space-bomb.fodt"] {
             let src = std::fs::read_to_string(dir.join(name)).unwrap();
             assert!(parse_fodt(&src).is_err(), "{name} must be refused");
@@ -3537,6 +3675,10 @@ mod tests {
         let script_iframe = std::fs::read_to_string(dir.join("script-iframe.fodt")).unwrap();
         let html = render_html(&script_iframe, "test", false).unwrap();
         assert!(!html.contains("<script") && !html.contains("<iframe"), "raw script/iframe leaked");
+
+        let ext_img = std::fs::read_to_string(dir.join("external-image.fodt")).unwrap();
+        let html = render_html(&ext_img, "test", false).unwrap();
+        assert!(!html.contains("evil.example") && !html.contains("file:///etc/hostname") && !html.contains("<img"), "external image or section-source leaked: {html}");
     }
 
     #[test]
@@ -3557,23 +3699,86 @@ mod tests {
     #[test]
     fn paired_marker_half_deletion_is_refused() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/writer/corpus/10-unknown.fodt");
-        if !dir.exists() {
-            return;
-        }
+        assert!(dir.exists(), "missing fixture: {}", dir.display());
         let src = std::fs::read_to_string(dir).unwrap();
         let mut doc = parse_fodt(&src).unwrap();
         assert!(doc.tracking, "10-unknown.fodt has tracked changes");
         assert!(doc.macros, "10-unknown.fodt has embedded macros");
         // Drop a block containing a bookmark-start / change-start without its matching end.
-        let idx = doc.blocks.iter().position(|b| match b {
-            Block::Paragraph { inlines, .. } => inlines.iter().any(|i| matches!(i, Inline::OpaqueInline { raw, .. } if raw.contains("bookmark-start"))),
-            _ => false,
-        });
-        if let Some(i) = idx {
-            doc.blocks.remove(i);
-            let err = serialize_fodt(&doc).unwrap_err();
-            assert!(err.contains("refused"), "{err}");
-        }
+        let i = doc
+            .blocks
+            .iter()
+            .position(|b| match b {
+                Block::Paragraph { inlines, .. } => inlines.iter().any(|i| matches!(i, Inline::OpaqueInline { raw, .. } if raw.contains("bookmark-start"))),
+                _ => false,
+            })
+            .expect("10-unknown.fodt must contain a bookmark-start paragraph");
+        doc.blocks.remove(i);
+        let err = serialize_fodt(&doc).unwrap_err();
+        assert!(err.contains("refused"), "{err}");
+    }
+
+    #[test]
+    fn replace_inlines_text_preserves_opaque_position_and_labels() {
+        let mut inlines = vec![
+            Inline::Text { text: "Hello".into(), marks: Marks::default() },
+            Inline::OpaqueInline { src: None, raw: "<text:note><text:note-citation>1</text:note-citation></text:note>".into(), name: "text:note".into(), label: "1".into(), marks: Marks::default() },
+            Inline::Text { text: " world".into(), marks: Marks::default() },
+        ];
+        replace_inlines_text(&mut inlines, "Hi1 world");
+        assert_eq!(inlines.len(), 3, "footnote must stay in middle without duplicating label");
+        assert!(matches!(&inlines[0], Inline::Text { text, .. } if text == "Hi"));
+        assert!(matches!(&inlines[1], Inline::OpaqueInline { label, .. } if label == "1"));
+        assert!(matches!(&inlines[2], Inline::Text { text, .. } if text == " world"));
+    }
+
+    #[test]
+    fn decode_bare_ampersands_is_linear_and_late_auto_styles_do_not_panic() {
+        let amps = "&".repeat(200_000);
+        assert_eq!(decode(&amps).len(), 200_000);
+        assert_eq!(decode("a &amp; & b &lt; c"), "a & & b < c");
+
+        // <office:automatic-styles> placed after <office:body> must not panic on style edit.
+        let weird = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.4" office:mimetype="application/vnd.oasis.opendocument.text">
+ <office:body><office:text><text:p>Hi</text:p></office:text></office:body>
+ <office:automatic-styles/>
+</office:document>"#;
+        let mut doc = parse_fodt(weird).unwrap();
+        let p0 = doc.first_editable_path().unwrap();
+        assert!(doc.toggle_inline_fmt(&p0, 0, 2, InlineFmt::Strong));
+        let out = serialize_fodt(&doc).unwrap();
+        assert!(out.contains("fo:font-weight=\"bold\""));
+    }
+
+    #[test]
+    fn page_break_on_placeholder_and_delete_block_inside_table_and_quote_on_heading() {
+        // Placeholder paragraph with page break must be serialized.
+        let empty = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.4" office:mimetype="application/vnd.oasis.opendocument.text">
+ <office:body><office:text></office:text></office:body>
+</office:document>"#;
+        let mut doc = parse_fodt(empty).unwrap();
+        let p0 = doc.first_editable_path().unwrap();
+        assert!(matches!(doc.block_at(&p0), Some(Block::Paragraph { placeholder: true, .. })));
+        assert!(doc.toggle_page_break(&p0));
+        let out = serialize_fodt(&doc).unwrap();
+        assert!(out.contains("fo:break-before=\"page\""), "page break on placeholder must save: {out}");
+
+        // Delete block inside a table cell must not delete the table.
+        let mut doc2 = parse_fodt(BLANK_FODT).unwrap();
+        let before = doc2.blocks.len();
+        let tp = doc2.insert_table_after(0, 2, 2);
+        assert!(!doc2.can_delete_block(&tp));
+        assert!(doc2.delete_block(&tp).is_none());
+        assert_eq!(doc2.blocks.len(), before + 1, "table must survive delete_block on a single-block cell");
+
+        // toggle_quote on a heading keeps heading level and checks styles.lookup.
+        let mut doc3 = parse_fodt(empty).unwrap();
+        let h = doc3.first_editable_path().unwrap();
+        assert!(doc3.set_block_kind(&h, Some(2), None));
+        assert!(!doc3.toggle_quote(&h), "document without Quotations style refuses toggle_quote");
+        assert!(matches!(doc3.block_at(&h), Some(Block::Heading { level: 2, .. })));
     }
 
     #[test]

@@ -356,6 +356,8 @@ struct WriterView {
     undo: Vec<writer::Doc>,
     redo: Vec<writer::Doc>,
     draft_dismissed: bool,
+    last_saved: Option<String>,
+    links: Vec<String>,
 }
 
 /// A question the window is asking: a name for a new page, a new name for
@@ -372,7 +374,7 @@ enum Prompt {
     IdUse(Box<cometid::Identity>, Option<String>),
     New(TextEdit),
     NewWriter(TextEdit),
-    WriterLink(TextEdit),
+    WriterLink(TextEdit, (usize, usize)),
     Rename(String, TextEdit),
     Delete(String),
     /// The address for a link on the editor's selection.
@@ -2187,10 +2189,10 @@ fn confirm(s: &mut App) {
         }
         return;
     }
-    if let Prompt::WriterLink(t) = &p {
+    if let Prompt::WriterLink(t, range) = &p {
         let url = t.text.trim().to_owned();
         let href = (!url.is_empty()).then_some(url);
-        let range = s.writer.as_ref().map(|v| v.entry.range()).unwrap_or((0, 0));
+        let range = *range;
         writer_apply(s, move |doc, path| doc.set_link(path, range.0, range.1, href.clone()));
         return;
     }
@@ -3298,13 +3300,15 @@ fn sync_writer(s: &mut App) {
         return;
     }
     let old = sess.writer.take().filter(|v| v.name == p.name);
-    let Ok(doc) = writer::parse_fodt(&p.body) else {
+    let Ok(doc) = guarded(|| writer::parse_fodt(&p.body)) else {
         sess.writer = None;
         return;
     };
-    let (cursor, undo, redo, draft_dismissed) = match old {
-        Some(v) => (v.cursor.filter(|path| doc.block_at(path).is_some()), v.undo, v.redo, v.draft_dismissed),
-        None => (None, Vec::new(), Vec::new(), false),
+    let same_as_saved = old.as_ref().is_some_and(|v| v.last_saved.as_deref() == Some(p.body.as_str()));
+    let (cursor, undo, redo, draft_dismissed, last_saved) = match old {
+        Some(v) if same_as_saved => (v.cursor.filter(|path| doc.block_at(path).is_some()), v.undo, v.redo, v.draft_dismissed, v.last_saved),
+        Some(v) => (v.cursor.filter(|path| doc.block_at(path).is_some()), Vec::new(), Vec::new(), v.draft_dismissed, None),
+        None => (None, Vec::new(), Vec::new(), false, None),
     };
     let entry_was = cursor
         .as_ref()
@@ -3315,7 +3319,8 @@ fn sync_writer(s: &mut App) {
         })
         .unwrap_or_default();
     let entry = TextEdit::new(entry_was.as_str());
-    sess.writer = Some(WriterView { name: p.name.clone(), rev: p.rev, doc, cursor, entry, entry_was, undo, redo, draft_dismissed });
+    let links = writer::fodt_links(&p.body);
+    sess.writer = Some(WriterView { name: p.name.clone(), rev: p.rev, doc, cursor, entry, entry_was, undo, redo, draft_dismissed, last_saved, links });
 }
 
 fn writer_editable(s: &App) -> bool {
@@ -3356,12 +3361,17 @@ fn writer_mutate(s: &mut App, f: impl FnOnce(&mut writer::Doc, Option<&writer::B
     }
     let mut next = v.doc.clone();
     let cur = v.cursor.clone();
-    let (changed, next_cursor) = f(&mut next, cur.as_ref());
-    if !changed {
-        return;
-    }
-    let body = match writer::serialize_fodt(&next) {
-        Ok(xml) => xml,
+    let step = guarded(move || {
+        let (changed, next_cursor) = f(&mut next, cur.as_ref());
+        if !changed {
+            return Ok(None);
+        }
+        let xml = writer::serialize_fodt(&next)?;
+        Ok(Some((next, next_cursor, xml)))
+    });
+    let (next, next_cursor, body) = match step {
+        Ok(Some(res)) => res,
+        Ok(None) => return,
         Err(why) => {
             s.note = why;
             return;
@@ -3385,6 +3395,8 @@ fn writer_mutate(s: &mut App, f: impl FnOnce(&mut writer::Doc, Option<&writer::B
         }
     }
     if body != p.body {
+        v.links = writer::fodt_links(&body);
+        v.last_saved = Some(body.clone());
         save_body(s, p, body);
     }
 }
@@ -3405,13 +3417,14 @@ fn writer_commit(s: &mut App) {
 }
 
 fn writer_undo(s: &mut App) {
+    writer_commit(s);
     let Some(p) = s.open.clone().filter(|p| p.kind == "fodt") else { return };
     if !writer_editable(s) {
         return;
     }
     let Some(v) = &mut s.session.writer else { return };
     let Some(prev) = v.undo.pop() else { return };
-    let body = match writer::serialize_fodt(&prev) {
+    let body = match guarded(|| writer::serialize_fodt(&prev)) {
         Ok(xml) => xml,
         Err(why) => {
             v.undo.push(prev);
@@ -3431,18 +3444,21 @@ fn writer_undo(s: &mut App) {
         }
     }
     if body != p.body {
+        v.links = writer::fodt_links(&body);
+        v.last_saved = Some(body.clone());
         save_body(s, p, body);
     }
 }
 
 fn writer_redo(s: &mut App) {
+    writer_commit(s);
     let Some(p) = s.open.clone().filter(|p| p.kind == "fodt") else { return };
     if !writer_editable(s) {
         return;
     }
     let Some(v) = &mut s.session.writer else { return };
     let Some(next) = v.redo.pop() else { return };
-    let body = match writer::serialize_fodt(&next) {
+    let body = match guarded(|| writer::serialize_fodt(&next)) {
         Ok(xml) => xml,
         Err(why) => {
             v.redo.push(next);
@@ -3462,6 +3478,8 @@ fn writer_redo(s: &mut App) {
         }
     }
     if body != p.body {
+        v.links = writer::fodt_links(&body);
+        v.last_saved = Some(body.clone());
         save_body(s, p, body);
     }
 }
@@ -3795,6 +3813,7 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                 .disabled(!has_cur || styles.is_empty())
                 .help("Cycle paragraph style from the document's named styles")
                 .on_press(move |s: &mut App| {
+                    writer_commit(s);
                     let Some(v) = &s.writer else { return };
                     let list = v.doc.styles.named_styles("paragraph");
                     if list.is_empty() {
@@ -3806,7 +3825,13 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                     });
                     let idx = cur.and_then(|cn| list.iter().position(|(n, _)| n == cn)).map_or(0, |i| (i + 1) % list.len());
                     let next_name = list[idx].0.clone();
-                    writer_apply(s, move |doc, path| doc.set_block_kind(path, None, Some(next_name.clone())));
+                    writer_apply(s, move |doc, path| {
+                        let keep_lv = match doc.block_at(path) {
+                            Some(writer::Block::Heading { level, .. }) => Some(*level),
+                            _ => None,
+                        };
+                        doc.set_block_kind(path, keep_lv, Some(next_name.clone()))
+                    });
                 })
                 .build(k)
                 .key("wr-style"),
@@ -3822,6 +3847,7 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                 .disabled(!has_cur)
                 .help("Cycle heading level (Body, H1 to H6)")
                 .on_press(|s: &mut App| {
+                    writer_commit(s);
                     let next_lv = match s.writer.as_ref().and_then(|v| v.cursor.as_ref().and_then(|p| v.doc.block_at(p))) {
                         Some(writer::Block::Heading { level, .. }) if *level < 6 => Some(level + 1),
                         Some(writer::Block::Heading { .. }) => None,
@@ -3845,8 +3871,8 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                 .disabled(!has_cur)
                 .help(help)
                 .on_press(move |s: &mut App| {
-                    writer_commit(s);
                     let range = s.writer.as_ref().map(|v| v.entry.range()).unwrap_or((0, 0));
+                    writer_commit(s);
                     writer_apply(s, move |doc, path| doc.toggle_inline_fmt(path, range.0, range.1, fmt));
                 })
                 .build(k)
@@ -3864,10 +3890,11 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                     .disabled(!has_cur)
                     .help("Set or remove link on selection or block")
                     .on_press(|s: &mut App| {
+                        let range = s.writer.as_ref().map(|v| v.entry.range()).unwrap_or((0, 0));
                         writer_commit(s);
                         let mut t = TextEdit::new("");
                         t.focused = true;
-                        s.prompt = Some(Prompt::WriterLink(t));
+                        s.prompt = Some(Prompt::WriterLink(t, range));
                     })
                     .build(k)
                     .key("wr-link"),
@@ -4156,13 +4183,14 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                                     Button::new("Delete block")
                                         .control_size(ControlSize::Small)
                                         .variant(ButtonVariant::GhostMuted)
-                                        .disabled(v.doc.blocks.len() <= 1)
+                                        .disabled(!v.cursor.as_ref().is_some_and(|p| v.doc.can_delete_block(p)))
                                         .on_press(|s: &mut App| {
                                             writer_mutate(s, |doc, cur| {
                                                 let Some(path) = cur else { return (false, None) };
-                                                let ti = writer::top_index(path);
-                                                let ok = doc.delete_top_block(ti);
-                                                (ok, Some(writer::BlockPath::Top(ti.min(doc.blocks.len().saturating_sub(1)))))
+                                                match doc.delete_block(path) {
+                                                    Some(next_path) => (true, Some(next_path)),
+                                                    None => (false, None),
+                                                }
                                             });
                                         })
                                         .build(k)
@@ -5924,7 +5952,8 @@ fn links_view(s: &App, k: &Kit, back: bool) -> El {
     } else {
         let mut out = col().key("links-out").w_full().gap(2.0).child(text("Links out").font(k.ty.small_medium).color(c.text_muted));
         if p.kind == "fodt" {
-            let hrefs = writer::fodt_links(&p.body);
+            let empty = Vec::new();
+            let hrefs = s.writer.as_ref().filter(|v| v.name == p.name).map_or(&empty, |v| &v.links);
             for (i, href) in hrefs.iter().enumerate() {
                 if !writer::safe_href(href) {
                     continue;
@@ -12097,7 +12126,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::ShipLabel(_, t) | Prompt::Kind(t) | Prompt::New(t) | Prompt::NewWriter(t) | Prompt::WriterLink(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
+                Prompt::ShipLabel(_, t) | Prompt::Kind(t) | Prompt::New(t) | Prompt::NewWriter(t) | Prompt::WriterLink(t, _) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
                 Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) | Prompt::ShipOut(_) => unreachable!("it has no field of this kind"),
                 #[cfg(unix)]
                 Prompt::IdOut(..) | Prompt::IdIn(..) | Prompt::IdUse(..) => unreachable!("it has fields of its own"),
@@ -12138,7 +12167,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         }
         Prompt::New(t) => ("New page", field(t, "folder/name"), "Create", ButtonVariant::Contrast),
         Prompt::NewWriter(t) => ("New Writer document", field(t, "folder/document-name"), "Create", ButtonVariant::Contrast),
-        Prompt::WriterLink(t) => ("Link URL (empty removes link)", field(t, "https:// or urb://"), "Apply", ButtonVariant::Contrast),
+        Prompt::WriterLink(t, _) => ("Link URL (empty removes link)", field(t, "https:// or urb://"), "Apply", ButtonVariant::Contrast),
         Prompt::NewFolder(t) => ("New folder", field(t, "A folder's name, as notes or notes/sub"), "Create", ButtonVariant::Contrast),
         Prompt::Rename(_, t) => ("Rename or move", field(t, "folder/name"), "Rename", ButtonVariant::Contrast),
         Prompt::Link(t) => ("Link the selection to", field(t, "https://"), "Link", ButtonVariant::Contrast),
@@ -19509,6 +19538,26 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sync_writer_clears_undo_redo_on_external_edit_and_keeps_them_on_own_save() {
+        let mut s = init();
+        s.open = Some(Page { name: "doc".into(), kind: "fodt".into(), body: writer::BLANK_FODT.to_owned(), rev: 1 });
+        sync_writer(&mut s);
+        let p0 = s.writer.as_ref().unwrap().doc.first_editable_path().unwrap();
+        writer_pick(&mut s, p0.clone());
+        writer_mutate(&mut s, |doc, _| (doc.set_block_text(&p0, "Local edit"), Some(p0.clone())));
+        assert_eq!(s.writer.as_ref().unwrap().undo.len(), 1, "own save preserves undo stack");
+        // External edit arrives with a new rev and different body.
+        let mut ext_doc = writer::parse_fodt(writer::BLANK_FODT).unwrap();
+        let ep0 = ext_doc.first_editable_path().unwrap();
+        ext_doc.set_block_text(&ep0, "External edit");
+        let ext_body = writer::serialize_fodt(&ext_doc).unwrap();
+        s.open = Some(Page { name: "doc".into(), kind: "fodt".into(), body: ext_body, rev: 99 });
+        sync_writer(&mut s);
+        assert!(s.writer.as_ref().unwrap().undo.is_empty(), "external edit must clear undo");
+        assert!(s.writer.as_ref().unwrap().redo.is_empty(), "external edit must clear redo");
     }
 }
 
