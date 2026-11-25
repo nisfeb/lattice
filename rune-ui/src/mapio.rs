@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::map;
 
 /// The most text an import reads, as on the web.
-const MAX_TEXT: usize = 16 * 1024 * 1024;
+pub const MAX_TEXT: usize = 16 * 1024 * 1024;
 /// A line of more positions than this is simplified until it fits.
 const SIMPLIFY_TO: usize = 500;
 
@@ -437,6 +437,65 @@ fn kml(root: &Node) -> Vec<Value> {
         put("kind", get("type").filter(|t| t.encode_utf16().count() <= 40));
         out.push(json!({"type": "Feature", "geometry": geometry, "properties": p}));
     }
+    let bbox_poly = |b: &Node| -> Option<Value> {
+        let (n, s, e, w) = (
+            parse_float(&b.first("north")?.text())?,
+            parse_float(&b.first("south")?.text())?,
+            parse_float(&b.first("east")?.text())?,
+            parse_float(&b.first("west")?.text())?,
+        );
+        if w > e {
+            Some(json!({
+                "type": "MultiPolygon",
+                "coordinates": [
+                    [[[w, s], [180.0, s], [180.0, n], [w, n], [w, s]]],
+                    [[[-180.0, s], [e, s], [e, n], [-180.0, n], [-180.0, s]]]
+                ]
+            }))
+        } else {
+            Some(json!({"type": "Polygon", "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}))
+        }
+    };
+    for ov in root.each("GroundOverlay") {
+        let Some(geometry) = ov.first("LatLonBox").and_then(bbox_poly) else { continue };
+        let mut p = serde_json::Map::new();
+        if let Some(name) = said(ov, "name") {
+            p.insert("name".into(), name.into_owned().into());
+        }
+        if let Some(desc) = said(ov, "description") {
+            p.insert("note".into(), desc.into_owned().into());
+        }
+        if let Some(href) = ov.first("Icon").and_then(|ic| said(ic, "href")).filter(|u| u.starts_with("http://") || u.starts_with("https://")) {
+            p.insert("source".into(), href.into_owned().into());
+        }
+        p.insert("kind".into(), "overlay".into());
+        out.push(json!({"type": "Feature", "geometry": geometry, "properties": p}));
+    }
+    for nl in root.each("NetworkLink") {
+        let geometry = nl
+            .first("LatLonAltBox")
+            .and_then(bbox_poly)
+            .or_else(|| {
+                let view = nl.first("LookAt").or_else(|| nl.first("Camera"))?;
+                let lon = parse_float(&view.first("longitude")?.text())?;
+                let lat = parse_float(&view.first("latitude")?.text())?;
+                Some(json!({"type": "Point", "coordinates": [lon, lat]}))
+            });
+        let Some(geometry) = geometry else { continue };
+        let mut p = serde_json::Map::new();
+        if let Some(name) = said(nl, "name") {
+            p.insert("name".into(), name.into_owned().into());
+        }
+        if let Some(desc) = said(nl, "description") {
+            p.insert("note".into(), desc.into_owned().into());
+        }
+        let href = nl.first("Link").and_then(|l| said(l, "href")).or_else(|| nl.first("Url").and_then(|u| said(u, "href")));
+        if let Some(href) = href.filter(|u| u.starts_with("http://") || u.starts_with("https://")) {
+            p.insert("source".into(), href.into_owned().into());
+        }
+        p.insert("kind".into(), "link".into());
+        out.push(json!({"type": "Feature", "geometry": geometry, "properties": p}));
+    }
     out
 }
 
@@ -747,6 +806,24 @@ mod tests {
     }
 
     #[test]
+    fn kml_ground_overlays_and_network_links_import_as_features() {
+        let src = r#"<kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+          <GroundOverlay><name>Chart</name><description>Radar</description><Icon><href>https://example.org/r.png</href></Icon>
+            <LatLonBox><north>41</north><south>40</south><east>-73</east><west>-74</west></LatLonBox></GroundOverlay>
+          <NetworkLink><name>Feed</name><Link><href>https://example.org/feed.kml</href></Link>
+            <LookAt><longitude>-73.5</longitude><latitude>40.5</latitude></LookAt></NetworkLink>
+        </Document></kml>"#;
+        let got = import("kml", src).unwrap().features;
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0]["geometry"]["type"], "Polygon");
+        assert_eq!(got[0]["properties"]["name"], "Chart");
+        assert_eq!(got[0]["properties"]["source"], "https://example.org/r.png");
+        assert_eq!(got[1]["geometry"]["type"], "Point");
+        assert_eq!(got[1]["properties"]["name"], "Feed");
+        assert_eq!(got[1]["properties"]["source"], "https://example.org/feed.kml");
+    }
+
+    #[test]
     fn geojson_comes_in_whole_as_a_feature_a_collection_or_a_bare_shape() {
         let one = import("geojson", r#"{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{"name":"A","zz":[1]}}"#).unwrap();
         assert_eq!(one.features[0]["properties"]["zz"][0], 1, "its properties are kept as they are");
@@ -977,5 +1054,16 @@ mod tests {
         // the zigzag is left as it is but for what the first tolerance takes, and is not made a straight line
         let zigzag: Vec<Value> = tracks[1].iter().map(|p| json!(p)).collect();
         assert!(simplify(&zigzag).len() > 400);
+    }
+
+    #[test]
+    fn kml_ground_overlay_crossing_antimeridian_splits_into_multipolygon() {
+        let kml = r#"<?xml version="1.0"?><kml><Document><GroundOverlay><name>Pacific</name>
+            <LatLonBox><north>10</north><south>-10</south><east>-170</east><west>170</west></LatLonBox>
+        </GroundOverlay></Document></kml>"#;
+        let got = import("kml", kml).unwrap();
+        assert_eq!(got.features.len(), 1);
+        assert_eq!(got.features[0]["geometry"]["type"], "MultiPolygon");
+        assert_eq!(got.features[0]["geometry"]["coordinates"].as_array().unwrap().len(), 2);
     }
 }

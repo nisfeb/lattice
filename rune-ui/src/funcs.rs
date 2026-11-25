@@ -449,7 +449,7 @@ fn is_day(e: &Engine, n: f64) -> bool {
 
 /// The seconds this machine's clock is ahead of UTC.
 // ponytail: asked of the `date` command once, since the standard library knows no time zones. UTC where there is no such command
-fn zone_secs() -> f64 {
+pub(crate) fn zone_secs() -> f64 {
     static ZONE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     *ZONE.get_or_init(|| {
         let out = std::process::Command::new("date").arg("+%z").output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_default();

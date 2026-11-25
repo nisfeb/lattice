@@ -109,6 +109,16 @@ struct MapView {
     pick_new: bool,
     /// The kinds not shown. Not kept: a map opens with every kind showing, as on the web.
     hidden: std::collections::HashSet<String>,
+    /// Maximum feature age in seconds (e.g. 24h, 7d, 30d, 1y), or `None` for all.
+    age: Option<u64>,
+    /// Whether the searchable feature list panel is open.
+    list_open: bool,
+    /// Filter text for the feature list panel.
+    list_query: TextEdit,
+    /// Pointer position in view coordinates while a drawing tool is active.
+    hover: Option<[f32; 2]>,
+    /// Last press time and view position while drawing, for double-click finish.
+    last_click: Option<(std::time::Instant, [f32; 2])>,
 }
 
 /// An OpenSCAD part on screen: the page it is of, its triangles, where
@@ -391,8 +401,8 @@ enum Prompt {
     Delete(String),
     /// The address for a link on the editor's selection.
     Link(TextEdit),
-    /// A map feature's name, kind, note, time, source and ring radius: its place in the page, and the fields in that order.
-    Feature(usize, Box<[TextEdit; 6]>),
+    /// A map feature's name, kind, note, time, source, ring radius and custom colour: its place in the page, and the fields in that order.
+    Feature(usize, Box<[TextEdit; 7]>),
     /// The ship's Mapbox token, to set or, left empty, to clear.
     Token(TextEdit),
     /// A name for a copy of a page: the page as it stood, and the name.
@@ -2612,9 +2622,34 @@ fn confirm(s: &mut App) {
         return;
     }
     if let Prompt::Feature(at, t) = &p {
-        let [name, kind, note, time, source, radius] = [t[0].text.trim(), t[1].text.trim(), t[2].text.as_str(), t[3].text.trim(), t[4].text.trim(), t[5].text.trim()];
-        if !time.is_empty() && !map::time_ok(time) {
-            s.note = "that time is not a date lattice can read. Write it as 2026-11-17T09:30:00Z".into();
+        let [name, kind, note, time, source, radius, color] = [
+            t[0].text.trim(),
+            t[1].text.trim(),
+            t[2].text.as_str(),
+            t[3].text.trim(),
+            t[4].text.trim(),
+            t[5].text.trim(),
+            t[6].text.trim(),
+        ];
+        let parsed_time = if time.is_empty() {
+            None
+        } else {
+            let Some(iso) = map::parse_time(time) else {
+                s.note = "that time is not a date lattice can read. Write it as 2026-11-17T09:30:00Z, 2026-11-17, or now".into();
+                s.prompt = Some(p);
+                return;
+            };
+            Some(iso)
+        };
+        let orig_color = s
+            .map
+            .as_ref()
+            .and_then(|m| m.feats.iter().find(|f| f.at == *at))
+            .and_then(|f| f.props.iter().find(|(k, _)| k == "color"))
+            .map(|(_, v)| v.trim())
+            .unwrap_or("");
+        if !color.is_empty() && color != orig_color && !map::hex_color_ok(color) {
+            s.note = "that colour is not a hex colour like #c0392b or #f00".into();
             s.prompt = Some(p);
             return;
         }
@@ -2622,7 +2657,15 @@ fn confirm(s: &mut App) {
         // a ring is so many metres, or there is none
         let radius = radius.parse::<f64>().ok().filter(|r| *r > 0.0).map(|r| serde_json::Value::from(r.min(2e7)));
         let at = *at;
-        write_map(s, |body| map::set_props(body, at, &[("name", some(name)), ("kind", some(kind)), ("note", some(note)), ("time", some(time)), ("source", some(source)), ("radius", radius)]));
+        write_map(s, |body| map::set_props(body, at, &[
+            ("name", some(name)),
+            ("kind", some(kind)),
+            ("note", some(note)),
+            ("time", parsed_time.map(serde_json::Value::from)),
+            ("source", some(source)),
+            ("radius", radius),
+            ("color", some(color)),
+        ]));
         return;
     }
     if let Prompt::Token(t) = &p {
@@ -3610,7 +3653,32 @@ fn sync_map(s: &mut App) {
     sess.map = map::parse(&p.body).map(|feats| {
         let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
         let pick_new = old.as_ref().is_some_and(|m| m.pick_new);
-        MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, tool: old.as_ref().and_then(|m| m.tool), verts: old.as_ref().map_or(Vec::new(), |m| m.verts.clone()), moving: None, grip: None, pick_new: false, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: if pick_new { last_added(&feats) } else { old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()) }, feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
+        let age = old.as_ref().and_then(|m| m.age);
+        let list_open = old.as_ref().is_some_and(|m| m.list_open);
+        let list_query = old.as_ref().map_or_else(|| TextEdit::new(""), |m| m.list_query.clone());
+        MapView {
+            name: p.name.clone(),
+            rev: p.rev,
+            cam,
+            grab: cam,
+            tool: old.as_ref().and_then(|m| m.tool),
+            verts: old.as_ref().map_or(Vec::new(), |m| m.verts.clone()),
+            moving: None,
+            grip: None,
+            pick_new: false,
+            style: map::base_style(&p.body),
+            size: old.as_ref().map_or((800.0, 500.0), |m| m.size),
+            fitted: old.as_ref().is_some_and(|m| m.fitted),
+            picked: if pick_new { last_added(&feats) } else { old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()) },
+            feats,
+            hidden: old.map(|m| m.hidden).unwrap_or_default(),
+            under,
+            age,
+            list_open,
+            list_query,
+            hover: None,
+            last_click: None,
+        }
     });
 }
 
@@ -5387,10 +5455,38 @@ const MAP_DOTS: usize = 400;
 /// The most kinds the legend lists.
 const MAP_KINDS: usize = 12;
 
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+fn map_visible(m: &MapView, f: &map::Feature, now: i64) -> bool {
+    !m.hidden.contains(&f.kind) && map::matches_age(f.time_epoch, m.age, now)
+}
+
+fn grip_vertex_delta(f: &map::Feature, grip: Option<(usize, f32, f32)>, gi: usize, is_area: bool, vi: usize, len: usize) -> (f32, f32) {
+    let Some((grip_idx, dx, dy)) = grip else { return (0.0, 0.0) };
+    let Some((path, _)) = f.corners.get(grip_idx) else { return (0.0, 0.0) };
+    let hit = if is_area {
+        match path.as_slice() {
+            [0, v] => vi == *v || (*v == 0 && len > 1 && vi + 1 == len),
+            [p, 0, v] => gi == *p && (vi == *v || (*v == 0 && len > 1 && vi + 1 == len)),
+            _ => false,
+        }
+    } else {
+        match path.as_slice() {
+            [v] => gi == 0 && vi == *v,
+            [p, v] => gi == *p && vi == *v,
+            _ => false,
+        }
+    };
+    if hit { (dx, dy) } else { (0.0, 0.0) }
+}
+
 fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
     let c = &k.c;
     let (w, h) = m.size;
     let ink = c.text_accent;
+    let now = now_secs();
     let to = |p: map::P| m.cam.project(p, w, h);
     // the graticule: lines of longitude and latitude a few across the view
     let step = m.cam.grid_step(w);
@@ -5428,15 +5524,16 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         }
     }
     let mut dots: Vec<(usize, map::P)> = Vec::new();
-    for (i, f) in m.feats.iter().enumerate().filter(|(_, f)| !m.hidden.contains(&f.kind)) {
+    for (i, f) in m.feats.iter().enumerate().filter(|(_, f)| map_visible(m, f, now)) {
         let ink = rune::color::hex(&f.color).unwrap_or(c.text_accent);
         // a line or area being dragged is drawn where it is held
         let (hx, hy) = m.moving.filter(|(at, ..)| *at == i).map_or((0.0, 0.0), |(_, dx, dy)| (dx, dy));
+        let active_grip = m.grip.filter(|_| m.picked == Some(i));
         let to = |p: map::P| {
             let [x, y] = to(p);
             [x + hx, y + hy]
         };
-        for g in &f.geoms {
+        for (gi, g) in f.geoms.iter().enumerate() {
             match g {
                 map::Geom::Point(p) => {
                     dots.push((i, *p));
@@ -5446,9 +5543,28 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                         shape = shape.fill(ring.clone(), ink.alpha(0.12)).stroke(ring, 1.5, ink);
                     }
                 }
-                map::Geom::Line(l) => shape = shape.stroke(map::thin(l, MAP_LINE).into_iter().map(to).collect::<Vec<_>>(), 2.5, ink),
+                map::Geom::Line(l) => {
+                    let pts: Vec<[f32; 2]> = if active_grip.is_some() {
+                        l.iter().enumerate().map(|(vi, p)| {
+                            let [x, y] = to(*p);
+                            let (gx, gy) = grip_vertex_delta(f, active_grip, gi, false, vi, l.len());
+                            [x + gx, y + gy]
+                        }).collect()
+                    } else {
+                        map::thin(l, MAP_LINE).into_iter().map(to).collect()
+                    };
+                    shape = shape.stroke(pts, 2.5, ink);
+                }
                 map::Geom::Area(l) => {
-                    let ring: Vec<[f32; 2]> = map::thin(l, MAP_LINE).into_iter().map(to).collect();
+                    let ring: Vec<[f32; 2]> = if active_grip.is_some() {
+                        l.iter().enumerate().map(|(vi, p)| {
+                            let [x, y] = to(*p);
+                            let (gx, gy) = grip_vertex_delta(f, active_grip, gi, true, vi, l.len());
+                            [x + gx, y + gy]
+                        }).collect()
+                    } else {
+                        map::thin(l, MAP_LINE).into_iter().map(to).collect()
+                    };
                     shape = shape.fill(ring.clone(), ink.alpha(0.18)).stroke(ring, 1.5, ink);
                 }
             }
@@ -5470,9 +5586,19 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             }
             sync_tiles(s);
         })
+        .on_pointer_move_local(|s: &mut App, at, tx| {
+            if let Some(m) = &mut s.map {
+                if m.tool.is_some() {
+                    m.hover = Some([at.x, at.y]);
+                    return;
+                }
+            }
+            tx.live_only();
+        })
         .on_drag(|s: &mut App, d, _| {
             let (mut put, mut props) = (None, serde_json::json!({}));
-            let (may, mut moved) = (map_changes(s), None);
+            let (may, mut moved, mut finish_now) = (map_changes(s), None, false);
+            let now = now_secs();
             if let Some(m) = &mut s.map {
                 // a press that hardly moved is a press, whatever it was on
                 if d.phase == Phase::Up && d.dx.hypot(d.dy) < 5.0 {
@@ -5482,7 +5608,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                     Phase::Down => {
                         m.grab = m.cam;
                         // a press on the picked line or area takes hold of it, to move it whole
-                        let on = map::hit(m.feats.iter().enumerate().filter(|(_, f)| !m.hidden.contains(&f.kind)), &m.cam, m.size.0, m.size.1, d.x, d.y);
+                        let on = map::hit(m.feats.iter().enumerate().filter(|(_, f)| map_visible(m, f, now)), &m.cam, m.size.0, m.size.1, d.x, d.y);
                         let shape = m.picked.filter(|i| on == Some(*i) && m.feats[*i].geoms.iter().any(|g| !matches!(g, map::Geom::Point(_))));
                         m.moving = shape.filter(|_| may && m.tool.is_none()).map(|i| (i, 0.0, 0.0));
                     }
@@ -5504,25 +5630,39 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                         let centre = m.verts.remove(0);
                         let radius = map::distance(centre, map::lonlat(m.cam.unproject(d.x, d.y, m.size.0, m.size.1))).round();
                         m.tool = None;
+                        m.hover = None;
+                        m.last_click = None;
                         if radius > 0.0 {
                             (put, props) = (Some(centre), serde_json::json!({"radius": radius}));
                         }
                     }
-                    // with the line or area tool on, each press is a corner. One on top of the last is dropped
+                    // with the line or area tool on, each press is a corner; double-click finishes the shape
                     Phase::Up if d.dx.hypot(d.dy) < 5.0 && m.tool.is_some() => {
                         m.cam = m.grab;
-                        let last = m.verts.last().map(|v| m.cam.project(map::mercator(v[0], v[1]), m.size.0, m.size.1));
-                        if last.is_none_or(|l| (l[0] - d.x).hypot(l[1] - d.y) >= 3.0) {
-                            m.verts.push(map::lonlat(m.cam.unproject(d.x, d.y, m.size.0, m.size.1)));
+                        let now_t = std::time::Instant::now();
+                        let dbl = matches!(m.tool, Some(map::Draw::Line | map::Draw::Area))
+                            && m.last_click.is_some_and(|(t, p)| now_t.duration_since(t).as_millis() <= 400 && (p[0] - d.x).hypot(p[1] - d.y) <= 8.0);
+                        if dbl && m.verts.len() >= 2 {
+                            m.last_click = None;
+                            finish_now = true;
+                        } else {
+                            m.last_click = Some((now_t, [d.x, d.y]));
+                            let last = m.verts.last().map(|v| m.cam.project(map::mercator(v[0], v[1]), m.size.0, m.size.1));
+                            if last.is_none_or(|l| (l[0] - d.x).hypot(l[1] - d.y) >= 3.0) {
+                                m.verts.push(map::lonlat(m.cam.unproject(d.x, d.y, m.size.0, m.size.1)));
+                            }
                         }
                     }
                     // a press that hardly moved is a press on what is under it, or on nothing
                     Phase::Up if d.dx.hypot(d.dy) < 5.0 => {
                         m.cam = m.grab;
-                        m.picked = map::hit(m.feats.iter().enumerate().filter(|(_, f)| !m.hidden.contains(&f.kind)), &m.cam, m.size.0, m.size.1, d.x, d.y);
+                        m.picked = map::hit(m.feats.iter().enumerate().filter(|(_, f)| map_visible(m, f, now)), &m.cam, m.size.0, m.size.1, d.x, d.y);
                     }
                     _ => m.cam = map::Camera::dragged(m.grab, d.dx, d.dy),
                 }
+            }
+            if finish_now {
+                finish_shape(s);
             }
             if let Some((at, from, to)) = moved {
                 write_map(s, |body| map::shift(body, at, to[0] - from[0], to[1] - from[1]));
@@ -5553,9 +5693,37 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             }
         }
     }
-    // the shape being drawn, in the web client's orange
+    // the shape being drawn, in the web client's orange, with live rubber-band to pointer
     let pen = rune::color::hex("#e67e22").unwrap_or(c.text_accent);
     let mut corners: Vec<[f32; 2]> = m.verts.iter().map(|v| to(map::mercator(v[0], v[1]))).collect();
+    if let Some(hov) = m.hover.filter(|_| !m.verts.is_empty()) {
+        match m.tool {
+            Some(map::Draw::Line) => {
+                if let Some(&last) = corners.last() {
+                    shape = shape.line(last, hov, 2.0, LineCap::Round, pen.alpha(0.65));
+                }
+            }
+            Some(map::Draw::Area) => {
+                let mut preview = corners.clone();
+                preview.push(hov);
+                if preview.len() >= 3 {
+                    preview.push(preview[0]);
+                    shape = shape.fill(preview.clone(), pen.alpha(0.10)).stroke(preview, 1.5, pen.alpha(0.65));
+                } else if preview.len() == 2 {
+                    shape = shape.line(preview[0], preview[1], 2.0, LineCap::Round, pen.alpha(0.65));
+                }
+            }
+            Some(map::Draw::Ring) => {
+                let centre = m.verts[0];
+                let radius = map::distance(centre, map::lonlat(m.cam.unproject(hov[0], hov[1], w, h)));
+                if radius > 0.0 {
+                    let ring: Vec<[f32; 2]> = map::circle(centre, radius).into_iter().map(to).collect();
+                    shape = shape.fill(ring.clone(), pen.alpha(0.12)).stroke(ring, 1.5, pen.alpha(0.75));
+                }
+            }
+            _ => {}
+        }
+    }
     if m.tool == Some(map::Draw::Area) && corners.len() > 2 {
         corners.push(corners[0]);
     }
@@ -5727,7 +5895,11 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             }
             card = card
                 .child(icons.child(small("No icon").on_press(set("icon", None)).build(k).key("icon:none")))
-                .child(inks.child(small("Kind's colour").on_press(set("color", None)).build(k).key("colour:none")))
+                .child(
+                    inks.flex_wrap()
+                        .child(small("Kind's colour").on_press(set("color", None)).build(k).key("colour:none"))
+                        .child(small("Custom").help("Enter any #rrggbb colour").on_press(move |s: &mut App| ask_feature_at(s, at, 6)).build(k).key("colour:custom")),
+                )
                 .child(
                     row().gap(6.0)
                         .child(Button::new("Edit").control_size(ControlSize::Small).help("Its name, kind and note").on_press(move |s: &mut App| ask_feature(s, at)).build(k).key("feature-edit"))
@@ -5757,42 +5929,141 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         }
         view = view.child(card);
     }
-    // the kinds, each with its colour and count: press one to hide or show its features
+    // right-side overlays: legend + optional searchable feature list & age filter
     let kinds = map::kinds(&m.feats);
-    if kinds.len() > 1 || kinds.iter().any(|(kind, _)| !kind.is_empty()) || !m.under.is_empty() {
-        let mut legend = col().key("map-legend").absolute(w - 192.0, 12.0).w(180.0).padding(6.0).gap(2.0).radius(k.radius.md).fill(c.layer_01).border(1.0, c.border_weak);
-        for (kind, n) in kinds.into_iter().take(MAP_KINDS) {
-            let off = m.hidden.contains(&kind);
-            let swatch = if kind.is_empty() { "#2e86c1" } else { map::kind_color(&kind) };
-            let label = format!("{} ({n})", if kind.is_empty() { "no kind" } else { &kind });
-            legend = legend.child(
-                row().key(format!("kind:{kind}"))
-                    .h(24.0)
-                    .px(6.0)
-                    .gap(8.0)
-                    .center_y()
-                    .radius(k.radius.sm)
-                    .label(format!("{label}, {}", if off { "hidden" } else { "shown" }))
-                    .on_press(move |s: &mut App| {
+    let show_legend = kinds.len() > 1 || kinds.iter().any(|(kind, _)| !kind.is_empty()) || !m.under.is_empty();
+    if show_legend || m.list_open {
+        let mut right = col().key("map-right").absolute((w - 252.0).max(12.0), 12.0).w(240.0).gap(8.0);
+        if show_legend {
+            let mut legend = col().key("map-legend").w_full().padding(6.0).gap(2.0).radius(k.radius.md).fill(c.layer_01).border(1.0, c.border_weak);
+            for (kind, n) in kinds.into_iter().take(MAP_KINDS) {
+                let off = m.hidden.contains(&kind);
+                let swatch = if kind.is_empty() { "#2e86c1" } else { map::kind_color(&kind) };
+                let label = format!("{} ({n})", if kind.is_empty() { "no kind" } else { &kind });
+                legend = legend.child(
+                    row().key(format!("kind:{kind}"))
+                        .h(24.0)
+                        .px(6.0)
+                        .gap(8.0)
+                        .center_y()
+                        .radius(k.radius.sm)
+                        .label(format!("{label}, {}", if off { "hidden" } else { "shown" }))
+                        .on_press(move |s: &mut App| {
+                            if let Some(m) = &mut s.map {
+                                if !m.hidden.remove(&kind) {
+                                    m.hidden.insert(kind.clone());
+                                }
+                                // a hidden feature is not left picked
+                                if m.picked.and_then(|i| m.feats.get(i)).is_some_and(|f| m.hidden.contains(&f.kind)) {
+                                    m.picked = None;
+                                }
+                            }
+                        })
+                        .child(el().size(10.0, 10.0).radius(5.0).fill(rune::color::hex(swatch).unwrap_or(ink).alpha(if off { 0.3 } else { 1.0 })))
+                        .child(text(label).font(k.ty.small).color(if off { c.text_faint } else { c.text_base }).truncate().grow(1.0).min_w(0.0)),
+                );
+            }
+            for (name, feats) in &m.under {
+                let say = feats.as_ref().map_or(format!("Layer {name} could not be read."), |f| format!("Layer: {name} ({})", f.len()));
+                legend = legend.child(text(say).font(k.ty.small).color(c.text_muted).wrap());
+            }
+            right = right.child(legend);
+        }
+        if m.list_open {
+            let mut panel = col().key("map-feature-list").w_full().padding(8.0).gap(6.0).radius(k.radius.md).fill(c.layer_01).border(1.0, c.border_weak);
+            panel = panel.child(
+                row().w_full().justify_between().center_y()
+                    .child(text("Features").font(k.ty.small_medium).color(c.text_base))
+                    .child(Button::new("Close").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
                         if let Some(m) = &mut s.map {
-                            if !m.hidden.remove(&kind) {
-                                m.hidden.insert(kind.clone());
-                            }
-                            // a hidden feature is not left picked
-                            if m.picked.and_then(|i| m.feats.get(i)).is_some_and(|f| m.hidden.contains(&f.kind)) {
-                                m.picked = None;
-                            }
+                            m.list_open = false;
                         }
-                    })
-                    .child(el().size(10.0, 10.0).radius(5.0).fill(rune::color::hex(swatch).unwrap_or(ink).alpha(if off { 0.3 } else { 1.0 })))
-                    .child(text(label).font(k.ty.small).color(if off { c.text_faint } else { c.text_base }).truncate().grow(1.0).min_w(0.0)),
+                    }).build(k).key("map-list-close")),
             );
+            let mut ages = row().key("map-age-filter").w_full().gap(4.0).flex_wrap();
+            for (label, secs, key) in [
+                ("All", None, "age:all"),
+                ("24h", Some(86_400), "age:24h"),
+                ("7d", Some(7 * 86_400), "age:7d"),
+                ("30d", Some(30 * 86_400), "age:30d"),
+                ("1y", Some(365 * 86_400), "age:1y"),
+            ] {
+                ages = ages.child(
+                    Button::new(label)
+                        .control_size(ControlSize::Small)
+                        .variant(if m.age == secs { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                        .on_press(move |s: &mut App| {
+                            let now = now_secs();
+                            if let Some(m) = &mut s.map {
+                                m.age = secs;
+                                if m.picked.and_then(|i| m.feats.get(i)).is_some_and(|f| !map_visible(m, f, now)) {
+                                    m.picked = None;
+                                }
+                            }
+                        })
+                        .build(k)
+                        .key(key),
+                );
+            }
+            panel = panel.child(ages);
+            panel = panel.child(
+                TextInput::new(&m.list_query)
+                    .placeholder("Filter features...")
+                    .on_edit(|s: &mut App| &mut s.map.as_mut().expect("map is open").list_query)
+                    .build(k)
+                    .w_full()
+                    .key("map-list-query"),
+            );
+            let q = m.list_query.text.trim().to_lowercase();
+            let mut rows = col().w_full().gap(2.0);
+            let mut listed = 0usize;
+            for (i, f) in m.feats.iter().enumerate() {
+                if !map_visible(m, f, now) {
+                    continue;
+                }
+                if !q.is_empty()
+                    && !f.name.to_lowercase().contains(&q)
+                    && !f.kind.to_lowercase().contains(&q)
+                    && !f.note.to_lowercase().contains(&q)
+                {
+                    continue;
+                }
+                listed += 1;
+                if listed > 200 {
+                    break;
+                }
+                let on = m.picked == Some(i);
+                let title = if f.name.is_empty() { format!("Feature {}", i + 1) } else { f.name.clone() };
+                rows = rows.child(
+                    row().key(format!("map-item:{i}"))
+                        .w_full()
+                        .h(26.0)
+                        .px(6.0)
+                        .gap(6.0)
+                        .center_y()
+                        .radius(k.radius.sm)
+                        .fill(if on { c.layer_02 } else { rune::Color::TRANSPARENT })
+                        .on_press(move |s: &mut App| {
+                            if let Some(m) = &mut s.map {
+                                if let Some(f) = m.feats.get(i) {
+                                    m.picked = Some(i);
+                                    m.cam = map::Camera::fit(std::slice::from_ref(f), m.size.0, m.size.1);
+                                }
+                            }
+                            sync_tiles(s);
+                        })
+                        .child(el().size(8.0, 8.0).radius(4.0).fill(rune::color::hex(&f.color).unwrap_or(ink)))
+                        .child(text(title).font(k.ty.small).color(c.text_base).truncate().grow(1.0).min_w(0.0))
+                        .children((!f.kind.is_empty()).then(|| text(f.kind.clone()).font(k.ty.small).color(c.text_faint))),
+                );
+            }
+            if listed == 0 {
+                rows = rows.child(text("No matching features").font(k.ty.small).color(c.text_faint).padding(4.0));
+            }
+            panel = panel.child(col().w_full().max_h((h - 240.0).clamp(100.0, 300.0)).child(rows).scroll(ScrollSpec { stick_bottom: false }));
+            right = right.child(panel);
         }
-        for (name, feats) in &m.under {
-            let say = feats.as_ref().map_or(format!("Layer {name} could not be read."), |f| format!("Layer: {name} ({})", f.len()));
-            legend = legend.child(text(say).font(k.ty.small).color(c.text_muted).wrap());
-        }
-        view = view.child(legend);
+        view = view.child(right);
     }
     let zoom = |key: &str, label: &str, f: f64| {
         Button::new(label)
@@ -5813,14 +6084,14 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         (None, n) if n > 0 => format!("   {}  © Mapbox © OpenStreetMap", m.style),
         _ => String::new(),
     };
-    let showing = m.feats.iter().filter(|f| !m.hidden.contains(&f.kind)).count();
+    let showing = m.feats.iter().filter(|f| map_visible(m, f, now)).count();
     let count = text(if showing == m.feats.len() { format!("{showing} shapes{ground}") } else { format!("{showing} of {} shapes{ground}", m.feats.len()) }).font(k.ty.small).color(c.text_muted);
     let mut draw = Vec::new();
     if map_changes(s) {
         for (tool, label, key, help) in [
             (map::Draw::Point, "Point", "map-point", "Put a point where the map is pressed next. Press again to stop"),
-            (map::Draw::Line, "Line", "map-line", "Draw a line: press for each corner, then Done"),
-            (map::Draw::Area, "Area", "map-area", "Draw an area: press for each corner, then Done"),
+            (map::Draw::Line, "Line", "map-line", "Draw a line: press for each corner, then Enter, double-click or Done"),
+            (map::Draw::Area, "Area", "map-area", "Draw an area: press for each corner, then Enter, double-click or Done"),
             (map::Draw::Ring, "Ring", "map-ring", "Draw a ring: press its centre, then its edge"),
         ] {
             draw.push(Button::new(label).control_size(ControlSize::Small).variant(if m.tool == Some(tool) { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help(help).on_press(move |s: &mut App| {
@@ -5828,17 +6099,32 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                     // another tool, or the same one again to stop: what was being drawn is dropped
                     m.tool = Some(tool).filter(|t| m.tool != Some(*t));
                     m.verts.clear();
+                    m.hover = None;
+                    m.last_click = None;
                 }
             }).build(k).key(key));
         }
         if !m.verts.is_empty() && m.tool != Some(map::Draw::Ring) {
-            draw.push(Button::new("Done").control_size(ControlSize::Small).help("Finish the shape").on_press(finish_shape).build(k).key("map-done"));
+            draw.push(Button::new("Done").control_size(ControlSize::Small).help("Finish the shape (Enter)").on_press(finish_shape).build(k).key("map-done"));
         }
     }
     if map_changes(s) {
         draw.push(Button::new("Import").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Add the features of a GPX, KML or GeoJSON file").on_press_tx(ask_map_import).build(k).key("map-import"));
     }
     draw.push(Button::new("GPX").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Download this map as GPX").on_press_tx(ask_gpx).build(k).key("map-gpx"));
+    draw.push(
+        Button::new("Features")
+            .control_size(ControlSize::Small)
+            .variant(if m.list_open || m.age.is_some() { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+            .help("Search features and filter by age")
+            .on_press(|s: &mut App| {
+                if let Some(m) = &mut s.map {
+                    m.list_open = !m.list_open;
+                }
+            })
+            .build(k)
+            .key("map-list-toggle"),
+    );
     let base = Button::new(format!("Base: {}", m.style)).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("The next base map: streets, outdoors, satellite, dark. It is kept in the page").on_press(next_base).build(k).key("map-base");
     let token = (s.conn.is_some() && s.tile_status.as_ref().is_some_and(|t| !t.token)).then(|| Button::new("Set Mapbox token").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(ask_token).build(k).key("map-token"));
     view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).children(draw).child(base).children(token).child(count))
@@ -5952,6 +6238,8 @@ fn next_base(s: &mut App) {
 fn finish_shape(s: &mut App) {
     let Some(m) = &mut s.map else { return };
     let (Some(tool), verts) = (m.tool, std::mem::take(&mut m.verts)) else { return };
+    m.hover = None;
+    m.last_click = None;
     let Some(geometry) = map::drawn(tool, &verts) else {
         s.note = "that is too few corners: a line takes two and an area three".into();
         return;
@@ -5996,7 +6284,11 @@ fn map_import(s: &mut App, path: std::path::PathBuf) {
         let name = path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
         let read = match mapio::file_kind(&name) {
             "" => Err("lattice reads .geojson, .json, .gpx and .kml files".to_owned()),
-            kind => std::fs::read_to_string(&path).map_err(|_| "the file cannot be read".to_owned()).and_then(|text| mapio::import(kind, &text)),
+            kind => match std::fs::metadata(&path) {
+                Err(_) => Err("the file cannot be read".to_owned()),
+                Ok(meta) if meta.len() > mapio::MAX_TEXT as u64 => Err("the file is too large to import".to_owned()),
+                Ok(_) => std::fs::read_to_string(&path).map_err(|_| "the file cannot be read".to_owned()).and_then(|text| mapio::import(kind, &text)),
+            },
         };
         Ok(match read {
             Ok(got) => {
@@ -6051,12 +6343,24 @@ fn set_pin(s: &mut App, id: &str, name: Option<&'static str>) {
     save_prefs(s);
 }
 
-/// Asks for the name, kind and note of the feature at `at` in the page.
+/// Asks for the name, kind, note, time, source, radius and colour of the feature at `at` in the page.
 fn ask_feature(s: &mut App, at: usize) {
+    ask_feature_at(s, at, 0);
+}
+
+fn ask_feature_at(s: &mut App, at: usize, focus: usize) {
     let Some(f) = s.map.as_ref().and_then(|m| m.feats.iter().find(|f| f.at == at)) else { return };
     let was = |key: &str| TextEdit::new(f.props.iter().find(|(k, _)| k == key).map_or("", |(_, v)| v.as_str()));
-    let mut t = [TextEdit::new(f.name.as_str()), TextEdit::new(f.kind.as_str()), TextEdit::new(f.note.as_str()), was("time"), was("source"), was("radius")];
-    t[0].focused = true;
+    let mut t = [
+        TextEdit::new(f.name.as_str()),
+        TextEdit::new(f.kind.as_str()),
+        TextEdit::new(f.note.as_str()),
+        was("time"),
+        was("source"),
+        was("radius"),
+        was("color"),
+    ];
+    t[focus.min(6)].focused = true;
     s.prompt = Some(Prompt::Feature(at, Box::new(t)));
 }
 
@@ -9306,11 +9610,11 @@ fn ask_download(s: &mut App, tx: &mut Tx) {
     });
 }
 
-/// Exports the page in front as a PDF. Writer (`fodt`) pages render locally
-/// with their own styles and `@page` margins; other kinds print as the ship renders them.
+/// Exports the page in front as a PDF. Writer (`fodt`), spreadsheet (`fods`),
+/// and GeoJSON (`geojson`) pages render locally; other kinds print as the ship renders them.
 fn ask_pdf(s: &mut App, tx: &mut Tx) {
     let Some(p) = s.open.clone() else { return };
-    let local_kind = matches!(p.kind.as_str(), "fodt" | "fods");
+    let local_kind = matches!(p.kind.as_str(), "fodt" | "fods" | "geojson");
     if !local_kind && s.conn.is_none() {
         s.note = "PDF export prints the page as the ship renders it, so it needs a ship".into();
         return;
@@ -9331,6 +9635,9 @@ fn ask_pdf(s: &mut App, tx: &mut Tx) {
                     writer::render_html(&p.body, &title, true).unwrap_or_else(|| pdf::document(&title, &pdf::source(&p.body)))
                 } else if p.kind == "fods" {
                     let body = sheet::render_html(&p.body, &title).unwrap_or_else(|_| pdf::source(&p.body));
+                    pdf::document(&title, &body)
+                } else if p.kind == "geojson" {
+                    let body = map::render_html(&p.body, &title).unwrap_or_else(|_| pdf::source(&p.body));
                     pdf::document(&title, &body)
                 } else {
                     let html = conn.as_ref().and_then(|c| c.rendered(&p.name).ok()).unwrap_or_default();
@@ -13371,15 +13678,40 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             // only a point has a ring round it
             let point = s.map.as_ref().and_then(|m| m.feats.iter().find(|f| f.at == *at)).is_some_and(|f| f.geoms.iter().all(|g| matches!(g, map::Geom::Point(_))));
             let line = |i: usize, label: &str, hint: &str, key: &str| TextInput::new(&t[i]).label(label).placeholder(hint).on_edit(move |s: &mut App| feature_field(s, i)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key(key.to_owned());
+            let time_field = col()
+                .w_full()
+                .gap(4.0)
+                .child(
+                    row()
+                        .w_full()
+                        .justify_between()
+                        .center_y()
+                        .child(text("Time").font(k.ty.small_medium).color(k.c.text_muted))
+                        .child(
+                            Button::new("Now")
+                                .control_size(ControlSize::Small)
+                                .variant(ButtonVariant::Ghost)
+                                .help("Fill in the current UTC time")
+                                .on_press(|s: &mut App| {
+                                    let f = feature_field(s, 3);
+                                    f.text = map::now_iso();
+                                    (f.anchor, f.focus) = (f.text.len(), f.text.len());
+                                })
+                                .build(k)
+                                .key("feature-time-now"),
+                        ),
+                )
+                .child(TextInput::new(&t[3]).placeholder("2026-11-17T09:30:00Z, 2026-11-17, or now").on_edit(|s: &mut App| feature_field(s, 3)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key("feature-time"));
             let body = col()
                 .w_full()
                 .gap(10.0)
                 .child(TextInput::new(&t[0]).label("Name").placeholder("Name").on_edit(|s: &mut App| feature_field(s, 0)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key("prompt-field"))
                 .child(TextInput::new(&t[1]).label("Kind").placeholder("place, report, person...").on_edit(|s: &mut App| feature_field(s, 1)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key("feature-kind"))
                 .child(TextArea::new(&t[2]).label("Note (markdown)").placeholder("A note, in markdown").rows(4).on_edit(|s: &mut App| feature_field(s, 2)).build(k).w_full().key("feature-note"))
-                .child(line(3, "Time", "Time, as 2026-11-17T09:30:00Z", "feature-time"))
+                .child(time_field)
                 .child(line(4, "Source", "Source: a URL or a page", "feature-source"))
-                .children(point.then(|| line(5, "Ring radius, metres", "Ring radius, in metres", "feature-radius")));
+                .children(point.then(|| line(5, "Ring radius, metres", "Ring radius, in metres", "feature-radius")))
+                .child(line(6, "Colour", "#rrggbb or empty for kind's colour", "feature-color"));
             ("This feature", body, "Save", ButtonVariant::Contrast)
         }
         Prompt::Delete(n) => {
@@ -18256,16 +18588,30 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         .build(&k);
     if s.global.dropping && !s.editing {
         // said in the middle of the window, over whatever is there
-        layer.push(col().key("drop-hint").absolute(0.0, 0.0).w_full().h_full().center().child(text("Drop to upload as pages").font(k.ty.body_medium).color(k.c.text_base).padding(16.0).radius(k.radius.md).fill(k.c.layer_01)));
+        let hint = if s.map.is_some() && map_changes(s) {
+            "Drop GPX, KML or GeoJSON to import into this map, or other files to upload"
+        } else {
+            "Drop to upload as pages"
+        };
+        layer.push(col().key("drop-hint").absolute(0.0, 0.0).w_full().h_full().center().child(text(hint).font(k.ty.body_medium).color(k.c.text_base).padding(16.0).radius(k.radius.md).fill(k.c.layer_01)));
     }
-    // files dropped anywhere on the window are uploaded, as on the web
+    // files dropped anywhere on the window are uploaded, or imported into an open map
     // a theme's ground goes behind the ribbon and the status bar too. The built-in look leaves the window's own there
     let ground = if s.prefs.worn.look().bg.is_some() { k.c.page } else { rune::Color::TRANSPARENT };
     let shell = row().w_full().h_full().min_h(0.0).fill(ground).child(ribbon_view(s, &k, if inset > 0.0 { 32.0 } else { 0.0 })).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(el().w_full().grow(1.0).min_h(0.0).child(shell)).child(status_bar(s, &k, busy)));
     let hung = link_menu_view(s, &k, &mut layer);
     layer.push(hung);
     rune_kit::root(shell, layer)
-        .on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec()))
+        .on_drop_files(|s: &mut App, files, _| {
+            if s.map.is_some() && map_changes(s) && !s.editing && files.len() == 1 {
+                let name = files[0].file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+                if !mapio::file_kind(&name).is_empty() {
+                    map_import(s, files[0].clone());
+                    return;
+                }
+            }
+            upload(s, files.to_vec());
+        })
         .on_drop_hover(|s: &mut App, over, _| s.global.dropping = over)
         // whether anyone is at the window, for what is only worth the ship's while when someone is
         .on_window_focus(|s: &mut App, front, _| (s.global.in_front, s.global.touched) = (front, true))
@@ -18418,6 +18764,24 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
             Key::Left => return scrub_key(s, |s| scrub_to(s, at.saturating_sub(1))),
             Key::Right => return scrub_key(s, |s| scrub_to(s, at + 1)),
             Key::Escape => return scrub_key(s, |s| s.scrub = None),
+            _ => {}
+        }
+    }
+    if s.map.as_ref().is_some_and(|m| m.tool.is_some()) && !over && plain {
+        match ev.key {
+            Key::Enter if s.map.as_ref().is_some_and(|m| matches!(m.tool, Some(map::Draw::Line | map::Draw::Area))) => {
+                finish_shape(s);
+                return true;
+            }
+            Key::Escape => {
+                if let Some(m) = &mut s.map {
+                    m.tool = None;
+                    m.verts.clear();
+                    m.hover = None;
+                    m.last_click = None;
+                }
+                return true;
+            }
             _ => {}
         }
     }
@@ -20364,6 +20728,28 @@ mod tests {
         let m = s.map.as_ref().unwrap();
         assert_eq!((m.feats.len(), m.picked, m.tool), (shapes + 1, Some(shapes), None), "the line is there and picked, and the tool is put down");
         assert!(matches!(m.feats[shapes].geoms[0], map::Geom::Line(_)));
+    }
+
+    #[test]
+    fn map_feature_prompt_accepts_flexible_time_and_custom_hex_colour() {
+        let mut s = sample("places");
+        ask_feature_at(&mut s, 0, 6);
+        let Some(Prompt::Feature(0, t)) = &mut s.prompt else { panic!("prompt open") };
+        assert!(t[6].focused, "custom colour field focused");
+        t[3].text = "2026-11-17 09:30".into();
+        t[6].text = "#12ab34".into();
+        confirm(&mut s);
+        assert!(s.prompt.is_none());
+        let f = &s.map.as_ref().unwrap().feats[0];
+        assert_eq!(f.color, "#12ab34");
+        assert!(f.props.iter().any(|(k, v)| k == "time" && v == "2026-11-17T09:30:00Z"), "{:?}", f.props);
+        assert!(f.time_epoch.is_some());
+        // invalid colour keeps the prompt open
+        ask_feature_at(&mut s, 0, 6);
+        let Some(Prompt::Feature(0, t)) = &mut s.prompt else { panic!() };
+        t[6].text = "not-a-color".into();
+        confirm(&mut s);
+        assert!(s.prompt.is_some());
     }
 
     #[test]
