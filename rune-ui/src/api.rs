@@ -2325,6 +2325,9 @@ pub struct Prefs {
     /// Long lines in the editor run on, to be scrolled sideways, where they would be broken at the room's edge.
     #[serde(default)]
     pub no_wrap: bool,
+    /// Timestamp token of the last dropped `/tree-job` warning already shown to the user.
+    #[serde(default)]
+    pub last_dropped_job: String,
     /// The address of the ship these are kept for. Empty with no ship: the computer's own alone.
     #[serde(skip)]
     pub of: String,
@@ -4582,6 +4585,275 @@ impl Conn {
     pub fn delete_tree(&self, name: &str) -> Result<(), String> {
         self.call_in(300, "POST", &format!("page-del?name={}&tree=1", enc(name)), Some("")).map(drop)
     }
+
+    /// Reads an arbitrary local ball grub (`/grub-source?path=...`).
+    pub fn grub_source(&self, path: &str) -> Result<GrubSource, String> {
+        let raw = self.call("GET", &format!("grub-source?path={}", enc(path)), None)?;
+        serde_json::from_str(&raw).map_err(|e| e.to_string())
+    }
+
+    /// Saves an arbitrary editable ball grub (`/grub-save?path=...`).
+    pub fn grub_save(&self, path: &str, body: &str) -> Result<(), String> {
+        self.call("POST", &format!("grub-save?path={}", enc(path)), Some(body)).map(drop)
+    }
+
+    /// Reads ship-side page compilation/evaluation errors (`GET /page-errors?name=...`).
+    /// Returns an empty string when the page has no errors or when the route is absent.
+    pub fn page_errors(&self, name: &str) -> Result<String, String> {
+        match self.call("GET", &format!("page-errors?name={}", enc(name)), None) {
+            Ok(t) => Ok(t.trim().to_owned()),
+            Err(e) if e.starts_with("404") => Ok(String::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Polls `/tree-job` for an active ship-side folder job or a recently dropped job.
+    pub fn tree_job(&self) -> Result<TreeJob, String> {
+        let raw = self.call_in(10, "GET", "tree-job", None)?;
+        serde_json::from_str(&raw).map_err(|e| e.to_string())
+    }
+
+    /// Lists all skills on the ship (`GET /skills`).
+    pub fn skills_list(&self) -> Result<Vec<crate::skills::SkillRow>, String> {
+        #[derive(Deserialize)]
+        struct Row {
+            #[serde(default)]
+            name: String,
+            #[serde(default)]
+            description: String,
+            #[serde(default)]
+            tags: Vec<String>,
+            #[serde(default)]
+            updated: String,
+            #[serde(default)]
+            author: String,
+            #[serde(default)]
+            sensitive: bool,
+            #[serde(default)]
+            superseded_by: Option<String>,
+            #[serde(default)]
+            files: usize,
+        }
+        #[derive(Deserialize)]
+        struct Wrap {
+            #[serde(default)]
+            skills: Vec<Row>,
+        }
+        let raw = self.call("GET", "skills", None)?;
+        let w: Wrap = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        Ok(w.skills
+            .into_iter()
+            .map(|r| crate::skills::SkillRow {
+                name: r.name,
+                description: r.description,
+                tags: r.tags,
+                updated: r.updated,
+                author: r.author,
+                sensitive: r.sensitive,
+                superseded_by: r.superseded_by,
+                files: r.files,
+            })
+            .collect())
+    }
+
+    /// Reads one skill (`GET /skill?name=...`).
+    pub fn skill_read(&self, name: &str) -> Result<crate::skills::SkillDetail, String> {
+        #[derive(Deserialize)]
+        struct FileRow {
+            #[serde(default)]
+            path: String,
+            #[serde(default)]
+            bytes: usize,
+        }
+        #[derive(Deserialize)]
+        struct Detail {
+            #[serde(default)]
+            name: String,
+            #[serde(default)]
+            description: String,
+            #[serde(default)]
+            body: String,
+            #[serde(default)]
+            tags: Vec<String>,
+            #[serde(default)]
+            updated: String,
+            #[serde(default)]
+            author: String,
+            #[serde(default)]
+            sensitive: bool,
+            #[serde(default)]
+            superseded_by: Option<String>,
+            #[serde(default)]
+            files: Vec<FileRow>,
+        }
+        let raw = self.call("GET", &format!("skill?name={}", enc(name)), None)?;
+        let d: Detail = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        Ok(crate::skills::SkillDetail {
+            name: if d.name.is_empty() { name.to_owned() } else { d.name },
+            description: d.description,
+            body: d.body,
+            tags: d.tags,
+            updated: d.updated,
+            author: d.author,
+            sensitive: d.sensitive,
+            superseded_by: d.superseded_by,
+            files: d.files.into_iter().map(|f| crate::skills::SkillFile { path: f.path, bytes: f.bytes }).collect(),
+        })
+    }
+
+    /// Reads an auxiliary file attached to a skill (`GET /skill-file?name=...&path=...`).
+    pub fn skill_file(&self, name: &str, path: &str) -> Result<(String, String), String> {
+        #[derive(Deserialize)]
+        struct Resp {
+            #[serde(default)]
+            body: String,
+            #[serde(default)]
+            updated: String,
+        }
+        let raw = self.call("GET", &format!("skill-file?name={}&path={}", enc(name), enc(path)), None)?;
+        let r: Resp = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        Ok((r.body, r.updated))
+    }
+
+    /// Saves `SKILL.md` or an attached file (`POST /skill-save?...`). Returns `true` if conflicted.
+    pub fn skill_save(&self, name: &str, path: &str, body: &str, expected_updated: Option<&str>, sensitive: Option<bool>) -> Result<bool, String> {
+        #[derive(Deserialize, Default)]
+        struct Resp {
+            #[serde(default)]
+            conflicted: bool,
+        }
+        let mut q = format!("skill-save?name={}&path={}", enc(name), enc(path));
+        if let Some(exp) = expected_updated.filter(|s| !s.is_empty()) {
+            q.push_str("&expected_updated=");
+            q.push_str(&enc(exp));
+        }
+        if let Some(sens) = sensitive {
+            q.push_str(if sens { "&sensitive=1" } else { "&sensitive=0" });
+        }
+        let raw = self.call("POST", &q, Some(if body.is_empty() { "\n" } else { body }))?;
+        let r: Resp = serde_json::from_str(&raw).unwrap_or_default();
+        Ok(r.conflicted)
+    }
+
+    /// Adds (`on == true`) or removes (`on == false`) a tag on a skill.
+    pub fn skill_tag(&self, name: &str, tag: &str, on: bool) -> Result<(), String> {
+        let route = if on { "skill-tag" } else { "skill-untag" };
+        self.call("POST", &format!("{route}?name={}&tag={}", enc(name), enc(tag)), Some("")).map(drop)
+    }
+
+    /// Soft-deletes a skill to the trash (`POST /skill-delete?name=...`).
+    pub fn skill_delete(&self, name: &str) -> Result<(), String> {
+        self.call("POST", &format!("skill-delete?name={}", enc(name)), Some("")).map(drop)
+    }
+
+    /// Lists deleted skills in the trash (`GET /skill-trash`).
+    pub fn skill_trash(&self) -> Result<Vec<crate::skills::SkillTrashRow>, String> {
+        #[derive(Deserialize)]
+        struct Row {
+            #[serde(default)]
+            name: String,
+            #[serde(default)]
+            updated: String,
+        }
+        #[derive(Deserialize)]
+        struct Wrap {
+            #[serde(default)]
+            skills: Vec<Row>,
+        }
+        let raw = self.call("GET", "skill-trash", None)?;
+        let w: Wrap = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        Ok(w.skills.into_iter().map(|r| crate::skills::SkillTrashRow { name: r.name, updated: r.updated }).collect())
+    }
+
+    /// Restores a deleted skill from the trash (`POST /skill-restore?name=...`).
+    pub fn skill_restore(&self, name: &str) -> Result<(), String> {
+        self.call("POST", &format!("skill-restore?name={}", enc(name)), Some("")).map(drop)
+    }
+
+    /// Deletes an attached file from a skill (`POST /skill-file-delete?name=...&path=...`).
+    pub fn skill_file_delete(&self, name: &str, path: &str) -> Result<(), String> {
+        self.call("POST", &format!("skill-file-delete?name={}&path={}", enc(name), enc(path)), Some("")).map(drop)
+    }
+
+    /// Lists revisions of a skill (`GET /skill-history?name=...`).
+    pub fn skill_history(&self, name: &str) -> Result<Vec<crate::skills::SkillRev>, String> {
+        #[derive(Deserialize)]
+        struct Row {
+            #[serde(default)]
+            rev: u64,
+            #[serde(default)]
+            updated: String,
+        }
+        #[derive(Deserialize)]
+        struct Wrap {
+            #[serde(default)]
+            revisions: Vec<Row>,
+        }
+        let raw = self.call("GET", &format!("skill-history?name={}", enc(name)), None)?;
+        let w: Wrap = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let mut revs: Vec<crate::skills::SkillRev> = w.revisions.into_iter().map(|r| crate::skills::SkillRev { rev: r.rev, updated: r.updated }).collect();
+        // app.hoon returns revisions oldest first; sort newest first so recent revisions appear first
+        revs.sort_by(|a, b| b.rev.cmp(&a.rev));
+        Ok(revs)
+    }
+
+    /// Reads one historical revision of a skill (`GET /skill-read-at?name=...&rev=...`).
+    pub fn skill_read_at(&self, name: &str, rev: u64) -> Result<(String, String, String), String> {
+        #[derive(Deserialize)]
+        struct Resp {
+            #[serde(default)]
+            body: String,
+            #[serde(default)]
+            description: String,
+            #[serde(default)]
+            updated: String,
+        }
+        let raw = self.call("GET", &format!("skill-read-at?name={}&rev={rev}", enc(name)), None)?;
+        let r: Resp = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        Ok((r.body, r.description, r.updated))
+    }
+}
+
+/// Payload from `GET /grub-source?path=...`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct GrubSource {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub blot: String,
+    #[serde(default)]
+    pub editable: bool,
+    #[serde(default)]
+    pub text: String,
+}
+
+/// Deserializes either a JSON string or JSON integer as a string token.
+fn string_or_num<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    })
+}
+
+/// Dropped async folder job descriptor reported by `GET /tree-job`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct DroppedJob {
+    #[serde(default)]
+    pub job: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default, deserialize_with = "string_or_num")]
+    pub at: String,
+}
+
+/// Status payload from `GET /tree-job`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct TreeJob {
+    #[serde(default)]
+    pub job: Option<String>,
+    #[serde(default)]
+    pub dropped: Option<DroppedJob>,
 }
 
 /// Percent-encodes a query value: everything but unreserved characters.
@@ -5013,7 +5285,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, split_shares: vec![0.6, 0.4], right_open: Some(false), right_tab: "page".into(), worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new(), ship: String::new(), edit_size: 0.0, no_wrap: false }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, split_shares: vec![0.6, 0.4], right_open: Some(false), right_tab: "page".into(), worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new(), ship: String::new(), edit_size: 0.0, no_wrap: false, last_dropped_job: String::new() }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert!(back.sort_desc);
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
@@ -6698,5 +6970,72 @@ mod tests {
         let pub_body = fetch_bytes(&format!("{url}/bounce"), None).unwrap();
         assert_eq!(pub_body, b"landed-body");
         assert!(log.lock().unwrap().iter().any(|r| r.path == "/landed"), "public_agent follows redirects");
+    }
+
+    #[test]
+    fn grub_page_errors_tree_job_and_skills_routes() {
+        let (url, log) = serve(|r| {
+            if r.path.starts_with("/apps/lattice/grub-source") {
+                answer("200 OK", "content-type: application/json\r\n", br#"{"path":"/apps/demo/a.hoon","blot":"/hoon","editable":true,"text":"|=  a=@\na\n"}"#)
+            } else if r.path.starts_with("/apps/lattice/grub-save") {
+                answer("200 OK", "", b"ok")
+            } else if r.path.starts_with("/apps/lattice/page-errors") {
+                answer("200 OK", "content-type: text/plain\r\n", b"syntax error on line 3\n")
+            } else if r.path.starts_with("/apps/lattice/tree-job") {
+                answer("200 OK", "content-type: application/json\r\n", br#"{"job":"moving notes -> archive","dropped":{"job":"deleting old","path":"old","at":1700000000}}"#)
+            } else if r.path == "/apps/lattice/skills" {
+                answer("200 OK", "content-type: application/json\r\n", br#"{"skills":[{"name":"deploy","description":"Ship it","tags":["core"],"updated":"~2026.11.25..12.0.0","author":"~zod","sensitive":false,"files":2}]}"#)
+            } else if r.path.starts_with("/apps/lattice/skill?name=deploy") {
+                answer("200 OK", "content-type: application/json\r\n", br#"{"name":"deploy","description":"Ship it","body":"---\nname: deploy\n---\n# Deploy\n","tags":["core"],"updated":"~2026.11.25..12.0.0","author":"~zod","sensitive":false,"files":[{"path":"steps.md","bytes":42}]}"#)
+            } else if r.path.starts_with("/apps/lattice/skill-file?") {
+                answer("200 OK", "content-type: application/json\r\n", br##"{"body":"# Steps\n","updated":"~2026.11.25..12.0.0"}"##)
+            } else if r.path.starts_with("/apps/lattice/skill-save?") {
+                answer("200 OK", "content-type: application/json\r\n", br#"{"conflicted":true}"#)
+            } else if r.path.starts_with("/apps/lattice/skill-trash") {
+                answer("200 OK", "content-type: application/json\r\n", br#"{"skills":[{"name":"old-skill","updated":"~2026.11.24..10.0.0"}]}"#)
+            } else if r.path.starts_with("/apps/lattice/skill-history?") {
+                // ship returns oldest first
+                answer("200 OK", "content-type: application/json\r\n", br#"{"revisions":[{"rev":1,"updated":"~2026.11.24..12.0.0"},{"rev":2,"updated":"~2026.11.25..12.0.0"}]}"#)
+            } else if r.path.starts_with("/apps/lattice/skill-read-at?") {
+                answer("200 OK", "content-type: application/json\r\n", br##"{"body":"# Rev 1\n","description":"Old","updated":"~2026.11.24..12.0.0"}"##)
+            } else {
+                answer("200 OK", "", b"ok")
+            }
+        });
+        let c = conn(&url, "~zod");
+        let g = c.grub_source("/apps/demo/a.hoon").unwrap();
+        assert!(g.editable);
+        assert_eq!(g.blot, "/hoon");
+        c.grub_save("/apps/demo/a.hoon", "|=  a=@\n+(a)\n").unwrap();
+        assert_eq!(c.page_errors("bad").unwrap(), "syntax error on line 3");
+        let tj = c.tree_job().unwrap();
+        assert_eq!(tj.job.as_deref(), Some("moving notes -> archive"));
+        let d = tj.dropped.unwrap();
+        assert_eq!(d.at, "1700000000");
+        assert_eq!(d.path, "old");
+
+        let list = c.skills_list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "deploy");
+        let detail = c.skill_read("deploy").unwrap();
+        assert_eq!(detail.files.len(), 1);
+        assert_eq!(c.skill_file("deploy", "steps.md").unwrap().0, "# Steps\n");
+        assert!(c.skill_save("deploy", "SKILL.md", "# Deploy\n", Some("~2026.11.25..12.0.0"), Some(true)).unwrap());
+        c.skill_tag("deploy", "ops", true).unwrap();
+        c.skill_tag("deploy", "ops", false).unwrap();
+        assert_eq!(c.skill_trash().unwrap()[0].name, "old-skill");
+        c.skill_restore("old-skill").unwrap();
+        c.skill_file_delete("deploy", "steps.md").unwrap();
+        c.skill_delete("deploy").unwrap();
+        let hist = c.skill_history("deploy").unwrap();
+        assert_eq!(hist.len(), 2);
+        assert_eq!(hist[0].rev, 2, "skill_history must sort newest first");
+        assert_eq!(hist[1].rev, 1);
+        assert_eq!(c.skill_read_at("deploy", 1).unwrap().0, "# Rev 1\n");
+
+        let paths: Vec<String> = log.lock().unwrap().iter().map(|r| r.path.clone()).collect();
+        assert!(paths.iter().any(|p| p.contains("skill-save?name=deploy&path=SKILL.md&expected_updated=") && p.contains("&sensitive=1")));
+        assert!(paths.iter().any(|p| p.contains("skill-tag?name=deploy&tag=ops")));
+        assert!(paths.iter().any(|p| p.contains("skill-untag?name=deploy&tag=ops")));
     }
 }

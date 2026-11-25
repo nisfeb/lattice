@@ -12,12 +12,14 @@ mod backups;
 mod browse;
 mod calc;
 mod code;
+mod conflicts;
 mod explorer;
 mod follow;
 mod fonts;
 mod formula;
 mod html;
 mod inturn;
+mod listedit;
 mod local;
 mod mounts;
 mod notify;
@@ -43,6 +45,7 @@ mod scadrun;
 mod search;
 mod sheet;
 mod shift;
+mod skills;
 mod splits;
 mod status;
 mod swm;
@@ -450,6 +453,85 @@ enum Prompt {
     MarkDrop(String, String),
     /// Taking a notice off shared with me, asked first.
     Forget(Shared),
+    /// Path to an arbitrary local ball grub to inspect or edit (`/grub-source`).
+    OpenGrub(TextEdit),
+    /// Confirm discarding unsaved edits in the open grub editor.
+    GrubDiscard,
+    /// Name for a newly created skill.
+    SkillNew(TextEdit),
+    /// Path for a new attached file inside the named skill.
+    SkillNewFile(String, TextEdit),
+    /// Soft-delete a skill to the trash.
+    SkillDelete(String),
+    /// Delete an attached file inside a skill.
+    SkillDeleteFile(String, String),
+    /// Restore a historical revision of a skill (`name, rev, updated, body`).
+    SkillRestoreRev(String, u64, String, String),
+}
+
+/// Arbitrary local ball grub open in the grub editor (`40-grub.js`).
+struct GrubState {
+    path: String,
+    blot: String,
+    kind: String,
+    editable: bool,
+    was: String,
+    edit: TextEdit,
+    saving: bool,
+}
+
+/// One skill currently open inside the Skills manager (`skills.js`).
+struct SkillOpen {
+    detail: skills::SkillDetail,
+    file: String,
+    text: String,
+    was: String,
+    edit: bool,
+    editor: TextEdit,
+    tag_input: TextEdit,
+    hist: Option<Vec<skills::SkillRev>>,
+    rev_view: Option<(u64, String, String)>,
+    saving: bool,
+}
+
+/// Skills manager screen state (`ui-app/skills.js`).
+struct SkillsState {
+    list: Vec<skills::SkillRow>,
+    loaded: bool,
+    loading: bool,
+    query: TextEdit,
+    tag: String,
+    trash_open: bool,
+    trash: Option<Vec<skills::SkillTrashRow>>,
+    cur: Option<SkillOpen>,
+}
+
+impl SkillsState {
+    fn new() -> Self {
+        Self {
+            list: Vec::new(),
+            loaded: false,
+            loading: false,
+            query: TextEdit::new(""),
+            tag: String::new(),
+            trash_open: false,
+            trash: None,
+            cur: None,
+        }
+    }
+}
+
+/// Response variants from background skill API calls.
+enum SkillGot {
+    List(Vec<skills::SkillRow>),
+    Open { detail: skills::SkillDetail, edit: bool, list: Option<Vec<skills::SkillRow>>, note: String },
+    File { name: String, path: String, body: String, edit: bool },
+    Saved { name: String, path: String, body: String, detail: skills::SkillDetail, list: Vec<skills::SkillRow>, note: String },
+    Deleted { name: String, list: Vec<skills::SkillRow> },
+    Restored { name: String, list: Vec<skills::SkillRow>, trash: Vec<skills::SkillTrashRow> },
+    Trash(Vec<skills::SkillTrashRow>),
+    History { name: String, revs: Vec<skills::SkillRev> },
+    Rev { name: String, rev: u64, updated: String, body: String },
 }
 
 /// A parked browser tab: its own navigation history, address field, folder list,
@@ -1181,6 +1263,24 @@ struct ShipSession {
     draw_queued: bool,
     /// Cached OpenSCAD 3D snapshots `(triangles, dims, image)` keyed by `(name, rev)` for parked split views.
     part_snaps: HashMap<(String, u64), (usize, [f32; 3], rune::Image)>,
+    /// Sync conflicts inbox screen (`80-conflicts.js`).
+    conflicts_open: bool,
+    /// Arbitrary ball grub editor screen (`40-grub.js`). Always cleared when leaving.
+    grub: Option<GrubState>,
+    grub_req: Latest<Result<api::GrubSource, String>>,
+    grub_save_req: Latest<Result<(String, String), String>>,
+    /// Skills manager screen (`ui-app/skills.js`).
+    skills: Option<SkillsState>,
+    skills_req: Latest<Result<SkillGot, String>>,
+    /// Ship-side page error from `GET /page-errors?name=...` for the open own page.
+    page_err: Option<(String, String)>,
+    page_err_req: Latest<(String, String)>,
+    /// Active ship-side async folder job (`GET /tree-job`) holding offline queue drain.
+    job_wait: Option<String>,
+    job_req: Latest<Result<api::TreeJob, String>>,
+    job_poll_at: f64,
+    /// True when `/tree-job` was triggered by a timed-out save so an empty job answer drains immediately.
+    job_from_timeout: bool,
 }
 
 impl Default for ShipSession {
@@ -1486,6 +1586,18 @@ impl Default for ShipSession {
             vault_read_req: Latest::default(),
             draw_queued: false,
             part_snaps: HashMap::new(),
+            conflicts_open: false,
+            grub: None,
+            grub_req: Latest::default(),
+            grub_save_req: Latest::default(),
+            skills: None,
+            skills_req: Latest::default(),
+            page_err: None,
+            page_err_req: Latest::default(),
+            job_wait: None,
+            job_req: Latest::default(),
+            job_poll_at: 0.0,
+            job_from_timeout: false,
         }
     }
 }
@@ -1585,6 +1697,11 @@ impl ShipSession {
         self.exp_raw_req.cancel();
         self.orrery_up_req.cancel();
         self.orrery_facts_req.cancel();
+        self.grub_req.cancel();
+        self.grub_save_req.cancel();
+        self.skills_req.cancel();
+        self.page_err_req.cancel();
+        self.job_req.cancel();
         self.orrery_in = std::sync::Arc::default();
         self.orrery_seq.clear();
         self.orrery_inflight.clear();
@@ -1843,7 +1960,7 @@ fn open_explorer(s: &mut App, path: Option<String>) {
     if s.memory {
         flip(s);
     }
-    let empty_tab = !s.exploring && !browsing(s) && s.open.is_none() && s.folder.is_none() && s.forum.is_none() && s.settings.is_none() && !s.access && !s.inbox;
+    let empty_tab = !s.exploring && !browsing(s) && s.open.is_none() && s.folder.is_none() && s.forum.is_none() && s.settings.is_none() && !s.access && !s.inbox && !s.conflicts_open && s.grub.is_none() && s.skills.is_none();
     if !empty_tab {
         park_tab(s);
         s.tabs.push(Tab::default());
@@ -1851,6 +1968,7 @@ fn open_explorer(s: &mut App, path: Option<String>) {
         (s.trail, s.trail_at) = (Vec::new(), 0);
     }
     remote_cancel(s);
+    clear_wave2_screens(s);
     (s.open, s.folder, s.remote, s.old, s.want) = (None, None, None, None, None);
     (s.access, s.shared_open, s.inbox, s.forum, s.settings) = (false, false, false, None, None);
     s.exploring = true;
@@ -2016,8 +2134,28 @@ fn explorer_view(s: &App, k: &Kit) -> El {
             page = page.child(list);
         }
         explorer::View::File { body, is_doc, note, has_raw, .. } => {
-            if *has_raw {
-                page = page.child(row().gap(8.0).child(Button::new("Download raw").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press_tx(explore_download_raw).build(k).key("explorer-download")));
+            let own_ball = s
+                .conn
+                .as_ref()
+                .and_then(|conn| view.x_path().strip_prefix(&format!("/apps/lattice/x/{}", conn.ship())))
+                .filter(|p| p.starts_with('/'))
+                .map(str::to_owned);
+            if *has_raw || own_ball.is_some() {
+                let mut acts = row().gap(8.0);
+                if let Some(ball_path) = own_ball {
+                    acts = acts.child(
+                        Button::new("Edit grub")
+                            .control_size(ControlSize::Small)
+                            .variant(ButtonVariant::Contrast)
+                            .on_press(move |s: &mut App| open_grub(s, ball_path.clone()))
+                            .build(k)
+                            .key("explorer-edit-grub"),
+                    );
+                }
+                if *has_raw {
+                    acts = acts.child(Button::new("Download raw").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press_tx(explore_download_raw).build(k).key("explorer-download"));
+                }
+                page = page.child(acts);
             }
             if !note.is_empty() {
                 page = page.child(text(note.clone()).font(k.ty.small).color(c.text_muted).wrap());
@@ -2161,6 +2299,7 @@ fn flip(s: &mut App) {
         return;
     }
     remote_cancel(s);
+    clear_wave2_screens(s);
     s.session.cancel_drawings();
     flip_quiet(s);
     s.open = None;
@@ -2528,6 +2667,54 @@ fn confirm(s: &mut App) {
     }
     if let Prompt::LinkIn(sh, t) = &p {
         link_in(s, sh.clone(), t.text.trim().to_owned());
+        return;
+    }
+    if let Prompt::OpenGrub(t) = &p {
+        let path = t.text.trim().to_owned();
+        if !skills::valid_grub_path(&path) {
+            s.note = "grub path must start with / and contain no spaces or .. segments".into();
+            s.prompt = Some(p);
+            return;
+        }
+        open_grub(s, path);
+        return;
+    }
+    if let Prompt::GrubDiscard = &p {
+        s.grub = None;
+        s.grub_save_req.cancel();
+        s.note = "discarded unsaved grub edits".into();
+        return;
+    }
+    if let Prompt::SkillNew(t) = &p {
+        let name = t.text.trim().to_owned();
+        if !skills::valid_name(&name) {
+            s.note = "skill name must be 1 to 64 lowercase letters, digits, and single internal hyphens".into();
+            s.prompt = Some(p);
+            return;
+        }
+        skill_create(s, name);
+        return;
+    }
+    if let Prompt::SkillNewFile(skill, t) = &p {
+        let path = t.text.trim().to_owned();
+        if path == "SKILL.md" || !skills::valid_path(&path) {
+            s.note = "file path must be relative, valid segments, ending in .md, .txt, .json, .yaml, or .yml".into();
+            s.prompt = Some(p);
+            return;
+        }
+        skill_create_file(s, skill.clone(), path);
+        return;
+    }
+    if let Prompt::SkillDelete(name) = &p {
+        skill_delete(s, name.clone());
+        return;
+    }
+    if let Prompt::SkillDeleteFile(name, path) = &p {
+        skill_delete_file(s, name.clone(), path.clone());
+        return;
+    }
+    if let Prompt::SkillRestoreRev(name, rev, updated, body) = &p {
+        skill_restore_rev(s, name.clone(), *rev, updated.clone(), body.clone());
         return;
     }
     if let Prompt::MarkMove(url, t) = &p {
@@ -2917,9 +3104,19 @@ fn under(names: &[String], path: &str) -> Vec<String> {
     names.iter().filter(|n| n.as_str() == path || n.strip_prefix(path).is_some_and(|r| r.starts_with('/'))).cloned().collect()
 }
 
+/// Clears wave-2 full-pane screens (`conflicts`, `grub`, `skills`) and cancels any pending requests for them.
+fn clear_wave2_screens(s: &mut App) {
+    s.conflicts_open = false;
+    s.grub = None;
+    s.grub_req.cancel();
+    s.grub_save_req.cancel();
+    s.skills = None;
+    s.skills_req.cancel();
+}
+
 /// Whether another screen stands where the open page would: its keys are not that page's then.
 fn page_hidden(s: &App) -> bool {
-    s.settings.is_some() || s.access || s.inbox || s.shared_open || s.exploring || s.forum.is_some() || s.folder.is_some()
+    s.settings.is_some() || s.access || s.inbox || s.shared_open || s.exploring || s.forum.is_some() || s.folder.is_some() || s.conflicts_open || s.grub.is_some() || s.skills.is_some()
 }
 
 /// A change to a sheet, worked out so that a fault in the working out is
@@ -3491,6 +3688,11 @@ fn setup_session(s: &mut App, waker: Waker) {
     s.exp_raw_req.set_waker(waker.clone());
     s.orrery_up_req.set_waker(waker.clone());
     s.orrery_facts_req.set_waker(waker.clone());
+    s.grub_req.set_waker(waker.clone());
+    s.grub_save_req.set_waker(waker.clone());
+    s.skills_req.set_waker(waker.clone());
+    s.page_err_req.set_waker(waker.clone());
+    s.job_req.set_waker(waker.clone());
     s.sugg_req.set_waker(waker.clone());
     s.visits_req.set_waker(waker.clone());
     s.theme_put.set_waker(waker.clone());
@@ -3514,6 +3716,7 @@ fn setup_session(s: &mut App, waker: Waker) {
     load_shared(s);
     load_following(s);
     load_orrery_up(s);
+    check_tree_job(s);
     listen(s);
     watch_ships(s);
 }
@@ -7104,14 +7307,15 @@ fn web_waiting(s: &App) -> bool {
 /// shown in the Page tab and the bottom status bar.
 fn page_issue(s: &App) -> Option<String> {
     let p = s.open.as_ref().filter(|_| !s.memory)?;
-    match p.kind.as_str() {
+    let local = match p.kind.as_str() {
         "scad" => {
-            let (_, _, run) = s.scad.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev)?;
-            if run.bad {
-                return Some(format!("OpenSCAD: {}", run.status));
-            }
-            let errs = run.lines.iter().filter(|(lvl, _)| *lvl == scadrun::Level::Error).count();
-            (errs > 0).then(|| format!("{errs} OpenSCAD error{}", if errs == 1 { "" } else { "s" }))
+            s.scad.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev).and_then(|(_, _, run)| {
+                if run.bad {
+                    return Some(format!("OpenSCAD: {}", run.status));
+                }
+                let errs = run.lines.iter().filter(|(lvl, _)| *lvl == scadrun::Level::Error).count();
+                (errs > 0).then(|| format!("{errs} OpenSCAD error{}", if errs == 1 { "" } else { "s" }))
+            })
         }
         "tex" => s.tex_why.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev).map(|(_, _, why)| format!("LaTeX: {why}")),
         "geojson" => s.map.is_none().then(|| {
@@ -7127,7 +7331,13 @@ fn page_issue(s: &App) -> Option<String> {
             _ => None,
         },
         _ => None,
-    }
+    };
+    local.or_else(|| {
+        s.remote
+            .is_none()
+            .then(|| s.page_err.as_ref().filter(|(n, e)| *n == p.name && !e.is_empty()).map(|(_, e)| format!("Ship error: {e}")))
+            .flatten()
+    })
 }
 
 /// The status bar along the bottom of the window: what was last said,
@@ -7141,6 +7351,10 @@ fn status_bar(s: &App, k: &Kit, busy: bool) -> El {
     let issue = status::issue_badge(page_issue(s).as_deref());
     let badge = |b: status::Badge, key: &str| text(b.short).key(key.to_owned()).role("status").label(b.long.clone()).help(b.long).font(k.ty.text_xsmall_medium).color(c.text_base).px(6.0).radius(k.radius.sm).fill(c.layer_02);
     let err_badge = |b: status::Badge| text(b.short).key("page-issue").role("status").label(b.long.clone()).help(b.long).font(k.ty.text_xsmall_medium).color(c.danger.icon).px(6.0).radius(k.radius.sm).fill(c.layer_02);
+    let job_badge = s.job_wait.as_ref().map(|job| {
+        let long = format!("Folder job running on ship: {job}. Queued saves will send once it finishes");
+        text("folder job").key("tree-job").role("status").label(long.clone()).help(long).font(k.ty.text_xsmall_medium).color(c.warning.icon).px(6.0).radius(k.radius.sm).fill(c.layer_02)
+    });
     let paused_badge = (paused > 0).then(|| {
         let long = format!("{paused} offline save{} paused after {} failures; save again or run Retry paused offline saves", if paused == 1 { "" } else { "s" }, api::MAX_RETRIES);
         text(format!("{paused} paused")).key("paused-saves").role("status").label(long.clone()).help(long).font(k.ty.text_xsmall_medium).color(c.danger.icon).px(6.0).radius(k.radius.sm).fill(c.layer_02)
@@ -7151,7 +7365,7 @@ fn status_bar(s: &App, k: &Kit, busy: bool) -> El {
     }
     // said even when there is nothing: the bar keeps its height, and the page does not jump as notes come and go
     out = out.child(text(bar.said.unwrap_or_default()).key("note").font(k.ty.small).color(c.text_muted).truncate().grow(1.0).min_w(0.0));
-    out.children(issue.map(err_badge)).children(bar.offline.map(|b| badge(b, "offline"))).children(bar.waiting.map(|b| badge(b, "waiting-saves"))).children(paused_badge)
+    out.children(issue.map(err_badge)).children(job_badge).children(bar.offline.map(|b| badge(b, "offline"))).children(bar.waiting.map(|b| badge(b, "waiting-saves"))).children(paused_badge)
 }
 
 /// The right pane: its tabs as icons, then what the one in front shows.
@@ -7275,6 +7489,9 @@ fn restore(s: &mut App) {
 
 fn show_page(s: &mut App, name: &str) {
     remote_cancel(s);
+    clear_wave2_screens(s);
+    s.page_err = None;
+    s.page_err_req.cancel();
     s.remote = None;
     s.shared_open = false;
     s.exploring = false;
@@ -7299,6 +7516,7 @@ fn show_page(s: &mut App, name: &str) {
             s.kept_req.request(c.clone(), |c| c.kept(ORRERY_MAP));
         }
         s.page_req.request((c, name.to_owned()), |(c, n)| c.page(&n));
+        load_page_errors(s, name);
     }
     sync_map(s);
     sync_sheet(s);
@@ -7502,6 +7720,33 @@ fn editor_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
                 return true;
             }
             _ => {}
+        }
+    }
+    if !s.rich {
+        let flavor = if s.memory {
+            "md"
+        } else {
+            match s.open.as_ref().map(|p| p.kind.as_str()) {
+                Some("md" | "text") => "md",
+                Some("gmi") => "gmi",
+                _ => "",
+            }
+        };
+        if !flavor.is_empty() {
+            let (a, b) = (s.edit.anchor.min(s.edit.focus), s.edit.anchor.max(s.edit.focus));
+            let list_ed = if ev.key == Key::Enter && plain {
+                listedit::list_enter(&s.edit.text, a, b, flavor)
+            } else if ev.key == Key::Tab && !ev.mods.cmd && !ev.mods.ctrl && !ev.mods.alt {
+                listedit::list_tab(&s.edit.text, a, b, flavor, if ev.mods.shift { -1 } else { 1 })
+            } else {
+                None
+            };
+            if let Some(ed) = list_ed {
+                (s.edit.anchor, s.edit.focus) = (ed.from, ed.to);
+                s.edit.insert(&ed.text);
+                (s.edit.anchor, s.edit.focus) = (ed.caret, ed.caret_end.unwrap_or(ed.caret));
+                return true;
+            }
         }
     }
     if ev.key == Key::Enter && plain && s.edit.current_block() == Block::Paragraph {
@@ -7742,6 +7987,7 @@ fn start_named(s: &mut App, name: String) {
         flip(s);
     }
     // nothing is asked of the ship: the page is not there until it is saved
+    clear_wave2_screens(s);
     (s.remote, s.folder, s.old, s.want) = (None, None, None, None);
     (s.shared_open, s.inbox, s.access, s.stale) = (false, false, false, false);
     s.forum = None;
@@ -7793,6 +8039,22 @@ fn cancel_edit(s: &mut App) {
 /// answer and a save the ship refuses is not lost. `false` when the
 /// editor could not be left, with why said.
 fn leave_edit(s: &mut App) -> bool {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return false;
+    }
+    if skill_dirty(s) {
+        s.note = "save or cancel your skill edits first".into();
+        return false;
+    }
+    if s.grub.as_ref().is_some_and(|g| g.saving) {
+        s.note = "saving grub; please wait".into();
+        return false;
+    }
+    if grub_dirty(s) {
+        s.note = "save or discard your grub edits first".into();
+        return false;
+    }
     if !s.editing {
         return true;
     }
@@ -8017,7 +8279,7 @@ fn change_waiting(s: &mut App, change: impl FnOnce(&mut Vec<api::QueuedOp>, &mut
 // ponytail: one request for each page. The ship's batch route is for when a queue of hundreds shows up
 fn drain(s: &mut App) {
     bg_taken(s);
-    if s.drain_req.is_pending() {
+    if s.drain_req.is_pending() || s.job_wait.is_some() {
         return;
     }
     let Some(c) = s.conn.clone() else { return };
@@ -8355,11 +8617,15 @@ fn landed(s: &mut App, p: Page) {
         s.note = format!("saved {}", p.name);
         return;
     }
+    let page_name = p.name.clone();
     s.capture = false;
     s.open = Some(p);
     (s.stale, s.moved_changed) = (false, false);
     s.auto_held = false;
     s.note = "saved".into();
+    if !s.memory && s.remote.is_none() {
+        load_page_errors(s, &page_name);
+    }
     if std::mem::take(&mut s.save_again) {
         // Save was pressed meanwhile: what was typed since goes too, and the editor closes
         s.autosaving = false;
@@ -8698,6 +8964,68 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Ok(_) => {}
             Err(e) => s.note = format!("explorer: {e}"),
         }
+    }
+    if let Some(r) = s.grub_req.take() {
+        changed = true;
+        match r {
+            Ok(g) => {
+                clear_other_screens_for_wave2(s);
+                let mut edit = TextEdit::new(g.text.as_str());
+                edit.focused = g.editable;
+                let kind = skills::grub_kind(&g.blot, &g.path);
+                if s.note.starts_with("opening ") {
+                    s.note.clear();
+                }
+                s.grub = Some(GrubState {
+                    path: g.path,
+                    blot: g.blot,
+                    kind,
+                    editable: g.editable,
+                    was: g.text,
+                    edit,
+                    saving: false,
+                });
+            }
+            Err(e) => s.note = format!("grub: {e}"),
+        }
+    }
+    if let Some(r) = s.grub_save_req.take() {
+        changed = true;
+        match r {
+            Ok((path, body)) => {
+                if let Some(g) = s.grub.as_mut().filter(|g| g.path == path) {
+                    g.was = body;
+                    g.saving = false;
+                }
+                s.note = format!("saved {path}");
+            }
+            Err(e) => {
+                if let Some(g) = &mut s.grub {
+                    g.saving = false;
+                }
+                s.note = format!("grub save failed: {e}");
+            }
+        }
+    }
+    if let Some(r) = s.skills_req.take() {
+        changed = true;
+        handle_skill_got(s, r);
+    }
+    if let Some((name, err)) = s.page_err_req.take() {
+        changed = true;
+        let matches = s.open.as_ref().is_some_and(|p| p.name == name) || s.want.as_deref() == Some(name.as_str());
+        if matches && !s.memory && s.remote.is_none() {
+            s.page_err = (!err.is_empty()).then_some((name, err));
+        }
+    }
+    if let Some(r) = s.job_req.take() {
+        changed = true;
+        handle_tree_job(s, r, clock, tx);
+    }
+    if s.job_wait.is_some() && clock >= s.job_poll_at && !s.job_req.is_pending() {
+        s.job_poll_at = clock + 5.0;
+        tx.wake_after(std::time::Duration::from_secs(5));
+        check_tree_job(s);
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(r) = s.exp_raw_req.take() {
@@ -9311,6 +9639,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 load_shared(s);
                 load_following(s);
                 load_orrery_up(s);
+                check_tree_job(s);
                 listen(s);
             }
             Err(e) => s.login_err = e,
@@ -9597,13 +9926,22 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             // the ship did not answer: the save waits here for it
             Err(e) if api::gone(&e) && sent.is_some() => {
                 let (p, base, memory, _) = sent.expect("just checked");
+                let timed = api::timed_out(&e);
                 // a link's host that did not answer is not the ship being away: the save waits for the host, and every other save goes on
                 let away_ship = ship_away(&e, !memory && s.links.contains_key(&p.name));
-                if away_ship {
+                if away_ship && (!timed || s.job_wait.is_none()) {
                     s.offline.get_or_insert_with(String::new);
                 }
+                if timed {
+                    s.job_from_timeout = true;
+                    check_tree_job(s);
+                }
                 queue_save(s, p, base, memory);
-                if !away_ship && s.note.starts_with("saved on this device") {
+                if timed && s.job_wait.is_some() {
+                    s.note = "a folder job is running on the ship; saves will send once it finishes".into();
+                } else if timed {
+                    s.note = "saved on this device (ship timed out; checking for folder job)".into();
+                } else if !away_ship && s.note.starts_with("saved on this device") {
                     s.note = format!("saved on this device, to send when its ship answers ({e})");
                 }
             }
@@ -10023,6 +10361,7 @@ fn land_on(s: &mut App, name: &str) {
         open_page(s, &index);
     } else if !under(&s.names, name).is_empty() && leave_edit(s) {
         remote_cancel(s);
+        clear_wave2_screens(s);
         (s.open, s.remote, s.access, s.shared_open, s.inbox) = (None, None, false, false, false);
         s.forum = None;
         s.folder = Some(name.to_owned());
@@ -10743,6 +11082,7 @@ fn load_tab(s: &mut App, to: usize) {
     let Tab { trail, at, kind } = std::mem::take(&mut s.tabs[to]);
     (s.trail, s.trail_at) = (trail, at);
     remote_cancel(s);
+    clear_wave2_screens(s);
     (s.open, s.folder, s.remote, s.old, s.want) = (None, None, None, None, None);
     (s.access, s.shared_open, s.inbox, s.exploring) = (false, false, false, false);
     s.forum = None;
@@ -11057,7 +11397,7 @@ fn open_browser_tab(s: &mut App, to: Option<String>) {
     if s.memory {
         flip(s);
     }
-    let empty_tab = !s.exploring && !browsing(s) && s.open.is_none() && s.folder.is_none() && s.forum.is_none() && s.settings.is_none() && !s.access && !s.inbox;
+    let empty_tab = !s.exploring && !browsing(s) && s.open.is_none() && s.folder.is_none() && s.forum.is_none() && s.settings.is_none() && !s.access && !s.inbox && !s.conflicts_open && s.grub.is_none() && s.skills.is_none();
     if !empty_tab {
         park_tab(s);
         s.tabs.push(Tab::default());
@@ -11065,6 +11405,7 @@ fn open_browser_tab(s: &mut App, to: Option<String>) {
         (s.trail, s.trail_at) = (Vec::new(), 0);
     }
     remote_cancel(s);
+    clear_wave2_screens(s);
     (s.open, s.folder, s.remote, s.old, s.want, s.urb_folder, s.thread) = (None, None, None, None, None, None, None);
     (s.forum, s.access, s.settings, s.inbox, s.exploring) = (None, false, None, false, false);
     s.nav = browse::Nav::default();
@@ -11092,6 +11433,7 @@ fn go_browser(s: &mut App) {
         open_browser_tab(s, None);
         return;
     }
+    clear_wave2_screens(s);
     (s.forum, s.access, s.settings, s.inbox, s.folder, s.exploring) = (None, false, None, false, None, false);
     s.shared_open = true;
     s.urb.focused = true;
@@ -11214,7 +11556,7 @@ fn browse_show(s: &mut App, url: &str) {
 
 /// Whether the browser is what is in front: its start page or a folder, or a page read at an address.
 fn browsing(s: &App) -> bool {
-    s.shared_open || (s.remote.as_ref().is_some_and(|r| r.mode == "published") && s.open.is_some() && !s.access && !s.inbox && !s.exploring && s.settings.is_none() && s.forum.is_none())
+    s.shared_open || (s.remote.as_ref().is_some_and(|r| r.mode == "published") && s.open.is_some() && !s.access && !s.inbox && !s.exploring && s.settings.is_none() && s.forum.is_none() && !s.conflicts_open && s.grub.is_none() && s.skills.is_none())
 }
 
 /// Asks what the address field offers for what is typed in it.
@@ -11301,6 +11643,7 @@ fn go_forum(s: &mut App) {
     if !leave_edit(s) {
         return;
     }
+    clear_wave2_screens(s);
     (s.inbox, s.access, s.shared_open, s.exploring) = (false, false, false, false);
     s.forum = Some(Forum::default());
     match s.conn.clone() {
@@ -11350,6 +11693,7 @@ fn forum_open_anon(s: &mut App, place: engine::BoardPlace) {
     if s.forum.is_none() {
         s.forum = Some(Forum::default());
     }
+    clear_wave2_screens(s);
     (s.inbox, s.access, s.shared_open) = (false, false, false);
     let url = place.url();
     s.note = format!("reading {url}\u{2026}");
@@ -12530,6 +12874,7 @@ fn go_inbox(s: &mut App) {
         return;
     }
     if !s.editing {
+        clear_wave2_screens(s);
         s.forum = None;
         s.inbox = true;
         s.access = false;
@@ -12545,6 +12890,7 @@ fn go_access(s: &mut App) {
         return;
     }
     if !s.editing {
+        clear_wave2_screens(s);
         s.forum = None;
         s.settings = None;
         s.access = true;
@@ -12560,6 +12906,7 @@ fn go_settings(s: &mut App) {
         return;
     }
     if !s.editing {
+        clear_wave2_screens(s);
         (s.forum, s.access, s.inbox, s.shared_open, s.exploring) = (None, false, false, false, false);
         s.settings = Some(Settings::new());
         keys_do(s, None, None);
@@ -13545,6 +13892,9 @@ const COMMANDS: &[(&str, &str)] = &[
     ("shared", "Shared with me"),
     ("urb-open", "Browser"),
     ("explorer", "Explorer: browse ship files"),
+    ("open-grub", "Open grub..."),
+    ("skills", "Skills"),
+    ("conflicts", "Sync conflicts"),
     ("link-in", "Move into my pages"),
     ("link-back", "Move back to shared with me"),
     ("access", "Access"),
@@ -13558,7 +13908,7 @@ const COMMANDS: &[(&str, &str)] = &[
 
 /// Whether a command can run now: the ones about a page need one open.
 fn usable(s: &App, id: &str) -> bool {
-    let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox && !s.exploring;
+    let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox && !s.exploring && !s.conflicts_open && s.grub.is_none() && s.skills.is_none();
     let own = page && s.remote.is_none();
     match id {
         // a link made from a page shared to read is read only
@@ -13579,7 +13929,9 @@ fn usable(s: &App, id: &str) -> bool {
         "kind" => own && !s.memory && !s.editing && s.open.as_ref().is_some_and(|p| PAGE_KINDS.contains(&p.kind.as_str()) && s.links.get(&p.name).is_none()),
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "find" => page && find_where(s) != FindIn::Nothing,
-        "reload" | "map-token" | "explorer" => s.conn.is_some(),
+        "reload" | "map-token" | "explorer" | "open-grub" => s.conn.is_some(),
+        "skills" => s.conn.is_some() || s.sample,
+        "conflicts" => !conflicts::list(page_names(s)).is_empty() || s.conflicts_open,
         "ships" => s.conn.is_some() && !cfg!(target_arch = "wasm32"),
         "map-base" => own && !s.editing && s.map.as_ref().is_some_and(|m| s.open.as_ref().is_some_and(|p| p.name == m.name)),
         "map-import" => map_changes(s),
@@ -13735,6 +14087,13 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "shared" => go_shared(s),
         "urb-open" => go_browser(s),
         "explorer" => open_explorer(s, None),
+        "open-grub" => {
+            let mut t = TextEdit::new("/");
+            t.focused = true;
+            s.prompt = Some(Prompt::OpenGrub(t));
+        }
+        "skills" => go_skills(s),
+        "conflicts" => go_conflicts(s),
         "link-in" => ask_link_in(s),
         "link-back" => link_back(s),
         "access" => go_access(s),
@@ -13958,8 +14317,8 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::ShipLabel(_, t) | Prompt::Kind(t) | Prompt::New(t) | Prompt::NewWriter(t) | Prompt::WriterLink(t, _) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::SendShip { name: t, .. } | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) | Prompt::ShipOut(_) => unreachable!("it has no field of this kind"),
+                Prompt::ShipLabel(_, t) | Prompt::Kind(t) | Prompt::New(t) | Prompt::NewWriter(t) | Prompt::WriterLink(t, _) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::SendShip { name: t, .. } | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) | Prompt::OpenGrub(t) | Prompt::SkillNew(t) | Prompt::SkillNewFile(_, t) => t,
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) | Prompt::ShipOut(_) | Prompt::GrubDiscard | Prompt::SkillDelete(_) | Prompt::SkillDeleteFile(..) | Prompt::SkillRestoreRev(..) => unreachable!("it has no field of this kind"),
                 #[cfg(unix)]
                 Prompt::IdOut(..) | Prompt::IdIn(..) | Prompt::IdUse(..) => unreachable!("it has fields of its own"),
             })
@@ -14152,6 +14511,13 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             let (ask, says) = if s.names.contains(n) { ("Delete this page?", n.clone()) } else { ("Delete this folder?", format!("{n} and the {held} pages in it")) };
             (ask, text(says).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger)
         }
+        Prompt::OpenGrub(t) => ("Open grub", field(t, "/apps/lattice/..."), "Open", ButtonVariant::Contrast),
+        Prompt::GrubDiscard => ("Discard unsaved grub edits?", text("You have unsaved changes in this grub. Closing it will discard them.").font(k.ty.ui).color(k.c.text_muted).wrap(), "Discard", ButtonVariant::Danger),
+        Prompt::SkillNew(t) => ("New skill", field(t, "lowercase-skill-name"), "Create", ButtonVariant::Contrast),
+        Prompt::SkillNewFile(skill, t) => ("Add file to skill", col().w_full().gap(6.0).child(text(format!("Skill: {skill}")).font(k.ty.small).color(k.c.text_muted)).child(field(t, "reference/notes.md")), "Create", ButtonVariant::Contrast),
+        Prompt::SkillDelete(name) => ("Delete this skill?", text(format!("{name} will be moved to the skills trash and can be restored later.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
+        Prompt::SkillDeleteFile(name, path) => ("Delete this skill file?", text(format!("Remove {path} from skill {name}?")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
+        Prompt::SkillRestoreRev(name, rev, updated, _) => ("Restore skill revision?", text(format!("Restore {name} SKILL.md to revision #{rev} ({updated})?")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Restore", ButtonVariant::Contrast),
     };
     let mut buttons = row().w_full().gap(8.0).justify_end();
     if matches!(p, Prompt::New(_)) && !s.memory {
@@ -14218,6 +14584,7 @@ fn show_remote(s: &mut App, sh: Shared, p: Page) {
     if let Some(c) = s.conn.clone().filter(|_| s.marks.is_none()) {
         s.marks_req.request(c, |c| c.bookmarks());
     }
+    clear_wave2_screens(s);
     s.access = false;
     s.settings = None;
     s.shared_open = false;
@@ -14723,6 +15090,9 @@ fn no_node(s: &mut App) -> bool {
 
 /// Reads what stands at an address: the one typed, or one given (a folder's entry).
 fn urb_go(s: &mut App, to: Option<String>) {
+    if !leave_edit(s) {
+        return;
+    }
     #[cfg(unix)]
     if s.anon {
         return urb_go_anon(s, to);
@@ -14756,14 +15126,14 @@ fn urb_go(s: &mut App, to: Option<String>) {
 /// What stands in front of the reader: the screen, and the page on it.
 #[derive(Clone, Debug, PartialEq)]
 struct Front {
-    /// The forum, the settings, the inbox, access, the browser, the explorer, a folder.
-    screens: [bool; 7],
+    /// The forum, the settings, the inbox, access, the browser, the explorer, a folder, conflicts, grub, skills.
+    screens: [bool; 10],
     memory: bool,
     page: Option<String>,
 }
 
 fn front(s: &App) -> Front {
-    Front { screens: [s.forum.is_some(), s.settings.is_some(), s.inbox, s.access, s.shared_open, s.exploring, s.folder.is_some()], memory: s.memory, page: s.open.as_ref().map(|p| p.name.clone()) }
+    Front { screens: [s.forum.is_some(), s.settings.is_some(), s.inbox, s.access, s.shared_open, s.exploring, s.folder.is_some(), s.conflicts_open, s.grub.is_some(), s.skills.is_some()], memory: s.memory, page: s.open.as_ref().map(|p| p.name.clone()) }
 }
 
 /// Whether the reader has gone elsewhere since the read of another ship's page now answered was
@@ -16567,6 +16937,7 @@ fn head_go(s: &mut App, act: head::Do, tx: &mut Tx) {
             }
         }
         Do::Fold => s.files.collapse_all(),
+        Do::Skills => go_skills(s),
     }
 }
 
@@ -16583,6 +16954,7 @@ fn ribbon_go(s: &mut App, go: ribbon::Go, tx: &mut Tx) {
         Go::Browser => go_browser(s),
         Go::Forum => go_forum(s),
         Go::Inbox => go_inbox(s),
+        Go::Conflicts => go_conflicts(s),
         Go::Access => go_access(s),
         Go::Commands => {
             let mut q = TextEdit::new("");
@@ -16601,9 +16973,11 @@ fn ribbon_view(s: &App, k: &Kit, top: f32) -> El {
         shared: s.shared_open,
         forum: s.forum.is_some(),
         inbox: s.inbox,
+        conflicts: s.conflicts_open,
         access: s.access,
         settings: s.settings.is_some(),
         waiting: s.waiting.held + s.waiting.unread,
+        conflict_count: conflicts::list(page_names(s)).len() as u32,
     });
     let one = |it: &ribbon::Item| {
         let go = it.go;
@@ -16787,6 +17161,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
                 open_page(s, id);
             } else if leave_edit(s) {
                 remote_cancel(s);
+                clear_wave2_screens(s);
                 // a folder shows what it holds, and can be renamed, moved or deleted there
                 s.access = false;
                 s.settings = None;
@@ -17456,7 +17831,7 @@ fn start_scrub(s: &mut App) {
 fn sync_scrub(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     // the page was left: its history goes with it
     // or another screen was gone to: the history is drawn in the page's place, and would stand over it
-    let elsewhere = s.settings.is_some() || s.access || s.inbox || s.shared_open || s.forum.is_some() || s.folder.is_some();
+    let elsewhere = s.settings.is_some() || s.access || s.inbox || s.shared_open || s.forum.is_some() || s.folder.is_some() || s.conflicts_open || s.grub.is_some() || s.skills.is_some();
     if s.scrub.as_ref().is_some_and(|sc| elsewhere || s.editing || s.memory || s.remote.is_some() || s.open.as_ref().is_none_or(|p| p.name != sc.name)) {
         s.scrub = None;
         return true;
@@ -17855,8 +18230,11 @@ fn not_done(s: &mut App, e: &str) {
         // a slow operation (like moving a large folder) timing out does not mean the ship is offline:
         // do not flip into offline mode or queue conflicting moves; refresh to see what landed
         s.note = "not done: the ship took too long to answer; refreshing to check what landed".into();
-        if s.conn.is_some() && !s.memory {
-            load_tree(s);
+        if s.conn.is_some() {
+            check_tree_job(s);
+            if !s.memory {
+                load_tree(s);
+            }
         }
     } else if api::gone(e) {
         s.offline.get_or_insert_with(String::new);
@@ -18238,7 +18616,7 @@ struct WebShow {
 /// The HTML page to show as a web page, when one is in front to be read and that is how it is wanted.
 #[cfg(not(target_arch = "wasm32"))]
 fn web_page(s: &App) -> Option<&Page> {
-    let screen = s.settings.is_some() || s.access || s.forum.is_some() || s.shared_open || s.inbox || s.folder.is_some();
+    let screen = s.settings.is_some() || s.access || s.forum.is_some() || s.shared_open || s.inbox || s.folder.is_some() || s.conflicts_open || s.grub.is_some() || s.skills.is_some();
     let broken = |p: &Page| s.web.broken.as_ref().is_some_and(|k| k.name == p.name && k.rev == p.rev && k.text == s.web.text);
     s.open.as_ref().filter(|p| p.kind == "html" && !s.prefs.html_plain && !s.editing && !s.memory && s.old.is_none() && !screen && !broken(p))
 }
@@ -18527,9 +18905,1385 @@ fn editor_reveal(s: &App, tx: &mut Tx) {
     tx.scroll_to_y(FIELD_SCROLL, (down - s.edit_room.max(120.0) * 0.3).max(0.0));
 }
 
+/// Returns the pages list regardless of whether Knowledge (memories) or Pages is active.
+fn page_names(s: &App) -> &[String] {
+    if s.memory { &s.other.1 } else { &s.names }
+}
+
+/// Clears all other full-pane screens when opening a wave-2 screen (`conflicts`, `grub`, `skills`).
+fn clear_other_screens_for_wave2(s: &mut App) {
+    remote_cancel(s);
+    s.settings = None;
+    s.access = false;
+    s.forum = None;
+    s.exploring = false;
+    s.shared_open = false;
+    s.inbox = false;
+    s.conflicts_open = false;
+    s.grub = None;
+    s.skills = None;
+}
+
+/// Fetches ship-side page errors (`GET /page-errors?name=...`) for an own non-memory page.
+fn load_page_errors(s: &mut App, name: &str) {
+    if s.memory || s.remote.is_some() {
+        return;
+    }
+    let Some(c) = s.conn.clone() else { return };
+    s.page_err_req.request((c, name.to_owned()), |(c, n)| {
+        let err = c.page_errors(&n).unwrap_or_default();
+        (n, err)
+    });
+}
+
+/// Queries `/tree-job` for active async folder operations and any recently dropped job.
+fn check_tree_job(s: &mut App) {
+    let Some(c) = s.conn.clone() else { return };
+    if s.job_req.is_pending() {
+        return;
+    }
+    s.job_req.request(c, |c| c.tree_job());
+}
+
+/// Handles a `/tree-job` response: surfaces dropped job warnings once, holds queue drain while a job runs, and drains once it finishes.
+fn handle_tree_job(s: &mut App, r: Result<api::TreeJob, String>, clock: f64, tx: &mut Tx) {
+    let from_timeout = std::mem::take(&mut s.job_from_timeout);
+    let Ok(tj) = r else {
+        // /tree-job failed: keep s.offline set if a save timed out so normal offline retry takes over
+        return;
+    };
+    if let Some(d) = tj.dropped.filter(|d| !d.at.is_empty()) {
+        if s.prefs.last_dropped_job != d.at {
+            s.prefs.last_dropped_job = d.at;
+            save_prefs(s);
+            let what = if d.job.is_empty() { "folder operation" } else { d.job.as_str() };
+            s.note = if d.path.is_empty() {
+                format!("A {what} timed out on the ship and was dropped.")
+            } else {
+                format!("A {what} on {} timed out on the ship and was dropped. Check that folder.", d.path)
+            };
+        }
+    }
+    if let Some(job) = tj.job.filter(|j| !j.is_empty()) {
+        s.offline = None;
+        s.job_wait = Some(job);
+        s.job_poll_at = clock + 5.0;
+        tx.wake_after(std::time::Duration::from_secs(5));
+        if s.note.is_empty() || s.note.starts_with("saved on this device") || s.note.starts_with("not done: the ship took too long") {
+            s.note = "a folder job is running on the ship; saves will send once it finishes".into();
+        }
+    } else if s.job_wait.take().is_some() || from_timeout {
+        s.job_poll_at = 0.0;
+        // the ship answered /tree-job with no active job: clear offline and drain any queued saves
+        s.offline = None;
+        drain(s);
+        load_tree(s);
+    }
+}
+
+/// Opens the Sync Conflicts inbox (`80-conflicts.js`).
+fn go_conflicts(s: &mut App) {
+    if !leave_edit(s) {
+        return;
+    }
+    if !s.editing {
+        clear_other_screens_for_wave2(s);
+        s.conflicts_open = true;
+    }
+}
+
+/// Sync conflicts inbox screen (`80-conflicts.js`).
+fn conflicts_view(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let pages = page_names(s);
+    let items = conflicts::list(pages);
+    let head = row()
+        .w_full()
+        .justify_between()
+        .center_y()
+        .gap(8.0)
+        .child(text(format!("Sync conflicts ({})", items.len())).font(k.ty.body_medium).color(c.text_base))
+        .child(
+            Button::new("Close")
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::Ghost)
+                .on_press(|s: &mut App| s.conflicts_open = false)
+                .build(k)
+                .key("conflicts-close"),
+        );
+    let mut out = col()
+        .w_full()
+        .max_w(760.0)
+        .padding(28.0)
+        .gap(12.0)
+        .child(head)
+        .child(
+            text("When an offline or concurrent save loses a race, the ship keeps a copy under conflicts/. Compare with the live page, copy anything you want to keep, then resolve by deleting the conflict page.")
+                .font(k.ty.small)
+                .color(c.text_muted)
+                .wrap(),
+        );
+    if items.is_empty() {
+        out = out.child(text("No sync conflicts.").font(k.ty.ui).color(c.text_muted));
+    } else {
+        for (i, path) in items.into_iter().enumerate() {
+            let orig = conflicts::original(&path).filter(|o| pages.contains(o));
+            let mut acts = row().gap(8.0).flex_wrap().center_y();
+            if let Some(live) = orig {
+                let live_open = live.clone();
+                acts = acts.child(
+                    Button::new(format!("Open live ({live})"))
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Contrast)
+                        .on_press(move |s: &mut App| {
+                            if s.memory {
+                                flip(s);
+                            }
+                            open_page(s, &live_open);
+                        })
+                        .build(k)
+                        .key(format!("conflict-live-{i}")),
+                );
+            }
+            let read_path = path.clone();
+            let del_path = path.clone();
+            acts = acts
+                .child(
+                    Button::new("Read it")
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Ghost)
+                        .on_press(move |s: &mut App| {
+                            if s.memory {
+                                flip(s);
+                            }
+                            open_page(s, &read_path);
+                        })
+                        .build(k)
+                        .key(format!("conflict-read-{i}")),
+                )
+                .child(
+                    Button::new("Resolve (delete)")
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Danger)
+                        .on_press(move |s: &mut App| {
+                            if s.memory {
+                                flip(s);
+                            }
+                            s.prompt = Some(Prompt::Delete(del_path.clone()));
+                        })
+                        .build(k)
+                        .key(format!("conflict-resolve-{i}")),
+                );
+            let card = col()
+                .key(format!("conflict-row-{i}"))
+                .w_full()
+                .padding(12.0)
+                .gap(8.0)
+                .radius(k.radius.md)
+                .fill(c.layer_01)
+                .border(1.0, c.border_weak)
+                .child(text(path).font(k.ty.mono).color(c.text_base).wrap().selectable(true))
+                .child(acts);
+            out = out.child(card);
+        }
+    }
+    col().key("conflicts").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(out)).scroll(ScrollSpec { stick_bottom: false })
+}
+
+/// Opens an arbitrary local ball grub in the grub editor (`40-grub.js`).
+fn open_grub(s: &mut App, path: String) {
+    let path = path.trim().to_owned();
+    if !skills::valid_grub_path(&path) {
+        s.note = "grub path must start with / and contain no spaces or .. segments".into();
+        return;
+    }
+    let Some(c) = s.conn.clone() else {
+        s.note = "grub editor needs a connected ship".into();
+        return;
+    };
+    if !leave_edit(s) {
+        return;
+    }
+    s.note = format!("opening {path}\u{2026}");
+    s.grub_req.request((c, path), |(c, p)| c.grub_source(&p));
+}
+
+/// Explicitly saves the currently open grub (`POST /grub-save`). Never runs via autosave.
+fn save_grub(s: &mut App) {
+    let Some(c) = s.conn.clone() else { return };
+    let Some(g) = s.grub.as_mut() else { return };
+    if !g.editable {
+        s.note = "this grub is read-only".into();
+        return;
+    }
+    if g.saving {
+        return;
+    }
+    if g.edit.text == g.was {
+        s.note = "no changes to save".into();
+        return;
+    }
+    let (path, body) = (g.path.clone(), g.edit.text.clone());
+    g.saving = true;
+    s.note = format!("saving {path}\u{2026}");
+    s.grub_save_req.request((c, path, body), |(c, p, b)| {
+        c.grub_save(&p, &b)?;
+        Ok((p, b))
+    });
+}
+
+/// Returns true if the open grub editor has unsaved edits.
+fn grub_dirty(s: &App) -> bool {
+    s.grub.as_ref().is_some_and(|g| g.editable && g.edit.text != g.was)
+}
+
+/// Arbitrary ball grub editor view (`40-grub.js`).
+fn grub_view(s: &App, g: &GrubState, k: &Kit) -> El {
+    let c = &k.c;
+    let dirty = g.editable && g.edit.text != g.was;
+    let mut bar = row()
+        .key("grub-bar")
+        .w_full()
+        .px(16.0)
+        .py(10.0)
+        .gap(8.0)
+        .center_y()
+        .justify_between()
+        .child(
+            row()
+                .gap(8.0)
+                .center_y()
+                .grow(1.0)
+                .min_w(0.0)
+                .child(text(format!("grub: {}", g.path)).font(k.ty.mono).color(c.text_base).truncate())
+                .children((!g.blot.is_empty()).then(|| text(g.blot.clone()).font(k.ty.text_xsmall_medium).color(c.text_muted).px(6.0).py(2.0).radius(k.radius.sm).fill(c.layer_02)))
+                .children(dirty.then(|| text("unsaved").font(k.ty.text_xsmall_medium).color(c.warning.icon))),
+        );
+    let mut acts = row().gap(6.0).center_y();
+    if g.editable {
+        acts = acts.child(
+            Button::new(if g.saving { "Saving\u{2026}" } else { "Save" })
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::Contrast)
+                .disabled(!dirty || g.saving)
+                .help("Save grub (Ctrl+S). Autosave is disabled for grubs.")
+                .on_press(save_grub)
+                .build(k)
+                .key("grub-save"),
+        );
+    }
+    acts = acts.child(
+        Button::new("Close")
+            .control_size(ControlSize::Small)
+            .variant(ButtonVariant::Ghost)
+            .on_press(|s: &mut App| {
+                if s.grub.as_ref().is_some_and(|g| g.saving) {
+                    s.note = "saving grub; please wait".into();
+                } else if grub_dirty(s) {
+                    s.prompt = Some(Prompt::GrubDiscard);
+                } else {
+                    s.grub = None;
+                    s.grub_save_req.cancel();
+                }
+            })
+            .build(k)
+            .key("grub-close"),
+    );
+    bar = bar.child(acts);
+    let mut out = col().key("grub-editor").w_full().h_full().min_h(0.0).child(bar).child(Divider::horizontal().build(k));
+    if !g.editable {
+        out = out.child(
+            row()
+                .key("grub-readonly")
+                .w_full()
+                .px(16.0)
+                .py(8.0)
+                .fill(c.layer_01)
+                .child(text("Read-only grub (this mark cannot be edited as text).").font(k.ty.small).color(c.text_muted)),
+        );
+    }
+    let spans = code_spans(&g.kind, &g.edit.text, k);
+    let body = if g.editable {
+        let style = edit_style(k, edit_size(&s.prefs));
+        let field = rune::text_input(&g.edit, style)
+            .key("grub-input")
+            .label("Grub source")
+            .color(c.text_base)
+            .caret(c.text_base, selection_of(k))
+            .spans(spans)
+            .on_edit(|s: &mut App| &mut s.grub.as_mut().expect("grub open").edit)
+            .on_input_key(|s: &mut App, ev: &KeyEvent, _| {
+                if ev.key == Key::Enter && ev.mods == rune::Mods::default() {
+                    if let Some(g) = &mut s.grub {
+                        g.edit.insert("\n");
+                        return true;
+                    }
+                }
+                false
+            });
+        let scroll = if s.prefs.no_wrap {
+            col().key("grub-scroll").w_full().grow(1.0).min_h(0.0).scroll_xy().child(field.w(UNWRAPPED))
+        } else {
+            col().key("grub-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(field.w_full().wrap_anywhere())
+        };
+        col().w_full().grow(1.0).min_h(0.0).padding(16.0).child(scroll)
+    } else {
+        col()
+            .key("grub-scroll")
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .padding(16.0)
+            .child(rune::rich(g.edit.text.clone(), spans).font(k.ty.mono).color(c.text_base).wrap().selectable(true))
+            .scroll(ScrollSpec { stick_bottom: false })
+    };
+    out.child(body)
+}
+
+/// Returns true if the Skills manager currently has unsaved edits in the open skill editor.
+fn skill_dirty(s: &App) -> bool {
+    s.skills.as_ref().and_then(|sk| sk.cur.as_ref()).is_some_and(|cur| cur.edit && cur.editor.text != cur.was)
+}
+
+/// Returns true if a skill save is currently in flight on `skills_req`.
+fn skill_saving(s: &App) -> bool {
+    s.skills.as_ref().and_then(|sk| sk.cur.as_ref()).is_some_and(|cur| cur.saving)
+}
+
+/// Opens the Skills manager screen (`ui-app/skills.js`).
+fn go_skills(s: &mut App) {
+    if !leave_edit(s) {
+        return;
+    }
+    if s.editing {
+        return;
+    }
+    clear_other_screens_for_wave2(s);
+    let mut st = SkillsState::new();
+    match s.conn.clone() {
+        Some(c) => {
+            st.loading = true;
+            s.skills = Some(st);
+            s.skills_req.request(c, |c| c.skills_list().map(SkillGot::List));
+        }
+        None => {
+            st.loaded = true;
+            st.list = vec![skills::SkillRow {
+                name: "sample-skill".into(),
+                description: "Built-in sample skill for previewing the Skills manager.".into(),
+                tags: vec!["core".into()],
+                updated: "~2026.11.25..12.0.0".into(),
+                author: "~zod".into(),
+                sensitive: false,
+                superseded_by: None,
+                files: 1,
+            }];
+            s.skills = Some(st);
+        }
+    }
+}
+
+/// Opens one skill by name inside the Skills manager.
+fn skill_open(s: &mut App, name: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    if skill_dirty(s) {
+        s.note = "save or cancel your skill edits before switching".into();
+        return;
+    }
+    match s.conn.clone() {
+        Some(c) => {
+            s.note = format!("opening skill {name}\u{2026}");
+            s.skills_req.request((c, name), |(c, n)| {
+                let detail = c.skill_read(&n)?;
+                Ok(SkillGot::Open { detail, edit: false, list: None, note: String::new() })
+            });
+        }
+        None => {
+            let body = skills::new_skill_template(&name);
+            let detail = skills::SkillDetail {
+                name: name.clone(),
+                description: "Sample skill".into(),
+                body: body.clone(),
+                tags: vec!["core".into()],
+                updated: "~2026.11.25..12.0.0".into(),
+                author: "~zod".into(),
+                sensitive: false,
+                superseded_by: None,
+                files: Vec::new(),
+            };
+            if let Some(sk) = &mut s.skills {
+                sk.cur = Some(SkillOpen {
+                    detail,
+                    file: "SKILL.md".into(),
+                    text: body.clone(),
+                    was: body.clone(),
+                    edit: false,
+                    editor: TextEdit::new(&body),
+                    tag_input: TextEdit::new(""),
+                    hist: None,
+                    rev_view: None,
+                    saving: false,
+                });
+            }
+        }
+    }
+}
+
+/// Switches the active file inside the currently open skill (`SKILL.md` or an attached file).
+fn skill_open_file(s: &mut App, path: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    if skill_dirty(s) {
+        s.note = "save or cancel your skill edits before switching files".into();
+        return;
+    }
+    let Some(cur) = s.skills.as_mut().and_then(|sk| sk.cur.as_mut()) else { return };
+    cur.rev_view = None;
+    if path == "SKILL.md" {
+        cur.file = "SKILL.md".into();
+        cur.text = cur.detail.body.clone();
+        cur.was = cur.detail.body.clone();
+        cur.editor = TextEdit::new(&cur.text);
+        cur.edit = false;
+        return;
+    }
+    let name = cur.detail.name.clone();
+    if let Some(c) = s.conn.clone() {
+        s.note = format!("loading {path}\u{2026}");
+        s.skills_req.request((c, name, path), |(c, n, p)| {
+            let (body, _) = c.skill_file(&n, &p)?;
+            Ok(SkillGot::File { name: n, path: p, body, edit: false })
+        });
+    }
+}
+
+/// Saves the currently edited skill file (`SKILL.md` or attached file).
+fn skill_save(s: &mut App) {
+    let Some(c) = s.conn.clone() else {
+        if let Some(cur) = s.skills.as_mut().and_then(|sk| sk.cur.as_mut()) {
+            let body = cur.editor.text.clone();
+            cur.text = body.clone();
+            cur.was = body.clone();
+            if cur.file == "SKILL.md" {
+                cur.detail.body = body;
+            }
+            cur.edit = false;
+            s.note = "saved".into();
+        }
+        return;
+    };
+    let Some(cur) = s.skills.as_mut().and_then(|sk| sk.cur.as_mut()) else { return };
+    if cur.saving {
+        return;
+    }
+    let (name, path, body, expected) = (cur.detail.name.clone(), cur.file.clone(), cur.editor.text.clone(), cur.detail.updated.clone());
+    cur.saving = true;
+    s.note = format!("saving {name}/{path}\u{2026}");
+    s.skills_req.request((c, name, path, body, expected), |(c, name, path, body, expected)| {
+        let exp = (path == "SKILL.md" && !expected.is_empty()).then_some(expected.as_str());
+        let conflicted = c.skill_save(&name, &path, &body, exp, None)?;
+        let detail = c.skill_read(&name)?;
+        let list = c.skills_list().unwrap_or_default();
+        let note = if conflicted {
+            format!("saved {name}/{path} (concurrent edit detected; conflict kept)")
+        } else {
+            format!("saved {name}/{path}")
+        };
+        Ok(SkillGot::Saved { name, path, body, detail, list, note })
+    });
+}
+
+/// Adds or removes a tag on a skill.
+fn skill_toggle_tag(s: &mut App, name: String, tag: String, on: bool) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    if skill_dirty(s) {
+        s.note = "save or cancel your skill edits first".into();
+        return;
+    }
+    let tag = tag.trim().to_ascii_lowercase();
+    if tag.is_empty() {
+        return;
+    }
+    let Some(c) = s.conn.clone() else {
+        if let Some(sk) = &mut s.skills {
+            if let Some(cur) = sk.cur.as_mut().filter(|c| c.detail.name == name) {
+                if on && !cur.detail.tags.contains(&tag) {
+                    cur.detail.tags.push(tag.clone());
+                } else if !on {
+                    cur.detail.tags.retain(|t| t != &tag);
+                }
+                cur.tag_input = TextEdit::new("");
+            }
+        }
+        return;
+    };
+    s.skills_req.request((c, name, tag, on), |(c, name, tag, on)| {
+        c.skill_tag(&name, &tag, on)?;
+        let detail = c.skill_read(&name)?;
+        let list = c.skills_list().unwrap_or_default();
+        let note = if on { format!("tagged {name} with #{tag}") } else { format!("removed #{tag} from {name}") };
+        Ok(SkillGot::Open { detail, edit: false, list: Some(list), note })
+    });
+}
+
+/// Toggles a skill's sensitive flag (saved via `POST /skill-save?sensitive=1|0`).
+fn skill_toggle_sensitive(s: &mut App, name: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    if skill_dirty(s) {
+        s.note = "save or cancel your skill edits first".into();
+        return;
+    }
+    let Some((body, updated, was)) = s
+        .skills
+        .as_ref()
+        .and_then(|sk| sk.cur.as_ref())
+        .filter(|cur| cur.detail.name == name)
+        .map(|cur| (cur.detail.body.clone(), cur.detail.updated.clone(), cur.detail.sensitive))
+    else {
+        return;
+    };
+    let next = !was;
+    let Some(c) = s.conn.clone() else {
+        if let Some(cur) = s.skills.as_mut().and_then(|sk| sk.cur.as_mut()) {
+            cur.detail.sensitive = next;
+        }
+        return;
+    };
+    s.skills_req.request((c, name, body, updated, next), |(c, name, body, updated, next)| {
+        let exp = (!updated.is_empty()).then_some(updated.as_str());
+        let _ = c.skill_save(&name, "SKILL.md", &body, exp, Some(next))?;
+        let detail = c.skill_read(&name)?;
+        let list = c.skills_list().unwrap_or_default();
+        let note = if next { format!("marked {name} sensitive") } else { format!("unmarked {name} sensitive") };
+        Ok(SkillGot::Open { detail, edit: false, list: Some(list), note })
+    });
+}
+
+/// Creates a new skill (checking `GET /skill?name=...` first so existing skills open instead of overwriting).
+fn skill_create(s: &mut App, name: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    if skill_dirty(s) {
+        s.note = "save or cancel your skill edits first".into();
+        return;
+    }
+    let Some(c) = s.conn.clone() else {
+        let body = skills::new_skill_template(&name);
+        if let Some(sk) = &mut s.skills {
+            if !sk.list.iter().any(|r| r.name == name) {
+                sk.list.push(skills::SkillRow { name: name.clone(), description: "New skill".into(), files: 1, ..Default::default() });
+            }
+            sk.cur = Some(SkillOpen {
+                detail: skills::SkillDetail { name: name.clone(), body: body.clone(), ..Default::default() },
+                file: "SKILL.md".into(),
+                text: body.clone(),
+                was: body.clone(),
+                edit: true,
+                editor: TextEdit::new(&body),
+                tag_input: TextEdit::new(""),
+                hist: None,
+                rev_view: None,
+                saving: false,
+            });
+        }
+        return;
+    };
+    s.note = format!("creating skill {name}\u{2026}");
+    s.skills_req.request((c, name), |(c, name)| {
+        match c.skill_read(&name) {
+            Ok(detail) => Ok(SkillGot::Open { detail, edit: false, list: None, note: format!("opened existing skill {name}") }),
+            Err(e) if e.starts_with("404") => {
+                let body = skills::new_skill_template(&name);
+                c.skill_save(&name, "SKILL.md", &body, None, None)?;
+                let detail = c.skill_read(&name)?;
+                let list = c.skills_list().unwrap_or_default();
+                Ok(SkillGot::Open { detail, edit: true, list: Some(list), note: format!("created skill {name}") })
+            }
+            Err(e) => Err(e),
+        }
+    });
+}
+
+/// Creates a new attached file inside a skill and opens it for editing (or opens it if it already exists).
+fn skill_create_file(s: &mut App, name: String, path: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    let exists = s
+        .skills
+        .as_ref()
+        .and_then(|sk| sk.cur.as_ref())
+        .is_some_and(|cur| cur.detail.name == name && cur.detail.files.iter().any(|f| f.path == path));
+    if exists {
+        skill_open_file(s, path.clone());
+        if !skill_dirty(s) {
+            s.note = format!("opened existing file {path}");
+        }
+        return;
+    }
+    let body = skills::new_file_template(&path);
+    let Some(c) = s.conn.clone() else { return };
+    s.note = format!("creating {name}/{path}\u{2026}");
+    s.skills_req.request((c, name, path, body), |(c, name, path, body)| {
+        c.skill_save(&name, &path, &body, None, None)?;
+        let detail = c.skill_read(&name)?;
+        let list = c.skills_list().unwrap_or_default();
+        Ok(SkillGot::Saved { name: name.clone(), path: path.clone(), body, detail, list, note: format!("created {name}/{path}") })
+    });
+}
+
+/// Soft-deletes a skill to the trash.
+fn skill_delete(s: &mut App, name: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    let Some(c) = s.conn.clone() else {
+        if let Some(sk) = &mut s.skills {
+            sk.list.retain(|r| r.name != name);
+            if sk.cur.as_ref().is_some_and(|c| c.detail.name == name) {
+                sk.cur = None;
+            }
+        }
+        return;
+    };
+    s.skills_req.request((c, name), |(c, name)| {
+        c.skill_delete(&name)?;
+        let list = c.skills_list().unwrap_or_default();
+        Ok(SkillGot::Deleted { name, list })
+    });
+}
+
+/// Deletes an attached file from a skill.
+fn skill_delete_file(s: &mut App, name: String, path: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    let Some(c) = s.conn.clone() else { return };
+    s.skills_req.request((c, name, path), |(c, name, path)| {
+        c.skill_file_delete(&name, &path)?;
+        let detail = c.skill_read(&name)?;
+        let list = c.skills_list().unwrap_or_default();
+        Ok(SkillGot::Open { detail, edit: false, list: Some(list), note: format!("deleted {path}") })
+    });
+}
+
+/// Toggles the Skills trash drawer and fetches deleted skills.
+fn skill_toggle_trash(s: &mut App) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    let conn = s.conn.clone();
+    let open = {
+        let Some(sk) = &mut s.skills else { return };
+        sk.trash_open = !sk.trash_open;
+        if sk.trash_open && conn.is_none() {
+            sk.trash = Some(Vec::new());
+        }
+        sk.trash_open
+    };
+    if open {
+        if let Some(c) = conn {
+            s.skills_req.request(c, |c| c.skill_trash().map(SkillGot::Trash));
+        }
+    }
+}
+
+/// Restores a deleted skill from the trash.
+fn skill_restore(s: &mut App, name: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    let Some(c) = s.conn.clone() else { return };
+    s.skills_req.request((c, name), |(c, name)| {
+        c.skill_restore(&name)?;
+        let list = c.skills_list().unwrap_or_default();
+        let trash = c.skill_trash().unwrap_or_default();
+        Ok(SkillGot::Restored { name, list, trash })
+    });
+}
+
+/// Loads revision history for the currently open skill.
+fn skill_load_history(s: &mut App, name: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    let Some(c) = s.conn.clone() else { return };
+    s.skills_req.request((c, name), |(c, name)| {
+        let revs = c.skill_history(&name)?;
+        Ok(SkillGot::History { name, revs })
+    });
+}
+
+/// Loads one historical revision of `SKILL.md` for read-only inspection.
+fn skill_view_rev(s: &mut App, name: String, rev: u64) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    if skill_dirty(s) {
+        s.note = "save or cancel your skill edits before viewing a revision".into();
+        return;
+    }
+    let Some(c) = s.conn.clone() else { return };
+    s.skills_req.request((c, name, rev), |(c, name, rev)| {
+        let (body, _, updated) = c.skill_read_at(&name, rev)?;
+        Ok(SkillGot::Rev { name, rev, updated, body })
+    });
+}
+
+/// Restores a historical revision of `SKILL.md` by saving it over the latest revision.
+fn skill_restore_rev(s: &mut App, name: String, rev: u64, expected_updated: String, body: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    let Some(c) = s.conn.clone() else { return };
+    s.skills_req.request((c, name, rev, expected_updated, body), |(c, name, rev, expected_updated, body)| {
+        let exp = (!expected_updated.is_empty()).then_some(expected_updated.as_str());
+        let _ = c.skill_save(&name, "SKILL.md", &body, exp, None)?;
+        let detail = c.skill_read(&name)?;
+        let list = c.skills_list().unwrap_or_default();
+        Ok(SkillGot::Saved { name: name.clone(), path: "SKILL.md".into(), body, detail, list, note: format!("restored {name} to revision #{rev}") })
+    });
+}
+
+/// Applies the result of a background Skills manager request.
+fn handle_skill_got(s: &mut App, r: Result<SkillGot, String>) {
+    let Some(sk) = &mut s.skills else { return };
+    sk.loading = false;
+    match r {
+        Err(e) => {
+            if let Some(cur) = &mut sk.cur {
+                cur.saving = false;
+            }
+            s.note = format!("skills: {e}");
+        }
+        Ok(SkillGot::List(list)) => {
+            sk.list = list;
+            sk.loaded = true;
+        }
+        Ok(SkillGot::Open { detail, edit, list, note }) => {
+            if let Some(l) = list {
+                sk.list = l;
+                sk.loaded = true;
+            }
+            let body = detail.body.clone();
+            let mut editor = TextEdit::new(&body);
+            editor.focused = edit;
+            sk.cur = Some(SkillOpen {
+                detail,
+                file: "SKILL.md".into(),
+                text: body.clone(),
+                was: body,
+                edit,
+                editor,
+                tag_input: TextEdit::new(""),
+                hist: None,
+                rev_view: None,
+                saving: false,
+            });
+            if !note.is_empty() {
+                s.note = note;
+            } else if s.note.starts_with("opening skill ") {
+                s.note.clear();
+            }
+        }
+        Ok(SkillGot::File { name, path, body, edit }) => {
+            if let Some(cur) = sk.cur.as_mut().filter(|c| c.detail.name == name) {
+                cur.file = path;
+                cur.text = body.clone();
+                cur.was = body.clone();
+                cur.editor = TextEdit::new(&body);
+                cur.editor.focused = edit;
+                cur.edit = edit;
+                cur.rev_view = None;
+            }
+            if s.note.starts_with("loading ") {
+                s.note.clear();
+            }
+        }
+        Ok(SkillGot::Saved { name, path, body, detail, list, note }) => {
+            sk.list = list;
+            sk.loaded = true;
+            let text = if path == "SKILL.md" { detail.body.clone() } else { body };
+            sk.cur = Some(SkillOpen {
+                detail,
+                file: path,
+                text: text.clone(),
+                was: text.clone(),
+                edit: false,
+                editor: TextEdit::new(&text),
+                tag_input: TextEdit::new(""),
+                hist: None,
+                rev_view: None,
+                saving: false,
+            });
+            let _ = name;
+            s.note = note;
+        }
+        Ok(SkillGot::Deleted { name, list }) => {
+            sk.list = list;
+            if sk.cur.as_ref().is_some_and(|c| c.detail.name == name) {
+                sk.cur = None;
+            }
+            s.note = format!("deleted skill {name}");
+        }
+        Ok(SkillGot::Restored { name, list, trash }) => {
+            sk.list = list;
+            sk.trash = Some(trash);
+            s.note = format!("restored skill {name}");
+        }
+        Ok(SkillGot::Trash(trash)) => {
+            sk.trash = Some(trash);
+        }
+        Ok(SkillGot::History { name, revs }) => {
+            if let Some(cur) = sk.cur.as_mut().filter(|c| c.detail.name == name) {
+                cur.hist = Some(revs);
+            }
+        }
+        Ok(SkillGot::Rev { name, rev, updated, body }) => {
+            if let Some(cur) = sk.cur.as_mut().filter(|c| c.detail.name == name) {
+                cur.rev_view = Some((rev, updated, body));
+                cur.edit = false;
+            }
+        }
+    }
+}
+
+/// Skills manager screen (`ui-app/skills.js`).
+fn skills_view(s: &App, sk: &SkillsState, k: &Kit) -> El {
+    let c = &k.c;
+    let tags = skills::all_tags(&sk.list);
+    let filtered = skills::filter_skills(&sk.list, &sk.query.text, &sk.tag);
+
+    let left_head = row()
+        .w_full()
+        .justify_between()
+        .center_y()
+        .gap(4.0)
+        .child(text("Skills").font(k.ty.ui_medium).color(c.text_base))
+        .child(
+            row()
+                .gap(4.0)
+                .child(
+                    Button::new("+ New")
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Contrast)
+                        .on_press(|s: &mut App| {
+                            let mut t = TextEdit::new("");
+                            t.focused = true;
+                            s.prompt = Some(Prompt::SkillNew(t));
+                        })
+                        .build(k)
+                        .key("skill-new"),
+                )
+                .child(
+                    Button::new(if sk.trash_open { "List" } else { "Trash" })
+                        .control_size(ControlSize::Small)
+                        .variant(if sk.trash_open { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                        .on_press(skill_toggle_trash)
+                        .build(k)
+                        .key("skill-trash-toggle"),
+                ),
+        );
+
+    let search = TextInput::new(&sk.query)
+        .placeholder("Filter skills...")
+        .on_edit(|s: &mut App| &mut s.skills.as_mut().expect("skills open").query)
+        .build(k)
+        .w_full()
+        .key("skills-filter");
+
+    let mut tag_row = row().w_full().gap(4.0).flex_wrap().child(
+        Button::new("All")
+            .control_size(ControlSize::Small)
+            .variant(if sk.tag.is_empty() { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted })
+            .on_press(|s: &mut App| {
+                if let Some(sk) = &mut s.skills {
+                    sk.tag.clear();
+                }
+            })
+            .build(k)
+            .key("skills-tag-all"),
+    );
+    for t in tags {
+        let on = sk.tag == t;
+        let tv = t.clone();
+        tag_row = tag_row.child(
+            Button::new(format!("#{t}"))
+                .control_size(ControlSize::Small)
+                .variant(if on { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted })
+                .on_press(move |s: &mut App| {
+                    if let Some(sk) = &mut s.skills {
+                        sk.tag = if sk.tag == tv { String::new() } else { tv.clone() };
+                    }
+                })
+                .build(k)
+                .key(format!("skills-tag-{t}")),
+        );
+    }
+
+    let mut list_col = col().w_full().gap(4.0);
+    if sk.trash_open {
+        match &sk.trash {
+            None => list_col = list_col.child(text("Loading trash\u{2026}").font(k.ty.small).color(c.text_muted)),
+            Some(rows) if rows.is_empty() => list_col = list_col.child(text("Trash is empty.").font(k.ty.small).color(c.text_muted)),
+            Some(rows) => {
+                for (i, r) in rows.iter().enumerate() {
+                    let name = r.name.clone();
+                    list_col = list_col.child(
+                        row()
+                            .key(format!("skill-trash-{i}"))
+                            .w_full()
+                            .padding(8.0)
+                            .gap(6.0)
+                            .center_y()
+                            .justify_between()
+                            .radius(k.radius.sm)
+                            .fill(c.layer_01)
+                            .child(text(r.name.clone()).font(k.ty.small_medium).color(c.text_base).truncate().grow(1.0).min_w(0.0))
+                            .child(
+                                Button::new("Restore")
+                                    .control_size(ControlSize::Small)
+                                    .variant(ButtonVariant::Ghost)
+                                    .on_press(move |s: &mut App| skill_restore(s, name.clone()))
+                                    .build(k)
+                                    .key(format!("skill-restore-{i}")),
+                            ),
+                    );
+                }
+            }
+        }
+    } else if sk.loading && !sk.loaded {
+        list_col = list_col.child(text("Loading skills\u{2026}").font(k.ty.small).color(c.text_muted));
+    } else if filtered.is_empty() {
+        list_col = list_col.child(text("No skills match.").font(k.ty.small).color(c.text_muted));
+    } else {
+        for (i, row_item) in filtered.iter().enumerate() {
+            let active = sk.cur.as_ref().is_some_and(|cur| cur.detail.name == row_item.name);
+            let open_name = row_item.name.clone();
+            let mut title_row = row().w_full().gap(6.0).center_y().child(text(row_item.name.clone()).font(k.ty.ui_medium).color(c.text_base).truncate().grow(1.0).min_w(0.0));
+            if row_item.tags.iter().any(|t| t == "core") {
+                title_row = title_row.child(text("core").font(k.ty.text_xsmall_medium).color(c.text_accent).px(4.0).radius(k.radius.sm).fill(c.layer_02));
+            }
+            if row_item.sensitive {
+                title_row = title_row.child(text("sensitive").font(k.ty.text_xsmall_medium).color(c.warning.icon).px(4.0).radius(k.radius.sm).fill(c.layer_02));
+            }
+            let mut card = col()
+                .key(format!("skill-row-{i}"))
+                .role("button")
+                .label(row_item.name.clone())
+                .w_full()
+                .padding(8.0)
+                .gap(3.0)
+                .radius(k.radius.sm)
+                .fill(if active { c.layer_02 } else { c.layer_01 })
+                .hover(c.hover)
+                .on_press(move |s: &mut App| skill_open(s, open_name.clone()))
+                .child(title_row);
+            if !row_item.description.is_empty() {
+                card = card.child(text(row_item.description.clone()).font(k.ty.small).color(c.text_muted).wrap());
+            }
+            list_col = list_col.child(card);
+        }
+    }
+
+    let left_rail = col()
+        .key("skills-list")
+        .w(260.0)
+        .h_full()
+        .min_h(0.0)
+        .padding(12.0)
+        .gap(8.0)
+        .child(left_head)
+        .child(search)
+        .child(tag_row)
+        .child(col().w_full().grow(1.0).min_h(0.0).child(list_col).scroll(ScrollSpec { stick_bottom: false }));
+
+    let right_pane = if let Some(cur) = &sk.cur {
+        let sname = cur.detail.name.clone();
+        let is_core = cur.detail.tags.iter().any(|t| t == "core");
+        let is_sens = cur.detail.sensitive;
+        let dirty = cur.edit && cur.editor.text != cur.was;
+
+        let mut actions = row().gap(6.0).flex_wrap().center_y();
+        if cur.edit {
+            actions = actions
+                .child(
+                    Button::new(if cur.saving { "Saving\u{2026}" } else { "Save" })
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Contrast)
+                        .disabled(!dirty || cur.saving)
+                        .on_press(skill_save)
+                        .build(k)
+                        .key("skill-save"),
+                )
+                .child(
+                    Button::new("Cancel")
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Ghost)
+                        .on_press(|s: &mut App| {
+                            if let Some(cur) = s.skills.as_mut().and_then(|sk| sk.cur.as_mut()) {
+                                cur.editor = TextEdit::new(&cur.was);
+                                cur.edit = false;
+                            }
+                        })
+                        .build(k)
+                        .key("skill-cancel"),
+                );
+        } else {
+            actions = actions.child(
+                Button::new("Edit")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Contrast)
+                    .on_press(|s: &mut App| {
+                        if let Some(cur) = s.skills.as_mut().and_then(|sk| sk.cur.as_mut()) {
+                            cur.rev_view = None;
+                            cur.editor = TextEdit::new(&cur.text);
+                            cur.editor.focused = true;
+                            cur.edit = true;
+                        }
+                    })
+                    .build(k)
+                    .key("skill-edit"),
+            );
+        }
+        let core_name = sname.clone();
+        let sens_name = sname.clone();
+        let hist_name = sname.clone();
+        let del_name = sname.clone();
+        actions = actions
+            .child(
+                Button::new(if is_core { "Core: on" } else { "Core" })
+                    .control_size(ControlSize::Small)
+                    .variant(if is_core { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted })
+                    .disabled(cur.edit || cur.saving)
+                    .on_press(move |s: &mut App| skill_toggle_tag(s, core_name.clone(), "core".into(), !is_core))
+                    .build(k)
+                    .key("skill-core"),
+            )
+            .child(
+                Button::new(if is_sens { "Sensitive: on" } else { "Sensitive" })
+                    .control_size(ControlSize::Small)
+                    .variant(if is_sens { ButtonVariant::Danger } else { ButtonVariant::GhostMuted })
+                    .disabled(cur.edit || cur.saving)
+                    .on_press(move |s: &mut App| skill_toggle_sensitive(s, sens_name.clone()))
+                    .build(k)
+                    .key("skill-sensitive"),
+            )
+            .child(
+                Button::new("History")
+                    .control_size(ControlSize::Small)
+                    .variant(if cur.hist.is_some() { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                    .on_press(move |s: &mut App| {
+                        let open = s.skills.as_ref().and_then(|sk| sk.cur.as_ref()).is_some_and(|c| c.hist.is_some());
+                        if open {
+                            if let Some(cur) = s.skills.as_mut().and_then(|sk| sk.cur.as_mut()) {
+                                cur.hist = None;
+                                cur.rev_view = None;
+                            }
+                        } else {
+                            skill_load_history(s, hist_name.clone());
+                        }
+                    })
+                    .build(k)
+                    .key("skill-history"),
+            )
+            .child(
+                Button::new("Delete")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Danger)
+                    .on_press(move |s: &mut App| s.prompt = Some(Prompt::SkillDelete(del_name.clone())))
+                    .build(k)
+                    .key("skill-delete"),
+            )
+            .child(
+                Button::new("Close")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .on_press(|s: &mut App| {
+                        if skill_saving(s) {
+                            s.note = "saving skill; please wait".into();
+                        } else if skill_dirty(s) {
+                            s.note = "save or cancel your skill edits first".into();
+                        } else {
+                            s.skills = None;
+                        }
+                    })
+                    .build(k)
+                    .key("skills-close"),
+            );
+
+        let header = row()
+            .w_full()
+            .justify_between()
+            .center_y()
+            .gap(8.0)
+            .flex_wrap()
+            .child(
+                col()
+                    .gap(2.0)
+                    .child(text(cur.detail.name.clone()).font(k.ty.body_medium).color(c.text_base))
+                    .child(
+                        text(format!(
+                            "{}{}",
+                            if cur.detail.author.is_empty() { String::new() } else { format!("by {}  ", cur.detail.author) },
+                            Rev { rev: 0, updated: cur.detail.updated.clone() }.when()
+                        ))
+                        .font(k.ty.small)
+                        .color(c.text_faint),
+                    ),
+            )
+            .child(actions);
+
+        let mut tag_bar = row().w_full().gap(6.0).flex_wrap().center_y();
+        for t in &cur.detail.tags {
+            let rm_name = sname.clone();
+            let rm_tag = t.clone();
+            tag_bar = tag_bar.child(
+                Button::new(format!("#{t} x"))
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::GhostMuted)
+                    .help("Remove tag")
+                    .on_press(move |s: &mut App| skill_toggle_tag(s, rm_name.clone(), rm_tag.clone(), false))
+                    .build(k)
+                    .key(format!("skill-cur-tag-{t}")),
+            );
+        }
+        let add_tag_name = sname.clone();
+        let add_tag_name2 = sname.clone();
+        tag_bar = tag_bar
+            .child(
+                TextInput::new(&cur.tag_input)
+                    .placeholder("add tag")
+                    .on_edit(|s: &mut App| &mut s.skills.as_mut().expect("skills open").cur.as_mut().expect("skill open").tag_input)
+                    .on_submit(move |s: &mut App, _| {
+                        let t = s.skills.as_ref().and_then(|sk| sk.cur.as_ref()).map(|c| c.tag_input.text.clone()).unwrap_or_default();
+                        skill_toggle_tag(s, add_tag_name.clone(), t, true);
+                    })
+                    .build(k)
+                    .w(110.0)
+                    .key("skill-tag-input"),
+            )
+            .child(
+                Button::new("+ Tag")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .on_press(move |s: &mut App| {
+                        let t = s.skills.as_ref().and_then(|sk| sk.cur.as_ref()).map(|c| c.tag_input.text.clone()).unwrap_or_default();
+                        skill_toggle_tag(s, add_tag_name2.clone(), t, true);
+                    })
+                    .build(k)
+                    .key("skill-tag-add"),
+            );
+
+        let mut file_tabs = row().w_full().gap(4.0).flex_wrap().center_y().child(
+            Button::new("SKILL.md")
+                .control_size(ControlSize::Small)
+                .variant(if cur.file == "SKILL.md" { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                .on_press(|s: &mut App| skill_open_file(s, "SKILL.md".into()))
+                .build(k)
+                .key("skill-file-main"),
+        );
+        for (i, f) in cur.detail.files.iter().enumerate() {
+            if f.path == "SKILL.md" {
+                continue;
+            }
+            let fp = f.path.clone();
+            file_tabs = file_tabs.child(
+                Button::new(f.path.clone())
+                    .control_size(ControlSize::Small)
+                    .variant(if cur.file == f.path { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                    .on_press(move |s: &mut App| skill_open_file(s, fp.clone()))
+                    .build(k)
+                    .key(format!("skill-file-{i}")),
+            );
+        }
+        let add_file_skill = sname.clone();
+        file_tabs = file_tabs.child(
+            Button::new("+ File")
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::GhostMuted)
+                .on_press(move |s: &mut App| {
+                    let mut t = TextEdit::new("");
+                    t.focused = true;
+                    s.prompt = Some(Prompt::SkillNewFile(add_file_skill.clone(), t));
+                })
+                .build(k)
+                .key("skill-file-new"),
+        );
+        if cur.file != "SKILL.md" {
+            let df_skill = sname.clone();
+            let df_path = cur.file.clone();
+            file_tabs = file_tabs.child(
+                Button::new("Delete file")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Danger)
+                    .on_press(move |s: &mut App| s.prompt = Some(Prompt::SkillDeleteFile(df_skill.clone(), df_path.clone())))
+                    .build(k)
+                    .key("skill-file-del"),
+            );
+        }
+
+        let mut detail_col = col().w_full().grow(1.0).min_h(0.0).padding(16.0).gap(10.0).child(header).child(tag_bar).child(file_tabs).child(Divider::horizontal().build(k));
+
+        if let Some((rev, rev_updated, rev_body)) = &cur.rev_view {
+            let (r_name, r_num, r_cur_upd, r_body) = (sname.clone(), *rev, cur.detail.updated.clone(), rev_body.clone());
+            let when = Rev { rev: *rev, updated: rev_updated.clone() }.when();
+            detail_col = detail_col.child(
+                row()
+                    .key("skill-rev-banner")
+                    .w_full()
+                    .px(10.0)
+                    .py(6.0)
+                    .gap(8.0)
+                    .center_y()
+                    .justify_between()
+                    .radius(k.radius.sm)
+                    .fill(c.layer_01)
+                    .child(text(format!("Viewing revision #{rev} ({when})")).font(k.ty.small_medium).color(c.text_base))
+                    .child(
+                        row()
+                            .gap(6.0)
+                            .child(
+                                Button::new("Restore")
+                                    .control_size(ControlSize::Small)
+                                    .variant(ButtonVariant::Contrast)
+                                    .on_press(move |s: &mut App| {
+                                        s.prompt = Some(Prompt::SkillRestoreRev(r_name.clone(), r_num, r_cur_upd.clone(), r_body.clone()));
+                                    })
+                                    .build(k)
+                                    .key("skill-rev-restore"),
+                            )
+                            .child(
+                                Button::new("Back to latest")
+                                    .control_size(ControlSize::Small)
+                                    .variant(ButtonVariant::Ghost)
+                                    .on_press(|s: &mut App| {
+                                        if let Some(cur) = s.skills.as_mut().and_then(|sk| sk.cur.as_mut()) {
+                                            cur.rev_view = None;
+                                        }
+                                    })
+                                    .build(k)
+                                    .key("skill-rev-latest"),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(revs) = &cur.hist {
+            let mut hrow = row().key("skill-history-list").w_full().gap(6.0).flex_wrap().center_y().child(text("Revisions:").font(k.ty.small_medium).color(c.text_muted));
+            if revs.is_empty() {
+                hrow = hrow.child(text("none").font(k.ty.small).color(c.text_faint));
+            }
+            for r in revs.iter().take(20) {
+                let (h_name, h_rev) = (sname.clone(), r.rev);
+                let when = Rev { rev: r.rev, updated: r.updated.clone() }.when();
+                hrow = hrow.child(
+                    Button::new(format!("#{} {}", r.rev, when))
+                        .control_size(ControlSize::Small)
+                        .variant(if cur.rev_view.as_ref().is_some_and(|v| v.0 == r.rev) { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted })
+                        .on_press(move |s: &mut App| skill_view_rev(s, h_name.clone(), h_rev))
+                        .build(k)
+                        .key(format!("skill-rev-{}", r.rev)),
+                );
+            }
+            detail_col = detail_col.child(hrow);
+        }
+
+        let content = if cur.edit {
+            let kind = if cur.file.ends_with(".md") { "md" } else if cur.file.ends_with(".json") { "json" } else { "txt" };
+            let spans = code_spans(kind, &cur.editor.text, k);
+            let style = edit_style(k, edit_size(&s.prefs));
+            let field = rune::text_input(&cur.editor, style)
+                .key("skill-editor")
+                .label("Skill source")
+                .color(c.text_base)
+                .caret(c.text_base, selection_of(k))
+                .spans(spans)
+                .on_edit(|s: &mut App| &mut s.skills.as_mut().expect("skills open").cur.as_mut().expect("skill open").editor)
+                .on_input_key(|s: &mut App, ev: &KeyEvent, _| {
+                    if ev.key == Key::Enter && ev.mods == rune::Mods::default() {
+                        if let Some(cur) = s.skills.as_mut().and_then(|sk| sk.cur.as_mut()) {
+                            cur.editor.insert("\n");
+                            return true;
+                        }
+                    }
+                    false
+                });
+            col().key("skill-edit-scroll").w_full().grow(1.0).min_h(0.0).child(field.w_full().wrap_anywhere()).scroll(ScrollSpec { stick_bottom: false })
+        } else {
+            let shown_text = cur.rev_view.as_ref().map(|v| v.2.as_str()).unwrap_or(&cur.text);
+            let mut body_col = col().w_full().gap(10.0);
+            if cur.file == "SKILL.md" || cur.rev_view.is_some() {
+                let (fm, md_body) = skills::split_front_matter(shown_text);
+                if !fm.is_empty() {
+                    body_col = body_col.child(text(fm.to_owned()).font(k.ty.mono).color(c.text_muted).padding(10.0).radius(k.radius.sm).fill(c.layer_01).wrap().selectable(true));
+                }
+                body_col = body_col.child(Markdown::new(md_body.to_owned()).style(page_style(k)).build(k));
+            } else if cur.file.to_ascii_lowercase().ends_with(".md") {
+                body_col = body_col.child(Markdown::new(shown_text.to_owned()).style(page_style(k)).build(k));
+            } else {
+                let kind = if cur.file.ends_with(".json") { "json" } else { "txt" };
+                let spans = code_spans(kind, shown_text, k);
+                body_col = body_col.child(rune::rich(shown_text.to_owned(), spans).font(k.ty.mono).color(c.text_base).wrap().selectable(true));
+            }
+            col().key("skill-body-scroll").w_full().grow(1.0).min_h(0.0).child(body_col).scroll(ScrollSpec { stick_bottom: false })
+        };
+
+        detail_col.child(content)
+    } else {
+        col()
+            .w_full()
+            .grow(1.0)
+            .h_full()
+            .center()
+            .gap(10.0)
+            .child(text("Pick a skill on the left, or create a new one.").font(k.ty.ui).color(c.text_muted))
+            .child(
+                Button::new("Close")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .on_press(|s: &mut App| s.skills = None)
+                    .build(k)
+                    .key("skills-close"),
+            )
+    };
+
+    row().key("skills").w_full().h_full().min_h(0.0).child(left_rail).child(Divider::vertical().build(k)).child(right_pane)
+}
+
 fn page_body(s: &App, k: &Kit) -> El {
     if let Some(st) = s.settings.as_ref().filter(|_| !s.editing) {
         return settings_view(s, st, k);
+    }
+    if let Some(sk) = s.skills.as_ref().filter(|_| !s.editing) {
+        return skills_view(s, sk, k);
+    }
+    if let Some(g) = s.grub.as_ref().filter(|_| !s.editing) {
+        return grub_view(s, g, k);
+    }
+    if s.conflicts_open && !s.editing {
+        return conflicts_view(s, k);
     }
     if s.access && !s.editing {
         return access_view(s, k);
@@ -18965,10 +20719,31 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let path = s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref());
     // the name it was given when there is one, with its path beside it
     let named = path.and_then(|p| s.dnames.get(p).filter(|_| !s.memory && s.remote.is_none()).map(|d| format!("{d}  ({p})")));
-    let title = if s.settings.is_some() { "Settings" } else if s.forum.is_some() { "Forum" } else if s.inbox { "Inbox" } else if s.exploring { "Explorer" } else if s.shared_open { "Browser" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
-    let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending() || s.drain_req.is_pending() || s.op_req.is_pending() || s.exp_req.is_pending();
+    let grub_title = s.grub.as_ref().map(|g| format!("grub: {}", g.path));
+    let title = if s.settings.is_some() {
+        "Settings"
+    } else if s.skills.is_some() {
+        "Skills"
+    } else if let Some(gt) = grub_title.as_deref() {
+        gt
+    } else if s.conflicts_open {
+        "Sync conflicts"
+    } else if s.forum.is_some() {
+        "Forum"
+    } else if s.inbox {
+        "Inbox"
+    } else if s.exploring {
+        "Explorer"
+    } else if s.shared_open {
+        "Browser"
+    } else if s.access {
+        "Access"
+    } else {
+        named.as_deref().or(path).unwrap_or("lattice")
+    };
+    let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending() || s.drain_req.is_pending() || s.op_req.is_pending() || s.exp_req.is_pending() || s.grub_req.is_pending() || s.grub_save_req.is_pending() || s.skills_req.is_pending();
     let mut layer = Vec::new();
-    let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox && !s.exploring;
+    let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox && !s.exploring && !s.conflicts_open && s.grub.is_none() && s.skills.is_none();
     let remote = s.remote.as_ref().filter(|_| page);
     // the Edit and Read switch: a page shows it, a screen that is no page (the forum, the inbox, a folder) does not
     let (editing, can_edit) = (page && s.editing, remote.is_none_or(Shared::editable));
@@ -19367,7 +21142,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     // a history being dragged through: the arrows step it, and Escape leaves it
     // Only those three keys, with nothing held, and not while something is open over the page: every other key goes on to what it does
-    let over = s.palette.is_some() || s.jump.is_some() || s.prompt.is_some() || s.find.is_some() || s.settings.is_some() || s.ships_open || s.tree_menu.is_some() || s.link_menu.is_some();
+    let over = s.palette.is_some() || s.jump.is_some() || s.prompt.is_some() || s.find.is_some() || s.settings.is_some() || s.grub.is_some() || s.skills.is_some() || s.ships_open || s.tree_menu.is_some() || s.link_menu.is_some();
     let plain = !(ev.mods.cmd || ev.mods.ctrl || ev.mods.alt || ev.mods.shift);
     if let Some(at) = s.scrub.as_ref().filter(|sc| sc.film.is_some() && !over && plain).map(|sc| sc.at) {
         match ev.key {
@@ -19413,6 +21188,14 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if ev.is_command('w') && !s.editing && s.tabs.len() > 1 {
         close_tab(s, s.tab);
+        return true;
+    }
+    if ev.is_command('s') && s.grub.is_some() {
+        save_grub(s);
+        return true;
+    }
+    if ev.is_command('s') && s.skills.as_ref().and_then(|sk| sk.cur.as_ref()).is_some_and(|cur| cur.edit) {
+        skill_save(s);
         return true;
     }
     if ev.is_command('s') && s.editing {
@@ -22235,6 +24018,187 @@ mod tests {
         s.forum = None;
         board_theme_sync(&mut s);
         assert!(s.board_theme.is_none());
+    }
+
+    #[test]
+    fn editor_key_smart_lists_continue_renumber_and_indent() {
+        let mut s = sample("welcome");
+        s.open = Some(Page { name: "notes".into(), kind: "md".into(), body: "- alpha".into(), rev: 1 });
+        s.editing = true;
+        s.rich = false;
+        s.edit = TextEdit::new("- alpha");
+        (s.edit.anchor, s.edit.focus) = (7, 7);
+        let mut tx = Tx::default();
+        assert!(editor_key(&mut s, &KeyEvent { key: Key::Enter, mods: rune::Mods::default() }, &mut tx));
+        assert_eq!(s.edit.text, "- alpha\n- ");
+        assert_eq!((s.edit.anchor, s.edit.focus), (10, 10));
+
+        // Tab indents the new bullet line, Shift+Tab outdents it back.
+        assert!(editor_key(&mut s, &KeyEvent { key: Key::Tab, mods: rune::Mods::default() }, &mut tx));
+        assert_eq!(s.edit.text, "- alpha\n  - ");
+        assert!(editor_key(&mut s, &KeyEvent { key: Key::Tab, mods: rune::Mods { shift: true, ..Default::default() } }, &mut tx));
+        assert_eq!(s.edit.text, "- alpha\n- ");
+
+        // Enter on empty bullet exits the list.
+        assert!(editor_key(&mut s, &KeyEvent { key: Key::Enter, mods: rune::Mods::default() }, &mut tx));
+        assert_eq!(s.edit.text, "- alpha\n");
+
+        // Gemtext page continues `* ` bullets and ignores Markdown `- ` bullets.
+        s.open = Some(Page { name: "log".into(), kind: "gmi".into(), body: "* item".into(), rev: 1 });
+        s.edit = TextEdit::new("* item");
+        (s.edit.anchor, s.edit.focus) = (6, 6);
+        assert!(editor_key(&mut s, &KeyEvent { key: Key::Enter, mods: rune::Mods::default() }, &mut tx));
+        assert_eq!(s.edit.text, "* item\n* ");
+
+        // Plain text pages also use Markdown smart list rules (matching web proseFlavor).
+        s.open = Some(Page { name: "plain".into(), kind: "text".into(), body: "- line".into(), rev: 1 });
+        s.edit = TextEdit::new("- line");
+        (s.edit.anchor, s.edit.focus) = (6, 6);
+        assert!(editor_key(&mut s, &KeyEvent { key: Key::Enter, mods: rune::Mods::default() }, &mut tx));
+        assert_eq!(s.edit.text, "- line\n- ");
+    }
+
+    #[test]
+    fn conflicts_inbox_counts_and_opens_on_conflict_pages() {
+        let mut s = sample("welcome");
+        assert!(!usable(&s, "conflicts"));
+        s.names.push("conflicts/notes-today-rev2".into());
+        assert!(usable(&s, "conflicts"));
+        assert_eq!(conflicts::list(page_names(&s)), vec!["conflicts/notes-today-rev2"]);
+        go_conflicts(&mut s);
+        assert!(s.conflicts_open);
+        assert!(page_hidden(&s));
+        // Opening a page clears conflicts_open.
+        open_page(&mut s, "welcome");
+        assert!(!s.conflicts_open);
+    }
+
+    #[test]
+    fn grub_guards_unsaved_edits_and_clears_when_clean() {
+        let mut s = sample("welcome");
+        s.grub = Some(GrubState {
+            path: "/apps/demo/a.hoon".into(),
+            blot: "/hoon".into(),
+            kind: "hoon".into(),
+            editable: true,
+            was: "a\n".into(),
+            edit: TextEdit::new("b\n"),
+            saving: false,
+        });
+        assert!(page_hidden(&s));
+        assert!(grub_dirty(&s));
+        // Dirty grub blocks navigation so unsaved edits are not silently dropped.
+        open_page(&mut s, "welcome");
+        assert!(s.grub.is_some());
+        assert!(s.note.contains("grub edits"));
+        go_inbox(&mut s);
+        assert!(s.grub.is_some() && !s.inbox);
+        // Once clean (saved or reverted), navigating to a page clears s.grub.
+        s.grub.as_mut().unwrap().was = "b\n".into();
+        assert!(!grub_dirty(&s));
+        open_page(&mut s, "welcome");
+        assert!(s.grub.is_none());
+    }
+
+    #[test]
+    fn skills_screen_guards_unsaved_edits_revs_saving_and_existing_files() {
+        let mut s = sample("welcome");
+        go_skills(&mut s);
+        assert!(s.skills.is_some());
+        assert!(page_hidden(&s));
+        skill_open(&mut s, "sample-skill".into());
+        assert_eq!(s.skills.as_ref().unwrap().cur.as_ref().unwrap().detail.name, "sample-skill");
+        // Seed an attached file so we can verify skill_create_file does not overwrite existing files.
+        s.skills.as_mut().unwrap().cur.as_mut().unwrap().detail.files.push(skills::SkillFile { path: "notes.md".into(), bytes: 12 });
+
+        // Mark dirty and verify switching skills, viewing revisions, toggling tags/sensitive, or navigating away is blocked.
+        let cur = s.skills.as_mut().unwrap().cur.as_mut().unwrap();
+        cur.edit = true;
+        cur.editor = TextEdit::new("changed");
+        assert!(skill_dirty(&s));
+        skill_open(&mut s, "other-skill".into());
+        assert_eq!(s.skills.as_ref().unwrap().cur.as_ref().unwrap().detail.name, "sample-skill");
+        assert!(s.note.contains("save or cancel"));
+        skill_view_rev(&mut s, "sample-skill".into(), 1);
+        assert!(s.note.contains("save or cancel"));
+        skill_toggle_tag(&mut s, "sample-skill".into(), "ops".into(), true);
+        assert!(!s.skills.as_ref().unwrap().cur.as_ref().unwrap().detail.tags.iter().any(|t| t == "ops"));
+        assert!(s.note.contains("save or cancel"));
+        skill_toggle_sensitive(&mut s, "sample-skill".into());
+        assert!(!s.skills.as_ref().unwrap().cur.as_ref().unwrap().detail.sensitive);
+        assert!(s.note.contains("save or cancel"));
+        open_page(&mut s, "welcome");
+        assert!(s.skills.is_some(), "dirty skill must block navigating away");
+
+        // While a save is in flight, competing skill actions are refused instead of superseding it.
+        s.skills.as_mut().unwrap().cur.as_mut().unwrap().saving = true;
+        skill_toggle_trash(&mut s);
+        assert!(!s.skills.as_ref().unwrap().trash_open);
+        assert!(s.note.contains("saving skill"));
+        s.skills.as_mut().unwrap().cur.as_mut().unwrap().saving = false;
+
+        // Clean edit + creating an already-existing file opens it instead of overwriting.
+        let cur = s.skills.as_mut().unwrap().cur.as_mut().unwrap();
+        cur.edit = false;
+        skill_create_file(&mut s, "sample-skill".into(), "notes.md".into());
+        assert!(s.note.contains("opened existing file notes.md"));
+    }
+
+    #[test]
+    fn ship_page_errors_accept_wanted_page_and_tree_job_handles_timeout_and_drop() {
+        let mut s = sample("welcome");
+        let mut tx = Tx::default();
+        // Page not yet in s.open (first open, s.want matches): poll keeps the /page-errors answer.
+        s.open = Some(Page { name: "other".into(), kind: "md".into(), body: String::new(), rev: 1 });
+        s.want = Some("app".into());
+        s.page_err_req.request((), |()| ("app".into(), "ford: syntax error".into()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while s.page_err.is_none() && std::time::Instant::now() < deadline {
+            poll(&mut s, 0.0, &mut tx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(s.page_err, Some(("app".into(), "ford: syntax error".into())));
+        s.open = Some(Page { name: "app".into(), kind: "hoon".into(), body: "bad".into(), rev: 1 });
+        assert_eq!(page_issue(&s).as_deref(), Some("Ship error: ford: syntax error"));
+
+        // Tree job active: clears offline, sets job_wait, and fires dropped warning once per timestamp.
+        s.offline = Some("just now".into());
+        s.job_from_timeout = true;
+        handle_tree_job(
+            &mut s,
+            Ok(api::TreeJob {
+                job: Some("moving notes".into()),
+                dropped: Some(api::DroppedJob { job: "delete".into(), path: "old".into(), at: "1700000001".into() }),
+            }),
+            10.0,
+            &mut tx,
+        );
+        assert!(s.offline.is_none());
+        assert!(!s.job_from_timeout);
+        assert_eq!(s.job_wait.as_deref(), Some("moving notes"));
+        assert_eq!(s.prefs.last_dropped_job, "1700000001");
+        assert!(s.note.contains("old"));
+
+        // Same dropped timestamp does not re-warn; job finishing clears job_wait.
+        s.note.clear();
+        handle_tree_job(
+            &mut s,
+            Ok(api::TreeJob {
+                job: None,
+                dropped: Some(api::DroppedJob { job: "delete".into(), path: "old".into(), at: "1700000001".into() }),
+            }),
+            15.0,
+            &mut tx,
+        );
+        assert!(s.job_wait.is_none());
+        assert!(s.note.is_empty());
+
+        // Timeout with no folder job running: /tree-job returning job: None clears offline immediately.
+        s.offline = Some(String::new());
+        s.job_from_timeout = true;
+        handle_tree_job(&mut s, Ok(api::TreeJob { job: None, dropped: None }), 20.0, &mut tx);
+        assert!(s.offline.is_none());
+        assert!(!s.job_from_timeout);
     }
 }
 
