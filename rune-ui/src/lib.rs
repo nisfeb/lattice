@@ -2146,7 +2146,14 @@ fn confirm(s: &mut App) {
             };
             Some(iso)
         };
-        if !color.is_empty() && !map::hex_color_ok(color) {
+        let orig_color = s
+            .map
+            .as_ref()
+            .and_then(|m| m.feats.iter().find(|f| f.at == *at))
+            .and_then(|f| f.props.iter().find(|(k, _)| k == "color"))
+            .map(|(_, v)| v.trim())
+            .unwrap_or("");
+        if !color.is_empty() && color != orig_color && !map::hex_color_ok(color) {
             s.note = "that colour is not a hex colour like #c0392b or #f00".into();
             s.prompt = Some(p);
             return;
@@ -4432,7 +4439,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                     .w_full()
                     .key("map-list-query"),
             );
-            let q = m.list_query.text.trim().to_ascii_lowercase();
+            let q = m.list_query.text.trim().to_lowercase();
             let mut rows = col().w_full().gap(2.0);
             let mut listed = 0usize;
             for (i, f) in m.feats.iter().enumerate() {
@@ -4440,9 +4447,9 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                     continue;
                 }
                 if !q.is_empty()
-                    && !f.name.to_ascii_lowercase().contains(&q)
-                    && !f.kind.to_ascii_lowercase().contains(&q)
-                    && !f.note.to_ascii_lowercase().contains(&q)
+                    && !f.name.to_lowercase().contains(&q)
+                    && !f.kind.to_lowercase().contains(&q)
+                    && !f.note.to_lowercase().contains(&q)
                 {
                     continue;
                 }
@@ -4702,7 +4709,11 @@ fn map_import(s: &mut App, path: std::path::PathBuf) {
         let name = path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
         let read = match mapio::file_kind(&name) {
             "" => Err("lattice reads .geojson, .json, .gpx and .kml files".to_owned()),
-            kind => std::fs::read_to_string(&path).map_err(|_| "the file cannot be read".to_owned()).and_then(|text| mapio::import(kind, &text)),
+            kind => match std::fs::metadata(&path) {
+                Err(_) => Err("the file cannot be read".to_owned()),
+                Ok(meta) if meta.len() > mapio::MAX_TEXT as u64 => Err("the file is too large to import".to_owned()),
+                Ok(_) => std::fs::read_to_string(&path).map_err(|_| "the file cannot be read".to_owned()).and_then(|text| mapio::import(kind, &text)),
+            },
         };
         Ok(match read {
             Ok(got) => {
@@ -7841,7 +7852,8 @@ fn ask_pdf(s: &mut App, tx: &mut Tx) {
             s.note = format!("printing {} to {}", p.name, path.display());
             s.op_req.request((c, p, browser, title, path), |(c, p, browser, title, path)| {
                 let doc = if p.kind == "geojson" {
-                    map::render_html(&p.body, &title).unwrap_or_else(|_| pdf::document(&title, &pdf::source(&p.body)))
+                    let body = map::render_html(&p.body, &title).unwrap_or_else(|_| pdf::source(&p.body));
+                    pdf::document(&title, &body)
                 } else {
                     // what the ship's preview shows, or the source for a kind it does not render
                     let html = c.as_ref().and_then(|c| c.rendered(&p.name).ok()).unwrap_or_default();
@@ -16203,7 +16215,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if s.map.as_ref().is_some_and(|m| m.tool.is_some()) && !over && plain {
         match ev.key {
-            Key::Enter => {
+            Key::Enter if s.map.as_ref().is_some_and(|m| matches!(m.tool, Some(map::Draw::Line | map::Draw::Area))) => {
                 finish_shape(s);
                 return true;
             }

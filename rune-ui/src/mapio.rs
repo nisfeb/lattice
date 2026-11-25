@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::map;
 
 /// The most text an import reads, as on the web.
-const MAX_TEXT: usize = 16 * 1024 * 1024;
+pub const MAX_TEXT: usize = 16 * 1024 * 1024;
 /// A line of more positions than this is simplified until it fits.
 const SIMPLIFY_TO: usize = 500;
 
@@ -444,7 +444,17 @@ fn kml(root: &Node) -> Vec<Value> {
             parse_float(&b.first("east")?.text())?,
             parse_float(&b.first("west")?.text())?,
         );
-        Some(json!({"type": "Polygon", "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}))
+        if w > e {
+            Some(json!({
+                "type": "MultiPolygon",
+                "coordinates": [
+                    [[[w, s], [180.0, s], [180.0, n], [w, n], [w, s]]],
+                    [[[-180.0, s], [e, s], [e, n], [-180.0, n], [-180.0, s]]]
+                ]
+            }))
+        } else {
+            Some(json!({"type": "Polygon", "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}))
+        }
     };
     for ov in root.each("GroundOverlay") {
         let Some(geometry) = ov.first("LatLonBox").and_then(bbox_poly) else { continue };
@@ -1044,5 +1054,16 @@ mod tests {
         // the zigzag is left as it is but for what the first tolerance takes, and is not made a straight line
         let zigzag: Vec<Value> = tracks[1].iter().map(|p| json!(p)).collect();
         assert!(simplify(&zigzag).len() > 400);
+    }
+
+    #[test]
+    fn kml_ground_overlay_crossing_antimeridian_splits_into_multipolygon() {
+        let kml = r#"<?xml version="1.0"?><kml><Document><GroundOverlay><name>Pacific</name>
+            <LatLonBox><north>10</north><south>-10</south><east>-170</east><west>170</west></LatLonBox>
+        </GroundOverlay></Document></kml>"#;
+        let got = import("kml", kml).unwrap();
+        assert_eq!(got.features.len(), 1);
+        assert_eq!(got.features[0]["geometry"]["type"], "MultiPolygon");
+        assert_eq!(got.features[0]["geometry"]["coordinates"].as_array().unwrap().len(), 2);
     }
 }
