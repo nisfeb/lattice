@@ -4791,7 +4791,10 @@ impl Conn {
         }
         let raw = self.call("GET", &format!("skill-history?name={}", enc(name)), None)?;
         let w: Wrap = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-        Ok(w.revisions.into_iter().map(|r| crate::skills::SkillRev { rev: r.rev, updated: r.updated }).collect())
+        let mut revs: Vec<crate::skills::SkillRev> = w.revisions.into_iter().map(|r| crate::skills::SkillRev { rev: r.rev, updated: r.updated }).collect();
+        // app.hoon returns revisions oldest first; sort newest first so recent revisions appear first
+        revs.sort_by(|a, b| b.rev.cmp(&a.rev));
+        Ok(revs)
     }
 
     /// Reads one historical revision of a skill (`GET /skill-read-at?name=...&rev=...`).
@@ -6991,7 +6994,8 @@ mod tests {
             } else if r.path.starts_with("/apps/lattice/skill-trash") {
                 answer("200 OK", "content-type: application/json\r\n", br#"{"skills":[{"name":"old-skill","updated":"~2026.11.24..10.0.0"}]}"#)
             } else if r.path.starts_with("/apps/lattice/skill-history?") {
-                answer("200 OK", "content-type: application/json\r\n", br#"{"revisions":[{"rev":2,"updated":"~2026.11.25..12.0.0"},{"rev":1,"updated":"~2026.11.24..12.0.0"}]}"#)
+                // ship returns oldest first
+                answer("200 OK", "content-type: application/json\r\n", br#"{"revisions":[{"rev":1,"updated":"~2026.11.24..12.0.0"},{"rev":2,"updated":"~2026.11.25..12.0.0"}]}"#)
             } else if r.path.starts_with("/apps/lattice/skill-read-at?") {
                 answer("200 OK", "content-type: application/json\r\n", br##"{"body":"# Rev 1\n","description":"Old","updated":"~2026.11.24..12.0.0"}"##)
             } else {
@@ -7023,7 +7027,10 @@ mod tests {
         c.skill_restore("old-skill").unwrap();
         c.skill_file_delete("deploy", "steps.md").unwrap();
         c.skill_delete("deploy").unwrap();
-        assert_eq!(c.skill_history("deploy").unwrap().len(), 2);
+        let hist = c.skill_history("deploy").unwrap();
+        assert_eq!(hist.len(), 2);
+        assert_eq!(hist[0].rev, 2, "skill_history must sort newest first");
+        assert_eq!(hist[1].rev, 1);
         assert_eq!(c.skill_read_at("deploy", 1).unwrap().0, "# Rev 1\n");
 
         let paths: Vec<String> = log.lock().unwrap().iter().map(|r| r.path.clone()).collect();

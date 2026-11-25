@@ -455,6 +455,8 @@ enum Prompt {
     Forget(Shared),
     /// Path to an arbitrary local ball grub to inspect or edit (`/grub-source`).
     OpenGrub(TextEdit),
+    /// Confirm discarding unsaved edits in the open grub editor.
+    GrubDiscard,
     /// Name for a newly created skill.
     SkillNew(TextEdit),
     /// Path for a new attached file inside the named skill.
@@ -1277,6 +1279,8 @@ struct ShipSession {
     job_wait: Option<String>,
     job_req: Latest<Result<api::TreeJob, String>>,
     job_poll_at: f64,
+    /// True when `/tree-job` was triggered by a timed-out save so an empty job answer drains immediately.
+    job_from_timeout: bool,
 }
 
 impl Default for ShipSession {
@@ -1593,6 +1597,7 @@ impl Default for ShipSession {
             job_wait: None,
             job_req: Latest::default(),
             job_poll_at: 0.0,
+            job_from_timeout: false,
         }
     }
 }
@@ -2672,6 +2677,12 @@ fn confirm(s: &mut App) {
             return;
         }
         open_grub(s, path);
+        return;
+    }
+    if let Prompt::GrubDiscard = &p {
+        s.grub = None;
+        s.grub_save_req.cancel();
+        s.note = "discarded unsaved grub edits".into();
         return;
     }
     if let Prompt::SkillNew(t) = &p {
@@ -7716,7 +7727,7 @@ fn editor_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
             "md"
         } else {
             match s.open.as_ref().map(|p| p.kind.as_str()) {
-                Some("md") => "md",
+                Some("md" | "text") => "md",
                 Some("gmi") => "gmi",
                 _ => "",
             }
@@ -8028,6 +8039,22 @@ fn cancel_edit(s: &mut App) {
 /// answer and a save the ship refuses is not lost. `false` when the
 /// editor could not be left, with why said.
 fn leave_edit(s: &mut App) -> bool {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return false;
+    }
+    if skill_dirty(s) {
+        s.note = "save or cancel your skill edits first".into();
+        return false;
+    }
+    if s.grub.as_ref().is_some_and(|g| g.saving) {
+        s.note = "saving grub; please wait".into();
+        return false;
+    }
+    if grub_dirty(s) {
+        s.note = "save or discard your grub edits first".into();
+        return false;
+    }
     if !s.editing {
         return true;
     }
@@ -8986,7 +9013,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     if let Some((name, err)) = s.page_err_req.take() {
         changed = true;
-        if s.open.as_ref().is_some_and(|p| p.name == name) && !s.memory && s.remote.is_none() {
+        let matches = s.open.as_ref().is_some_and(|p| p.name == name) || s.want.as_deref() == Some(name.as_str());
+        if matches && !s.memory && s.remote.is_none() {
             s.page_err = (!err.is_empty()).then_some((name, err));
         }
     }
@@ -9902,17 +9930,16 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 // a link's host that did not answer is not the ship being away: the save waits for the host, and every other save goes on
                 let away_ship = ship_away(&e, !memory && s.links.contains_key(&p.name));
                 if away_ship && (!timed || s.job_wait.is_none()) {
-                    if !timed {
-                        s.offline.get_or_insert_with(String::new);
-                    }
+                    s.offline.get_or_insert_with(String::new);
                 }
                 if timed {
+                    s.job_from_timeout = true;
                     check_tree_job(s);
                 }
                 queue_save(s, p, base, memory);
                 if timed && s.job_wait.is_some() {
                     s.note = "a folder job is running on the ship; saves will send once it finishes".into();
-                } else if timed && s.offline.is_none() {
+                } else if timed {
                     s.note = "saved on this device (ship timed out; checking for folder job)".into();
                 } else if !away_ship && s.note.starts_with("saved on this device") {
                     s.note = format!("saved on this device, to send when its ship answers ({e})");
@@ -14291,7 +14318,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::ShipLabel(_, t) | Prompt::Kind(t) | Prompt::New(t) | Prompt::NewWriter(t) | Prompt::WriterLink(t, _) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::SendShip { name: t, .. } | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) | Prompt::OpenGrub(t) | Prompt::SkillNew(t) | Prompt::SkillNewFile(_, t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) | Prompt::ShipOut(_) | Prompt::SkillDelete(_) | Prompt::SkillDeleteFile(..) | Prompt::SkillRestoreRev(..) => unreachable!("it has no field of this kind"),
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) | Prompt::ShipOut(_) | Prompt::GrubDiscard | Prompt::SkillDelete(_) | Prompt::SkillDeleteFile(..) | Prompt::SkillRestoreRev(..) => unreachable!("it has no field of this kind"),
                 #[cfg(unix)]
                 Prompt::IdOut(..) | Prompt::IdIn(..) | Prompt::IdUse(..) => unreachable!("it has fields of its own"),
             })
@@ -14485,6 +14512,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             (ask, text(says).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger)
         }
         Prompt::OpenGrub(t) => ("Open grub", field(t, "/apps/lattice/..."), "Open", ButtonVariant::Contrast),
+        Prompt::GrubDiscard => ("Discard unsaved grub edits?", text("You have unsaved changes in this grub. Closing it will discard them.").font(k.ty.ui).color(k.c.text_muted).wrap(), "Discard", ButtonVariant::Danger),
         Prompt::SkillNew(t) => ("New skill", field(t, "lowercase-skill-name"), "Create", ButtonVariant::Contrast),
         Prompt::SkillNewFile(skill, t) => ("Add file to skill", col().w_full().gap(6.0).child(text(format!("Skill: {skill}")).font(k.ty.small).color(k.c.text_muted)).child(field(t, "reference/notes.md")), "Create", ButtonVariant::Contrast),
         Prompt::SkillDelete(name) => ("Delete this skill?", text(format!("{name} will be moved to the skills trash and can be restored later.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
@@ -15062,6 +15090,9 @@ fn no_node(s: &mut App) -> bool {
 
 /// Reads what stands at an address: the one typed, or one given (a folder's entry).
 fn urb_go(s: &mut App, to: Option<String>) {
+    if !leave_edit(s) {
+        return;
+    }
     #[cfg(unix)]
     if s.anon {
         return urb_go_anon(s, to);
@@ -18916,7 +18947,11 @@ fn check_tree_job(s: &mut App) {
 
 /// Handles a `/tree-job` response: surfaces dropped job warnings once, holds queue drain while a job runs, and drains once it finishes.
 fn handle_tree_job(s: &mut App, r: Result<api::TreeJob, String>, clock: f64, tx: &mut Tx) {
-    let Ok(tj) = r else { return };
+    let from_timeout = std::mem::take(&mut s.job_from_timeout);
+    let Ok(tj) = r else {
+        // /tree-job failed: keep s.offline set if a save timed out so normal offline retry takes over
+        return;
+    };
     if let Some(d) = tj.dropped.filter(|d| !d.at.is_empty()) {
         if s.prefs.last_dropped_job != d.at {
             s.prefs.last_dropped_job = d.at;
@@ -18937,8 +18972,10 @@ fn handle_tree_job(s: &mut App, r: Result<api::TreeJob, String>, clock: f64, tx:
         if s.note.is_empty() || s.note.starts_with("saved on this device") || s.note.starts_with("not done: the ship took too long") {
             s.note = "a folder job is running on the ship; saves will send once it finishes".into();
         }
-    } else if s.job_wait.take().is_some() {
+    } else if s.job_wait.take().is_some() || from_timeout {
         s.job_poll_at = 0.0;
+        // the ship answered /tree-job with no active job: clear offline and drain any queued saves
+        s.offline = None;
         drain(s);
         load_tree(s);
     }
@@ -19095,6 +19132,11 @@ fn save_grub(s: &mut App) {
     });
 }
 
+/// Returns true if the open grub editor has unsaved edits.
+fn grub_dirty(s: &App) -> bool {
+    s.grub.as_ref().is_some_and(|g| g.editable && g.edit.text != g.was)
+}
+
 /// Arbitrary ball grub editor view (`40-grub.js`).
 fn grub_view(s: &App, g: &GrubState, k: &Kit) -> El {
     let c = &k.c;
@@ -19135,8 +19177,14 @@ fn grub_view(s: &App, g: &GrubState, k: &Kit) -> El {
             .control_size(ControlSize::Small)
             .variant(ButtonVariant::Ghost)
             .on_press(|s: &mut App| {
-                s.grub = None;
-                s.grub_save_req.cancel();
+                if s.grub.as_ref().is_some_and(|g| g.saving) {
+                    s.note = "saving grub; please wait".into();
+                } else if grub_dirty(s) {
+                    s.prompt = Some(Prompt::GrubDiscard);
+                } else {
+                    s.grub = None;
+                    s.grub_save_req.cancel();
+                }
             })
             .build(k)
             .key("grub-close"),
@@ -19197,6 +19245,11 @@ fn skill_dirty(s: &App) -> bool {
     s.skills.as_ref().and_then(|sk| sk.cur.as_ref()).is_some_and(|cur| cur.edit && cur.editor.text != cur.was)
 }
 
+/// Returns true if a skill save is currently in flight on `skills_req`.
+fn skill_saving(s: &App) -> bool {
+    s.skills.as_ref().and_then(|sk| sk.cur.as_ref()).is_some_and(|cur| cur.saving)
+}
+
 /// Opens the Skills manager screen (`ui-app/skills.js`).
 fn go_skills(s: &mut App) {
     if !leave_edit(s) {
@@ -19232,6 +19285,10 @@ fn go_skills(s: &mut App) {
 
 /// Opens one skill by name inside the Skills manager.
 fn skill_open(s: &mut App, name: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
     if skill_dirty(s) {
         s.note = "save or cancel your skill edits before switching".into();
         return;
@@ -19277,6 +19334,10 @@ fn skill_open(s: &mut App, name: String) {
 
 /// Switches the active file inside the currently open skill (`SKILL.md` or an attached file).
 fn skill_open_file(s: &mut App, path: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
     if skill_dirty(s) {
         s.note = "save or cancel your skill edits before switching files".into();
         return;
@@ -19339,6 +19400,10 @@ fn skill_save(s: &mut App) {
 
 /// Adds or removes a tag on a skill.
 fn skill_toggle_tag(s: &mut App, name: String, tag: String, on: bool) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
     let tag = tag.trim().to_ascii_lowercase();
     if tag.is_empty() {
         return;
@@ -19367,6 +19432,10 @@ fn skill_toggle_tag(s: &mut App, name: String, tag: String, on: bool) {
 
 /// Toggles a skill's sensitive flag (saved via `POST /skill-save?sensitive=1|0`).
 fn skill_toggle_sensitive(s: &mut App, name: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
     let Some((body, updated, was)) = s
         .skills
         .as_ref()
@@ -19395,6 +19464,14 @@ fn skill_toggle_sensitive(s: &mut App, name: String) {
 
 /// Creates a new skill (checking `GET /skill?name=...` first so existing skills open instead of overwriting).
 fn skill_create(s: &mut App, name: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    if skill_dirty(s) {
+        s.note = "save or cancel your skill edits first".into();
+        return;
+    }
     let Some(c) = s.conn.clone() else {
         let body = skills::new_skill_template(&name);
         if let Some(sk) = &mut s.skills {
@@ -19432,8 +19509,24 @@ fn skill_create(s: &mut App, name: String) {
     });
 }
 
-/// Creates a new attached file inside a skill and opens it for editing.
+/// Creates a new attached file inside a skill and opens it for editing (or opens it if it already exists).
 fn skill_create_file(s: &mut App, name: String, path: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    let exists = s
+        .skills
+        .as_ref()
+        .and_then(|sk| sk.cur.as_ref())
+        .is_some_and(|cur| cur.detail.name == name && cur.detail.files.iter().any(|f| f.path == path));
+    if exists {
+        skill_open_file(s, path.clone());
+        if !skill_dirty(s) {
+            s.note = format!("opened existing file {path}");
+        }
+        return;
+    }
     let body = skills::new_file_template(&path);
     let Some(c) = s.conn.clone() else { return };
     s.note = format!("creating {name}/{path}\u{2026}");
@@ -19447,6 +19540,10 @@ fn skill_create_file(s: &mut App, name: String, path: String) {
 
 /// Soft-deletes a skill to the trash.
 fn skill_delete(s: &mut App, name: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
     let Some(c) = s.conn.clone() else {
         if let Some(sk) = &mut s.skills {
             sk.list.retain(|r| r.name != name);
@@ -19465,6 +19562,10 @@ fn skill_delete(s: &mut App, name: String) {
 
 /// Deletes an attached file from a skill.
 fn skill_delete_file(s: &mut App, name: String, path: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
     let Some(c) = s.conn.clone() else { return };
     s.skills_req.request((c, name, path), |(c, name, path)| {
         c.skill_file_delete(&name, &path)?;
@@ -19476,6 +19577,10 @@ fn skill_delete_file(s: &mut App, name: String, path: String) {
 
 /// Toggles the Skills trash drawer and fetches deleted skills.
 fn skill_toggle_trash(s: &mut App) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
     let conn = s.conn.clone();
     let open = {
         let Some(sk) = &mut s.skills else { return };
@@ -19494,6 +19599,10 @@ fn skill_toggle_trash(s: &mut App) {
 
 /// Restores a deleted skill from the trash.
 fn skill_restore(s: &mut App, name: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
     let Some(c) = s.conn.clone() else { return };
     s.skills_req.request((c, name), |(c, name)| {
         c.skill_restore(&name)?;
@@ -19505,6 +19614,10 @@ fn skill_restore(s: &mut App, name: String) {
 
 /// Loads revision history for the currently open skill.
 fn skill_load_history(s: &mut App, name: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
     let Some(c) = s.conn.clone() else { return };
     s.skills_req.request((c, name), |(c, name)| {
         let revs = c.skill_history(&name)?;
@@ -19514,6 +19627,14 @@ fn skill_load_history(s: &mut App, name: String) {
 
 /// Loads one historical revision of `SKILL.md` for read-only inspection.
 fn skill_view_rev(s: &mut App, name: String, rev: u64) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
+    if skill_dirty(s) {
+        s.note = "save or cancel your skill edits before viewing a revision".into();
+        return;
+    }
     let Some(c) = s.conn.clone() else { return };
     s.skills_req.request((c, name, rev), |(c, name, rev)| {
         let (body, _, updated) = c.skill_read_at(&name, rev)?;
@@ -19523,6 +19644,10 @@ fn skill_view_rev(s: &mut App, name: String, rev: u64) {
 
 /// Restores a historical revision of `SKILL.md` by saving it over the latest revision.
 fn skill_restore_rev(s: &mut App, name: String, rev: u64, expected_updated: String, body: String) {
+    if skill_saving(s) {
+        s.note = "saving skill; please wait".into();
+        return;
+    }
     let Some(c) = s.conn.clone() else { return };
     s.skills_req.request((c, name, rev, expected_updated, body), |(c, name, rev, expected_updated, body)| {
         let exp = (!expected_updated.is_empty()).then_some(expected_updated.as_str());
@@ -19886,7 +20011,9 @@ fn skills_view(s: &App, sk: &SkillsState, k: &Kit) -> El {
                     .control_size(ControlSize::Small)
                     .variant(ButtonVariant::Ghost)
                     .on_press(|s: &mut App| {
-                        if skill_dirty(s) {
+                        if skill_saving(s) {
+                            s.note = "saving skill; please wait".into();
+                        } else if skill_dirty(s) {
                             s.note = "save or cancel your skill edits first".into();
                         } else {
                             s.skills = None;
@@ -23912,6 +24039,13 @@ mod tests {
         (s.edit.anchor, s.edit.focus) = (6, 6);
         assert!(editor_key(&mut s, &KeyEvent { key: Key::Enter, mods: rune::Mods::default() }, &mut tx));
         assert_eq!(s.edit.text, "* item\n* ");
+
+        // Plain text pages also use Markdown smart list rules (matching web proseFlavor).
+        s.open = Some(Page { name: "plain".into(), kind: "text".into(), body: "- line".into(), rev: 1 });
+        s.edit = TextEdit::new("- line");
+        (s.edit.anchor, s.edit.focus) = (6, 6);
+        assert!(editor_key(&mut s, &KeyEvent { key: Key::Enter, mods: rune::Mods::default() }, &mut tx));
+        assert_eq!(s.edit.text, "- line\n- ");
     }
 
     #[test]
@@ -23925,12 +24059,12 @@ mod tests {
         assert!(s.conflicts_open);
         assert!(page_hidden(&s));
         // Opening a page clears conflicts_open.
-        show_page(&mut s, "welcome");
+        open_page(&mut s, "welcome");
         assert!(!s.conflicts_open);
     }
 
     #[test]
-    fn grub_clears_on_navigation_and_blocks_autosave() {
+    fn grub_guards_unsaved_edits_and_clears_when_clean() {
         let mut s = sample("welcome");
         s.grub = Some(GrubState {
             path: "/apps/demo/a.hoon".into(),
@@ -23942,20 +24076,32 @@ mod tests {
             saving: false,
         });
         assert!(page_hidden(&s));
-        // Switching to a page always clears s.grub so Ctrl+S can never overwrite a grub accidentally.
-        show_page(&mut s, "welcome");
+        assert!(grub_dirty(&s));
+        // Dirty grub blocks navigation so unsaved edits are not silently dropped.
+        open_page(&mut s, "welcome");
+        assert!(s.grub.is_some());
+        assert!(s.note.contains("grub edits"));
+        go_inbox(&mut s);
+        assert!(s.grub.is_some() && !s.inbox);
+        // Once clean (saved or reverted), navigating to a page clears s.grub.
+        s.grub.as_mut().unwrap().was = "b\n".into();
+        assert!(!grub_dirty(&s));
+        open_page(&mut s, "welcome");
         assert!(s.grub.is_none());
     }
 
     #[test]
-    fn skills_screen_opens_and_guards_unsaved_edits() {
+    fn skills_screen_guards_unsaved_edits_revs_saving_and_existing_files() {
         let mut s = sample("welcome");
         go_skills(&mut s);
         assert!(s.skills.is_some());
         assert!(page_hidden(&s));
         skill_open(&mut s, "sample-skill".into());
         assert_eq!(s.skills.as_ref().unwrap().cur.as_ref().unwrap().detail.name, "sample-skill");
-        // Mark dirty and verify switching skills is blocked until saved or cancelled.
+        // Seed an attached file so we can verify skill_create_file does not overwrite existing files.
+        s.skills.as_mut().unwrap().cur.as_mut().unwrap().detail.files.push(skills::SkillFile { path: "notes.md".into(), bytes: 12 });
+
+        // Mark dirty and verify switching skills, viewing revisions, or navigating away is blocked.
         let cur = s.skills.as_mut().unwrap().cur.as_mut().unwrap();
         cur.edit = true;
         cur.editor = TextEdit::new("changed");
@@ -23963,11 +24109,33 @@ mod tests {
         skill_open(&mut s, "other-skill".into());
         assert_eq!(s.skills.as_ref().unwrap().cur.as_ref().unwrap().detail.name, "sample-skill");
         assert!(s.note.contains("save or cancel"));
+        skill_view_rev(&mut s, "sample-skill".into(), 1);
+        assert!(s.note.contains("save or cancel"));
+        open_page(&mut s, "welcome");
+        assert!(s.skills.is_some(), "dirty skill must block navigating away");
+
+        // While a save is in flight, competing skill actions are refused instead of superseding it.
+        s.skills.as_mut().unwrap().cur.as_mut().unwrap().saving = true;
+        skill_toggle_trash(&mut s);
+        assert!(!s.skills.as_ref().unwrap().trash_open);
+        assert!(s.note.contains("saving skill"));
+        s.skills.as_mut().unwrap().cur.as_mut().unwrap().saving = false;
+
+        // Clean edit + creating an already-existing file opens it instead of overwriting.
+        let cur = s.skills.as_mut().unwrap().cur.as_mut().unwrap();
+        cur.edit = false;
+        skill_create_file(&mut s, "sample-skill".into(), "notes.md".into());
+        assert!(s.note.contains("opened existing file notes.md"));
     }
 
     #[test]
-    fn ship_page_errors_and_tree_job_hold_and_drop_warning() {
+    fn ship_page_errors_accept_wanted_page_and_tree_job_handles_timeout_and_drop() {
         let mut s = sample("welcome");
+        // Page not yet in s.open (first open, s.want matches): page-errors answer is kept.
+        s.open = Some(Page { name: "other".into(), kind: "md".into(), body: String::new(), rev: 1 });
+        s.want = Some("app".into());
+        let matches = s.open.as_ref().is_some_and(|p| p.name == "app") || s.want.as_deref() == Some("app");
+        assert!(matches);
         s.open = Some(Page { name: "app".into(), kind: "hoon".into(), body: "bad".into(), rev: 1 });
         s.page_err = Some(("app".into(), "ford: syntax error".into()));
         assert_eq!(page_issue(&s).as_deref(), Some("Ship error: ford: syntax error"));
@@ -23975,6 +24143,7 @@ mod tests {
         // Tree job active: clears offline, sets job_wait, and fires dropped warning once per timestamp.
         let mut tx = Tx::default();
         s.offline = Some("just now".into());
+        s.job_from_timeout = true;
         handle_tree_job(
             &mut s,
             Ok(api::TreeJob {
@@ -23985,6 +24154,7 @@ mod tests {
             &mut tx,
         );
         assert!(s.offline.is_none());
+        assert!(!s.job_from_timeout);
         assert_eq!(s.job_wait.as_deref(), Some("moving notes"));
         assert_eq!(s.prefs.last_dropped_job, "1700000001");
         assert!(s.note.contains("old"));
@@ -24002,6 +24172,13 @@ mod tests {
         );
         assert!(s.job_wait.is_none());
         assert!(s.note.is_empty());
+
+        // Timeout with no folder job running: /tree-job returning job: None clears offline immediately.
+        s.offline = Some(String::new());
+        s.job_from_timeout = true;
+        handle_tree_job(&mut s, Ok(api::TreeJob { job: None, dropped: None }), 20.0, &mut tx);
+        assert!(s.offline.is_none());
+        assert!(!s.job_from_timeout);
     }
 }
 
