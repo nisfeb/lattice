@@ -22,6 +22,8 @@ pub struct Hit {
     pub hits: usize,
     /// The text around the first one, or nothing when only the name matched.
     pub snip: String,
+    /// Another signed-in ship `(label, url)` when searching across all ships, or `None` for the ship in front.
+    pub ship: Option<(String, String)>,
 }
 
 /// The word shown for how a page is shared, from the tree's own word for it.
@@ -101,7 +103,7 @@ pub fn hit(key: &str, body: &str, q: &str, scope: &'static str, know: bool) -> O
     // where it is, counted in letters: a letter's small form can be longer than it, so bytes would not do
     let found = at.map(|at| (hay.matches(q).count(), snip(body, hay[..at].chars().count(), q.chars().count())));
     let (hits, snip) = found.unwrap_or_default();
-    Some(Hit { key: key.to_owned(), scope, in_path, know, hits, snip })
+    Some(Hit { key: key.to_owned(), scope, in_path, know, hits, snip, ship: None })
 }
 
 /// The query as it is searched for, or nothing when it is too short.
@@ -174,7 +176,7 @@ mod tests {
 
     #[test]
     fn names_first_then_most_matches_then_by_name() {
-        let h = |key: &str, in_path, hits| Hit { key: key.into(), scope: "private", in_path, know: false, hits, snip: String::new() };
+        let h = |key: &str, in_path, hits| Hit { key: key.into(), scope: "private", in_path, know: false, hits, snip: String::new(), ship: None };
         let mut out = vec![h("b", false, 1), h("z", true, 0), h("a", false, 1), h("c", false, 5)];
         sort(&mut out);
         assert_eq!(out.iter().map(|h| h.key.as_str()).collect::<Vec<_>>(), ["z", "c", "a", "b"]);

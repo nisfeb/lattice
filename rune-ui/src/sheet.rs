@@ -243,13 +243,37 @@ pub fn typed_on(text: &str, null_date: f64) -> Result<Typed, String> {
         "false" => return Ok(Typed::Bool(false)),
         _ => {}
     }
-    let d: Vec<&str> = t.split('-').collect();
+    let (date_part, time_part) = match t.find([' ', 'T']) {
+        Some(i) => (&t[..i], Some(&t[i + 1..])),
+        None => (t, None),
+    };
+    let d: Vec<&str> = date_part.split('-').collect();
     if d.len() == 3 && digits(d[0], 4, 4) && digits(d[1], 1, 2) && digits(d[2], 1, 2) {
         let (y, m, day): (i64, i64, i64) = (d[0].parse().unwrap_or(0), d[1].parse().unwrap_or(0), d[2].parse().unwrap_or(0));
+        let frac = match time_part {
+            None => Some(0.0),
+            Some(tp) => {
+                let c: Vec<&str> = tp.split(':').collect();
+                if (2..=3).contains(&c.len()) && digits(c[0], 1, 2) && digits(c[1], 2, 2) && c.get(2).is_none_or(|s| digits(s, 2, 2)) {
+                    let (h, min, sec): (f64, f64, f64) = (
+                        c[0].parse().unwrap_or(99.0),
+                        c[1].parse().unwrap_or(99.0),
+                        c.get(2).map_or(0.0, |s| s.parse().unwrap_or(99.0)),
+                    );
+                    (h < 24.0 && min < 60.0 && sec < 60.0).then_some((h * 3600.0 + min * 60.0 + sec) / 86_400.0)
+                } else {
+                    None
+                }
+            }
+        };
         // only a day the calendar has: the 30th of February would run on into March, and is the text that was typed
-        if (1..=12).contains(&m) && day >= 1 && civil_from_days(days_from_civil(y, m, day)) == (y, m, day) {
+        if let Some(frac) = frac
+            && (1..=12).contains(&m)
+            && day >= 1
+            && civil_from_days(days_from_civil(y, m, day)) == (y, m, day)
+        {
             if let Some(v) = date_serial(&format!("{}-{m:02}-{day:02}", d[0]), null_date) {
-                return Ok(Typed::Special("date", v));
+                return Ok(Typed::Special("date", v + frac));
             }
         }
     }
@@ -674,10 +698,19 @@ pub struct MSheet {
     starts: Vec<usize>,
 }
 
+/// A named range or named expression stored in `<table:named-expressions>`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Named {
+    Range { addr: String, home: usize },
+    Expr { expr: String, home: usize },
+}
+
 /// A spreadsheet's sheets with every cell's type, value and formula.
 pub struct Book {
     pub sheets: Vec<MSheet>,
     pub null_date: f64,
+    /// Named ranges and expressions keyed by `(scope, lower-case name)` where `Some(si)` is sheet-local and `None` is workbook-global.
+    pub names: std::collections::HashMap<(Option<usize>, String), Named>,
 }
 
 impl Book {
@@ -714,9 +747,34 @@ pub fn book(src: &str) -> Result<Book, String> {
     let (ss, _) = spreadsheet(src)?;
     let null_date = null_date(src, &ss);
     let mut sheets = Vec::new();
-    for table in kids(src, &ss)?.into_iter().filter(|e| e.name == "table:table") {
+    let mut names = std::collections::HashMap::new();
+    let mut read_names = |parent: &El, scope: Option<usize>, home: usize| {
+        let Ok(children) = kids(src, parent) else { return };
+        let Some(box_el) = children.into_iter().find(|e| e.name == "table:named-expressions") else { return };
+        let Ok(defs) = kids(src, &box_el) else { return };
+        for k in defs {
+            let tag = &src[k.start + 1..k.open_end];
+            let Some(nm) = attr(tag, "table:name").filter(|n| !n.is_empty()) else { continue };
+            match k.name.as_str() {
+                "table:named-range" => {
+                    if let Some(addr) = attr(tag, "table:cell-range-address").filter(|a| !a.is_empty()) {
+                        names.insert((scope, nm.to_lowercase()), Named::Range { addr, home });
+                    }
+                }
+                "table:named-expression" => {
+                    if let Some(expr) = attr(tag, "table:expression") {
+                        names.insert((scope, nm.to_lowercase()), Named::Expr { expr, home });
+                    }
+                }
+                _ => {}
+            }
+        }
+    };
+    let tables: Vec<El> = kids(src, &ss)?.into_iter().filter(|e| e.name == "table:table").collect();
+    for (si, table) in tables.iter().enumerate() {
+        read_names(table, Some(si), si);
         let mut rows = Vec::new();
-        rows_of(src, &table, &mut rows)?;
+        rows_of(src, table, &mut rows)?;
         let mut out = Vec::new();
         for row in &rows {
             let mut cells = Vec::new();
@@ -752,7 +810,7 @@ pub fn book(src: &str) -> Result<Book, String> {
             Ok(())
         }
         let mut cols = Vec::new();
-        cols_of(src, &table, &mut cols)?;
+        cols_of(src, table, &mut cols)?;
         // the same columns again, by the style of the column itself
         fn col_styles_of(src: &str, el: &El, out: &mut Vec<(usize, Option<String>)>) -> Result<(), String> {
             for k in kids(src, el)? {
@@ -765,7 +823,7 @@ pub fn book(src: &str) -> Result<Book, String> {
             Ok(())
         }
         let mut col_styles = Vec::new();
-        col_styles_of(src, &table, &mut col_styles)?;
+        col_styles_of(src, table, &mut col_styles)?;
         let mut starts = Vec::with_capacity(out.len());
         let mut at = 0usize;
         for row in &out {
@@ -774,7 +832,8 @@ pub fn book(src: &str) -> Result<Book, String> {
         }
         sheets.push(MSheet { name: attr(&src[table.start + 1..table.open_end], "table:name").unwrap_or_default(), rows: out, cols, col_styles, starts });
     }
-    Ok(Book { sheets, null_date })
+    read_names(&ss, None, 0);
+    Ok(Book { sheets, null_date, names })
 }
 
 /// The formula a cell holds, as it is stored, or nothing.
@@ -1139,11 +1198,12 @@ fn escape(s: &str, out: &mut String) {
 }
 
 /// A new spreadsheet page holding a CSV's cells: the web client's blank
-/// sheet with the rows in it. A plain number is a number cell and every
-/// other field is text, so a field that starts with `=` never runs as a
-/// formula.
-// ponytail: the web client types each field into its grid, which also reads dates, percents and
-// money. Here those stay text. Port its readTyped (ui-src/sheet/book.js) if that matters.
+/// sheet with the rows in it. Plain numbers, booleans, dates, times,
+/// percentages, and currency values become typed cells with matching ODF
+/// number formats; `=` fields stay plain text so a CSV cannot plant a formula,
+/// and leading-zero or >15-digit codes (including signed/decimal/padded forms)
+/// stay text so IDs and postal codes are not mangled (an intentional departure
+/// from the web client's `importCsv`, which passes `007` through `readTyped`).
 pub fn from_csv(src: &str) -> Result<String, String> {
     let rows = parse_csv(src);
     let cells: usize = rows.iter().map(Vec::len).sum();
@@ -1153,15 +1213,77 @@ pub fn from_csv(src: &str) -> Result<String, String> {
     let blank = include_str!("../../ui-src/sheet/blank.fods");
     let empty = "    <table:table-row table:style-name=\"ro1\">\n     <table:table-cell/>\n    </table:table-row>\n";
     let at = blank.find(empty).ok_or("the blank sheet is not as expected")?;
+    let null_date = -25_569.0;
+    let base_styles = crate::styles::Styles::read(blank, null_date);
+    let mut new_styles: Vec<String> = Vec::new();
+    let mut style_for_kind: std::collections::HashMap<&'static str, (String, crate::styles::Styles)> = std::collections::HashMap::new();
+    let mut format_special = |vt: &'static str, n: f64| -> (String, String) {
+        if !style_for_kind.contains_key(vt) {
+            let (name, added) = base_styles.with_format("Default", vt);
+            for xml in &added {
+                if !new_styles.contains(xml) {
+                    new_styles.push(xml.clone());
+                }
+            }
+            let tmp = crate::styles::add_auto(blank, &added).unwrap_or_else(|_| blank.to_owned());
+            let st = crate::styles::Styles::read(&tmp, null_date);
+            style_for_kind.insert(vt, (name, st));
+        }
+        let (name, st) = &style_for_kind[vt];
+        (name.clone(), st.text(name, n, vt))
+    };
     let mut out = String::with_capacity(blank.len() + src.len() * 3);
     out.push_str(&blank[..at]);
     for row in &rows {
         out.push_str("    <table:table-row table:style-name=\"ro1\">\n");
         for v in row {
+            let trimmed = v.trim();
+            let body = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
+            let (whole, frac) = body.split_once('.').unwrap_or((body, ""));
+            let all_digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+            let is_code = !whole.is_empty() && all_digits(whole) && all_digits(frac) && ((whole.len() > 1 && whole.starts_with('0')) || body.len() > 15);
             if v.is_empty() {
                 out.push_str("     <table:table-cell/>\n");
             } else if let Some(n) = plain_number(v) {
                 out.push_str(&format!("     <table:table-cell office:value-type=\"float\" office:value=\"{n}\" calcext:value-type=\"float\"><text:p>{n}</text:p></table:table-cell>\n"));
+            } else if !is_code && !v.starts_with('=') && !v.starts_with('\'') {
+                match typed_on(v, null_date) {
+                    Ok(Typed::Number(n)) => {
+                        let attr_v = num_attr(n);
+                        let shown = general(n);
+                        out.push_str(&format!(
+                            "     <table:table-cell office:value-type=\"float\" office:value=\"{attr_v}\" calcext:value-type=\"float\"><text:p>{shown}</text:p></table:table-cell>\n"
+                        ));
+                    }
+                    Ok(Typed::Bool(b)) => {
+                        let shown = if b { "TRUE" } else { "FALSE" };
+                        out.push_str(&format!(
+                            "     <table:table-cell office:value-type=\"boolean\" office:boolean-value=\"{b}\" calcext:value-type=\"boolean\"><text:p>{shown}</text:p></table:table-cell>\n"
+                        ));
+                    }
+                    Ok(Typed::Special(vt, n)) => {
+                        let (st_name, shown) = format_special(vt, n);
+                        let val_attr = match vt {
+                            "date" => format!("office:date-value=\"{}\"", serial_date(n, null_date)),
+                            "time" => format!("office:time-value=\"{}\"", serial_time(n)),
+                            "currency" => format!("office:currency=\"USD\" office:value=\"{}\"", num_attr(n)),
+                            _ => format!("office:value=\"{}\"", num_attr(n)),
+                        };
+                        let mut esc_shown = String::new();
+                        escape(&shown, &mut esc_shown);
+                        out.push_str(&format!(
+                            "     <table:table-cell table:style-name=\"{st_name}\" office:value-type=\"{vt}\" {val_attr} calcext:value-type=\"{vt}\"><text:p>{esc_shown}</text:p></table:table-cell>\n"
+                        ));
+                    }
+                    _ => {
+                        out.push_str("     <table:table-cell office:value-type=\"string\" calcext:value-type=\"string\">");
+                        for (i, line) in v.split('\n').enumerate() {
+                            out.push_str(if i == 0 { "<text:p>" } else { "</text:p><text:p>" });
+                            escape(line.trim_end_matches('\r'), &mut out);
+                        }
+                        out.push_str("</text:p></table:table-cell>\n");
+                    }
+                }
             } else {
                 out.push_str("     <table:table-cell office:value-type=\"string\" calcext:value-type=\"string\">");
                 for (i, line) in v.split('\n').enumerate() {
@@ -1180,6 +1302,104 @@ pub fn from_csv(src: &str) -> Result<String, String> {
         out.push_str(empty);
     }
     out.push_str(&blank[at + empty.len()..]);
+    if !new_styles.is_empty() {
+        out = crate::styles::add_auto(&out, &new_styles)?;
+    }
+    Ok(out)
+}
+
+/// Renders a flat ODS spreadsheet to a styled HTML body fragment for PDF export,
+/// keeping cell formatting, colors, alignment, font sizes, and multi-sheet tables.
+pub fn render_html(src: &str, title: &str) -> Result<String, String> {
+    let shown = parse(src);
+    if shown.is_empty() {
+        return Err("this page holds no spreadsheet".into());
+    }
+    let model = book(src).ok();
+    let styles = model.as_ref().map(|b| crate::styles::Styles::read(src, b.null_date));
+    let esc_html = |s: &str| {
+        let mut o = String::new();
+        escape(s, &mut o);
+        o
+    };
+    let mut out = format!("<h1>{}</h1>\n", esc_html(title));
+    for (si, sh) in shown.iter().enumerate() {
+        if shown.len() > 1 {
+            let name = if sh.name.is_empty() { format!("Sheet {}", si + 1) } else { sh.name.clone() };
+            out.push_str(&format!("<h2>{}</h2>\n", esc_html(&name)));
+        }
+        let cols = sh.width().min(MAX_COLS);
+        if sh.rows.is_empty() || cols == 0 {
+            out.push_str("<p><em>Empty sheet</em></p>\n");
+            continue;
+        }
+        out.push_str("<table style=\"width:100%;font-size:9.5pt;margin-bottom:14pt\"><thead><tr><th style=\"background:#f4f4f4;color:#666;width:28pt\">#</th>");
+        for c in 0..cols {
+            out.push_str(&format!("<th style=\"background:#f4f4f4;color:#555;text-align:center\">{}</th>", column_name(c)));
+        }
+        out.push_str("</tr></thead><tbody>\n");
+        for (ri, row) in sh.rows.iter().enumerate() {
+            out.push_str(&format!("<tr><td style=\"background:#fafafa;color:#777;text-align:right\">{}</td>", ri + 1));
+            for c in 0..cols {
+                let text = row.get(c).map_or("", String::as_str);
+                let mut css = Vec::new();
+                if let (Some(b), Some(st)) = (&model, &styles) {
+                    let look = st.look(&b.style_at(si, ri, c));
+                    let cell = b.at(si, ri, c);
+                    let align = look.align.unwrap_or_else(|| {
+                        cell.map_or('l', |mc| {
+                            if mc.err || mc.vt == "boolean" {
+                                'c'
+                            } else if mc.vt.is_empty() || mc.vt == "string" {
+                                'l'
+                            } else {
+                                'r'
+                            }
+                        })
+                    });
+                    match align {
+                        'r' => css.push("text-align:right".to_owned()),
+                        'c' => css.push("text-align:center".to_owned()),
+                        'j' => css.push("text-align:justify".to_owned()),
+                        _ => {}
+                    }
+                    if look.bold {
+                        css.push("font-weight:700".to_owned());
+                    }
+                    if look.italic {
+                        css.push("font-style:italic".to_owned());
+                    }
+                    let mut decos = Vec::new();
+                    if look.underline {
+                        decos.push("underline");
+                    }
+                    if look.strike {
+                        decos.push("line-through");
+                    }
+                    if !decos.is_empty() {
+                        css.push(format!("text-decoration:{}", decos.join(" ")));
+                    }
+                    if let Some(sz) = look.size {
+                        css.push(format!("font-size:{sz:.1}pt"));
+                    }
+                    if let Some(col) = &look.color {
+                        css.push(format!("color:{col}"));
+                    }
+                    if let Some(bg) = &look.bg {
+                        css.push(format!("background:{bg}"));
+                    }
+                    if look.wrap {
+                        css.push("white-space:pre-wrap".to_owned());
+                    }
+                }
+                let style_attr = if css.is_empty() { String::new() } else { format!(" style=\"{}\"", css.join(";")) };
+                let body = esc_html(text).replace('\n', "<br>");
+                out.push_str(&format!("<td{style_attr}>{body}</td>"));
+            }
+            out.push_str("</tr>\n");
+        }
+        out.push_str("</tbody></table>\n");
+    }
     Ok(out)
 }
 
@@ -1582,12 +1802,12 @@ mod tests {
                 vec!["Tea <green> & \"co\"", "4.5", "007", "=SUM(A1)"],
                 vec!["Milk", "-2", "12345678901234567890", "two\nlines"],
                 vec![],
-                vec!["last", "1e5", "3.", "x"],
+                vec!["last", "100000", "3.", "x"],
             ]
         );
-        // a number is a number cell, and what only looks like one is text: nothing typed runs as a formula
-        assert_eq!(fods.matches("office:value-type=\"float\"").count(), 2);
-        assert!(fods.contains("office:value=\"4.5\"") && fods.contains("office:value=\"-2\""));
+        // a number is a number cell, leading-zero and long digit codes stay text, and nothing typed runs as a formula
+        assert_eq!(fods.matches("office:value-type=\"float\"").count(), 3);
+        assert!(fods.contains("office:value=\"4.5\"") && fods.contains("office:value=\"-2\"") && fods.contains("office:value=\"100000\""));
         assert!(!fods.contains("table:formula"));
         assert!(fods.contains("<text:p>=SUM(A1)</text:p>"));
         // the rest of the document is the blank sheet's, untouched
@@ -1603,5 +1823,34 @@ mod tests {
     fn columns_are_lettered_as_a_spreadsheet_letters_them() {
         let names: Vec<String> = [0, 1, 25, 26, 27, 51, 52, 701, 702].into_iter().map(column_name).collect();
         assert_eq!(names, ["A", "B", "Z", "AA", "AB", "AZ", "BA", "ZZ", "AAA"]);
+    }
+
+    #[test]
+    fn csv_parses_dates_percents_money_and_booleans_and_renders_html() {
+        let csv2 = "When,Share,Price,Done,Formula,Grouped,Plus,Dot,DateTime,SignedCode,DecCode,PadCode\n2026-11-17,50%,\"$1,200.50\",true,=1+1,\"1,234.5\",+5,.5,2024-1-5 10:30,-007,0123.5, 007\n9:30,25%,-$5,false,'2026-11-17,1e5,007,3.,2024-01-05T10:30:15,+007,-0.5,0.5\n";
+        let fods = from_csv(csv2).unwrap();
+        let b = book(&fods).unwrap();
+        assert_eq!(b.at(0, 1, 0).unwrap().vt, "date");
+        assert_eq!(b.at(0, 1, 1).unwrap().vt, "percentage");
+        assert_eq!(b.at(0, 1, 2).unwrap().vt, "currency");
+        assert_eq!(b.at(0, 1, 3).unwrap().vt, "boolean");
+        assert_eq!(b.at(0, 1, 4).unwrap().vt, "string");
+        assert_eq!(b.at(0, 1, 5).unwrap().vt, "float");
+        assert_eq!(b.at(0, 1, 6).unwrap().vt, "float");
+        assert_eq!(b.at(0, 1, 7).unwrap().vt, "float");
+        assert_eq!(b.at(0, 1, 8).unwrap().vt, "date");
+        assert_eq!(b.at(0, 1, 9).unwrap().vt, "string");
+        assert_eq!(b.at(0, 1, 10).unwrap().vt, "string");
+        assert_eq!(b.at(0, 1, 11).unwrap().vt, "string");
+        assert_eq!(b.at(0, 2, 0).unwrap().vt, "time");
+        assert_eq!(b.at(0, 2, 4).unwrap().vt, "string");
+        assert_eq!(b.at(0, 2, 5).unwrap().vt, "float");
+        assert_eq!(b.at(0, 2, 6).unwrap().vt, "string");
+        assert_eq!(b.at(0, 2, 8).unwrap().vt, "date");
+        assert_eq!(b.at(0, 2, 9).unwrap().vt, "string");
+        assert_eq!(b.at(0, 2, 10).unwrap().vt, "float");
+        assert_eq!(b.at(0, 2, 11).unwrap().vt, "float");
+        let html = render_html(&fods, "Budget").unwrap();
+        assert!(html.contains("<h1>Budget</h1>") && html.contains("$1,200.50") && html.contains("50.00%") && html.contains("2026-11-17"));
     }
 }

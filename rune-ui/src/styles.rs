@@ -447,6 +447,10 @@ pub struct Look {
     pub bg: Option<String>,
     /// Left, centre, right or justified, when the style fixes it.
     pub align: Option<char>,
+    /// Font size in points when the style sets one (clamped to readable grid bounds).
+    pub size: Option<f32>,
+    /// Whether `fo:wrap-option="wrap"` is set on the cell style.
+    pub wrap: bool,
 }
 
 /// A length as the document writes one ("2.258cm") in points on screen.
@@ -630,6 +634,12 @@ impl Styles {
                     "style:text-properties@style:text-underline-style" => out.underline = v != "none",
                     "style:text-properties@style:text-line-through-style" => out.strike = v != "none",
                     "style:text-properties@fo:color" if hex => out.color = Some(v.clone()),
+                    "style:text-properties@fo:font-size" => {
+                        if let Some(p) = px(v).filter(|p| p.is_finite() && *p > 0.0) {
+                            out.size = Some((p * 0.75).clamp(8.0, 32.0));
+                        }
+                    }
+                    "style:table-cell-properties@fo:wrap-option" => out.wrap = v == "wrap",
                     "style:paragraph-properties@fo:text-align" => {
                         out.align = Some(match v.as_str() {
                             "end" | "right" => 'r',

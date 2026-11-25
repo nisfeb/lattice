@@ -1527,6 +1527,8 @@ pub enum Beacon {
     Notify { old: bool, stamp: String },
     /// A comment landed.
     Comments,
+    /// A followed folder moved (`op: stale` or `op: new`).
+    Folds { old: bool, data: String },
     /// The stream ended, as it does every minute or so, or broke.
     Down,
 }
@@ -1570,6 +1572,7 @@ pub fn beacon_of(name: &str, data: &str) -> Option<Beacon> {
         "/shares" => Some(Beacon::Shares { old, stamp }),
         "/notify" => Some(Beacon::Notify { old, stamp }),
         "/comments" if !old => Some(Beacon::Comments),
+        "/folds" => Some(Beacon::Folds { old, data: stamp }),
         _ => None,
     }
 }
@@ -1583,6 +1586,7 @@ pub struct BeaconState {
     know: String,
     shares: String,
     notify: String,
+    folds: String,
 }
 
 /// What an event asks to be read again.
@@ -1592,6 +1596,7 @@ pub struct Wants {
     pub know: bool,
     pub shared: bool,
     pub inbox: bool,
+    pub folds: bool,
 }
 
 impl BeaconState {
@@ -1617,6 +1622,7 @@ impl BeaconState {
             // these two say the same stamp again when nothing moved
             Beacon::Shares { old, stamp } => w.shared = stamp != self.shares && moved(&mut self.shares, old, stamp),
             Beacon::Notify { old, stamp } => w.inbox = stamp != self.notify && moved(&mut self.notify, old, stamp),
+            Beacon::Folds { old, data } => w.folds = data != self.folds && moved(&mut self.folds, old, data),
             Beacon::Comments => w.inbox = true,
             Beacon::Down => self.live = false,
         }
@@ -1908,6 +1914,10 @@ pub fn key_request(a: &KeyAsk) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "name": name, "by": by, "scope": { "memory": a.memory, "pages": pages, "web": web, "sensitive": a.sensitive, "skills": a.skills } }))
 }
 
+/// Maximum consecutive per-save transient failures before a waiting save is
+/// paused so it stops blocking or retrying every half minute (matching the web client).
+pub const MAX_RETRIES: u8 = 3;
+
 /// A page's save that could not reach the ship, waiting to be sent: the
 /// text, and the revision it was written over, by which the ship can
 /// tell whether the page changed meanwhile.
@@ -1924,6 +1934,9 @@ pub struct Queued {
     /// When it was put by, in seconds.
     #[serde(default)]
     pub at: u64,
+    /// Consecutive per-save transient failure count; paused once it reaches `MAX_RETRIES`.
+    #[serde(default)]
+    pub tries: u8,
 }
 
 /// A waiting save as the file keeps it. A file written before `claims`
@@ -1940,18 +1953,20 @@ struct QueuedFile {
     is_new: bool,
     #[serde(default)]
     at: u64,
+    #[serde(default)]
+    tries: u8,
 }
 
 impl From<QueuedFile> for Queued {
     fn from(f: QueuedFile) -> Self {
         let base = if f.claims { f.base } else { f.base.filter(|&b| b != 0) };
-        Queued { kind: f.kind, body: f.body, base, is_new: f.is_new, at: f.at }
+        Queued { kind: f.kind, body: f.body, base, is_new: f.is_new, at: f.at, tries: f.tries }
     }
 }
 
 impl From<Queued> for QueuedFile {
     fn from(q: Queued) -> Self {
-        QueuedFile { kind: q.kind, body: q.body, base: q.base, claims: true, is_new: q.is_new, at: q.at }
+        QueuedFile { kind: q.kind, body: q.body, base: q.base, claims: true, is_new: q.is_new, at: q.at, tries: q.tries }
     }
 }
 
@@ -1964,7 +1979,7 @@ pub type Queue = std::collections::BTreeMap<String, Queued>;
 pub fn enqueue(q: &mut Queue, p: &Page, base: Option<u64>, is_new: bool, at: u64) {
     let prev = q.get(&p.name);
     let (base, is_new) = (prev.map_or(base, |o| o.base), is_new || prev.is_some_and(|o| o.is_new));
-    q.insert(p.name.clone(), Queued { kind: p.kind.clone(), body: p.body.clone(), base, is_new, at });
+    q.insert(p.name.clone(), Queued { kind: p.kind.clone(), body: p.body.clone(), base, is_new, at, tries: 0 });
 }
 
 /// How sending one waiting save came out.
@@ -2032,6 +2047,8 @@ pub enum QueuedOp {
     DelPage(String),
     /// From a path to a path, with the names to show for it (`RealName`).
     Move { from: String, to: String, dname: String, dnames: String },
+    /// An empty folder made while offline.
+    NewFolder { path: String, dname: String, dnames: String },
 }
 
 /// A path at `at` or under it, as it is called once `at` is `to`. `None` for a path elsewhere.
@@ -2061,15 +2078,17 @@ pub fn enqueue_op(ops: &mut Vec<QueuedOp>, saves: &mut Queue, op: QueuedOp) {
             for (old, new) in carried {
                 if let Some(mut q) = saves.remove(&old) {
                     q.base = None;
+                    q.tries = 0;
                     saves.insert(new, q);
                 }
             }
         }
+        QueuedOp::NewFolder { .. } => {}
     }
     ops.push(op);
 }
 
-/// The tree as read, as it is once the deletes and moves that wait are
+/// The tree as read, as it is once the deletes, moves and new folders that wait are
 /// done to it: what shows while they wait.
 pub fn ops_over(mut nodes: Vec<Node>, ops: &[QueuedOp]) -> Vec<Node> {
     for op in ops {
@@ -2084,6 +2103,25 @@ pub fn ops_over(mut nodes: Vec<Node>, ops: &[QueuedOp]) -> Vec<Node> {
                             n.dname = dname.clone();
                         }
                         n.path = new;
+                    }
+                }
+            }
+            QueuedOp::NewFolder { path, dname, .. } => {
+                let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+                for k in 1..=parts.len() {
+                    let sub = parts[..k].join("/");
+                    let is_leaf = k == parts.len();
+                    if let Some(existing) = nodes.iter_mut().find(|n| !n.page && n.path == sub) {
+                        if is_leaf && !dname.is_empty() {
+                            existing.dname = dname.clone();
+                        }
+                    } else {
+                        nodes.push(Node {
+                            path: sub,
+                            page: false,
+                            dname: if is_leaf { dname.clone() } else { String::new() },
+                            ..Node::default()
+                        });
                     }
                 }
             }
@@ -2121,6 +2159,7 @@ pub fn held_by(ops: &[QueuedOp], name: &str) -> bool {
             QueuedOp::Del(at) => moved(name, at, "").is_some(),
             QueuedOp::DelPage(at) => name == at,
             QueuedOp::Move { from, to, .. } => moved(name, from, "").is_some() || moved(name, to, "").is_some(),
+            QueuedOp::NewFolder { path, .. } => moved(name, path, "").is_some(),
         })
 }
 
@@ -2259,6 +2298,15 @@ pub struct Prefs {
     /// The page held beside is held below, not to the right.
     #[serde(default)]
     pub split_down: bool,
+    /// Relative split group shares kept across restarts.
+    #[serde(default)]
+    pub split_shares: Vec<f32>,
+    /// Whether the right pane was open across restarts (`None` = default open).
+    #[serde(default)]
+    pub right_open: Option<bool>,
+    /// Active tab of the right pane across restarts (`page`, `out`, `back`, `outline`, `comments`, `hist`).
+    #[serde(default)]
+    pub right_tab: String,
     /// The bookmark folders folded away in the left pane.
     #[serde(default)]
     pub marks_folded: Vec<String>,
@@ -2827,12 +2875,13 @@ impl Conn {
         write_private(&ops_path(&self.url, self.ship()).ok_or("no home directory")?, &serde_json::to_vec(ops).map_err(|e| e.to_string())?)
     }
 
-    /// Sends one delete or move that waited, as it would have gone at the time.
+    /// Sends one delete, move or new folder that waited, as it would have gone at the time.
     pub fn send_op(&self, op: &QueuedOp) -> Result<(), String> {
         match op {
             QueuedOp::Del(name) => self.delete_tree(name),
             QueuedOp::DelPage(name) => self.delete(name),
             QueuedOp::Move { from, to, dname, dnames } => self.rename_as(from, &RealName { name: to.clone(), dname: dname.clone(), dnames: dnames.clone() }),
+            QueuedOp::NewFolder { path, dname, dnames } => self.folder_new(&RealName { name: path.clone(), dname: dname.clone(), dnames: dnames.clone() }),
         }
     }
 
@@ -3032,6 +3081,204 @@ impl Conn {
         urb_parse(&self.call_in(90, "GET", &format!("urb-read?url={}", enc(url)), None)?)
     }
 
+    /// Followed peer folders (`GET /apps/lattice/folder-follows`).
+    pub fn folder_follows(&self) -> Result<Vec<crate::follow::Fold>, String> {
+        let text = self.call("GET", "folder-follows", None)?;
+        serde_json::from_str(&text).map_err(|e| e.to_string())
+    }
+
+    /// Follow a peer's shared folder (`POST /apps/lattice/folder-follow`).
+    pub fn folder_follow(&self, host: &str, path: &str) -> Result<(), String> {
+        self.call_in(60, "POST", &format!("folder-follow?host={}&path={}", enc(host), enc(path)), Some("")).map(drop)
+    }
+
+    /// Unfollow a peer's shared folder (`POST /apps/lattice/folder-unfollow`).
+    pub fn folder_unfollow(&self, host: &str, path: &str) -> Result<(), String> {
+        self.call("POST", &format!("folder-unfollow?host={}&path={}", enc(host), enc(path)), Some("")).map(drop)
+    }
+
+    /// Re-read one followed folder or all followed folders (`POST /apps/lattice/folder-check`).
+    pub fn folder_check(&self, host: Option<&str>, path: Option<&str>) -> Result<(), String> {
+        let route = match (host, path) {
+            (Some(h), Some(p)) => format!("folder-check?host={}&path={}", enc(h), enc(p)),
+            _ => "folder-check".to_owned(),
+        };
+        self.call_in(60, "POST", &route, Some("")).map(drop)
+    }
+
+    /// Mark a page inside a followed folder as seen (`POST /apps/lattice/folder-seen`).
+    pub fn folder_seen(&self, host: &str, path: &str, key: &str) -> Result<(), String> {
+        self.call("POST", &format!("folder-seen?host={}&path={}&key={}", enc(host), enc(path), enc(key)), Some("")).map(drop)
+    }
+
+    /// Whether `/apps/orrery` is installed on this ship (`GET /apps/orrery/api/version` -> 200).
+    pub fn orrery_present(&self) -> bool {
+        let full = format!("{}/apps/orrery/api/version", self.url);
+        #[cfg(target_arch = "wasm32")]
+        {
+            web::request("GET", &full, None, None, None).is_ok_and(|(code, _)| code == 200)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            ship_agent().get(&full).timeout(Duration::from_secs(10)).set("cookie", &self.cookie).call().is_ok_and(|r| r.status() == 200)
+        }
+    }
+
+    /// A page's status in orrery (`GET /apps/orrery/api/follow?path=...`).
+    pub fn orrery_status(&self, path: &str) -> crate::orrery::Status {
+        let full = format!("{}/apps/orrery/api/follow?path={}", self.url, enc(path));
+        #[cfg(target_arch = "wasm32")]
+        let text = match web::request("GET", &full, None, None, None) {
+            Ok((200, t)) => t,
+            _ => return crate::orrery::Status::None,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let text = match ship_agent().get(&full).timeout(Duration::from_secs(15)).set("cookie", &self.cookie).call() {
+            Ok(r) if r.status() == 200 => match read_text(r, ANSWER_LIMIT) {
+                Ok(t) => t,
+                Err(_) => return crate::orrery::Status::None,
+            },
+            _ => return crate::orrery::Status::None,
+        };
+        serde_json::from_str::<serde_json::Value>(&text).map(|v| crate::orrery::parse_status(&v)).unwrap_or_default()
+    }
+
+    /// Sends a page to orrery (`POST /apps/orrery/api/follow`), then reads back its status.
+    pub fn orrery_send(&self, path: &str, title: &str, text: &str) -> crate::orrery::Status {
+        let full = format!("{}/apps/orrery/api/follow", self.url);
+        let payload = serde_json::json!({
+            "path": path,
+            "title": title,
+            "text": text,
+            "links": crate::orrery::links(text, path),
+        })
+        .to_string();
+        #[cfg(target_arch = "wasm32")]
+        let res = web::request("POST", &full, Some("application/json"), None, Some(&payload));
+        #[cfg(not(target_arch = "wasm32"))]
+        let res: Result<(u16, String), String> = match ship_agent()
+            .post(&full)
+            .timeout(Duration::from_secs(30))
+            .set("cookie", &self.cookie)
+            .set("origin", &self.url)
+            .set("content-type", "application/json")
+            .send_string(&payload)
+        {
+            Ok(r) => {
+                let code = r.status();
+                Ok((code, read_text(r, ANSWER_LIMIT).unwrap_or_default()))
+            }
+            Err(ureq::Error::Status(code, r)) => Ok((code, r.into_string().unwrap_or_default())),
+            Err(e) => Err(e.to_string()),
+        };
+        match res {
+            Err(_) => crate::orrery::Status::Failed { note: "orrery did not answer".into() },
+            Ok((code, body)) if (200..300).contains(&code) => {
+                let _ = body;
+                self.orrery_status(path)
+            }
+            Ok((code, body)) => {
+                let note = serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+                    .unwrap_or_else(|| format!("orrery refused it ({code})"));
+                crate::orrery::Status::Failed { note }
+            }
+        }
+    }
+
+    /// Live body facts for a `<kind>/<slug>` page (`GET /apps/orrery/api/body/<kind>/<slug>`).
+    pub fn orrery_facts(&self, path: &str) -> Option<crate::orrery::BodyFacts> {
+        if !crate::orrery::is_body_path(path) {
+            return None;
+        }
+        let encoded = path.split('/').map(enc).collect::<Vec<_>>().join("/");
+        let full = format!("{}/apps/orrery/api/body/{encoded}", self.url);
+        #[cfg(target_arch = "wasm32")]
+        let text = match web::request("GET", &full, None, None, None) {
+            Ok((200, t)) => t,
+            _ => return None,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let text = match ship_agent().get(&full).timeout(Duration::from_secs(15)).set("cookie", &self.cookie).call() {
+            Ok(r) if r.status() == 200 => read_text(r, ANSWER_LIMIT).ok()?,
+            _ => return None,
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        crate::orrery::parse_facts(&v)
+    }
+
+    /// Reads an explorer path (`/apps/lattice/x...`), following up to 3 redirects within `/apps/lattice/x`.
+    pub fn explore(&self, x_path: &str, raw: bool) -> Result<(String, crate::explorer::View), String> {
+        let mut cur = crate::explorer::normalize_path(x_path)?;
+        for _ in 0..4 {
+            let query = if raw && cur.ends_with('/') { "?raw=1" } else { "" };
+            let full = format!("{}{cur}{query}", self.url);
+            #[cfg(target_arch = "wasm32")]
+            {
+                let (code, body) = web::request("GET", &full, None, None, None)?;
+                if code == 0 {
+                    return Err("the ship could not be reached".into());
+                }
+                if code >= 400 && code != 403 {
+                    return Err(format!("{code}: {body}"));
+                }
+                let view = crate::explorer::parse_response(&cur, code, &body);
+                return Ok((cur, view));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                match ship_agent().get(&full).timeout(Duration::from_secs(60)).set("cookie", &self.cookie).call() {
+                    Ok(r) if (300..400).contains(&r.status()) => {
+                        let Some(loc) = r.header("location").map(str::to_owned) else {
+                            return Err(format!("{}: redirect with no location", r.status()));
+                        };
+                        if !loc.starts_with("/apps/lattice/x") {
+                            return Err(format!("unexpected explorer redirect: {loc}"));
+                        }
+                        cur = crate::explorer::normalize_path(loc.split('?').next().unwrap_or(&loc))?;
+                        continue;
+                    }
+                    Ok(r) => {
+                        let code = r.status();
+                        let body = read_text(r, ANSWER_LIMIT)?;
+                        let view = crate::explorer::parse_response(&cur, code, &body);
+                        return Ok((cur, view));
+                    }
+                    Err(ureq::Error::Status(403, r)) => {
+                        let body = read_text(r, ANSWER_LIMIT).unwrap_or_default();
+                        let view = crate::explorer::parse_response(&cur, 403, &body);
+                        return Ok((cur, view));
+                    }
+                    Err(ureq::Error::Status(code, r)) => return Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+        }
+        Err("too many explorer redirects".into())
+    }
+
+    /// Fetches the raw `?data` bytes of a file in the explorer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn explore_raw(&self, x_path: &str) -> Result<Vec<u8>, String> {
+        let clean = crate::explorer::normalize_path(x_path)?;
+        let full = format!("{}{clean}?data", self.url);
+        let mut out = Vec::new();
+        match ship_agent().get(&full).timeout(Duration::from_secs(60)).set("cookie", &self.cookie).call() {
+            Ok(r) if (300..400).contains(&r.status()) => Err(format!("{}: redirect", r.status())),
+            Ok(r) => {
+                use std::io::Read;
+                r.into_reader().take(ANSWER_LIMIT.saturating_add(1)).read_to_end(&mut out).map_err(|e| e.to_string())?;
+                if out.len() as u64 > ANSWER_LIMIT {
+                    return Err(format!("the answer is too large to read: over {} MB", ANSWER_LIMIT.div_ceil(1024 * 1024)));
+                }
+                Ok(out)
+            }
+            Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     /// The agent keys, newest first.
     pub fn keys(&self) -> Result<Vec<AgentKey>, String> {
         agent_keys(&self.call("GET", "keys", None)?)
@@ -3110,7 +3357,7 @@ impl Conn {
             note(BgSent::Op(op));
         }
         let ops = self.ops();
-        let mut names: Vec<(String, bool)> = self.queue().iter().filter(|(n, _)| !held_by(&ops, n)).map(|(n, q)| (n.clone(), q.is_new)).collect();
+        let mut names: Vec<(String, bool)> = self.queue().iter().filter(|(n, q)| q.tries < MAX_RETRIES && !held_by(&ops, n)).map(|(n, q)| (n.clone(), q.is_new)).collect();
         names.sort_by_key(|(_, new)| !new);
         let mut aside = 0;
         for (name, _) in names {
@@ -3120,10 +3367,21 @@ impl Conn {
             let _held = send_lock();
             let _file = self.sending_lock();
             let Some(item) = self.queue().get(&name).cloned() else { continue };
+            if item.tries >= MAX_RETRIES {
+                continue;
+            }
             match self.send_queued(&name, &item) {
                 // a ship that is away, or a session it has ended, takes none of the rest either. Any other refusal is of this one save, and the rest go. A 504 for a link is the ship saying the link's host did not answer (`+link-write` in app.hoon): the ship itself is here
                 Sent::Stop(why) if stops_all(&why) && !(why.starts_with("504") && self.kept_link(&name)) => break,
-                Sent::Stop(_) => {}
+                Sent::Stop(why) => {
+                    if !gone(&why) && !why.starts_with("401") {
+                        let _ = self.change_waiting(|_, q| {
+                            if let Some(cur) = q.get_mut(&name).filter(|cur| *cur == &item) {
+                                cur.tries = cur.tries.saturating_add(1);
+                            }
+                        });
+                    }
+                }
                 sent => {
                     if self.change_waiting(|_, q| drop_sent(q, &name, &item)).is_err() {
                         break;
@@ -3185,6 +3443,36 @@ impl Conn {
     /// The tree as it was last kept for this ship, and how many seconds ago. Its `since` is empty, so the next read of the ship is a whole one.
     pub fn kept_tree(&self) -> Option<(Dump, u64)> {
         kept_at(&kept_path(&self.url, self.ship())?)
+    }
+
+    /// Reads the cached tree (with any queued offline ops and saves overlaid) for another signed-in ship.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn kept_nodes_for(url: &str, ship: &str) -> Vec<Node> {
+        let base = kept_path(url, ship).and_then(|p| kept_at(&p)).map_or_else(Vec::new, |(d, _)| d.nodes);
+        let ops: Vec<QueuedOp> = ops_path(url, ship)
+            .and_then(|p| std::fs::read(&p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let queue: Queue = queue_path(url, ship)
+            .and_then(|p| std::fs::read(&p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let mut nodes = ops_over(base, &ops);
+        for (name, q) in queue.into_iter().filter(|(n, _)| queued_know(n).is_none()) {
+            match nodes.iter_mut().find(|n| n.page && n.path == name) {
+                Some(n) => (n.body, n.kind, n.rev) = (Some(q.body), q.kind, q.base.unwrap_or(n.rev)),
+                None => nodes.push(Node { path: name, page: true, kind: q.kind, rev: q.base.unwrap_or(0), body: Some(q.body), ..Node::default() }),
+            }
+        }
+        nodes
+    }
+
+    /// Returns a `Conn` for any non-expired signed-in ship at `url`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn conn_for(url: &str) -> Option<Conn> {
+        let dir = session_path()?.parent()?.to_path_buf();
+        let all = crate::accounts::load_at(&dir, now_secs());
+        all.list.into_iter().find(|a| a.url == url && !a.expired).map(|a| Conn { url: a.url, cookie: a.cookie })
     }
 
     /// Keeps this session for the next run, among the ships signed in, and brings its ship to the front.
@@ -4725,7 +5013,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new(), ship: String::new(), edit_size: 0.0, no_wrap: false }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, split_shares: vec![0.6, 0.4], right_open: Some(false), right_tab: "page".into(), worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new(), ship: String::new(), edit_size: 0.0, no_wrap: false }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert!(back.sort_desc);
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
@@ -5213,7 +5501,7 @@ mod tests {
         enqueue(&mut q, &page("made", "newer"), None, false, 13);
         enqueue(&mut q, &page("first", "on rev 0"), Some(0), false, 14);
         assert_eq!(q.len(), 3);
-        assert_eq!(q["a"], Queued { kind: "md".into(), body: "two".into(), base: Some(4), is_new: false, at: 12 });
+        assert_eq!(q["a"], Queued { kind: "md".into(), body: "two".into(), base: Some(4), is_new: false, at: 12, tries: 0 });
         assert_eq!((q["made"].body.as_str(), q["made"].is_new), ("newer", true));
         // kept in a file and read back the same. A file that is not there, or not a queue, is an empty one
         let file = std::env::temp_dir().join(format!("lr-queue-{}", std::process::id())).join("waiting.json");
@@ -5251,7 +5539,7 @@ mod tests {
     fn live_send_queued() {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
         let name = format!("waited/a-{}", crate::api::since_epoch().unwrap().as_secs());
-        let q = |body: &str, base: u64, is_new: bool| Queued { kind: "md".into(), body: body.into(), base: Some(base), is_new, at: 0 };
+        let q = |body: &str, base: u64, is_new: bool| Queued { kind: "md".into(), body: body.into(), base: Some(base), is_new, at: 0, tries: 0 };
         // made here: it goes as a new page
         let Sent::Done { rev: r1, kept: None } = c.send_queued(&name, &q("first\n", 0, true)) else { panic!("a new page is taken") };
         assert_eq!(c.page(&name).unwrap().body, "first\n");
@@ -5331,6 +5619,19 @@ mod tests {
         // a move with a name to show
         let shown = ops_over(vec![node("x", true)], &[QueuedOp::Move { from: "x".into(), to: "my-page".into(), dname: "My Page".into(), dnames: String::new() }]);
         assert_eq!((shown[0].path.as_str(), shown[0].dname.as_str()), ("my-page", "My Page"));
+        // offline NewFolder adds missing folder and ancestor nodes and holds pages under it
+        let with_dir = ops_over(Vec::new(), &[QueuedOp::NewFolder { path: "notes/sub".into(), dname: "Sub".into(), dnames: String::new() }]);
+        assert_eq!(with_dir.len(), 2);
+        assert!(with_dir.iter().any(|n| !n.page && n.path == "notes"));
+        assert!(with_dir.iter().any(|n| !n.page && n.path == "notes/sub" && n.dname == "Sub"));
+        assert!(held_by(&[QueuedOp::NewFolder { path: "notes/sub".into(), dname: String::new(), dnames: String::new() }], "notes/sub/page"));
+        // Queued.tries round-trips and resets to 0 on fresh enqueue
+        let mut tq = Queue::new();
+        tq.insert("p".into(), Queued { kind: "md".into(), body: "old".into(), base: Some(2), is_new: false, at: 1, tries: 3 });
+        let rt: Queue = serde_json::from_str(&serde_json::to_string(&tq).unwrap()).unwrap();
+        assert_eq!(rt["p"].tries, 3);
+        enqueue(&mut tq, &Page { name: "p".into(), body: "new".into(), kind: "md".into(), rev: 2 }, Some(2), false, 2);
+        assert_eq!(tq["p"].tries, 0);
         assert!(ops_path("http://ship.example:8080", "~zod").unwrap().ends_with("lattice-rune/ops-~zod+http%3A%2F%2Fship.example%3A8080.json"));
     }
 
@@ -5341,7 +5642,7 @@ mod tests {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
         let t = crate::api::since_epoch().unwrap().as_secs();
         let (a, b, to) = (format!("ops{t}/a"), format!("ops{t}/b"), format!("ops{t}/moved"));
-        let q = |body: &str, base: u64, is_new: bool| Queued { kind: "md".into(), body: body.into(), base: Some(base), is_new, at: 0 };
+        let q = |body: &str, base: u64, is_new: bool| Queued { kind: "md".into(), body: body.into(), base: Some(base), is_new, at: 0, tries: 0 };
         for n in [&a, &b] {
             assert!(matches!(c.send_queued(n, &q("as made\n", 0, true)), Sent::Done { .. }));
         }
@@ -5512,7 +5813,7 @@ mod tests {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
         let dir = format!("urbt{}", crate::api::since_epoch().unwrap().as_secs());
         let name = format!("{dir}/page");
-        let q = Queued { kind: "md".into(), body: "# Read by address\n".into(), base: None, is_new: true, at: 0 };
+        let q = Queued { kind: "md".into(), body: "# Read by address\n".into(), base: None, is_new: true, at: 0, tries: 0 };
         assert!(matches!(c.send_queued(&name, &q), Sent::Done { .. }));
         c.share(&name, "shared").unwrap();
         let got = c.urb_read(&format!("urb://{}/{name}", c.ship())).unwrap();
@@ -5535,7 +5836,8 @@ mod tests {
         assert_eq!(sse_events(&mut buf), [("upd /rev".to_owned(), "42".to_owned())]);
         assert_eq!(beacon_of("upd /rev", "42"), Some(Beacon::Rev { old: false, stamp: "42".into() }));
         assert_eq!(beacon_of("old /comments", "x"), None, "a comment stamp as it stood is not news");
-        assert_eq!((beacon_of("upd /comments", "x"), beacon_of("upd /folds", "x")), (Some(Beacon::Comments), None));
+        assert_eq!(beacon_of("upd /comments", "x"), Some(Beacon::Comments));
+        assert_eq!(beacon_of("upd /folds", "x"), Some(Beacon::Folds { old: false, data: "x".into() }));
         let rev = |old, n: &str| Beacon::Rev { old, stamp: n.into() };
         let mut st = BeaconState::default();
         // the first registration is no news: nothing was seen before it
@@ -5584,7 +5886,7 @@ mod tests {
                     let (c3, n3) = (c2.clone(), name2.clone());
                     saver = Some(std::thread::spawn(move || {
                         std::thread::sleep(Duration::from_secs(1));
-                        c3.send_queued(&n3, &Queued { kind: "md".into(), body: "seen\n".into(), base: None, is_new: true, at: 0 })
+                        c3.send_queued(&n3, &Queued { kind: "md".into(), body: "seen\n".into(), base: None, is_new: true, at: 0, tries: 0 })
                     }));
                 }
                 let done = matches!(ev, Beacon::Rev { old: false, .. });
@@ -5878,7 +6180,7 @@ mod tests {
         // a bookmark of a page that is shared opens by the read the pane uses for it.
         // The page is left there, named for the run, for `scripts/marks-ship.json` to press
         let name = format!("marks{stamp}/page");
-        let q = Queued { kind: "md".into(), body: "# Kept by a bookmark\n".into(), base: None, is_new: true, at: 0 };
+        let q = Queued { kind: "md".into(), body: "# Kept by a bookmark\n".into(), base: None, is_new: true, at: 0, tries: 0 };
         assert!(matches!(c.send_queued(&name, &q), Sent::Done { .. }));
         c.share(&name, "shared").unwrap();
         let there = format!("urb://{}/{name}", c.ship());

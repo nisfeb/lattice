@@ -53,6 +53,8 @@ pub struct Ask {
     pub dark: bool,
     /// The page may fetch what it names on the web.
     pub outside: bool,
+    /// Optional ship `(base_url, cookie)` for authenticated same-origin assets.
+    pub ship: Option<(String, String)>,
 }
 
 enum Cmd {
@@ -61,6 +63,10 @@ enum Cmd {
     See(f32, f32),
     /// The pointer at a point of the page, and whether it pressed there.
     Point(f32, f32, bool),
+    /// Scroll to an in-page `#anchor` target (`id` or `<a name="...">`).
+    Anchor(String),
+    /// Find text occurrences in the laid-out DOM and report their Y offsets.
+    Find(String),
     /// Something the page asked for has come.
     Loaded,
     /// The window is done with the thread.
@@ -82,6 +88,10 @@ pub enum Out {
     Hot(bool),
     /// A link was pressed.
     Link(String),
+    /// Scroll the HTML container to this Y offset (in points), e.g. for an `#anchor` link.
+    ScrollTo(f32),
+    /// Document Y offsets (in points) for each match of the active Find query.
+    Found(Vec<f32>),
     /// Laying out or painting the page failed inside the engine. The thread goes on without it, and
     /// the window reads the page another way.
     Failed,
@@ -120,6 +130,16 @@ impl Html {
     /// The pointer at a point of the page.
     pub fn point(&self, x: f32, y: f32, press: bool) {
         let _ = self.tx.send(Cmd::Point(x, y, press));
+    }
+
+    /// Asks the page thread to locate an in-page `#anchor` and emit `Out::ScrollTo`.
+    pub fn anchor(&self, href: &str) {
+        let _ = self.tx.send(Cmd::Anchor(href.to_owned()));
+    }
+
+    /// Searches the laid-out DOM for `query` and emits `Out::Found` with match Y offsets.
+    pub fn find(&self, query: &str) {
+        let _ = self.tx.send(Cmd::Find(query.to_owned()));
     }
 
     /// What has come since last asked.
@@ -165,12 +185,22 @@ pub fn width_for(room: f32) -> f32 {
     room.clamp(WIDTHS.0, WIDTHS.1).floor()
 }
 
-/// Fetches what a page names, with no cookie: `data:`, and the web when let.
+/// Fetches what a page names: `data:`, same-origin ship assets with cookie, and the web when let.
 struct Net {
     tx: Mutex<Sender<Cmd>>,
     outside: bool,
+    ship: Option<(String, String)>,
     left: std::sync::atomic::AtomicUsize,
     held: std::sync::atomic::AtomicUsize,
+}
+
+fn same_origin(url: &blitz_traits::net::Url, base: &str) -> bool {
+    let Ok(b) = blitz_traits::net::Url::parse(base) else { return false };
+    url.scheme() == b.scheme()
+        && url.host_str().is_some()
+        && url.host_str() == b.host_str()
+        && url.port_or_known_default() == b.port_or_known_default()
+        && url.path().starts_with("/apps/lattice/")
 }
 
 impl NetProvider for Net {
@@ -193,7 +223,8 @@ impl NetProvider for Net {
                 }
             }
             "http" | "https" => {
-                if !self.outside {
+                let ship_cookie = self.ship.as_ref().filter(|(base, _)| same_origin(&url, base)).map(|(_, c)| c.clone());
+                if ship_cookie.is_none() && !self.outside {
                     self.held.fetch_add(1, Ordering::Relaxed);
                     return;
                 }
@@ -201,6 +232,14 @@ impl NetProvider for Net {
                     return;
                 }
                 let _ = std::thread::Builder::new().name("html-fetch".to_owned()).spawn(move || {
+                    if let Some(cookie) = ship_cookie {
+                        if let Ok(bytes) = crate::api::fetch_bytes(url.as_str(), Some(&cookie))
+                            && bytes.len() <= FETCH_BYTES
+                        {
+                            done(bytes, url.to_string());
+                        }
+                        return;
+                    }
                     use std::io::Read;
                     let Ok(res) = crate::api::public_agent().get(url.as_str()).timeout(std::time::Duration::from_secs(15)).call() else { return };
                     let mut bytes = Vec::new();
@@ -255,8 +294,9 @@ fn document(html: &str, config: impl Fn() -> DocumentConfig) -> HtmlDocument {
         return HtmlDocument::from_html(TOO_DEEP, config());
     }
     // measured on a parse that has no way to fetch: a page refused for its depth must not have asked for
-    // its images and stylesheets on the way
-    let deep = tree_depth(&HtmlDocument::from_html(html, DocumentConfig::default())) > DEEPEST;
+    // its images and stylesheets on the way. A hierarchical base URL stops Blitz from panicking on root-relative paths.
+    let check_cfg = DocumentConfig { base_url: Some("lattice://local/".to_owned()), ..DocumentConfig::default() };
+    let deep = tree_depth(&HtmlDocument::from_html(html, check_cfg)) > DEEPEST;
     HtmlDocument::from_html(if deep { TOO_DEEP } else { html }, config())
 }
 
@@ -370,6 +410,126 @@ fn lay(page: &mut Page) {
     page.have.clear();
 }
 
+/// Document Y coordinate (in points) of `id`, summed up its ancestor element layout boxes.
+fn node_abs_y(doc: &BaseDocument, mut id: blitz_dom::NodeId) -> f32 {
+    let mut y = 0.0f32;
+    let mut steps = 0usize;
+    while steps < 4096 {
+        let Some(node) = doc.get_node(id) else { break };
+        if node.element_data().is_some() {
+            y += node.final_layout().location.y;
+        }
+        let Some(parent) = node.parent else { break };
+        id = parent;
+        steps += 1;
+    }
+    y.max(0.0)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn pct_decode(raw: &str) -> String {
+    let b = raw.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(hi), Some(lo)) = (hex_nibble(b[i + 1]), hex_nibble(b[i + 2]))
+        {
+            out.push((hi << 4) | lo);
+            i += 3;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| raw.to_owned())
+}
+
+/// Finds the Y offset of an `#anchor` target (`id` attribute or `<a name="...">`).
+fn anchor_y(doc: &BaseDocument, raw: &str) -> Option<f32> {
+    let frag = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
+    if frag.is_empty() {
+        return Some(0.0);
+    }
+    let decoded = pct_decode(frag);
+    let mut stack = vec![doc.root_node().id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.get_node(id) else { continue };
+        if let Some(el) = node.element_data() {
+            let is_a = &*el.name.local == "a";
+            let hit = el.attrs().iter().any(|a| {
+                let k = &*a.name.local;
+                (k == "id" || (is_a && k == "name")) && (a.value.trim() == frag || a.value.trim() == decoded)
+            });
+            if hit {
+                return Some(node_abs_y(doc, id));
+            }
+        }
+        for &child in node.children.iter().rev() {
+            stack.push(child);
+        }
+    }
+    None
+}
+
+/// Finds every text match of `query` in document order and returns each match's exact Y offset.
+/// Searches each inline formatting context's laid-out text (`inline_layout_data`), so matches split
+/// across inline tags (`hel<b>lo</b>`) are found and each hit gets its own laid-out line Y coordinate.
+fn find_y(doc: &BaseDocument, scale: f32, query: &str) -> Vec<f32> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let fold = rune_kit::search::Fold::default();
+    let inv_scale = 1.0 / scale.max(1.0);
+    let mut out = Vec::new();
+    let mut stack = vec![doc.root_node().id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.get_node(id) else { continue };
+        if let Some(el) = node.element_data() {
+            if matches!(&*el.name.local, "script" | "style" | "head" | "noscript" | "title") {
+                continue;
+            }
+            if node.flags.is_inline_root()
+                && let Some(il) = el.inline_layout_data.as_deref()
+            {
+                let hits = fold.find(&il.text, q);
+                if !hits.is_empty() {
+                    let base_y = node_abs_y(doc, id) + il.block_offset;
+                    let lines: Vec<(std::ops::Range<usize>, f32)> = il
+                        .layout
+                        .lines()
+                        .map(|l| (l.text_range(), l.metrics().block_min_coord * inv_scale))
+                        .collect();
+                    for r in hits {
+                        let line_y = lines
+                            .iter()
+                            .find(|(lr, _)| r.start >= lr.start && r.start < lr.end)
+                            .map_or(0.0, |(_, y)| *y);
+                        out.push((base_y + line_y).max(0.0));
+                        if out.len() >= 2000 {
+                            return out;
+                        }
+                    }
+                }
+            }
+        }
+        for &child in node.children.iter().rev() {
+            stack.push(child);
+        }
+    }
+    out
+}
+
 /// The link at a point of the page, if one is there.
 fn link_at(doc: &BaseDocument, x: f32, y: f32) -> Option<String> {
     let mut at = Some(doc.hit(x, y)?.node_id);
@@ -439,12 +599,13 @@ fn serve(rx: &Receiver<Cmd>, own: &Sender<Cmd>, out: &Arc<Mutex<Vec<Out>>>, wake
     let mut page: Option<Page> = None;
     let mut renderer = None;
     let (mut turn, mut seen, mut hot, mut rest) = (0u64, (0.0f32, 900.0f32), false, true);
+    let mut find_q = String::new();
     loop {
         // everything waiting is taken at once, so only the newest of each kind is acted on
         let Ok(first) = rx.recv() else { return };
         let mut cmds = vec![first];
         cmds.extend(rx.try_iter());
-        let (mut show, mut loaded, mut point) = (None, false, None);
+        let (mut show, mut loaded, mut point, mut anchor, mut find_new) = (None, false, None, None, None);
         for c in cmds {
             match c {
                 Cmd::Show(a, h) => show = Some(match (show.take(), h) {
@@ -459,6 +620,8 @@ fn serve(rx: &Receiver<Cmd>, own: &Sender<Cmd>, out: &Arc<Mutex<Vec<Out>>>, wake
                     Some((_, _, true)) if !press => continue,
                     _ => (x, y, press),
                 }),
+                Cmd::Anchor(href) => anchor = Some(href),
+                Cmd::Find(q) => find_new = Some(q),
             }
         }
         let mut laid = false;
@@ -476,8 +639,13 @@ fn serve(rx: &Receiver<Cmd>, own: &Sender<Cmd>, out: &Arc<Mutex<Vec<Out>>>, wake
                 (Some(html), _) => {
                     // a new page: nothing of it is under the pointer yet
                     (seen.0, hot) = (0.0, false);
-                    let net = Arc::new(Net { tx: Mutex::new(own.clone()), outside: ask.outside, left: FETCHES.into(), held: 0.into() });
-                    let doc = document(&html, || DocumentConfig { viewport: Some(viewport(&ask, seen.1)), net_provider: Some(net.clone()), ..Default::default() });
+                    let net = Arc::new(Net { tx: Mutex::new(own.clone()), outside: ask.outside, ship: ask.ship.clone(), left: FETCHES.into(), held: 0.into() });
+                    let doc = document(&html, || DocumentConfig {
+                        viewport: Some(viewport(&ask, seen.1)),
+                        base_url: Some(ask.ship.as_ref().map(|(u, _)| u.clone()).unwrap_or_else(|| "lattice://local/".to_owned())),
+                        net_provider: Some(net.clone()),
+                        ..Default::default()
+                    });
                     let mut p = Page { ask, doc, net, height: 1.0, have: BTreeSet::new(), view: seen.1 };
                     lay(&mut p);
                     page = Some(p);
@@ -503,6 +671,17 @@ fn serve(rx: &Receiver<Cmd>, own: &Sender<Cmd>, out: &Arc<Mutex<Vec<Out>>>, wake
         if laid {
             turn += 1;
             tell(Out::Laid { ask: p.ask.clone(), turn, height: p.height, held: p.net.held.load(std::sync::atomic::Ordering::Relaxed) });
+        }
+        if let Some(q) = find_new {
+            find_q = q;
+            tell(Out::Found(find_y(&p.doc, p.ask.scale, &find_q)));
+        } else if laid && !find_q.is_empty() {
+            tell(Out::Found(find_y(&p.doc, p.ask.scale, &find_q)));
+        }
+        if let Some(href) = anchor {
+            if let Some(y) = anchor_y(&p.doc, &href) {
+                tell(Out::ScrollTo(y));
+            }
         }
         if let Some((x, y, press)) = point {
             let link = link_at(&p.doc, x, y);
@@ -543,7 +722,7 @@ mod tests {
         let h = Html::start(Arc::new(|| {}));
         // the page is asked for alone and the next after it is laid out: the worker must not leave out the first (it takes the newest of what is waiting) and parse it
         let deep = format!("{}x{}", "<div>".repeat(20_000), "</div>".repeat(20_000));
-        let ask = |name: &str| Ask { key: Key { name: name.into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false };
+        let ask = |name: &str| Ask { key: Key { name: name.into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false, ship: None };
         let laid = |name: &str| {
             let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
             loop {
@@ -566,8 +745,8 @@ mod tests {
         let named = "<img src='http://example.invalid/a.png'><link rel=stylesheet href='http://example.invalid/a.css'>";
         let fetched = |page: &str| {
             let (tx, _rx) = channel();
-            let net = Arc::new(Net { tx: Mutex::new(tx), outside: false, left: FETCHES.into(), held: 0.into() });
-            let ask = Ask { key: Key { name: "f".into(), rev: 1, text: 0 }, width: 100.0, scale: 1.0, dark: false, outside: false };
+            let net = Arc::new(Net { tx: Mutex::new(tx), outside: false, ship: None, left: FETCHES.into(), held: 0.into() });
+            let ask = Ask { key: Key { name: "f".into(), rev: 1, text: 0 }, width: 100.0, scale: 1.0, dark: false, outside: false, ship: None };
             let doc = document(page, || DocumentConfig { viewport: Some(viewport(&ask, 100.0)), net_provider: Some(net.clone()), ..Default::default() });
             (tree_depth(&doc), net.held.load(std::sync::atomic::Ordering::Relaxed))
         };
@@ -654,7 +833,7 @@ mod tests {
             format!("{}x", format!("{}{}", "<div>".repeat(4000), "</x>".repeat(4000)).repeat(2)),
         ];
         for (n, page) in pages.into_iter().enumerate() {
-            h.show(Ask { key: Key { name: format!("deep{n}"), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some(page));
+            h.show(Ask { key: Key { name: format!("deep{n}"), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false, ship: None }, Some(page));
             let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
             let height = loop {
                 if let Some(Out::Laid { height, .. }) = h.take().into_iter().find(|o| matches!(o, Out::Laid { .. })) {
@@ -683,7 +862,7 @@ mod tests {
         ];
         for (n, page) in pages.into_iter().enumerate() {
             assert!(tree_depth(&HtmlDocument::from_html(&page, DocumentConfig::default())) <= DEEPEST, "shape {n} is let by");
-            h.show(Ask { key: Key { name: format!("near{n}"), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some(page));
+            h.show(Ask { key: Key { name: format!("near{n}"), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false, ship: None }, Some(page));
             let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
             let mut got = (false, false);
             while !(got.0 && got.1) {
@@ -704,8 +883,8 @@ mod tests {
     /// The pixel in the middle of a 100 by 100 band of a page, laid out and painted as the page's thread does.
     fn middle_of(html: &str) -> [u8; 4] {
         let (tx, _rx) = channel();
-        let net = Arc::new(Net { tx: Mutex::new(tx), outside: false, left: FETCHES.into(), held: 0.into() });
-        let ask = Ask { key: Key { name: "paint".into(), rev: 1, text: 0 }, width: 100.0, scale: 1.0, dark: false, outside: false };
+        let net = Arc::new(Net { tx: Mutex::new(tx), outside: false, ship: None, left: FETCHES.into(), held: 0.into() });
+        let ask = Ask { key: Key { name: "paint".into(), rev: 1, text: 0 }, width: 100.0, scale: 1.0, dark: false, outside: false, ship: None };
         let doc = document(html, || DocumentConfig { viewport: Some(viewport(&ask, 100.0)), net_provider: Some(net.clone()), ..Default::default() });
         let mut p = Page { ask, doc, net, height: 1.0, have: BTreeSet::new(), view: 100.0 };
         lay(&mut p);
@@ -816,7 +995,7 @@ mod tests {
         let h = Html::start(Arc::new(|| {}));
         // nothing listens there: were it asked, the test would still pass, so the count is what is checked
         let html = "<link rel='stylesheet' href='http://127.0.0.1:9/a.css'><img src='http://127.0.0.1:9/a.png'><img src='data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=='>";
-        h.show(Ask { key: Key { name: "o".into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false }, Some(html.to_owned()));
+        h.show(Ask { key: Key { name: "o".into(), rev: 1, text: 0 }, width: 300.0, scale: 1.0, dark: false, outside: false, ship: None }, Some(html.to_owned()));
         let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
             if let Some(Out::Laid { held, .. }) = h.take().into_iter().find(|o| matches!(o, Out::Laid { .. })) {
@@ -845,7 +1024,7 @@ mod tests {
     fn a_page_is_laid_out_painted_in_bands_and_its_link_found() {
         let h = Html::start(Arc::new(|| {}));
         let html = "<body style='margin:0;background:#102030'><div style='height:700px'><a href='https://example.com/x' style='display:block;width:200px;height:50px;background:#ff0000'>go</a></div></body>";
-        let ask = Ask { key: Key { name: "p".into(), rev: 1, text: 0 }, width: 400.0, scale: 1.0, dark: false, outside: false };
+        let ask = Ask { key: Key { name: "p".into(), rev: 1, text: 0 }, width: 400.0, scale: 1.0, dark: false, outside: false, ship: None };
         h.show(ask.clone(), Some(html.to_owned()));
         let (turn, height) = laid(&h);
         assert_eq!(height, 700.0);
@@ -890,7 +1069,7 @@ mod tests {
     #[test]
     fn a_page_with_no_ground_stands_on_white() {
         let h = Html::start(Arc::new(|| {}));
-        h.show(Ask { key: Key { name: "w".into(), rev: 1, text: 0 }, width: 300.0, scale: 2.0, dark: false, outside: false }, Some("<p>hello</p>".to_owned()));
+        h.show(Ask { key: Key { name: "w".into(), rev: 1, text: 0 }, width: 300.0, scale: 2.0, dark: false, outside: false, ship: None }, Some("<p>hello</p>".to_owned()));
         laid(&h);
         let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
@@ -908,7 +1087,7 @@ mod tests {
     #[test]
     fn at_two_pixels_to_a_point_every_band_is_painted_to_its_foot() {
         let h = Html::start(Arc::new(|| {}));
-        h.show(Ask { key: Key { name: "t".into(), rev: 1, text: 0 }, width: 300.0, scale: 2.0, dark: false, outside: false }, Some("<body style='margin:0'><div style='height:1300px;background:#102030'></div></body>".to_owned()));
+        h.show(Ask { key: Key { name: "t".into(), rev: 1, text: 0 }, width: 300.0, scale: 2.0, dark: false, outside: false, ship: None }, Some("<body style='margin:0'><div style='height:1300px;background:#102030'></div></body>".to_owned()));
         let (mut got, end) = (Vec::new(), std::time::Instant::now() + std::time::Duration::from_secs(20));
         while got.len() < 3 {
             for o in h.take() {
@@ -982,5 +1161,94 @@ mod tests {
         }
         let got = middle_of(&page_of(&chain));
         assert!(got[0] > 200 && got[1] > 200 && got[2] > 200, "5-deep sub-SVG chain must be stopped: {got:?}");
+    }
+
+    #[test]
+    fn htmlview_anchor_find_and_same_origin_ship_assets_work() {
+        let h = Html::start(Arc::new(|| {}));
+        let html = "<body style='margin:0'><div style='height:400px'>Alpha cafe</div><h2 id='sec-2'>Beta café</h2><div style='height:300px'></div><a name='foot'>Gamma</a></body>";
+        h.show(
+            Ask {
+                key: Key { name: "af".into(), rev: 1, text: 0 },
+                width: 400.0,
+                scale: 1.0,
+                dark: false,
+                outside: false,
+                ship: Some(("http://127.0.0.1:9/apps/lattice/".into(), "urbauth-~zod=abc".into())),
+            },
+            Some(html.to_owned()),
+        );
+        laid(&h);
+        h.anchor("#sec-2");
+        h.find("cafe");
+        let (mut y_scroll, mut found) = (None, None);
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while y_scroll.is_none() || found.is_none() {
+            for o in h.take() {
+                match o {
+                    Out::ScrollTo(y) => y_scroll = Some(y),
+                    Out::Found(ys) => found = Some(ys),
+                    _ => {}
+                }
+            }
+            assert!(std::time::Instant::now() < end);
+            std::thread::yield_now();
+        }
+        let y = y_scroll.unwrap();
+        assert!(y >= 390.0 && y <= 460.0, "expected #sec-2 around 400px, got {y}");
+        let ys = found.unwrap();
+        assert_eq!(ys.len(), 2, "finds both ascii and accented cafe: {ys:?}");
+        assert!(ys[1] > ys[0] + 300.0, "{ys:?}");
+        // same-origin ship image under /apps/lattice/ is allowed, while other paths (/~/) and foreign origins are held
+        let same_and_foreign = "<img src='/apps/lattice/logo.png'><img src='/~/login'><img src='http://example.invalid/ext.png'>";
+        h.show(
+            Ask {
+                key: Key { name: "orig".into(), rev: 1, text: 0 },
+                width: 300.0,
+                scale: 1.0,
+                dark: false,
+                outside: false,
+                ship: Some(("http://127.0.0.1:9/apps/lattice/".into(), "urbauth-~zod=abc".into())),
+            },
+            Some(same_and_foreign.to_owned()),
+        );
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            if let Some(Out::Laid { held, .. }) = h.take().into_iter().find(|o| matches!(o, Out::Laid { .. })) {
+                assert_eq!(held, 2, "both /~/login and foreign-origin image are held, only /apps/lattice/ passes");
+                break;
+            }
+            assert!(std::time::Instant::now() < end);
+            std::thread::yield_now();
+        }
+        // pct_decode must not panic on non-ASCII char boundaries after '%'.
+        assert_eq!(pct_decode("%a\u{e9}"), "%a\u{e9}");
+        assert_eq!(pct_decode("sec%202"), "sec 2");
+
+        // find_y matches across inline tags (hel<b>lo</b>) and gives increasing Y down a long paragraph.
+        let filler = "word ".repeat(120);
+        let inline_html = format!("<body style='margin:0'><p>hel<b>lo</b> {filler} hel<i>lo</i></p></body>");
+        h.find("hello");
+        h.show(
+            Ask { key: Key { name: "inl".into(), rev: 1, text: 0 }, width: 200.0, scale: 1.0, dark: false, outside: false, ship: None },
+            Some(inline_html),
+        );
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut saw_laid = false;
+        let mut ys = None;
+        while !saw_laid || ys.is_none() {
+            for o in h.take() {
+                match o {
+                    Out::Laid { ask, .. } if ask.key.name == "inl" => saw_laid = true,
+                    Out::Found(v) if saw_laid => ys = Some(v),
+                    _ => {}
+                }
+            }
+            assert!(std::time::Instant::now() < end);
+            std::thread::yield_now();
+        }
+        let ys = ys.unwrap();
+        assert_eq!(ys.len(), 2, "matches split across inline tags: {ys:?}");
+        assert!(ys[1] > ys[0] + 40.0, "later hit in long paragraph gets larger Y: {ys:?}");
     }
 }
