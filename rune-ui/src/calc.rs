@@ -445,7 +445,7 @@ pub struct Engine<'a> {
     book: &'a Book,
     styles: &'a Styles,
     /// Named ranges and named expressions declared in the workbook or sheets.
-    names: HashMap<String, NamedItem>,
+    names: HashMap<(Option<usize>, String), NamedItem>,
     /// What formulas were worked out to, over what the book holds.
     over: HashMap<Key, Put>,
     formulas: Vec<Entry>,
@@ -488,11 +488,11 @@ impl<'a> Engine<'a> {
         for (k, def) in &book.names {
             match def {
                 sheet::Named::Range { addr, home } => {
-                    if let Some(mut refs) = formula::parse_addrs(addr) {
-                        if refs.len() == 1 {
-                            names.insert(k.clone(), NamedItem::Ref(refs.remove(0), *home));
-                        }
-                    }
+                    let item = match formula::parse_addrs(addr) {
+                        Some(mut refs) if refs.len() == 1 => NamedItem::Ref(refs.remove(0), *home),
+                        _ => NamedItem::Ast(None, *home),
+                    };
+                    names.insert(k.clone(), item);
                 }
                 sheet::Named::Expr { expr, home } => {
                     let body = formula::body_of(expr).unwrap_or(expr.as_str());
@@ -564,10 +564,10 @@ impl<'a> Engine<'a> {
                 },
                 Node::Name(name) => {
                     let low = name.to_lowercase();
-                    if !seen.insert(low.clone()) {
+                    if !seen.insert((h, low)) {
                         continue;
                     }
-                    match self.names.get(&low) {
+                    match self.lookup_name(h, name) {
                         Some(NamedItem::Ref(r, nh)) => match self.range(r, *nh) {
                             Ok(V::Range(g)) => {
                                 for si in g.s..=g.s2 {
@@ -596,7 +596,7 @@ impl<'a> Engine<'a> {
                             Ok(V::Range(g)) if g.single_sheet() => Some(g),
                             _ => None,
                         },
-                        Node::Name(nm) => match self.names.get(&nm.to_lowercase()) {
+                        Node::Name(nm) => match self.lookup_name(h, nm) {
                             Some(NamedItem::Ref(r, nh)) => match self.range(r, *nh) {
                                 Ok(V::Range(g)) if g.single_sheet() => Some(g),
                                 _ => None,
@@ -877,18 +877,27 @@ impl<'a> Engine<'a> {
         })
     }
 
+    /// Resolves a named range or expression: sheet-local takes priority over workbook-global.
+    fn lookup_name(&self, sheet: usize, name: &str) -> Option<&NamedItem> {
+        let low = name.to_lowercase();
+        self.names.get(&(Some(sheet), low.clone())).or_else(|| self.names.get(&(None, low)))
+    }
+
     #[inline(never)]
     fn eval_name(&mut self, name: &str, ctx: Ctx) -> Result<V, Unsupported> {
-        match self.names.get(&name.to_lowercase()) {
+        match self.lookup_name(ctx.s, name) {
             None => Ok(err("#NAME?")),
-            Some(NamedItem::Ref(r, home)) => self.range(r, *home),
+            Some(NamedItem::Ref(r, home)) => {
+                let (r, home) = (r.clone(), *home);
+                self.range(&r, home)
+            }
             Some(NamedItem::Ast(None, _)) => Err(Unsupported),
             Some(NamedItem::Ast(Some(ast), home)) => {
+                let (ast, h) = (ast.clone(), *home);
+                self.count(1)?;
                 if ctx.depth > 32 {
                     Ok(err("Err:522"))
                 } else {
-                    let ast = ast.clone();
-                    let h = *home;
                     self.ev(&ast, Ctx { s: h, depth: ctx.depth + 1, ..ctx })
                 }
             }
@@ -2571,5 +2580,72 @@ mod tests {
         assert!(!st.look(&b.style_at(0, 0, 3)).bold);
         // Accent-aware collation sorts é before f.
         assert!(compare(&V::Str("éclair".into()), &V::Str("fig".into())) < 0);
+    }
+
+    #[test]
+    fn named_expressions_respect_budget_sheet_scope_and_multi_area_ranges() {
+        // 1. Exponential recursive named expression X = X+X stops under budget instead of hanging.
+        let bomb = r#"<?xml version="1.0"?>
+<office:document xmlns:office="urn:o" xmlns:table="urn:t" xmlns:text="urn:x" xmlns:calcext="urn:c">
+ <office:body><office:spreadsheet>
+  <table:table table:name="S1">
+   <table:table-row>
+    <table:table-cell office:value-type="float" office:value="1" calcext:value-type="float"><text:p>1</text:p></table:table-cell>
+    <table:table-cell table:formula="of:=X+[.A1]" office:value-type="float" office:value="9" calcext:value-type="float"><text:p>9</text:p></table:table-cell>
+   </table:table-row>
+  </table:table>
+  <table:named-expressions>
+   <table:named-expression table:name="X" table:expression="of:=X+X"/>
+  </table:named-expressions>
+ </office:spreadsheet></office:body>
+</office:document>"#;
+        let got = enter(bomb, 0, 0, 0, "2").unwrap();
+        assert_eq!(got.stale, vec![(0, 0, 1)], "budget-exhausted recursive name stays stale");
+        assert_eq!(sheet::parse(&got.body)[0].rows[0], vec!["2"], "budget-exhausted formula is blanked via with_blanks");
+
+        // 2. Sheet-local names take priority over global names, do not leak across sheets,
+        // and multi-area ranges stay stale instead of overwriting cached values with #NAME?.
+        let scoped = r#"<?xml version="1.0"?>
+<office:document xmlns:office="urn:o" xmlns:table="urn:t" xmlns:text="urn:x" xmlns:calcext="urn:c">
+ <office:body><office:spreadsheet>
+  <table:table table:name="S1">
+   <table:named-expressions>
+    <table:named-expression table:name="Rate" table:expression="of:=10"/>
+   </table:named-expressions>
+   <table:table-row>
+    <table:table-cell office:value-type="float" office:value="1" calcext:value-type="float"><text:p>1</text:p></table:table-cell>
+    <table:table-cell table:formula="of:=[.A1]*Rate" office:value-type="float" office:value="0" calcext:value-type="float"><text:p>0</text:p></table:table-cell>
+    <table:table-cell table:formula="of:=SUM(Multi)+[.A1]" office:value-type="float" office:value="42" calcext:value-type="float"><text:p>42</text:p></table:table-cell>
+   </table:table-row>
+  </table:table>
+  <table:table table:name="S2">
+   <table:named-expressions>
+    <table:named-expression table:name="Rate" table:expression="of:=20"/>
+   </table:named-expressions>
+   <table:table-row>
+    <table:table-cell office:value-type="float" office:value="1" calcext:value-type="float"><text:p>1</text:p></table:table-cell>
+    <table:table-cell table:formula="of:=[.A1]*Rate" office:value-type="float" office:value="0" calcext:value-type="float"><text:p>0</text:p></table:table-cell>
+   </table:table-row>
+  </table:table>
+  <table:table table:name="S3">
+   <table:table-row>
+    <table:table-cell office:value-type="float" office:value="1" calcext:value-type="float"><text:p>1</text:p></table:table-cell>
+    <table:table-cell table:formula="of:=[.A1]*Rate" office:value-type="float" office:value="0" calcext:value-type="float"><text:p>0</text:p></table:table-cell>
+   </table:table-row>
+  </table:table>
+  <table:named-expressions>
+   <table:named-expression table:name="Rate" table:expression="of:=5"/>
+   <table:named-range table:name="Multi" table:cell-range-address="$S1.$A$1:.$A$1 $S2.$A$1:.$A$1"/>
+  </table:named-expressions>
+ </office:spreadsheet></office:body>
+</office:document>"#;
+        let g1 = enter(scoped, 0, 0, 0, "3").unwrap();
+        assert_eq!(sheet::parse(&g1.body)[0].rows[0][1], "30", "S1 uses its local Rate=10");
+        assert_eq!(sheet::parse(&g1.body)[0].rows[0][2], "42", "multi-area named range keeps cached value instead of #NAME?");
+        assert_eq!(g1.stale, vec![(0, 0, 2)]);
+        let g2 = enter(&g1.body, 1, 0, 0, "3").unwrap();
+        assert_eq!(sheet::parse(&g2.body)[1].rows[0][1], "60", "S2 uses its local Rate=20");
+        let g3 = enter(&g2.body, 2, 0, 0, "3").unwrap();
+        assert_eq!(sheet::parse(&g3.body)[2].rows[0][1], "15", "S3 falls back to global Rate=5");
     }
 }

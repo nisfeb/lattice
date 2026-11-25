@@ -243,13 +243,37 @@ pub fn typed_on(text: &str, null_date: f64) -> Result<Typed, String> {
         "false" => return Ok(Typed::Bool(false)),
         _ => {}
     }
-    let d: Vec<&str> = t.split('-').collect();
+    let (date_part, time_part) = match t.find([' ', 'T']) {
+        Some(i) => (&t[..i], Some(&t[i + 1..])),
+        None => (t, None),
+    };
+    let d: Vec<&str> = date_part.split('-').collect();
     if d.len() == 3 && digits(d[0], 4, 4) && digits(d[1], 1, 2) && digits(d[2], 1, 2) {
         let (y, m, day): (i64, i64, i64) = (d[0].parse().unwrap_or(0), d[1].parse().unwrap_or(0), d[2].parse().unwrap_or(0));
+        let frac = match time_part {
+            None => Some(0.0),
+            Some(tp) => {
+                let c: Vec<&str> = tp.split(':').collect();
+                if (2..=3).contains(&c.len()) && digits(c[0], 1, 2) && digits(c[1], 2, 2) && c.get(2).is_none_or(|s| digits(s, 2, 2)) {
+                    let (h, min, sec): (f64, f64, f64) = (
+                        c[0].parse().unwrap_or(99.0),
+                        c[1].parse().unwrap_or(99.0),
+                        c.get(2).map_or(0.0, |s| s.parse().unwrap_or(99.0)),
+                    );
+                    (h < 24.0 && min < 60.0 && sec < 60.0).then_some((h * 3600.0 + min * 60.0 + sec) / 86_400.0)
+                } else {
+                    None
+                }
+            }
+        };
         // only a day the calendar has: the 30th of February would run on into March, and is the text that was typed
-        if (1..=12).contains(&m) && day >= 1 && civil_from_days(days_from_civil(y, m, day)) == (y, m, day) {
+        if let Some(frac) = frac
+            && (1..=12).contains(&m)
+            && day >= 1
+            && civil_from_days(days_from_civil(y, m, day)) == (y, m, day)
+        {
             if let Some(v) = date_serial(&format!("{}-{m:02}-{day:02}", d[0]), null_date) {
-                return Ok(Typed::Special("date", v));
+                return Ok(Typed::Special("date", v + frac));
             }
         }
     }
@@ -685,7 +709,8 @@ pub enum Named {
 pub struct Book {
     pub sheets: Vec<MSheet>,
     pub null_date: f64,
-    pub names: std::collections::HashMap<String, Named>,
+    /// Named ranges and expressions keyed by `(scope, lower-case name)` where `Some(si)` is sheet-local and `None` is workbook-global.
+    pub names: std::collections::HashMap<(Option<usize>, String), Named>,
 }
 
 impl Book {
@@ -723,7 +748,7 @@ pub fn book(src: &str) -> Result<Book, String> {
     let null_date = null_date(src, &ss);
     let mut sheets = Vec::new();
     let mut names = std::collections::HashMap::new();
-    let mut read_names = |parent: &El, home: usize| {
+    let mut read_names = |parent: &El, scope: Option<usize>, home: usize| {
         let Ok(children) = kids(src, parent) else { return };
         let Some(box_el) = children.into_iter().find(|e| e.name == "table:named-expressions") else { return };
         let Ok(defs) = kids(src, &box_el) else { return };
@@ -733,12 +758,12 @@ pub fn book(src: &str) -> Result<Book, String> {
             match k.name.as_str() {
                 "table:named-range" => {
                     if let Some(addr) = attr(tag, "table:cell-range-address").filter(|a| !a.is_empty()) {
-                        names.insert(nm.to_lowercase(), Named::Range { addr, home });
+                        names.insert((scope, nm.to_lowercase()), Named::Range { addr, home });
                     }
                 }
                 "table:named-expression" => {
                     if let Some(expr) = attr(tag, "table:expression") {
-                        names.insert(nm.to_lowercase(), Named::Expr { expr, home });
+                        names.insert((scope, nm.to_lowercase()), Named::Expr { expr, home });
                     }
                 }
                 _ => {}
@@ -747,7 +772,7 @@ pub fn book(src: &str) -> Result<Book, String> {
     };
     let tables: Vec<El> = kids(src, &ss)?.into_iter().filter(|e| e.name == "table:table").collect();
     for (si, table) in tables.iter().enumerate() {
-        read_names(table, si);
+        read_names(table, Some(si), si);
         let mut rows = Vec::new();
         rows_of(src, table, &mut rows)?;
         let mut out = Vec::new();
@@ -807,7 +832,7 @@ pub fn book(src: &str) -> Result<Book, String> {
         }
         sheets.push(MSheet { name: attr(&src[table.start + 1..table.open_end], "table:name").unwrap_or_default(), rows: out, cols, col_styles, starts });
     }
-    read_names(&ss, 0);
+    read_names(&ss, None, 0);
     Ok(Book { sheets, null_date, names })
 }
 
@@ -1210,12 +1235,21 @@ pub fn from_csv(src: &str) -> Result<String, String> {
     for row in &rows {
         out.push_str("    <table:table-row table:style-name=\"ro1\">\n");
         for v in row {
+            let trimmed = v.trim();
+            let is_code = !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) && ((trimmed.len() > 1 && trimmed.starts_with('0')) || trimmed.len() > 15);
             if v.is_empty() {
                 out.push_str("     <table:table-cell/>\n");
             } else if let Some(n) = plain_number(v) {
                 out.push_str(&format!("     <table:table-cell office:value-type=\"float\" office:value=\"{n}\" calcext:value-type=\"float\"><text:p>{n}</text:p></table:table-cell>\n"));
-            } else if !v.starts_with('=') && !v.starts_with('\'') {
+            } else if !is_code && !v.starts_with('=') && !v.starts_with('\'') {
                 match typed_on(v, null_date) {
+                    Ok(Typed::Number(n)) => {
+                        let attr_v = num_attr(n);
+                        let shown = general(n);
+                        out.push_str(&format!(
+                            "     <table:table-cell office:value-type=\"float\" office:value=\"{attr_v}\" calcext:value-type=\"float\"><text:p>{shown}</text:p></table:table-cell>\n"
+                        ));
+                    }
                     Ok(Typed::Bool(b)) => {
                         let shown = if b { "TRUE" } else { "FALSE" };
                         out.push_str(&format!(
@@ -1763,12 +1797,12 @@ mod tests {
                 vec!["Tea <green> & \"co\"", "4.5", "007", "=SUM(A1)"],
                 vec!["Milk", "-2", "12345678901234567890", "two\nlines"],
                 vec![],
-                vec!["last", "1e5", "3.", "x"],
+                vec!["last", "100000", "3.", "x"],
             ]
         );
-        // a number is a number cell, and what only looks like one is text: nothing typed runs as a formula
-        assert_eq!(fods.matches("office:value-type=\"float\"").count(), 2);
-        assert!(fods.contains("office:value=\"4.5\"") && fods.contains("office:value=\"-2\""));
+        // a number is a number cell, leading-zero and long digit codes stay text, and nothing typed runs as a formula
+        assert_eq!(fods.matches("office:value-type=\"float\"").count(), 3);
+        assert!(fods.contains("office:value=\"4.5\"") && fods.contains("office:value=\"-2\"") && fods.contains("office:value=\"100000\""));
         assert!(!fods.contains("table:formula"));
         assert!(fods.contains("<text:p>=SUM(A1)</text:p>"));
         // the rest of the document is the blank sheet's, untouched
@@ -1788,9 +1822,7 @@ mod tests {
 
     #[test]
     fn csv_parses_dates_percents_money_and_booleans_and_renders_html() {
-        let csv = "When,Share,Price,Done,Formula\n2026-11-17,50%,$1,200.50,true,=1+1\n9:30,25%,-$5,false,'2026-11-17\n";
-        let csv2 = "When,Share,Price,Done,Formula\n2026-11-17,50%,\"$1,200.50\",true,=1+1\n9:30,25%,-$5,false,'2026-11-17\n";
-        let _ = csv;
+        let csv2 = "When,Share,Price,Done,Formula,Grouped,Plus,Dot,DateTime\n2026-11-17,50%,\"$1,200.50\",true,=1+1,\"1,234.5\",+5,.5,2024-1-5 10:30\n9:30,25%,-$5,false,'2026-11-17,1e5,007,3.,2024-01-05T10:30:15\n";
         let fods = from_csv(csv2).unwrap();
         let b = book(&fods).unwrap();
         assert_eq!(b.at(0, 1, 0).unwrap().vt, "date");
@@ -1798,8 +1830,15 @@ mod tests {
         assert_eq!(b.at(0, 1, 2).unwrap().vt, "currency");
         assert_eq!(b.at(0, 1, 3).unwrap().vt, "boolean");
         assert_eq!(b.at(0, 1, 4).unwrap().vt, "string");
+        assert_eq!(b.at(0, 1, 5).unwrap().vt, "float");
+        assert_eq!(b.at(0, 1, 6).unwrap().vt, "float");
+        assert_eq!(b.at(0, 1, 7).unwrap().vt, "float");
+        assert_eq!(b.at(0, 1, 8).unwrap().vt, "date");
         assert_eq!(b.at(0, 2, 0).unwrap().vt, "time");
         assert_eq!(b.at(0, 2, 4).unwrap().vt, "string");
+        assert_eq!(b.at(0, 2, 5).unwrap().vt, "float");
+        assert_eq!(b.at(0, 2, 6).unwrap().vt, "string");
+        assert_eq!(b.at(0, 2, 8).unwrap().vt, "date");
         let html = render_html(&fods, "Budget").unwrap();
         assert!(html.contains("<h1>Budget</h1>") && html.contains("$1,200.50") && html.contains("50.00%") && html.contains("2026-11-17"));
     }
