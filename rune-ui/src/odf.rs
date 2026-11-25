@@ -307,6 +307,77 @@ impl Part {
     }
 }
 
+/// Reads `Basic/` macro libraries from the package into `<office:script>` XML
+/// (matching `ui-src/writer/odt.js`), recording consumed zip entries in `used`.
+fn read_basic(
+    ents: &[(String, Entry)],
+    used: &mut HashSet<String>,
+    take: &mut dyn FnMut(&Entry) -> Result<String, String>,
+) -> Result<String, String> {
+    let esc_attr = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
+    };
+    let mut read_part = |name: &str| -> Result<Option<(String, El)>, String> {
+        let Some((_, e)) = ents.iter().find(|(n, _)| n == name) else { return Ok(None) };
+        if used.contains(name) {
+            return Ok(None);
+        }
+        let src = take(e)?;
+        let root = elements(&src, 0, src.len()).map_err(|err| format!("{name}: {err}"))?.into_iter().next();
+        used.insert(name.to_owned());
+        Ok(root.map(|el| (src, el)))
+    };
+    let Some((lc_src, lc_el)) = read_part("Basic/script-lc.xml")? else { return Ok(String::new()) };
+    if lc_el.open_end == lc_el.end {
+        return Ok(String::new());
+    }
+    let lc_close = lc_src[..lc_el.end].rfind("</").unwrap_or(lc_el.end);
+    let mut libs = String::new();
+    for lib in elements(&lc_src, lc_el.open_end, lc_close).map_err(|e| format!("Basic/script-lc.xml: {e}"))? {
+        let Some(name) = attr(&lc_src, &lib, "library:name") else { continue };
+        if name.is_empty() || attr(&lc_src, &lib, "library:link") == Some("true") {
+            continue;
+        }
+        let lb_path = format!("Basic/{name}/script-lb.xml");
+        let Some((lb_src, lb_el)) = read_part(&lb_path)? else { continue };
+        if lb_el.open_end == lb_el.end {
+            libs.push_str(&format!("<ooo:library-embedded ooo:name=\"{}\"></ooo:library-embedded>", esc_attr(name)));
+            continue;
+        }
+        let lb_close = lb_src[..lb_el.end].rfind("</").unwrap_or(lb_el.end);
+        let mut mods = String::new();
+        for m in elements(&lb_src, lb_el.open_end, lb_close).map_err(|e| format!("{lb_path}: {e}"))? {
+            let Some(mn) = attr(&lb_src, &m, "library:name") else { continue };
+            if mn.is_empty() {
+                continue;
+            }
+            let mod_path = format!("Basic/{name}/{mn}.xml");
+            let Some((mod_src, mod_el)) = read_part(&mod_path)? else { continue };
+            let code = if mod_el.open_end == mod_el.end {
+                ""
+            } else {
+                let close = mod_src[..mod_el.end].rfind("</").unwrap_or(mod_el.end);
+                &mod_src[mod_el.open_end..close]
+            };
+            mods.push_str(&format!(
+                "<ooo:module ooo:name=\"{}\"><ooo:source-code>{code}</ooo:source-code></ooo:module>",
+                esc_attr(mn)
+            ));
+        }
+        libs.push_str(&format!("<ooo:library-embedded ooo:name=\"{}\">{mods}</ooo:library-embedded>", esc_attr(name)));
+    }
+    if libs.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!(
+        "<office:script script:language=\"ooo:Basic\"><ooo:libraries xmlns:ooo=\"http://openoffice.org/2004/office\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">{libs}</ooo:libraries></office:script>"
+    ))
+}
+
 /// The flat document a package folds into. `ext` is the file's
 /// extension, which must agree with what the package says it is.
 pub fn import(b: &[u8], ext: &str) -> Result<Flat, String> {
@@ -330,11 +401,12 @@ pub fn import(b: &[u8], ext: &str) -> Result<Flat, String> {
     if says.as_deref().map(str::trim) != Some(mime) {
         return Err(format!("it is not {name}"));
     }
-    let mut part = |file: &str, root: &str| -> Result<Option<Part>, String> { find(file).map(|e| Part::read(file, root, take(e)?)).transpose() };
-    let c = part("content.xml", "office:document-content")?.ok_or("it has no content.xml")?;
-    let s = part("styles.xml", "office:document-styles")?;
-    let m = part("meta.xml", "office:document-meta")?;
-    let g = part("settings.xml", "office:document-settings")?;
+    let c = find("content.xml").map(|e| Part::read("content.xml", "office:document-content", take(e)?)).transpose()?.ok_or("it has no content.xml")?;
+    let s = find("styles.xml").map(|e| Part::read("styles.xml", "office:document-styles", take(e)?)).transpose()?;
+    let m = find("meta.xml").map(|e| Part::read("meta.xml", "office:document-meta", take(e)?)).transpose()?;
+    let g = find("settings.xml").map(|e| Part::read("settings.xml", "office:document-settings", take(e)?)).transpose()?;
+    let mut used = HashSet::new();
+    let basic_xml = read_basic(&ents, &mut used, &mut take)?;
 
     // the root: every namespace any part declares, then version and mimetype
     let mut head = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\n<office:document");
@@ -346,6 +418,9 @@ pub fn import(b: &[u8], ext: &str) -> Result<Flat, String> {
                 head.push_str(&format!(" {k}=\"{}\"", &tag[v]));
             }
         }
+    }
+    if !basic_xml.is_empty() && seen.insert("xmlns:script".to_owned()) {
+        head.push_str(" xmlns:script=\"urn:oasis:names:tc:opendocument:xmlns:script:1.0\"");
     }
     if let Some(ver) = attr(&c.src, &c.root, "office:version") {
         head.push_str(&format!(" office:version=\"{ver}\""));
@@ -386,13 +461,25 @@ pub fn import(b: &[u8], ext: &str) -> Result<Flat, String> {
             }
         }
     }
+    let scripts = {
+        let existing = c.get("office:scripts");
+        if basic_xml.is_empty() {
+            existing.to_owned()
+        } else if existing.is_empty() || existing.ends_with("/>") {
+            format!("<office:scripts>{basic_xml}</office:scripts>")
+        } else if let Some(prefix) = existing.strip_suffix("</office:scripts>") {
+            format!("{prefix}{basic_xml}</office:scripts>")
+        } else {
+            format!("<office:scripts>{basic_xml}</office:scripts>")
+        }
+    };
     let c_auto = c.get("office:automatic-styles");
     let auto = if s_auto.is_empty() && c_auto.is_empty() { String::new() } else { format!("<office:automatic-styles>{}{}</office:automatic-styles>", inner(&s_auto), inner(c_auto)) };
     let faces = if faces.is_empty() { String::new() } else { format!("<office:font-face-decls>{faces}</office:font-face-decls>") };
     let body: Vec<&str> = [
         m.as_ref().map_or("", |m| m.get("office:meta")),
         g.as_ref().map_or("", |g| g.get("office:settings")),
-        c.get("office:scripts"),
+        &scripts,
         &faces,
         s.as_ref().map_or("", |s| s.get("office:styles")),
         &auto,
@@ -411,8 +498,8 @@ pub fn import(b: &[u8], ext: &str) -> Result<Flat, String> {
         return Err("it did not fold into one document".into());
     }
 
-    // what stays behind: pictures, embedded objects, macros
-    let kept = |n: &str| matches!(n, "mimetype" | "content.xml" | "styles.xml" | "meta.xml" | "settings.xml" | "manifest.rdf" | "layout-cache") || n.ends_with('/') || ["META-INF/", "Thumbnails/", "Configurations2/"].iter().any(|d| n.starts_with(d));
+    // what stays behind: pictures, embedded objects, unreferenced macro files
+    let kept = |n: &str| matches!(n, "mimetype" | "content.xml" | "styles.xml" | "meta.xml" | "settings.xml" | "manifest.rdf" | "layout-cache") || n.ends_with('/') || ["META-INF/", "Thumbnails/", "Configurations2/"].iter().any(|d| n.starts_with(d)) || used.contains(n);
     let dropped: Vec<&str> = ents.iter().map(|e| e.0.as_str()).filter(|n| !kept(n)).collect();
     let pics = dropped.iter().filter(|n| n.starts_with("Pictures/")).count();
     let macros = dropped.iter().filter(|n| n.starts_with("Basic/")).count();
@@ -487,7 +574,7 @@ mod tests {
     #[test]
     fn a_package_folds_into_one_flat_document() {
         for deflate in [false, true] {
-            let z = zip(&[("mimetype", ODT), ("content.xml", CONTENT), ("styles.xml", STYLES), ("Pictures/a.png", "x"), ("Pictures/b.png", "y"), ("Basic/script-lc.xml", "<x/>"), ("META-INF/manifest.xml", "<m/>")], deflate);
+            let z = zip(&[("mimetype", ODT), ("content.xml", CONTENT), ("styles.xml", STYLES), ("Pictures/a.png", "x"), ("Pictures/b.png", "y"), ("Basic/unreferenced.xml", "<x/>"), ("META-INF/manifest.xml", "<m/>")], deflate);
             let f = import(&z, "odt").unwrap();
             assert_eq!(f.kind, "fodt");
             assert_eq!(f.note, "left out 2 pictures, 1 macro file");
@@ -507,6 +594,21 @@ mod tests {
             let at = |s: &str| t.find(s).unwrap_or_else(|| panic!("no {s}"));
             assert!(at("<office:scripts/>") < at("<office:font-face-decls>") && at("<office:styles>") < at("<office:automatic-styles>") && at("<office:master-styles>") < at("<office:body>"));
         }
+    }
+
+    #[test]
+    fn basic_macros_are_folded_into_office_scripts() {
+        let lc = r#"<library:libraries xmlns:library="http://openoffice.org/2000/library"><library:library library:name="Standard" library:link="false"/><library:library library:name="Linked" library:link="true"/></library:libraries>"#;
+        let lb = r#"<library:library xmlns:library="http://openoffice.org/2000/library" library:name="Standard"><library:element library:name="Module1"/></library:library>"#;
+        let m1 = r#"<script:module xmlns:script="http://openoffice.org/2000/script" script:name="Module1">Sub Main
+MsgBox &quot;hi&quot;
+End Sub</script:module>"#;
+        let z = zip(&[("mimetype", ODT), ("content.xml", CONTENT), ("Basic/script-lc.xml", lc), ("Basic/Standard/script-lb.xml", lb), ("Basic/Standard/Module1.xml", m1)], false);
+        let f = import(&z, "odt").unwrap();
+        assert!(f.note.is_empty(), "consumed Basic files should not be reported left out: {}", f.note);
+        assert!(f.text.contains(r#"<office:scripts><office:script script:language="ooo:Basic">"#), "{}", f.text);
+        assert!(f.text.contains(r#"<ooo:library-embedded ooo:name="Standard"><ooo:module ooo:name="Module1"><ooo:source-code>Sub Main"#), "{}", f.text);
+        assert!(!f.text.contains("Linked"));
     }
 
     #[test]
