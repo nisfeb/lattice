@@ -24,6 +24,7 @@ line!(UPDIR, "lat-updir", "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-
 line!(PEN, "lat-pen", "M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z");
 line!(SORT, "lat-sort", "M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4");
 line!(FOLD, "lat-fold", "M7 15l5 5 5-5M7 9l5-5 5 5");
+line!(SKILL, "lat-skill", "M13 3L5 13h6l-1 8 8-10h-6z");
 
 /// What a tab shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +67,7 @@ pub fn tabs(showing: Half, pages: usize, knows: usize) -> [Tab; 4] {
 pub enum Do {
     Open,
     New,
+    Skills,
     NewFolder,
     Template,
     Upload,
@@ -94,6 +96,7 @@ pub fn tools(memory: bool, desc: bool) -> Vec<Tool> {
     let mut out = Vec::new();
     if memory {
         out.push(t(Do::New, "new", "New memory", &PLUS));
+        out.push(t(Do::Skills, "skills-open", "Skills", &SKILL));
     } else {
         out.push(Tool { keys: Some("Ctrl+O"), ..t(Do::Open, "jump-open", "Open a page", &QOPEN) });
         out.push(t(Do::New, "new", "New page", &PLUS));
@@ -183,9 +186,11 @@ mod tests {
     fn the_memories_toolbar_is_shorter() {
         let t = tools(true, false);
         let acts: Vec<_> = t.iter().map(|t| t.act).collect();
-        assert_eq!(acts, [Do::New, Do::Sort, Do::Fold]);
+        assert_eq!(acts, [Do::New, Do::Skills, Do::Sort, Do::Fold]);
         assert_eq!(t[0].name, "New memory");
         assert_eq!(t[0].key, "new");
+        assert_eq!(t[1].name, "Skills");
+        assert_eq!(t[1].key, "skills-open");
     }
 
     #[test]

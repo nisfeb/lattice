@@ -25,6 +25,7 @@ line!(GLOBE, "lat-globe", "M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0M3 12h18M12 3c3 3 
 line!(FORUM, "lat-forum", "M3 4h12v8H8l-3 3v-3H3zM18 9h3v8h-2v3l-3-3h-6v-2");
 line!(INBOX, "lat-inbox", "M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5");
 line!(KEY, "lat-key", "M4 15a4 4 0 1 0 8 0a4 4 0 1 0-8 0M11 12l9-9M16 7l3 3M14 9l2 2");
+line!(CONFLICT, "lat-conflict", "M12 3l10 18H2zM12 10v5M12 18h.01");
 line!(TERM, "lat-term", "M4 17l6-5-6-5M12 19h8");
 // a gear with teeth, not the web client's own, which reads as a sun: the Feather set's, on the same grid
 line!(GEAR, "lat-gear", "M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z");
@@ -37,6 +38,7 @@ pub enum Go {
     Forum,
     Inbox,
     Access,
+    Conflicts,
     Commands,
     Settings,
 }
@@ -67,6 +69,7 @@ impl Item {
         match (self.go, self.count) {
             (_, 0) => self.name.to_owned(),
             (Go::Inbox, n) => format!("{}, {n} waiting", self.name),
+            (Go::Conflicts, n) => format!("{}, {n} to resolve", self.name),
             (_, n) => format!("{}, {n}", self.name),
         }
     }
@@ -88,23 +91,30 @@ pub struct Showing {
     pub forum: bool,
     pub inbox: bool,
     pub access: bool,
+    pub conflicts: bool,
     pub settings: bool,
     /// Held comments and unread notices together.
     pub waiting: u32,
+    /// Unresolved conflict pages under `conflicts/`.
+    pub conflict_count: u32,
 }
 
 /// The ribbon's items, top to bottom, with settings in the lower group.
 pub fn items(w: Showing) -> Vec<Item> {
     let it = |go, key, name, icon| Item { go, key, name, keys: None, icon, on: false, count: 0, foot: false };
-    vec![
+    let mut out = vec![
         it(Go::Today, "today", "Today's page", &CAL),
         Item { on: w.shared, ..it(Go::Browser, "browser-open", "Browser", &GLOBE) },
         Item { on: w.forum, ..it(Go::Forum, "forum-open", "Forum", &FORUM) },
         Item { on: w.inbox, count: w.waiting, ..it(Go::Inbox, "inbox-open", "Inbox", &INBOX) },
         Item { on: w.access, ..it(Go::Access, "access-open", "Access & groups", &KEY) },
-        Item { keys: Some("Ctrl+K"), ..it(Go::Commands, "palette-open", "Command palette", &TERM) },
-        Item { on: w.settings, keys: Some("Ctrl+,"), foot: true, ..it(Go::Settings, "settings-open", "Settings", &GEAR) },
-    ]
+    ];
+    if w.conflict_count > 0 || w.conflicts {
+        out.push(Item { on: w.conflicts, count: w.conflict_count, ..it(Go::Conflicts, "conflicts-open", "Sync conflicts", &CONFLICT) });
+    }
+    out.push(Item { keys: Some("Ctrl+K"), ..it(Go::Commands, "palette-open", "Command palette", &TERM) });
+    out.push(Item { on: w.settings, keys: Some("Ctrl+,"), foot: true, ..it(Go::Settings, "settings-open", "Settings", &GEAR) });
+    out
 }
 
 #[cfg(test)]
@@ -132,11 +142,13 @@ mod tests {
 
     #[test]
     fn counts_are_painted_and_said() {
-        let it = items(Showing { waiting: 120, ..Default::default() });
+        let it = items(Showing { waiting: 120, conflict_count: 3, ..Default::default() });
         let by = |g| it.iter().find(|i| i.go == g).unwrap();
         assert_eq!((by(Go::Browser).badge(), by(Go::Browser).said()), (None, "Browser".to_owned()));
         assert_eq!(by(Go::Inbox).badge().as_deref(), Some("99+"));
         assert_eq!(by(Go::Inbox).said(), "Inbox, 120 waiting");
+        assert_eq!(by(Go::Conflicts).badge().as_deref(), Some("3"));
+        assert_eq!(by(Go::Conflicts).said(), "Sync conflicts, 3 to resolve");
         assert_eq!(by(Go::Forum).badge(), None);
         assert_eq!(by(Go::Forum).said(), "Forum");
     }
