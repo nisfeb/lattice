@@ -1527,6 +1527,8 @@ pub enum Beacon {
     Notify { old: bool, stamp: String },
     /// A comment landed.
     Comments,
+    /// A followed folder moved (`op: stale` or `op: new`).
+    Folds { old: bool, data: String },
     /// The stream ended, as it does every minute or so, or broke.
     Down,
 }
@@ -1570,6 +1572,7 @@ pub fn beacon_of(name: &str, data: &str) -> Option<Beacon> {
         "/shares" => Some(Beacon::Shares { old, stamp }),
         "/notify" => Some(Beacon::Notify { old, stamp }),
         "/comments" if !old => Some(Beacon::Comments),
+        "/folds" => Some(Beacon::Folds { old, data: stamp }),
         _ => None,
     }
 }
@@ -1583,6 +1586,7 @@ pub struct BeaconState {
     know: String,
     shares: String,
     notify: String,
+    folds: String,
 }
 
 /// What an event asks to be read again.
@@ -1592,6 +1596,7 @@ pub struct Wants {
     pub know: bool,
     pub shared: bool,
     pub inbox: bool,
+    pub folds: bool,
 }
 
 impl BeaconState {
@@ -1617,6 +1622,7 @@ impl BeaconState {
             // these two say the same stamp again when nothing moved
             Beacon::Shares { old, stamp } => w.shared = stamp != self.shares && moved(&mut self.shares, old, stamp),
             Beacon::Notify { old, stamp } => w.inbox = stamp != self.notify && moved(&mut self.notify, old, stamp),
+            Beacon::Folds { old, data } => w.folds = data != self.folds && moved(&mut self.folds, old, data),
             Beacon::Comments => w.inbox = true,
             Beacon::Down => self.live = false,
         }
@@ -3030,6 +3036,201 @@ impl Conn {
     /// What stands at a `urb://` address: a page, a folder, a board, a file. The ship waits on another ship for one of its.
     pub fn urb_read(&self, url: &str) -> Result<Urb, String> {
         urb_parse(&self.call_in(90, "GET", &format!("urb-read?url={}", enc(url)), None)?)
+    }
+
+    /// Followed peer folders (`GET /apps/lattice/folder-follows`).
+    pub fn folder_follows(&self) -> Result<Vec<crate::follow::Fold>, String> {
+        let text = self.call("GET", "folder-follows", None)?;
+        serde_json::from_str(&text).map_err(|e| e.to_string())
+    }
+
+    /// Follow a peer's shared folder (`POST /apps/lattice/folder-follow`).
+    pub fn folder_follow(&self, host: &str, path: &str) -> Result<(), String> {
+        self.call_in(60, "POST", &format!("folder-follow?host={}&path={}", enc(host), enc(path)), Some("")).map(drop)
+    }
+
+    /// Unfollow a peer's shared folder (`POST /apps/lattice/folder-unfollow`).
+    pub fn folder_unfollow(&self, host: &str, path: &str) -> Result<(), String> {
+        self.call("POST", &format!("folder-unfollow?host={}&path={}", enc(host), enc(path)), Some("")).map(drop)
+    }
+
+    /// Re-read one followed folder or all followed folders (`POST /apps/lattice/folder-check`).
+    pub fn folder_check(&self, host: Option<&str>, path: Option<&str>) -> Result<(), String> {
+        let route = match (host, path) {
+            (Some(h), Some(p)) => format!("folder-check?host={}&path={}", enc(h), enc(p)),
+            _ => "folder-check".to_owned(),
+        };
+        self.call_in(60, "POST", &route, Some("")).map(drop)
+    }
+
+    /// Mark a page inside a followed folder as seen (`POST /apps/lattice/folder-seen`).
+    pub fn folder_seen(&self, host: &str, path: &str, key: &str) -> Result<(), String> {
+        self.call("POST", &format!("folder-seen?host={}&path={}&key={}", enc(host), enc(path), enc(key)), Some("")).map(drop)
+    }
+
+    /// Whether `/apps/orrery` is installed on this ship (`GET /apps/orrery/api/version` -> 200).
+    pub fn orrery_present(&self) -> bool {
+        let full = format!("{}/apps/orrery/api/version", self.url);
+        #[cfg(target_arch = "wasm32")]
+        {
+            web::request("GET", &full, None, None, None).is_ok_and(|(code, _)| code == 200)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            ship_agent().get(&full).timeout(Duration::from_secs(10)).set("cookie", &self.cookie).call().is_ok_and(|r| r.status() == 200)
+        }
+    }
+
+    /// A page's status in orrery (`GET /apps/orrery/api/follow?path=...`).
+    pub fn orrery_status(&self, path: &str) -> crate::orrery::Status {
+        let full = format!("{}/apps/orrery/api/follow?path={}", self.url, enc(path));
+        #[cfg(target_arch = "wasm32")]
+        let text = match web::request("GET", &full, None, None, None) {
+            Ok((200, t)) => t,
+            _ => return crate::orrery::Status::None,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let text = match ship_agent().get(&full).timeout(Duration::from_secs(15)).set("cookie", &self.cookie).call() {
+            Ok(r) if r.status() == 200 => match read_text(r, ANSWER_LIMIT) {
+                Ok(t) => t,
+                Err(_) => return crate::orrery::Status::None,
+            },
+            _ => return crate::orrery::Status::None,
+        };
+        serde_json::from_str::<serde_json::Value>(&text).map(|v| crate::orrery::parse_status(&v)).unwrap_or_default()
+    }
+
+    /// Sends a page to orrery (`POST /apps/orrery/api/follow`), then reads back its status.
+    pub fn orrery_send(&self, path: &str, title: &str, text: &str) -> crate::orrery::Status {
+        let full = format!("{}/apps/orrery/api/follow", self.url);
+        let payload = serde_json::json!({
+            "path": path,
+            "title": title,
+            "text": text,
+            "links": crate::orrery::links(text, path),
+        })
+        .to_string();
+        #[cfg(target_arch = "wasm32")]
+        let res = web::request("POST", &full, Some("application/json"), None, Some(&payload));
+        #[cfg(not(target_arch = "wasm32"))]
+        let res: Result<(u16, String), String> = match ship_agent()
+            .post(&full)
+            .timeout(Duration::from_secs(30))
+            .set("cookie", &self.cookie)
+            .set("origin", &self.url)
+            .set("content-type", "application/json")
+            .send_string(&payload)
+        {
+            Ok(r) => {
+                let code = r.status();
+                Ok((code, read_text(r, ANSWER_LIMIT).unwrap_or_default()))
+            }
+            Err(ureq::Error::Status(code, r)) => Ok((code, r.into_string().unwrap_or_default())),
+            Err(e) => Err(e.to_string()),
+        };
+        match res {
+            Err(_) => crate::orrery::Status::Failed { note: "orrery did not answer".into() },
+            Ok((code, body)) if (200..300).contains(&code) => {
+                let _ = body;
+                self.orrery_status(path)
+            }
+            Ok((code, body)) => {
+                let note = serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+                    .unwrap_or_else(|| format!("orrery refused it ({code})"));
+                crate::orrery::Status::Failed { note }
+            }
+        }
+    }
+
+    /// Live body facts for a `<kind>/<slug>` page (`GET /apps/orrery/api/body/<kind>/<slug>`).
+    pub fn orrery_facts(&self, path: &str) -> Option<crate::orrery::BodyFacts> {
+        if !crate::orrery::is_body_path(path) {
+            return None;
+        }
+        let encoded = path.split('/').map(enc).collect::<Vec<_>>().join("/");
+        let full = format!("{}/apps/orrery/api/body/{encoded}", self.url);
+        #[cfg(target_arch = "wasm32")]
+        let text = match web::request("GET", &full, None, None, None) {
+            Ok((200, t)) => t,
+            _ => return None,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let text = match ship_agent().get(&full).timeout(Duration::from_secs(15)).set("cookie", &self.cookie).call() {
+            Ok(r) if r.status() == 200 => read_text(r, ANSWER_LIMIT).ok()?,
+            _ => return None,
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        crate::orrery::parse_facts(&v)
+    }
+
+    /// Reads an explorer path (`/apps/lattice/x...`), following up to 3 redirects within `/apps/lattice/x`.
+    pub fn explore(&self, x_path: &str, raw: bool) -> Result<(String, crate::explorer::View), String> {
+        let mut cur = crate::explorer::normalize_path(x_path);
+        for _ in 0..4 {
+            let query = if raw && cur.ends_with('/') { "?raw=1" } else { "" };
+            let full = format!("{}{cur}{query}", self.url);
+            #[cfg(target_arch = "wasm32")]
+            {
+                let (code, body) = web::request("GET", &full, None, None, None)?;
+                if code == 0 {
+                    return Err("the ship could not be reached".into());
+                }
+                if code >= 400 && code != 403 {
+                    return Err(format!("{code}: {body}"));
+                }
+                let view = crate::explorer::parse_response(&cur, code, &body);
+                return Ok((cur, view));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                match ship_agent().get(&full).timeout(Duration::from_secs(60)).set("cookie", &self.cookie).call() {
+                    Ok(r) if (300..400).contains(&r.status()) => {
+                        let Some(loc) = r.header("location").map(str::to_owned) else {
+                            return Err(format!("{}: redirect with no location", r.status()));
+                        };
+                        if !loc.starts_with("/apps/lattice/x") {
+                            return Err(format!("unexpected explorer redirect: {loc}"));
+                        }
+                        cur = loc.split('?').next().unwrap_or(&loc).to_owned();
+                        continue;
+                    }
+                    Ok(r) => {
+                        let code = r.status();
+                        let body = read_text(r, ANSWER_LIMIT)?;
+                        let view = crate::explorer::parse_response(&cur, code, &body);
+                        return Ok((cur, view));
+                    }
+                    Err(ureq::Error::Status(403, r)) => {
+                        let body = read_text(r, ANSWER_LIMIT).unwrap_or_default();
+                        let view = crate::explorer::parse_response(&cur, 403, &body);
+                        return Ok((cur, view));
+                    }
+                    Err(ureq::Error::Status(code, r)) => return Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+        }
+        Err("too many explorer redirects".into())
+    }
+
+    /// Fetches the raw `?data` bytes of a file in the explorer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn explore_raw(&self, x_path: &str) -> Result<Vec<u8>, String> {
+        let clean = crate::explorer::normalize_path(x_path);
+        let full = format!("{}{clean}?data", self.url);
+        let mut out = Vec::new();
+        match ship_agent().get(&full).timeout(Duration::from_secs(60)).set("cookie", &self.cookie).call() {
+            Ok(r) if (300..400).contains(&r.status()) => Err(format!("{}: redirect", r.status())),
+            Ok(r) => {
+                use std::io::Read;
+                r.into_reader().take(ANSWER_LIMIT as u64).read_to_end(&mut out).map_err(|e| e.to_string())?;
+                Ok(out)
+            }
+            Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     /// The agent keys, newest first.
@@ -5535,7 +5736,8 @@ mod tests {
         assert_eq!(sse_events(&mut buf), [("upd /rev".to_owned(), "42".to_owned())]);
         assert_eq!(beacon_of("upd /rev", "42"), Some(Beacon::Rev { old: false, stamp: "42".into() }));
         assert_eq!(beacon_of("old /comments", "x"), None, "a comment stamp as it stood is not news");
-        assert_eq!((beacon_of("upd /comments", "x"), beacon_of("upd /folds", "x")), (Some(Beacon::Comments), None));
+        assert_eq!(beacon_of("upd /comments", "x"), Some(Beacon::Comments));
+        assert_eq!(beacon_of("upd /folds", "x"), Some(Beacon::Folds { old: false, data: "x".into() }));
         let rev = |old, n: &str| Beacon::Rev { old, stamp: n.into() };
         let mut st = BeaconState::default();
         // the first registration is no news: nothing was seen before it

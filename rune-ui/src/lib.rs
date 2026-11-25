@@ -12,6 +12,8 @@ mod backups;
 mod browse;
 mod calc;
 mod code;
+mod explorer;
+mod follow;
 mod fonts;
 mod formula;
 mod html;
@@ -29,6 +31,7 @@ mod mapio;
 mod md;
 mod merge;
 mod odf;
+mod orrery;
 mod outline;
 mod pdf;
 mod pins;
@@ -407,17 +410,52 @@ enum Prompt {
     Forget(Shared),
 }
 
+/// A parked browser tab: its own navigation history, address field, folder list,
+/// or loaded remote page and comment thread.
+#[derive(Clone)]
+struct BrowserTab {
+    nav: browse::Nav,
+    urb: TextEdit,
+    urb_folder: Option<(String, Vec<(String, String, bool)>)>,
+    remote: Option<Shared>,
+    open: Option<Page>,
+    thread: Option<Thread>,
+}
+
+/// A parked explorer tab (`/apps/lattice/x`): its navigation history, typed path,
+/// raw-grubs toggle, and loaded directory or file view.
+#[derive(Clone)]
+struct ExplorerTab {
+    nav: browse::Nav,
+    input: TextEdit,
+    raw: bool,
+    view: Option<explorer::View>,
+}
+
+/// What a tab holds when it is parked.
+#[derive(Clone, Default)]
+enum TabKind {
+    #[default]
+    Page,
+    Browser(Box<BrowserTab>),
+    Explorer(Box<ExplorerTab>),
+}
+
 /// A tab that is not in front: the pages it went through, and which of
-/// them it shows.
+/// them it shows (or its parked browser/explorer state).
 #[derive(Clone, Default)]
 struct Tab {
     trail: Vec<String>,
     at: usize,
+    kind: TabKind,
 }
 
 impl Tab {
     fn page(&self) -> Option<&str> {
-        self.trail.get(self.at).map(String::as_str)
+        match self.kind {
+            TabKind::Page => self.trail.get(self.at).map(String::as_str),
+            TabKind::Browser(_) | TabKind::Explorer(_) => None,
+        }
     }
 }
 
@@ -786,6 +824,29 @@ struct ShipSession {
     visits: Vec<api::Visit>,
     visits_req: Latest<Result<Vec<api::Visit>, String>>,
     shared_open: bool,
+    /// Peer folders this ship follows (`/folder-follows`), plus scheduled checks.
+    following: Vec<follow::Fold>,
+    following_req: Latest<Result<Vec<follow::Fold>, String>>,
+    follow_act_req: Latest<Result<String, String>>,
+    follow_checks: Vec<(f64, Option<(String, String)>)>,
+    next_follow_check: f64,
+    /// Native tree explorer (`/apps/lattice/x`): active flag, nav history, address bar, raw toggle, and view.
+    exploring: bool,
+    exp_nav: browse::Nav,
+    exp_input: TextEdit,
+    exp_raw: bool,
+    exp_view: Option<explorer::View>,
+    exp_req: Latest<Result<(String, explorer::View), String>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    exp_raw_req: Latest<Result<(String, Vec<u8>), String>>,
+    /// Orrery integration (`/apps/orrery/api`): installed check, per-path status cache, queued poll timers, and body facts.
+    orrery_up: Option<bool>,
+    orrery_up_req: Latest<bool>,
+    orrery_st: HashMap<String, orrery::Status>,
+    orrery_req: Latest<(String, orrery::Status)>,
+    orrery_polls: HashMap<String, (u32, f64)>,
+    orrery_facts: Option<(String, Option<orrery::BodyFacts>)>,
+    orrery_facts_req: Latest<(String, Option<orrery::BodyFacts>)>,
     /// The comments of every page show in place of a page.
     inbox: bool,
     remote: Option<Shared>,
@@ -1180,6 +1241,26 @@ impl Default for ShipSession {
             visits: Vec::new(),
             visits_req: Latest::default(),
             shared_open: false,
+            following: Vec::new(),
+            following_req: Latest::default(),
+            follow_act_req: Latest::default(),
+            follow_checks: Vec::new(),
+            next_follow_check: 0.0,
+            exploring: false,
+            exp_nav: browse::Nav::default(),
+            exp_input: TextEdit::new("/apps/lattice/x"),
+            exp_raw: false,
+            exp_view: None,
+            exp_req: Latest::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            exp_raw_req: Latest::default(),
+            orrery_up: None,
+            orrery_up_req: Latest::default(),
+            orrery_st: HashMap::new(),
+            orrery_req: Latest::default(),
+            orrery_polls: HashMap::new(),
+            orrery_facts: None,
+            orrery_facts_req: Latest::default(),
             inbox: false,
             remote: None,
             remote_req: Latest::default(),
@@ -1474,12 +1555,15 @@ fn sort_files(m: &mut Files, desc: bool) {
     m.sort_by(|a, b| head::order((a.dir, head::sort_key(&a.path, &a.name)), (b.dir, head::sort_key(&b.path, &b.name)), desc));
 }
 
-/// The folders of shared with me as they stand now, each open or shut, to leave them so when the tree is made again.
+/// The folders of shared with me and following as they stand now, each open or shut, to leave them so when the tree is made again.
 fn shared_shut(s: &App) -> Vec<(String, bool)> {
-    let mut ids = vec![swm::ROOT.to_owned()];
+    let mut ids = vec![swm::ROOT.to_owned(), follow::ROOT.to_owned()];
     for (h, entries) in swm::hosts(&s.shared) {
         ids.push(swm::host_id(h));
         ids.extend(entries.into_iter().filter(|sh| swm::is_dir(&sh.path)).map(swm::row_id));
+    }
+    for f in &s.following {
+        ids.push(follow::dir_id(f));
     }
     ids.into_iter().filter(|id| s.files.contains(id)).map(|id| (s.files.is_expanded(&id), id)).map(|(open, id)| (id, open)).collect()
 }
@@ -1514,6 +1598,330 @@ fn graft_shared(s: &mut App, was: &[(String, bool)]) {
         m.set_expanded(&hid, open(&hid, true));
     }
     m.set_expanded(swm::ROOT, open(swm::ROOT, true));
+}
+
+/// Puts followed folders at the foot of the pages' tree, after shared with me,
+/// matching `ui-src/lattice/69x-follow.js`.
+fn graft_following(s: &mut App, was: &[(String, bool)]) {
+    if s.memory || s.files.contains(follow::ROOT) || s.following.is_empty() {
+        return;
+    }
+    let (list, m) = (&s.session.following, &mut s.session.files);
+    let open = |id: &str, unless: bool| was.iter().find(|(x, _)| x == id).map_or(unless, |(_, o)| *o);
+    let node = |name: &str, path: &str, dir: bool| FileNode { name: name.to_owned(), path: path.to_owned(), dir, data: None };
+    m.insert(None, follow::ROOT, node(follow::LABEL, follow::ROOT, true));
+    for f in follow::sorted(list) {
+        let did = follow::dir_id(f);
+        m.insert(Some(follow::ROOT), did.clone(), node(&follow::fold_name(f), &did, true));
+        for p in &f.pages {
+            let pid = follow::page_id(f, &p.key);
+            m.insert(Some(did.as_str()), pid.clone(), node(&follow::page_label(f, p), &pid, false));
+        }
+        m.set_expanded(&did, open(&did, false));
+    }
+    m.set_expanded(follow::ROOT, open(follow::ROOT, true));
+}
+
+/// Loads the ship's followed folders list (`/folder-follows`).
+fn load_following(s: &mut App) {
+    if let Some(c) = s.conn.clone() {
+        s.following_req.request(c, |c| c.folder_follows());
+    }
+}
+
+/// Opens a page from a followed folder: marks it seen immediately and opens it in a browser tab.
+fn open_following(s: &mut App, id: &str, new_tab_wanted: bool) {
+    let Some((f, page)) = follow::at(&s.following, id).map(|(f, p)| (f.clone(), p.cloned())) else { return };
+    let Some(p) = page else { return };
+    if follow::mark_seen_local(&mut s.following, &f.host, &f.path, &p.key) {
+        redraw_tree(s, false);
+        if let Some(c) = s.conn.clone() {
+            let (host, path, key) = (f.host.clone(), f.path.clone(), p.key.clone());
+            spawn(move || drop(c.folder_seen(&host, &path, &key)));
+        }
+    }
+    let url = follow::fold_url(&f.host, &p.key);
+    if new_tab_wanted {
+        open_browser_tab(s, Some(url));
+    } else {
+        urb_go(s, Some(url));
+    }
+}
+
+/// Follows or unfollows a peer folder (`host`, `path`).
+fn follow_set(s: &mut App, host: String, path: String, follow_it: bool) {
+    let Some(c) = s.conn.clone() else { return };
+    if !follow_it {
+        s.following.retain(|x| !(x.host == host && x.path == path));
+        redraw_tree(s, false);
+    }
+    let label = format!("{host}{path}");
+    s.follow_act_req.request((c, host, path, follow_it, label), |(c, host, path, follow_it, label)| {
+        if follow_it {
+            c.folder_follow(&host, &path)?;
+            Ok(format!("following {label}"))
+        } else {
+            c.folder_unfollow(&host, &path)?;
+            Ok(format!("unfollowed {label}"))
+        }
+    });
+}
+
+/// Checks once per session whether `/apps/orrery` is installed on this ship.
+fn load_orrery_up(s: &mut App) {
+    if s.orrery_up.is_some() {
+        return;
+    }
+    if let Some(c) = s.conn.clone() {
+        s.orrery_up_req.request(c, |c| c.orrery_present());
+    }
+}
+
+/// Fetches orrery's standing for `path` (cached per session unless `fresh`).
+fn load_orrery_status(s: &mut App, path: &str, fresh: bool) {
+    if s.orrery_up != Some(true) || path.is_empty() {
+        return;
+    }
+    if !fresh && s.orrery_st.contains_key(path) {
+        return;
+    }
+    if let Some(c) = s.conn.clone() {
+        let p = path.to_owned();
+        s.orrery_req.request((c, p), |(c, p)| {
+            let st = c.orrery_status(&p);
+            (p, st)
+        });
+    }
+}
+
+/// Sends a page to orrery (`POST /apps/orrery/api/follow`), resetting poll state.
+fn send_to_orrery(s: &mut App, path: String, title: String, text: String) {
+    let Some(c) = s.conn.clone() else { return };
+    s.orrery_st.insert(path.clone(), orrery::Status::Queued);
+    s.orrery_polls.insert(path.clone(), (0, 0.0));
+    s.orrery_req.request((c, path, title, text), |(c, path, title, text)| {
+        let st = c.orrery_send(&path, &title, &text);
+        (path, st)
+    });
+}
+
+/// Fetches live orrery body facts for an own `<kind>/<slug>` page in the browser reader.
+fn load_orrery_facts(s: &mut App, path: &str) {
+    if s.orrery_up != Some(true) || !orrery::is_body_path(path) {
+        s.orrery_facts = None;
+        return;
+    }
+    if let Some(c) = s.conn.clone() {
+        let p = path.to_owned();
+        s.orrery_facts = Some((p.clone(), None));
+        s.orrery_facts_req.request((c, p), |(c, p)| {
+            let f = c.orrery_facts(&p);
+            (p, f)
+        });
+    }
+}
+
+/// Opens the native tree explorer (`/apps/lattice/x`) in its own tab (or reuses an empty tab).
+fn open_explorer(s: &mut App, path: Option<String>) {
+    if s.conn.is_none() {
+        s.note = "explorer needs a connected ship".into();
+        return;
+    }
+    if !leave_edit(s) {
+        return;
+    }
+    if s.memory {
+        flip(s);
+    }
+    let empty_tab = !s.exploring && !browsing(s) && s.open.is_none() && s.folder.is_none() && s.forum.is_none() && s.settings.is_none() && !s.access && !s.inbox;
+    if !empty_tab {
+        park_tab(s);
+        s.tabs.push(Tab::default());
+        s.tab = s.tabs.len() - 1;
+        (s.trail, s.trail_at) = (Vec::new(), 0);
+    }
+    remote_cancel(s);
+    (s.open, s.folder, s.remote, s.old, s.want) = (None, None, None, None, None);
+    (s.access, s.shared_open, s.inbox, s.forum, s.settings) = (false, false, false, None, None);
+    s.exploring = true;
+    s.exp_nav = browse::Nav::default();
+    s.exp_raw = false;
+    s.exp_view = None;
+    let target = path.unwrap_or_else(|| "/apps/lattice/x".into());
+    explore_go(s, Some(target), true);
+}
+
+/// Navigates the explorer to `to` (or what is typed in `s.exp_input`).
+fn explore_go(s: &mut App, to: Option<String>, push_nav: bool) {
+    let Some(c) = s.conn.clone() else { return };
+    let path = explorer::normalize_path(&to.unwrap_or_else(|| s.exp_input.text.clone()));
+    s.exp_input = TextEdit::new(path.as_str());
+    s.exp_input.focused = false;
+    if push_nav {
+        s.exp_nav.go(&path);
+    }
+    let raw = s.exp_raw;
+    s.note = format!("exploring {path}\u{2026}");
+    s.exp_req.request((c, path, raw), |(c, p, raw)| c.explore(&p, raw));
+}
+
+/// Steps back or forward in the explorer's own history.
+fn explore_step(s: &mut App, back: bool) {
+    if let Some(path) = s.exp_nav.step(back).map(str::to_owned) {
+        explore_go(s, Some(path), false);
+    }
+}
+
+/// Downloads the raw `?data` bytes of the file currently shown in Explorer.
+fn explore_download_raw(s: &mut App, tx: &mut Tx) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(c) = s.conn.clone() else { return };
+        let Some(x_path) = s.exp_view.as_ref().map(|v| v.x_path().to_owned()) else { return };
+        let suggested = x_path.trim_end_matches('/').rsplit('/').next().unwrap_or("grub").to_owned();
+        let opts = rune::FileDialogOptions { title: "Save raw grub".into(), file_name: Some(suggested), ..Default::default() };
+        tx.save_file(opts, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| {
+            let dest = match result {
+                Ok(Some(path)) => path,
+                Ok(None) => return,
+                Err(e) => {
+                    s.note = format!("no file dialog could open: {e}");
+                    return;
+                }
+            };
+            let dest_str = dest.display().to_string();
+            let c = c.clone();
+            let x_path = x_path.clone();
+            s.exp_raw_req.request((c, x_path, dest, dest_str), |(c, p, dest, dest_str)| {
+                let bytes = c.explore_raw(&p)?;
+                std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+                Ok((dest_str, bytes))
+            });
+        });
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = tx;
+        s.note = "raw download is available in the desktop app".into();
+    }
+}
+
+/// Explorer header bar: Back, Forward, Home, path input, Raw toggle, Copy urb://.
+fn explorer_bar(s: &App, k: &Kit) -> El {
+    let nav = |key: &str, icon: &'static rune::Icon, name: &str, back: bool, on: bool| {
+        IconButton::new(icon).variant(IconButtonVariant::GhostMuted).help(name).disabled(!on).on_press(move |s: &mut App| explore_step(s, back)).build(k).key(key.to_owned())
+    };
+    let field = TextInput::new(&s.exp_input)
+        .label("Explorer path")
+        .placeholder("/apps/lattice/x/~ship/...")
+        .on_edit(|s: &mut App| &mut s.exp_input)
+        .on_submit(|s: &mut App, _| explore_go(s, None, true))
+        .build(k)
+        .grow(1.0)
+        .min_w(0.0)
+        .key("explorer-path");
+    let mut bar = row()
+        .key("explorer-bar")
+        .w_full()
+        .px(8.0)
+        .pb(6.0)
+        .gap(4.0)
+        .center_y()
+        .child(nav("explorer-back", &tabhead::LEFT, "Back", true, s.exp_nav.can_back()))
+        .child(nav("explorer-forward", &tabhead::RIGHT, "Forward", false, s.exp_nav.can_forward()))
+        .child(Button::new("Home").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Your pages folder").on_press(|s: &mut App| explore_go(s, Some("/apps/lattice/x".into()), true)).build(k).key("explorer-home"))
+        .child(field)
+        .child(Button::new(if s.exp_raw { "Raw: on" } else { "Raw" }).control_size(ControlSize::Small).variant(if s.exp_raw { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted }).help("Show raw grubs inside page directories").on_press(|s: &mut App| {
+            s.exp_raw = !s.exp_raw;
+            let cur = s.exp_view.as_ref().map(|v| v.x_path().to_owned()).unwrap_or_else(|| s.exp_input.text.clone());
+            explore_go(s, Some(cur), false);
+        }).build(k).key("explorer-raw"));
+    if let Some(canon) = s.exp_view.as_ref().map(explorer::View::canon).filter(|c| !c.is_empty()) {
+        let copy = canon.to_owned();
+        bar = bar.child(Button::new("Copy urb://").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(canon.to_owned()).on_press_tx(move |s: &mut App, tx| {
+            tx.copy(copy.clone());
+            s.note = format!("copied {copy}");
+        }).build(k).key("explorer-copy-urb"));
+    }
+    bar
+}
+
+/// Explorer body view: breadcrumbs + directory listing, file preview, or 403 refusal.
+fn explorer_view(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let mut page = col().w_full().max_w(820.0).padding(24.0).gap(12.0);
+    let Some(view) = &s.exp_view else {
+        return col().key("explorer").w_full().h_full().center().child(text("Loading explorer\u{2026}").font(k.ty.small).color(c.text_muted));
+    };
+    if !view.crumbs().is_empty() {
+        let mut bc = row().key("explorer-crumbs").w_full().gap(4.0).flex_wrap().center_y();
+        for (i, cr) in view.crumbs().iter().enumerate() {
+            if i > 0 {
+                bc = bc.child(text("/").font(k.ty.small).color(c.text_faint));
+            }
+            let href = cr.href.clone();
+            bc = bc.child(Button::new(cr.label.clone()).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| explore_go(s, Some(href.clone()), true)).build(k).key(format!("exp-crumb-{i}")));
+        }
+        page = page.child(bc);
+    }
+    if !view.canon().is_empty() {
+        page = page.child(text(view.canon().to_owned()).font(k.ty.mono).color(c.text_muted).selectable(true).wrap());
+    }
+    match view {
+        explorer::View::Dir { entries, truncated, .. } => {
+            let mut list = col().key("explorer-dir").w_full().gap(2.0);
+            if entries.is_empty() {
+                list = list.child(text("Empty directory.").font(k.ty.small).color(c.text_faint));
+            }
+            for (i, e) in entries.iter().enumerate() {
+                let href = e.href.clone();
+                let label = if e.is_dir { format!("{}/", e.name) } else { e.name.clone() };
+                let mut r = row()
+                    .key(format!("exp-entry-{i}"))
+                    .role("button")
+                    .label(label.clone())
+                    .w_full()
+                    .px(8.0)
+                    .py(5.0)
+                    .gap(8.0)
+                    .center_y()
+                    .radius(k.radius.sm)
+                    .hover(c.hover)
+                    .on_press(move |s: &mut App| explore_go(s, Some(href.clone()), true))
+                    .child(text(label).font(if e.is_dir { k.ty.ui_medium } else { k.ty.mono }).color(if e.is_dir { c.text_accent } else { c.text_base }).truncate().grow(1.0).min_w(0.0));
+                if !e.mark.is_empty() {
+                    r = r.child(text(e.mark.clone()).font(k.ty.text_xsmall_medium).color(c.text_muted).px(5.0).py(1.0).radius(k.radius.sm).fill(c.layer_02));
+                }
+                list = list.child(r);
+            }
+            if *truncated {
+                list = list.child(text("Listing truncated.").font(k.ty.small).color(c.warning.icon));
+            }
+            page = page.child(list);
+        }
+        explorer::View::File { body, is_doc, note, has_raw, .. } => {
+            if *has_raw {
+                page = page.child(row().gap(8.0).child(Button::new("Download raw").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press_tx(explore_download_raw).build(k).key("explorer-download")));
+            }
+            if !note.is_empty() {
+                page = page.child(text(note.clone()).font(k.ty.small).color(c.text_muted).wrap());
+            }
+            if !body.is_empty() {
+                if *is_doc {
+                    page = page.child(Markdown::new(body.clone()).style(page_style(k)).build(k));
+                } else {
+                    page = page.child(text(body.clone()).font(k.ty.mono).color(c.text_base).wrap().selectable(true));
+                }
+            }
+        }
+        explorer::View::Refused { pages_href, .. } => {
+            let to = pages_href.clone();
+            page = page
+                .child(text("Lattice is not allowed to read this path on your ship. Installed as a desk, it reads only inside its own folder.").font(k.ty.small).color(c.text_muted).wrap())
+                .child(row().child(Button::new("Your pages").control_size(ControlSize::Small).variant(ButtonVariant::Contrast).on_press(move |s: &mut App| explore_go(s, Some(to.clone()), true)).build(k).key("explorer-your-pages")));
+        }
+    }
+    col().key("explorer").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page)).scroll(ScrollSpec { stick_bottom: false })
 }
 
 /// Reads the pages of each folder shared whole, one request after
@@ -2292,7 +2700,7 @@ fn under(names: &[String], path: &str) -> Vec<String> {
 
 /// Whether another screen stands where the open page would: its keys are not that page's then.
 fn page_hidden(s: &App) -> bool {
-    s.settings.is_some() || s.access || s.inbox || s.shared_open || s.forum.is_some() || s.folder.is_some()
+    s.settings.is_some() || s.access || s.inbox || s.shared_open || s.exploring || s.forum.is_some() || s.folder.is_some()
 }
 
 /// A change to a sheet, worked out so that a fault in the working out is
@@ -2724,6 +3132,7 @@ fn redraw_tree(s: &mut App, all: bool) {
         s.files.expand_all();
     }
     graft_shared(s, &shut);
+    graft_following(s, &shut);
     if let Some(p) = &s.session.open {
         s.session.files.select(&p.name);
     }
@@ -2840,6 +3249,14 @@ fn setup_session(s: &mut App, waker: Waker) {
     s.font_req.set_waker(waker.clone());
     s.here_req.set_waker(waker.clone());
     s.folds_req.set_waker(waker.clone());
+    s.following_req.set_waker(waker.clone());
+    s.follow_act_req.set_waker(waker.clone());
+    s.exp_req.set_waker(waker.clone());
+    #[cfg(not(target_arch = "wasm32"))]
+    s.exp_raw_req.set_waker(waker.clone());
+    s.orrery_up_req.set_waker(waker.clone());
+    s.orrery_req.set_waker(waker.clone());
+    s.orrery_facts_req.set_waker(waker.clone());
     s.sugg_req.set_waker(waker.clone());
     s.visits_req.set_waker(waker.clone());
     s.theme_put.set_waker(waker.clone());
@@ -2861,6 +3278,8 @@ fn setup_session(s: &mut App, waker: Waker) {
     load_tree(s);
     load_know(s);
     load_shared(s);
+    load_following(s);
+    load_orrery_up(s);
     listen(s);
     watch_ships(s);
 }
@@ -5196,6 +5615,7 @@ fn show_page(s: &mut App, name: &str) {
     remote_cancel(s);
     s.remote = None;
     s.shared_open = false;
+    s.exploring = false;
     s.inbox = false;
     s.forum = None;
     s.access = false;
@@ -5226,8 +5646,10 @@ fn show_page(s: &mut App, name: &str) {
     // a heading marked in the page before is not this page's
     s.outline_at = None;
     if s.pane == rpane::Tab::Page && s.inspector.is_open() {
-        // the Page tab follows the page: whether this one is marked sensitive
+        // the Page tab follows the page: whether this one is marked sensitive, and its orrery status
         load_sens(s);
+        load_orrery_up(s);
+        load_orrery_status(s, name, false);
     }
     sync_pics(s);
 }
@@ -6410,6 +6832,23 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 changed = true;
             }
         }
+        if let api::Beacon::Folds { old: false, data } = &ev {
+            match follow::parse_beacon(data) {
+                follow::FoldEvent::Stale { host, path } => {
+                    for delay in [0.0, 4.0, 12.0] {
+                        s.follow_checks.push((clock + delay, Some((host.clone(), path.clone()))));
+                        tx.wake_after(std::time::Duration::from_secs_f64(delay));
+                    }
+                }
+                follow::FoldEvent::New { host, path, new } => {
+                    if new > 0 {
+                        s.note = format!("{new} new page{} in {host}{path}", if new == 1 { "" } else { "s" });
+                    }
+                    load_following(s);
+                }
+                follow::FoldEvent::Other => load_following(s),
+            }
+        }
         let w = s.beacon_state.take(ev);
         if w.tree {
             // a moment later, so changes that come together are read once
@@ -6421,6 +6860,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
         if w.shared {
             load_shared(s);
+        }
+        if w.folds {
+            load_following(s);
         }
         if let Some(c) = s.conn.clone().filter(|_| w.inbox) {
             s.waiting_req.request(c, |c| c.waiting());
@@ -6507,6 +6949,123 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         s.folds = read.into_iter().collect();
         redraw_tree(s, false);
+    }
+    if let Some(r) = s.following_req.take() {
+        changed = true;
+        match r {
+            Ok(list) => {
+                s.following = list;
+                redraw_tree(s, false);
+            }
+            Err(_) => {}
+        }
+    }
+    if let Some(r) = s.follow_act_req.take() {
+        changed = true;
+        match r {
+            Ok(said) => {
+                s.note = said;
+                load_following(s);
+            }
+            Err(e) => s.note = format!("follow: {e}"),
+        }
+    }
+    if s.conn.is_some() && !s.follow_checks.is_empty() {
+        let mut due = Vec::new();
+        let mut rest = Vec::new();
+        for item in std::mem::take(&mut s.follow_checks) {
+            if clock >= item.0 {
+                due.push(item.1);
+            } else {
+                rest.push(item);
+            }
+        }
+        s.follow_checks = rest;
+        if let Some(c) = s.conn.clone().filter(|_| !due.is_empty()) {
+            for target in due {
+                let c = c.clone();
+                spawn(move || match target {
+                    Some((h, p)) => drop(c.folder_check(Some(&h), Some(&p))),
+                    None => drop(c.folder_check(None, None)),
+                });
+            }
+            load_following(s);
+        }
+    }
+    if s.conn.is_some() && !s.global.away && !s.following.is_empty() && clock >= s.next_follow_check {
+        if s.next_follow_check > 0.0 {
+            if let Some(c) = s.conn.clone() {
+                spawn(move || drop(c.folder_check(None, None)));
+                load_following(s);
+            }
+        }
+        s.next_follow_check = clock + 20.0 * 60.0;
+    }
+    if let Some(r) = s.exp_req.take() {
+        changed = true;
+        match r {
+            Ok((resolved, view)) => {
+                if s.note.starts_with("exploring ") {
+                    s.note.clear();
+                }
+                s.exp_input = TextEdit::new(resolved.as_str());
+                s.exp_view = Some(view);
+            }
+            Err(e) => s.note = format!("explorer: {e}"),
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(r) = s.exp_raw_req.take() {
+        changed = true;
+        match r {
+            Ok((dest, bytes)) => s.note = format!("saved {} bytes to {dest}", bytes.len()),
+            Err(e) => s.note = format!("raw download failed: {e}"),
+        }
+    }
+    if let Some(up) = s.orrery_up_req.take() {
+        changed = true;
+        s.orrery_up = Some(up);
+        if up {
+            if let Some(name) = s.open.as_ref().filter(|_| !s.memory && s.remote.is_none()).map(|p| p.name.clone()) {
+                load_orrery_status(s, &name, false);
+            }
+            if let Some(own_path) = own_browsed_path(s) {
+                load_orrery_status(s, &own_path, false);
+                load_orrery_facts(s, &own_path);
+            }
+        }
+    }
+    if let Some((path, st)) = s.orrery_req.take() {
+        changed = true;
+        let queued = st.is_queued();
+        s.orrery_st.insert(path.clone(), st);
+        if queued {
+            let count = s.orrery_polls.get(&path).map_or(0, |(n, _)| *n);
+            if let Some(delay) = orrery::poll_delay_secs(count) {
+                let at = clock + delay as f64;
+                s.orrery_polls.insert(path, (count + 1, at));
+                tx.wake_after(std::time::Duration::from_secs(delay));
+            } else {
+                s.orrery_polls.remove(&path);
+            }
+        } else {
+            s.orrery_polls.remove(&path);
+        }
+    }
+    if s.orrery_up == Some(true) && !s.orrery_polls.is_empty() {
+        let ready: Vec<String> = s.orrery_polls.iter().filter(|(_, (_, at))| *at > 0.0 && clock >= *at).map(|(p, _)| p.clone()).collect();
+        for p in ready {
+            if let Some(entry) = s.orrery_polls.get_mut(&p) {
+                entry.1 = 0.0;
+            }
+            load_orrery_status(s, &p, true);
+        }
+    }
+    if let Some((path, facts)) = s.orrery_facts_req.take() {
+        changed = true;
+        if s.orrery_facts.as_ref().is_some_and(|(p, _)| p == &path) {
+            s.orrery_facts = Some((path, facts));
+        }
     }
     if let Some(r) = s.remote_req.take() {
         changed = true;
@@ -6908,6 +7467,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 let had = s.open.as_ref().is_some_and(|p| s.files.contains(&p.name));
                 s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
                 graft_shared(s, &shut);
+    graft_following(s, &shut);
                 if s.over == Some(Over::Search) {
                     run_search(s);
                 }
@@ -6926,7 +7486,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     s.restored = true;
                     // the page held beside last run is held again, if it is still there
                     if s.names.contains(&s.prefs.split) && s.tgroups.is_empty() {
-                        (s.tgroups, s.front_at) = (vec![TabGroup::default(), TabGroup { tabs: vec![Tab { trail: vec![s.prefs.split.clone()], at: 0 }], at: 0, view: None }], 0);
+                        (s.tgroups, s.front_at) = (vec![TabGroup::default(), TabGroup { tabs: vec![Tab { trail: vec![s.prefs.split.clone()], at: 0, kind: TabKind::Page }], at: 0, view: None }], 0);
                         s.split_down = s.prefs.split_down;
                     }
                     let last = s.prefs.last.clone();
@@ -7004,6 +7564,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 load_tree(s);
                 load_know(s);
                 load_shared(s);
+                load_following(s);
+                load_orrery_up(s);
                 listen(s);
             }
             Err(e) => s.login_err = e,
@@ -7797,7 +8359,7 @@ fn split_page(s: &App) -> Option<&str> {
 /// front, which gives it half its share of the room. The first one makes the split.
 fn add_group(s: &mut App) {
     let Some(name) = s.open.as_ref().filter(|_| s.remote.is_none() && !s.capture && !s.memory).map(|p| p.name.clone()) else { return };
-    let made = TabGroup { tabs: vec![Tab { trail: vec![name], at: 0 }], at: 0, view: None };
+    let made = TabGroup { tabs: vec![Tab { trail: vec![name], at: 0, kind: TabKind::Page }], at: 0, view: None };
     if s.tgroups.is_empty() {
         // the group in front has a place among them, left empty: its tabs are the window's own
         (s.tgroups, s.front_at) = (vec![TabGroup::default(), made], 0);
@@ -8211,10 +8773,10 @@ fn restore_tabs(s: &mut App) -> bool {
     if s.prefs.tabs.len() < 2 {
         return false;
     }
-    s.tabs = s.prefs.tabs.iter().map(|n| if s.names.contains(n) { Tab { trail: vec![n.clone()], at: 0 } } else { Tab::default() }).collect();
+    s.tabs = s.prefs.tabs.iter().map(|n| if s.names.contains(n) { Tab { trail: vec![n.clone()], at: 0, kind: TabKind::Page } } else { Tab::default() }).collect();
     s.tab = s.prefs.tab.min(s.tabs.len() - 1);
     let tab = s.tab;
-    let Tab { trail, at } = std::mem::take(&mut s.tabs[tab]);
+    let Tab { trail, at, .. } = std::mem::take(&mut s.tabs[tab]);
     (s.trail, s.trail_at) = (trail, at);
     if let Some(name) = s.trail.first().cloned() {
         s.files.expand_to(&name);
@@ -8243,12 +8805,40 @@ fn open_in_tab(s: &mut App, name: &str) {
     open_page(s, name);
 }
 
-/// Puts the tab in front away, as it stands.
+/// Puts the tab in front away, as it stands (local page, browser tab, or explorer tab).
 fn park_tab(s: &mut App) {
-    // a tab on a folder or a screen has no page of its own to come back to
+    let is_browse = browsing(s);
     let on_page = s.open.is_some() && s.remote.is_none() && !s.capture;
     let sess = &mut s.session;
-    sess.tabs[sess.tab] = if on_page { Tab { trail: std::mem::take(&mut sess.trail), at: sess.trail_at } } else { Tab::default() };
+    sess.tabs[sess.tab] = if sess.exploring {
+        Tab {
+            trail: Vec::new(),
+            at: 0,
+            kind: TabKind::Explorer(Box::new(ExplorerTab {
+                nav: std::mem::take(&mut sess.exp_nav),
+                input: std::mem::replace(&mut sess.exp_input, TextEdit::new("/apps/lattice/x")),
+                raw: sess.exp_raw,
+                view: sess.exp_view.take(),
+            })),
+        }
+    } else if is_browse {
+        Tab {
+            trail: Vec::new(),
+            at: 0,
+            kind: TabKind::Browser(Box::new(BrowserTab {
+                nav: std::mem::take(&mut sess.nav),
+                urb: std::mem::replace(&mut sess.urb, TextEdit::new("")),
+                urb_folder: sess.urb_folder.take(),
+                remote: sess.remote.take(),
+                open: sess.open.take(),
+                thread: sess.thread.take(),
+            })),
+        }
+    } else if on_page {
+        Tab { trail: std::mem::take(&mut sess.trail), at: sess.trail_at, kind: TabKind::Page }
+    } else {
+        Tab::default()
+    };
 }
 
 /// Brings a tab forward. A page it held that is gone leaves it empty.
@@ -8264,24 +8854,51 @@ fn switch_tab(s: &mut App, to: usize) {
     keep_tabs(s);
 }
 
-/// Shows tab `to` of the group in front: its history, and the page it was on.
+/// Shows tab `to` of the group in front: its history, and the page, browser, or explorer it held.
 fn load_tab(s: &mut App, to: usize) {
     s.tab = to;
-    let Tab { trail, at } = std::mem::take(&mut s.tabs[to]);
+    let Tab { trail, at, kind } = std::mem::take(&mut s.tabs[to]);
     (s.trail, s.trail_at) = (trail, at);
     remote_cancel(s);
     (s.open, s.folder, s.remote, s.old, s.want) = (None, None, None, None, None);
-    (s.access, s.shared_open, s.inbox) = (false, false, false);
+    (s.access, s.shared_open, s.inbox, s.exploring) = (false, false, false, false);
     s.forum = None;
-    match s.trail.get(s.trail_at).cloned() {
-        Some(name) if s.names.contains(&name) => {
-            s.files.select(&name);
-            show_page(s, &name);
+    s.settings = None;
+    s.exp_view = None;
+    match kind {
+        TabKind::Explorer(et) => {
+            s.exploring = true;
+            s.exp_nav = et.nav;
+            s.exp_input = et.input;
+            s.exp_raw = et.raw;
+            s.exp_view = et.view;
         }
-        _ => {
-            s.trail.clear();
-            s.trail_at = 0;
+        TabKind::Browser(bt) => {
+            s.nav = bt.nav;
+            s.urb = bt.urb;
+            s.urb_folder = bt.urb_folder;
+            s.remote = bt.remote;
+            s.open = bt.open;
+            s.thread = bt.thread;
+            s.shared_open = s.open.is_none();
+            if s.open.is_some() {
+                sync_map(s);
+                sync_sheet(s);
+                sync_pics(s);
+            } else {
+                browse_home(s);
+            }
         }
+        TabKind::Page => match s.trail.get(s.trail_at).cloned() {
+            Some(name) if s.names.contains(&name) => {
+                s.files.select(&name);
+                show_page(s, &name);
+            }
+            _ => {
+                s.trail.clear();
+                s.trail_at = 0;
+            }
+        },
     }
 }
 
@@ -8311,14 +8928,29 @@ fn close_tab(s: &mut App, i: usize) {
     keep_tabs(s);
 }
 
-/// What a tab is called: its page's last name, or that it is empty.
+/// What a tab is called: its page's last name, browser page, explorer path, or that it is empty.
 fn tab_label(s: &App, i: usize) -> String {
+    if i == s.tab && s.exploring {
+        return s.exp_view.as_ref().map_or_else(|| "Explorer".to_owned(), explorer::View::title);
+    }
     // the browser in front names its tab by the page it is on, as the web client's does
     if i == s.tab && browsing(s) {
         return match s.open.as_ref().filter(|_| s.remote.is_some() && !s.shared_open) {
             Some(p) => p.name.rsplit('/').next().unwrap_or(&p.name).to_owned(),
             None => "Browser".to_owned(),
         };
+    }
+    if i != s.tab {
+        match &s.tabs[i].kind {
+            TabKind::Explorer(et) => return et.view.as_ref().map_or_else(|| "Explorer".to_owned(), explorer::View::title),
+            TabKind::Browser(bt) => {
+                return match bt.open.as_ref() {
+                    Some(p) => p.name.rsplit('/').next().unwrap_or(&p.name).to_owned(),
+                    None => "Browser".to_owned(),
+                };
+            }
+            TabKind::Page => {}
+        }
     }
     let name = if i == s.tab { s.open.as_ref().filter(|_| s.remote.is_none()).map(|p| p.name.as_str()) } else { s.tabs[i].page() };
     name.map_or("New tab".to_owned(), |n| s.dnames.get(n).cloned().unwrap_or_else(|| n.rsplit('/').next().unwrap_or(n).to_owned()))
@@ -8532,14 +9164,101 @@ fn go_shared(s: &mut App) {
 }
 
 /// The browser: its start page, or whatever it was last on, with the address field to type in.
+/// Opens a new browser tab (or reuses the current empty tab), optionally navigating to `to`.
+fn open_browser_tab(s: &mut App, to: Option<String>) {
+    if !leave_edit(s) {
+        return;
+    }
+    if s.memory {
+        flip(s);
+    }
+    let empty_tab = !s.exploring && !browsing(s) && s.open.is_none() && s.folder.is_none() && s.forum.is_none() && s.settings.is_none() && !s.access && !s.inbox;
+    if !empty_tab {
+        park_tab(s);
+        s.tabs.push(Tab::default());
+        s.tab = s.tabs.len() - 1;
+        (s.trail, s.trail_at) = (Vec::new(), 0);
+    }
+    remote_cancel(s);
+    (s.open, s.folder, s.remote, s.old, s.want, s.urb_folder, s.thread) = (None, None, None, None, None, None, None);
+    (s.forum, s.access, s.settings, s.inbox, s.exploring) = (None, false, None, false, false);
+    s.nav = browse::Nav::default();
+    s.urb = TextEdit::new("");
+    s.shared_open = true;
+    if let Some(url) = to {
+        s.nav.go(&url);
+        browse_show(s, &url);
+    } else {
+        s.urb.focused = true;
+        browse_home(s);
+    }
+}
+
 fn go_browser(s: &mut App) {
     if !leave_edit(s) {
         return;
     }
-    (s.forum, s.access, s.settings, s.inbox, s.folder) = (None, false, None, false, None);
+    if s.open.is_some() || s.exploring || browsing(s) {
+        open_browser_tab(s, None);
+        return;
+    }
+    (s.forum, s.access, s.settings, s.inbox, s.folder, s.exploring) = (None, false, None, false, None, false);
     s.shared_open = true;
     s.urb.focused = true;
     browse_home(s);
+}
+
+/// If the browser is currently showing a page belonging to the connected ship (`urb://<our>/<path>`),
+/// returns `<path>`.
+fn own_browsed_path(s: &App) -> Option<String> {
+    let our = s.conn.as_ref()?.ship();
+    let cur = s.nav.cur();
+    let rest = cur.strip_prefix("urb://")?;
+    let (ship, path) = rest.split_once('/')?;
+    let clean = path.trim_end_matches('/');
+    (ship == our && !clean.is_empty()).then(|| clean.to_owned())
+}
+
+/// Renders the compact or full Orrery status + Send button widget (matching `ui-app/orrery.js`).
+fn orrery_widget(s: &App, k: &Kit, path: &str, title: String, text_src: String, compact: bool) -> El {
+    let c = &k.c;
+    let st = s.orrery_st.get(path).cloned().unwrap_or_default();
+    let mut box_row = row().gap(6.0).center_y().flex_wrap();
+    if let Some(summary) = st.summary() {
+        if let Some(rel_href) = st.situation_href() {
+            let full = s.conn.as_ref().map_or(rel_href.clone(), |conn| format!("{}{rel_href}", conn.url));
+            box_row = box_row.child(
+                Button::new(summary)
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .help(full.clone())
+                    .on_press_tx(move |s: &mut App, tx| {
+                        if let Err(e) = tx.open_url(&full) {
+                            s.note = format!("could not open orrery: {e}");
+                        }
+                    })
+                    .build(k)
+                    .key(if compact { "orrery-bar-link" } else { "orrery-link" }),
+            );
+        } else {
+            let color = if matches!(st, orrery::Status::Failed { .. }) { c.warning.icon } else { c.text_muted };
+            box_row = box_row.child(text(summary).font(k.ty.small).color(color).wrap());
+        }
+    }
+    if !st.is_queued() {
+        let label = if matches!(st, orrery::Status::None) { "Send to orrery" } else { "Send again" };
+        let p = path.to_owned();
+        box_row = box_row.child(
+            Button::new(label)
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::Ghost)
+                .help(orrery::TIP)
+                .on_press(move |s: &mut App| send_to_orrery(s, p.clone(), title.clone(), text_src.clone()))
+                .build(k)
+                .key(if compact { "orrery-bar-send" } else { "orrery-send" }),
+        );
+    }
+    box_row
 }
 
 /// Reads what the browser's start page lists: the bookmarks and the visits.
@@ -8605,7 +9324,7 @@ fn browse_show(s: &mut App, url: &str) {
 
 /// Whether the browser is what is in front: its start page or a folder, or a page read at an address.
 fn browsing(s: &App) -> bool {
-    s.shared_open || (s.remote.as_ref().is_some_and(|r| r.mode == "published") && s.open.is_some() && !s.access && !s.inbox && s.settings.is_none() && s.forum.is_none())
+    s.shared_open || (s.remote.as_ref().is_some_and(|r| r.mode == "published") && s.open.is_some() && !s.access && !s.inbox && !s.exploring && s.settings.is_none() && s.forum.is_none())
 }
 
 /// Asks what the address field offers for what is typed in it.
@@ -8652,6 +9371,13 @@ fn browser_bar(s: &App, k: &Kit) -> El {
         .child(field);
     // the star keeps the page at this address, or drops it
     if cur.starts_with("urb://") {
+        if s.orrery_up == Some(true) {
+            if let Some(own_path) = own_browsed_path(s) {
+                let title = s.open.as_ref().map_or_else(|| own_path.clone(), |p| p.name.clone());
+                let body = s.open.as_ref().map(|p| p.body.clone()).or_else(|| s.cache.get(&own_path).map(|p| p.body.clone())).unwrap_or_default();
+                bar = bar.child(orrery_widget(s, k, &own_path, title, body, true));
+            }
+        }
         let kept = s.marks.as_deref().is_some_and(|m| marks::has(m, &cur));
         let title = s.open.as_ref().filter(|_| s.remote.is_some()).map_or_else(|| cur.trim_start_matches("urb://").to_owned(), |p| p.name.clone());
         bar = bar.child(IconButton::new(&head::MARK).variant(if kept { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(if kept { "Bookmarked. Press to drop it" } else { "Bookmark this page" }).on_press(move |s: &mut App| {
@@ -8685,7 +9411,7 @@ fn go_forum(s: &mut App) {
     if !leave_edit(s) {
         return;
     }
-    (s.inbox, s.access, s.shared_open) = (false, false, false);
+    (s.inbox, s.access, s.shared_open, s.exploring) = (false, false, false, false);
     s.forum = Some(Forum::default());
     match s.conn.clone() {
         Some(c) => {
@@ -9721,8 +10447,9 @@ fn go_inbox(s: &mut App) {
         s.forum = None;
         s.inbox = true;
         s.access = false;
-    s.settings = None;
+        s.settings = None;
         s.shared_open = false;
+        s.exploring = false;
         load_comments(s);
     }
 }
@@ -9736,7 +10463,8 @@ fn go_access(s: &mut App) {
         s.settings = None;
         s.access = true;
         s.inbox = false;
-        s.forum = None;
+        s.shared_open = false;
+        s.exploring = false;
         load_groups(s);
     }
 }
@@ -9746,7 +10474,7 @@ fn go_settings(s: &mut App) {
         return;
     }
     if !s.editing {
-        (s.forum, s.access, s.inbox, s.shared_open) = (None, false, false, false);
+        (s.forum, s.access, s.inbox, s.shared_open, s.exploring) = (None, false, false, false, false);
         s.settings = Some(Settings::new());
         keys_do(s, None, None);
         settings_do(s, SetAct::Read);
@@ -9901,7 +10629,14 @@ fn settings_more(st: &Settings, k: &Kit) -> El {
         .child(head("Search index"))
         .child(muted("Search covers your published pages, your private page sources and your memories. The ship's index is rebuilt on demand rather than continuously, so reindex after a batch of edits to make them findable."))
         .child(row().gap(8.0).center_y().child(Button::new("Reindex my content").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(busy).on_press(|s: &mut App| settings_do(s, SetAct::Reindex)).build(k).key("reindex")).child(text(st.reindex.clone()).key("reindex-state").font(k.ty.small).color(c.text_muted)));
-    col().w_full().gap(20.0).child(tiles).child(scad).child(ob).child(search)
+    let advanced = col()
+        .key("set-advanced")
+        .w_full()
+        .gap(6.0)
+        .child(head("Advanced"))
+        .child(muted("The explorer browses the files lattice keeps on your ship: each page's source, data and history, as grubbery stores them."))
+        .child(row().child(Button::new("Open explorer").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| open_explorer(s, None)).build(k).key("open-explorer")));
+    col().w_full().gap(20.0).child(tiles).child(scad).child(ob).child(search).child(advanced)
 }
 
 /// Reads the agent keys, after making one (`mint`) or revoking one (`revoke`, by its id) when asked.
@@ -10718,6 +11453,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("inbox", "Inbox"),
     ("shared", "Shared with me"),
     ("urb-open", "Browser"),
+    ("explorer", "Explorer: browse ship files"),
     ("link-in", "Move into my pages"),
     ("link-back", "Move back to shared with me"),
     ("access", "Access"),
@@ -10730,7 +11466,7 @@ const COMMANDS: &[(&str, &str)] = &[
 
 /// Whether a command can run now: the ones about a page need one open.
 fn usable(s: &App, id: &str) -> bool {
-    let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox;
+    let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox && !s.exploring;
     let own = page && s.remote.is_none();
     match id {
         // a link made from a page shared to read is read only
@@ -10746,7 +11482,7 @@ fn usable(s: &App, id: &str) -> bool {
         "kind" => own && !s.memory && !s.editing && s.open.as_ref().is_some_and(|p| PAGE_KINDS.contains(&p.kind.as_str()) && s.links.get(&p.name).is_none()),
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "find" => page && find_where(s) != FindIn::Nothing,
-        "reload" | "map-token" => s.conn.is_some(),
+        "reload" | "map-token" | "explorer" => s.conn.is_some(),
         "ships" => s.conn.is_some() && !cfg!(target_arch = "wasm32"),
         "map-base" => own && !s.editing && s.map.as_ref().is_some_and(|m| s.open.as_ref().is_some_and(|p| p.name == m.name)),
         "map-import" => map_changes(s),
@@ -10851,6 +11587,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "inbox" => go_inbox(s),
         "shared" => go_shared(s),
         "urb-open" => go_browser(s),
+        "explorer" => open_explorer(s, None),
         "link-in" => ask_link_in(s),
         "link-back" => link_back(s),
         "access" => go_access(s),
@@ -11239,6 +11976,7 @@ fn show_remote(s: &mut App, sh: Shared, p: Page) {
     s.access = false;
     s.settings = None;
     s.shared_open = false;
+    s.exploring = false;
     s.inbox = false;
     s.forum = None;
     s.folder = None;
@@ -11683,14 +12421,14 @@ fn urb_go(s: &mut App, to: Option<String>) {
 /// What stands in front of the reader: the screen, and the page on it.
 #[derive(Clone, Debug, PartialEq)]
 struct Front {
-    /// The forum, the settings, the inbox, access, the browser, a folder.
-    screens: [bool; 6],
+    /// The forum, the settings, the inbox, access, the browser, the explorer, a folder.
+    screens: [bool; 7],
     memory: bool,
     page: Option<String>,
 }
 
 fn front(s: &App) -> Front {
-    Front { screens: [s.forum.is_some(), s.settings.is_some(), s.inbox, s.access, s.shared_open, s.folder.is_some()], memory: s.memory, page: s.open.as_ref().map(|p| p.name.clone()) }
+    Front { screens: [s.forum.is_some(), s.settings.is_some(), s.inbox, s.access, s.shared_open, s.exploring, s.folder.is_some()], memory: s.memory, page: s.open.as_ref().map(|p| p.name.clone()) }
 }
 
 /// Whether the reader has gone elsewhere since the read of another ship's page now answered was
@@ -11746,6 +12484,13 @@ fn urb_got(s: &mut App, url: String, got: api::Urb) {
             let note = std::mem::take(&mut s.note);
             show_remote(s, Shared { host: ship, path, mode: "published".into(), when: String::new() }, Page { name, body, kind, rev: 0 });
             s.note = note;
+            if let Some(own_path) = own_browsed_path(s) {
+                load_orrery_up(s);
+                load_orrery_status(s, &own_path, false);
+                load_orrery_facts(s, &own_path);
+            } else {
+                s.orrery_facts = None;
+            }
         }
         api::Urb::Folder { path, entries } => {
             s.urb_folder = Some((path, entries));
@@ -11767,9 +12512,25 @@ fn shared_view(s: &App, k: &Kit) -> El {
     let go = |label: String, to: String, key: String| Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press_tx(move |s: &mut App, tx| browse_to(s, Some(to.clone()), tx)).build(k).key(key);
     let mut page = col().w_full().max_w(760.0).padding(28.0).gap(16.0);
     if let Some((path, entries)) = &s.urb_folder {
-        let mut rows = col().key("urb-folder").w_full().gap(2.0).child(text(format!("{path} \u{b7} {} in it", entries.len())).font(k.ty.small).color(c.text_muted));
+        let mut head_row = row().w_full().center_y().justify_between().gap(8.0).child(text(format!("{path} \u{b7} {} in it", entries.len())).font(k.ty.small).color(c.text_muted));
+        if let Some((host, fpath)) = s.conn.as_ref().and_then(|c| follow::folder_target(s.nav.cur(), c.ship())) {
+            let is_on = follow::is_following(&s.following, &host, &fpath);
+            head_row = head_row.child(
+                Button::new(if is_on { "Following" } else { "Follow" })
+                    .control_size(ControlSize::Small)
+                    .variant(if is_on { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                    .help(if is_on { "Unfollow this folder" } else { "Follow this folder for new pages" })
+                    .on_press(move |s: &mut App| follow_set(s, host.clone(), fpath.clone(), !is_on))
+                    .build(k)
+                    .key("urb-folder-follow"),
+            );
+        }
+        let mut rows = col().key("urb-folder").w_full().gap(2.0).child(head_row);
         for (i, (name, url, folder)) in entries.iter().enumerate() {
-            rows = rows.child(row().child(go(if *folder { format!("{name}/") } else { name.clone() }, url.clone(), format!("urb-entry-{i}"))));
+            let mid = url.clone();
+            let b = go(if *folder { format!("{name}/") } else { name.clone() }, url.clone(), format!("urb-entry-{i}"))
+                .on_middle_press(move |s: &mut App, _| open_browser_tab(s, Some(mid.clone())));
+            rows = rows.child(row().child(b));
         }
         if entries.is_empty() {
             rows = rows.child(text("Nothing is in it.").font(k.ty.small).color(c.text_faint));
@@ -11783,8 +12544,27 @@ fn shared_view(s: &App, k: &Kit) -> El {
             Some([]) | None => saved = saved.child(text(if s.marks.is_some() { "Nothing is saved yet. The star in the bar above keeps the page showing." } else { "Reading the bookmarks" }).font(k.ty.small).color(c.text_faint).wrap()),
             Some(list) => {
                 for (i, m) in list.iter().take(12).enumerate() {
-                    let to = m.url.clone();
-                    saved = saved.child(row().key(format!("saved-{i}")).role("button").label(marks::label(m)).w_full().px(8.0).py(4.0).radius(k.radius.sm).hover(c.hover).on_press_tx(move |s: &mut App, tx| browse_to(s, Some(to.clone()), tx)).child(line(&m.title, &m.url)));
+                    let (to, mid) = (m.url.clone(), m.url.clone());
+                    saved = saved.child(
+                        row()
+                            .key(format!("saved-{i}"))
+                            .role("button")
+                            .label(marks::label(m))
+                            .w_full()
+                            .px(8.0)
+                            .py(4.0)
+                            .radius(k.radius.sm)
+                            .hover(c.hover)
+                            .on_press_tx(move |s: &mut App, tx| {
+                                if tx.mods().cmd {
+                                    open_browser_tab(s, Some(to.clone()));
+                                } else {
+                                    browse_to(s, Some(to.clone()), tx);
+                                }
+                            })
+                            .on_middle_press(move |s: &mut App, _| open_browser_tab(s, Some(mid.clone())))
+                            .child(line(&m.title, &m.url)),
+                    );
                 }
                 if list.len() > 12 {
                     saved = saved.child(text(format!("and {} more, in the left pane's Bookmarks", list.len() - 12)).font(k.ty.small).color(c.text_faint));
@@ -11800,10 +12580,29 @@ fn shared_view(s: &App, k: &Kit) -> El {
             seen = seen.child(text(if s.conn.is_some() { "No address has been visited yet." } else if s.anon { "No address has been read yet. What you read is listed here, on this computer only." } else { "Sample pages have no other ships to visit." }).font(k.ty.small).color(c.text_faint));
         }
         for (i, v) in s.visits.iter().take(30).enumerate() {
-            let (to, gone) = (v.url.clone(), v.url.clone());
+            let (to, mid, gone) = (v.url.clone(), v.url.clone(), v.url.clone());
             seen = seen.child(
                 row().key(format!("visited-{i}")).w_full().gap(6.0).center_y()
-                    .child(row().role("button").label(if v.title.is_empty() { v.url.clone() } else { v.title.clone() }).grow(1.0).min_w(0.0).px(8.0).py(4.0).radius(k.radius.sm).hover(c.hover).on_press_tx(move |s: &mut App, tx| browse_to(s, Some(to.clone()), tx)).child(line(&v.title, &v.url)))
+                    .child(
+                        row()
+                            .role("button")
+                            .label(if v.title.is_empty() { v.url.clone() } else { v.title.clone() })
+                            .grow(1.0)
+                            .min_w(0.0)
+                            .px(8.0)
+                            .py(4.0)
+                            .radius(k.radius.sm)
+                            .hover(c.hover)
+                            .on_press_tx(move |s: &mut App, tx| {
+                                if tx.mods().cmd {
+                                    open_browser_tab(s, Some(to.clone()));
+                                } else {
+                                    browse_to(s, Some(to.clone()), tx);
+                                }
+                            })
+                            .on_middle_press(move |s: &mut App, _| open_browser_tab(s, Some(mid.clone())))
+                            .child(line(&v.title, &v.url)),
+                    )
                     .child(IconButton::new(&head::X).control_size(ControlSize::Small).variant(IconButtonVariant::GhostMuted).label(format!("Forget the visit to {}", v.url)).help("Forget this visit").on_press(move |s: &mut App| forget_visit(s, Some(gone.clone()))).build(k).key(format!("visited-forget-{i}"))),
             );
         }
@@ -12719,6 +13518,21 @@ fn share_body(s: &App, k: &Kit) -> Option<(String, El)> {
                 }).build(k).key("share-copy")),
         );
     }
+    if !folder && s.orrery_up == Some(true) {
+        let title = s.dnames.get(&p.name).cloned().unwrap_or_else(|| p.name.rsplit('/').next().unwrap_or(&p.name).to_owned());
+        let text_src = if s.editing && s.open.as_ref().is_some_and(|op| op.name == p.name) {
+            edited(s)
+        } else {
+            s.open.as_ref().filter(|op| op.name == p.name).map(|op| op.body.clone()).or_else(|| s.cache.get(&p.name).map(|op| op.body.clone())).unwrap_or_default()
+        };
+        let orr = col()
+            .key("orrery-sec")
+            .w_full()
+            .gap(4.0)
+            .child(text("Orrery").font(k.ty.small_medium).color(c.text_muted))
+            .child(orrery_widget(s, k, &p.name, title, text_src, false));
+        body = body.child(Divider::horizontal().build(k)).child(orr);
+    }
     if s.op_req.is_pending() {
         body = body.child(Spinner::new().build(k));
     }
@@ -13403,13 +14217,14 @@ fn sidebar(s: &App, k: &Kit) -> El {
     let tree = Tree::new(|s: &App| &s.files, |s: &mut App| &mut s.files, |n: &FileNode<Node>| n.name.as_str())
         .name(if s.memory { "Memories" } else { "Pages" })
         .row({
-            let (shared, links) = (s.shared.clone(), s.links.keys().cloned().collect::<std::collections::HashSet<String>>());
+            let (shared, following, links) = (s.shared.clone(), s.following.clone(), s.links.keys().cloned().collect::<std::collections::HashSet<String>>());
             let (muted, hover) = (k.c.text_muted, k.c.hover);
+            let follow_total = follow::total_new(&following);
             move |n, r| {
                 let item = TreeItem::file(n, r).highlight(q.clone());
                 // the tree has no right-click of its own for a row, so a row of this ship's carries a clear
                 // sheet over itself that takes one. It has no press, so a click still reaches the row
-                let item = if swm::is_ours(&n.path) {
+                let item = if swm::is_ours(&n.path) || follow::is_ours(&n.path) {
                     item
                 } else {
                     let (at, mid, page) = (n.path.clone(), n.path.clone(), !n.dir);
@@ -13428,6 +14243,27 @@ fn sidebar(s: &App, k: &Kit) -> El {
                     // a page that is another ship's, moved here as a link
                     return item.icon(&tabhead::OUT);
                 }
+                if n.path == follow::ROOT {
+                    return if follow_total > 0 { item.badge(format!("{follow_total} new")) } else { item };
+                }
+                if let Some((f, fp)) = follow::at(&following, &n.path) {
+                    if let Some(p) = fp {
+                        return if p.new { item.badge("new".to_owned()) } else { item };
+                    }
+                    let small = |glyph: &'static str, name: &str, key: String| text(glyph).key(key).role("button").label(name.to_owned()).help(name.to_owned()).color(muted).px(4.0).radius(4.0).hover(hover);
+                    let item = if !f.ok {
+                        item.badge("unavailable".to_owned())
+                    } else if f.new > 0 {
+                        item.badge(format!("{} new", f.new))
+                    } else {
+                        item
+                    };
+                    let idx_url = follow::index_url(f);
+                    let (uh, up) = (f.host.clone(), f.path.clone());
+                    return item
+                        .trailing(small("\u{2197}", "Open the folder's index", format!("fol-ix:{}", n.path)).on_press(move |s: &mut App| urb_go(s, Some(idx_url.clone()))))
+                        .trailing(small("\u{d7}", "Unfollow", format!("fol-rm:{}", n.path)).on_press(move |s: &mut App| follow_set(s, uh.clone(), up.clone(), false)));
+                }
                 let Some((sh, None)) = swm::at(&shared, &n.path) else { return item };
                 // what the host lets this ship do with it, then into my pages (a page only), and off the list
                 let small = |glyph: &'static str, name: &str, key: String| text(glyph).key(key).role("button").label(name.to_owned()).help(name.to_owned()).color(muted).px(4.0).radius(4.0).hover(hover);
@@ -13440,10 +14276,12 @@ fn sidebar(s: &App, k: &Kit) -> El {
         // one click opens a page, as the web client's tree does
         .on_select(|s: &mut App, id, tx| {
             // with Ctrl (Cmd on a Mac) a page opens in a new tab
-            if tx.mods().cmd && !swm::is_ours(id) && s.files.get(id).is_some_and(|n| !n.dir) {
+            if tx.mods().cmd && !swm::is_ours(id) && !follow::is_ours(id) && s.files.get(id).is_some_and(|n| !n.dir) {
                 return tab_for(s, id);
             }
-            if swm::is_ours(id) {
+            if follow::is_ours(id) {
+                open_following(s, id, tx.mods().cmd);
+            } else if swm::is_ours(id) {
                 // a page or a folder another ship shared. The folder itself and a ship's only fold
                 open_shared(s, id);
             } else if s.files.get(id).is_some_and(|n| !n.dir) {
@@ -13452,8 +14290,9 @@ fn sidebar(s: &App, k: &Kit) -> El {
                 remote_cancel(s);
                 // a folder shows what it holds, and can be renamed, moved or deleted there
                 s.access = false;
-    s.settings = None;
+                s.settings = None;
                 s.shared_open = false;
+                s.exploring = false;
                 s.inbox = false;
                 s.forum = None;
                 s.remote = None;
@@ -15129,6 +15968,9 @@ fn page_body(s: &App, k: &Kit) -> El {
         };
         return col().key("forum-pane").w_full().h_full().min_h(0.0).fill(ground).child(col().w_full().items_center().child(forum_view(f, s.conn.as_ref().map_or("", |c| c.ship()), &Pics { had: &s.pics, failed: &s.pics_failed }, k))).scroll(ScrollSpec { stick_bottom: false });
     }
+    if s.exploring && !s.editing {
+        return explorer_view(s, k);
+    }
     if s.shared_open && !s.editing {
         return shared_view(s, k);
     }
@@ -15204,6 +16046,21 @@ fn page_body(s: &App, k: &Kit) -> El {
         })
     };
     let mut page = col().w_full().max_w(760.0).padding(28.0).gap(12.0);
+    if let Some((fp, Some(facts))) = &s.orrery_facts {
+        if own_browsed_path(s).as_deref() == Some(fp.as_str()) {
+            let mut card = col().key("orrery-facts").w_full().padding(10.0).gap(3.0).radius(k.radius.md).fill(c.layer_01).border(1.0, c.border_weak);
+            if !facts.name.is_empty() {
+                card = card.child(text(facts.name.clone()).font(k.ty.ui_medium).color(c.text_base));
+            }
+            for r in &facts.rows {
+                card = card.child(text(r.clone()).font(k.ty.small).color(c.text_base).wrap());
+            }
+            for a in &facts.actions {
+                card = card.child(text(format!("open: {a}")).font(k.ty.small).color(c.text_muted).wrap());
+            }
+            page = page.child(card);
+        }
+    }
     if let Some((tags, updated)) = s.know_meta.get(&p.name).filter(|_| s.memory) {
         let when = Rev { rev: 0, updated: updated.clone() }.when();
         let mut meta = row().key("know-meta").gap(6.0).center_y().child(text(when).font(k.ty.small).color(c.text_faint));
@@ -15489,10 +16346,10 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let path = s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref());
     // the name it was given when there is one, with its path beside it
     let named = path.and_then(|p| s.dnames.get(p).filter(|_| !s.memory && s.remote.is_none()).map(|d| format!("{d}  ({p})")));
-    let title = if s.settings.is_some() { "Settings" } else if s.forum.is_some() { "Forum" } else if s.inbox { "Inbox" } else if s.shared_open { "Browser" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
-    let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending() || s.drain_req.is_pending() || s.op_req.is_pending();
+    let title = if s.settings.is_some() { "Settings" } else if s.forum.is_some() { "Forum" } else if s.inbox { "Inbox" } else if s.exploring { "Explorer" } else if s.shared_open { "Browser" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
+    let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending() || s.drain_req.is_pending() || s.op_req.is_pending() || s.exp_req.is_pending();
     let mut layer = Vec::new();
-    let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox;
+    let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox && !s.exploring;
     let remote = s.remote.as_ref().filter(|_| page);
     // the Edit and Read switch: a page shows it, a screen that is no page (the forum, the inbox, a folder) does not
     let (editing, can_edit) = (page && s.editing, remote.is_none_or(Shared::editable));
@@ -15673,8 +16530,14 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         row().key("tab-head").w_full().h(36.0).px(8.0).gap(8.0).center_y().justify_between().child(leading.grow(1.0).min_w(0.0)).child(trailing)
     };
     // the room the groups have is noted as it is laid out: a split is refused when it is too little for two
-    // while browsing, the browser's bar is the header: its own Back and Forward, the address, and the star
-    let head = if browsing(s) && !s.editing { browser_bar(s, &k).pt(6.0) } else { head };
+    // while browsing or exploring, their own bar is the header
+    let head = if s.exploring && !s.editing {
+        explorer_bar(s, &k).pt(6.0)
+    } else if browsing(s) && !s.editing {
+        browser_bar(s, &k).pt(6.0)
+    } else {
+        head
+    };
     #[cfg(not(target_arch = "wasm32"))]
     let offer = update_banner(s, &k);
     #[cfg(target_arch = "wasm32")]
@@ -16042,7 +16905,7 @@ mod tests {
         s.names.push("vault/doc".into());
         s.open = Some(Page { name: "vault/doc".into(), body: "# Doc\n".into(), kind: "md".into(), rev: 1 });
         s.editing = true;
-        s.tabs = vec![Tab { trail: vec!["vault/doc".into()], at: 0 }];
+        s.tabs = vec![Tab { trail: vec!["vault/doc".into()], at: 0, kind: TabKind::Page }];
         s.folder = Some("vault".into());
         applied(&mut s, Op::MoveTimedOut("vault".into(), "kept".into()));
         assert_eq!(s.timed_out_moves, vec![("vault".into(), "kept".into())]);
@@ -16524,7 +17387,7 @@ mod tests {
         let mut s = sample("welcome");
         // a split of two, with the named page in the group that is not in front
         fn hold(s: &mut App, name: &str) {
-            (s.tgroups, s.front_at) = (vec![TabGroup::default(), TabGroup { tabs: vec![Tab { trail: vec![name.to_owned()], at: 0 }], at: 0, view: None }], 0);
+            (s.tgroups, s.front_at) = (vec![TabGroup::default(), TabGroup { tabs: vec![Tab { trail: vec![name.to_owned()], at: 0, kind: TabKind::Page }], at: 0, view: None }], 0);
             sync_beside(s);
         }
         hold(&mut s, "budget");
@@ -18472,6 +19335,71 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn browser_and_explorer_tabs_preserve_state_across_switches() {
+        let mut s = sample("welcome");
+        assert_eq!((s.tabs.len(), s.tab, tab_label(&s, 0).as_str()), (1, 0, "welcome"));
+        // opening Browser while on a page creates a new Browser tab
+        go_browser(&mut s);
+        assert_eq!((s.tabs.len(), s.tab), (2, 1));
+        assert!(browsing(&s));
+        assert_eq!(tab_label(&s, 1), "Browser");
+        s.nav.go("urb://~bus/notes");
+        s.urb = TextEdit::new("urb://~bus/notes");
+        // opening a second Browser tab keeps the first Browser tab's history independent
+        open_browser_tab(&mut s, None);
+        assert_eq!((s.tabs.len(), s.tab), (3, 2));
+        s.nav.go("urb://~nec/log");
+        s.urb = TextEdit::new("urb://~nec/log");
+        // switching back to tab 1 restores ~bus/notes, tab 0 restores welcome
+        switch_tab(&mut s, 1);
+        assert!(browsing(&s));
+        assert_eq!(s.nav.cur(), "urb://~bus/notes");
+        switch_tab(&mut s, 2);
+        assert_eq!(s.nav.cur(), "urb://~nec/log");
+        switch_tab(&mut s, 0);
+        assert!(!browsing(&s));
+        assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("welcome"));
+        assert_eq!(tab_label(&s, 1), "Browser");
+        // explorer tab parks and restores cleanly
+        s.exploring = true;
+        s.open = None;
+        s.exp_view = Some(explorer::parse_response(
+            "/apps/lattice/x/~zod/page/",
+            200,
+            r#"<ul class="tree"><li><a href="notes/">notes/</a></li></ul>"#,
+        ));
+        assert_eq!(tab_label(&s, 0), "x: page");
+        switch_tab(&mut s, 1);
+        assert!(!s.exploring && browsing(&s));
+        assert_eq!(tab_label(&s, 0), "x: page");
+        switch_tab(&mut s, 0);
+        assert!(s.exploring && !browsing(&s));
+        assert!(matches!(s.exp_view, Some(explorer::View::Dir { .. })));
+    }
+
+    #[test]
+    fn following_tree_grafts_marks_seen_and_clears_on_unfollow() {
+        let mut s = sample("welcome");
+        s.following = vec![follow::Fold {
+            host: "~bus".into(),
+            path: "/notes".into(),
+            ok: true,
+            new: 1,
+            pages: vec![follow::FoldPage { key: "/notes/plan".into(), title: "Plan".into(), new: true }],
+        }];
+        redraw_tree(&mut s, false);
+        let did = follow::dir_id(&s.following[0]);
+        let pid = follow::page_id(&s.following[0], "/notes/plan");
+        assert!(s.files.contains(follow::ROOT));
+        assert!(s.files.contains(&did));
+        assert!(s.files.contains(&pid));
+        assert_eq!(follow::total_new(&s.following), 1);
+        open_following(&mut s, &pid, false);
+        assert_eq!(follow::total_new(&s.following), 0, "opening marks the page seen locally");
+        assert!(!s.following[0].pages[0].new);
     }
 }
 
