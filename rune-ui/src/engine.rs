@@ -1344,6 +1344,13 @@ pub fn place(url: &str) -> Option<(String, String)> {
 /// published page keys and optional `/pub/titles` (or a granted folder's `dir-index`).
 /// Folders come first sorted by name, then pages sorted by name.
 pub fn dir_entries(ship: &str, dir: &[String], pages: &[String], titles: &[PageTitle]) -> Vec<(String, String, bool)> {
+    let mut title_map: std::collections::HashMap<&str, &str> = std::collections::HashMap::with_capacity(titles.len());
+    for t in titles {
+        let k = t.key.trim_start_matches('/');
+        if !k.is_empty() && !t.title.is_empty() {
+            title_map.entry(k).or_insert(t.title.as_str());
+        }
+    }
     let mut dirs: BTreeMap<String, ()> = BTreeMap::new();
     let mut files: BTreeMap<String, String> = BTreeMap::new();
     let all_keys = pages.iter().map(String::as_str).chain(titles.iter().map(|t| t.key.as_str()));
@@ -1354,7 +1361,7 @@ pub fn dir_entries(ship: &str, dir: &[String], pages: &[String], titles: &[PageT
         }
         let seg = r[dir.len()].to_string();
         if r.len() == dir.len() + 1 {
-            let title = titles.iter().find(|t| same_page(&t.key, key)).map(|t| t.title.clone()).unwrap_or_default();
+            let title = title_map.get(key.trim_start_matches('/')).copied().unwrap_or_default().to_owned();
             files.entry(seg).and_modify(|cur| {
                 if cur.is_empty() && !title.is_empty() {
                     *cur = title.clone();
@@ -1364,22 +1371,25 @@ pub fn dir_entries(ship: &str, dir: &[String], pages: &[String], titles: &[PageT
             dirs.insert(seg, ());
         }
     }
-    let join_url = |seg: &str, folder: bool| -> String {
+    let join_url = |seg: &str, folder: bool| -> Option<String> {
         let mut path: Vec<&str> = dir.iter().map(String::as_str).collect();
         path.push(seg);
         let n = if path.first().is_some_and(|d| d.len() == 1) { "n/" } else { "" };
         let slash = if folder { "/" } else { "" };
-        format!("urb://{ship}/{n}{}{slash}", path.join("/"))
+        let url = format!("urb://{ship}/{n}{}{slash}", path.join("/"));
+        de_urb(&url).is_ok().then_some(url)
     };
     let mut out = Vec::with_capacity(dirs.len() + files.len());
     for name in dirs.into_keys() {
-        let url = join_url(&name, true);
-        out.push((name, url, true));
+        if let Some(url) = join_url(&name, true) {
+            out.push((name, url, true));
+        }
     }
     for (name, title) in files {
-        let url = join_url(&name, false);
-        let label = if !title.is_empty() && title != name { format!("{name} \u{b7} {title}") } else { name };
-        out.push((label, url, false));
+        if let Some(url) = join_url(&name, false) {
+            let label = if !title.is_empty() && title != name { format!("{name} \u{b7} {title}") } else { name };
+            out.push((label, url, false));
+        }
     }
     out
 }
@@ -1682,7 +1692,7 @@ mod tests {
 
     #[test]
     fn dir_entries_lists_folders_then_pages_with_titles() {
-        let pages = vec!["/notes/a".into(), "/notes/sub/deep".into(), "/notes/b".into(), "/other/x".into()];
+        let pages = vec!["/notes/a".into(), "/notes/sub/deep".into(), "/notes/b".into(), "/notes/Bad Key".into(), "/notes/UPPER".into(), "/other/x".into()];
         let titles = vec![PageTitle { key: "/notes/a".into(), secs: 10, title: "Alpha".into() }];
         let got = dir_entries("~zod", &["notes".into()], &pages, &titles);
         assert_eq!(

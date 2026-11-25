@@ -2638,7 +2638,13 @@ fn applied(s: &mut App, op: Op) {
                 return;
             };
             let (ship, key) = (t.ship.clone(), if t.key.is_empty() { format!("/{}", t.page.trim_start_matches('/')) } else { t.key.clone() });
-            sess.note = if told { format!("sent to {ship}") } else { format!("{ship} has not said it took the comment yet") };
+            sess.note = if told {
+                format!("sent to {ship}")
+            } else if sess.anon {
+                format!("sent to {ship}, but {ship} did not confirm its comment policy")
+            } else {
+                format!("{ship} has not said it took the comment yet")
+            };
             // how many like it were there already: it has shown when there is one more
             let had = like_ours(&t.list, &ours, &body);
             t.sent = Some((body, told, had));
@@ -12234,7 +12240,8 @@ fn post_remote_comment(s: &mut App) {
         s.note = format!("sending to {}\u{2026}", t.ship);
         let key = if t.key.is_empty() { format!("/{}", t.page.trim_start_matches('/')) } else { t.key.clone() };
         s.comment_req.request((e, t, key, body), |(e, t, key, body)| {
-            if let Some(o) = e.comments_open(&t.ship, engine::PEEK_BUDGET) {
+            let policy = e.comments_open(&t.ship, engine::PEEK_BUDGET);
+            if let Some(o) = &policy {
                 if !o.names.iter().any(|n| engine::same_page(n, &key)) {
                     return Err("Comments are off for this page.".into());
                 }
@@ -12255,7 +12262,7 @@ fn post_remote_comment(s: &mut App) {
                     }
                 }
             }
-            Ok(Op::SentRemote(t.url, body, true))
+            Ok(Op::SentRemote(t.url, body, policy.is_some()))
         });
     }
 }
