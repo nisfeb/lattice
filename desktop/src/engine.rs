@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 
 use urb_engine::host::net::{libmesa_log, random, Log, NetIo};
 use urb_engine::host::{Event, Host};
-use urb_engine::url::{APP_BASE, DESK_BASE};
+use urb_engine::url::PEER_BASES;
 use urb_engine::core::{ForumCall, FurumCall};
 use urb_engine::js::Js;
 use urb_engine::{Failure, Int, Reply, Request, Value};
@@ -550,7 +550,7 @@ impl Engine {
     pub fn comment(&self, ship: &str, page: &str, body: &str, budget: Duration) -> Result<(), CommentError> {
         let start = Instant::now();
         let mut first = None;
-        for base in [DESK_BASE, APP_BASE] {
+        for base in PEER_BASES {
             let left = budget.saturating_sub(start.elapsed()).max(Duration::from_secs(1));
             let c = Comment { ship: ship.into(), base, page: page.into(), body: body.into() };
             match self.comment_at(c, left) {
@@ -637,7 +637,7 @@ impl Engine {
     /// publisher without it (an older lattice) has every page open.
     pub fn comments_open(&self, ship: &str, budget: Duration) -> Option<Opened> {
         let start = Instant::now();
-        for base in [DESK_BASE, APP_BASE] {
+        for base in PEER_BASES {
             let left = budget.saturating_sub(start.elapsed());
             if left.is_zero() {
                 return None;
@@ -693,7 +693,7 @@ impl Engine {
     /// neither has it or there is no answer within `budget`.
     fn list_cord(&self, ship: &str, list: List, budget: Duration) -> Option<String> {
         let start = Instant::now();
-        for base in [DESK_BASE, APP_BASE] {
+        for base in PEER_BASES {
             let left = budget.saturating_sub(start.elapsed());
             if left.is_zero() {
                 return None;
@@ -732,7 +732,7 @@ impl Engine {
     pub fn dir_index(&self, ship: &str, folder: &str, budget: Duration) -> DirIndex {
         let Some(folder) = thread_page(folder) else { return DirIndex::Refused };
         let start = Instant::now();
-        for base in [DESK_BASE, APP_BASE] {
+        for base in PEER_BASES {
             let left = budget.saturating_sub(start.elapsed());
             if left.is_zero() {
                 return DirIndex::Silent;
@@ -773,7 +773,7 @@ impl Engine {
     /// either, no answer, or a reader not ready.
     fn peek_bases(&self, budget: Duration, job: impl Fn(&'static str, Cord) -> Job) -> Option<String> {
         let start = Instant::now();
-        for base in [DESK_BASE, APP_BASE] {
+        for base in PEER_BASES {
             let left = budget.saturating_sub(start.elapsed());
             if left.is_zero() {
                 return None;
