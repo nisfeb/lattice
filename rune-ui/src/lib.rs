@@ -234,6 +234,10 @@ struct Forum {
     acting: bool,
     /// What was written is on its way to the ship: it is kept until the ship has it.
     sending: bool,
+    /// Anonymous mode: the `urb://` address of the board or thread showing.
+    anon_url: Option<String>,
+    /// Anonymous mode: whether the host accepts comet posts on this board (`/pub/forum-comets`).
+    anon_open: Option<bool>,
 }
 
 /// A board's moderation as the ship gave it, and what is typed over it:
@@ -288,6 +292,9 @@ enum ForumGot {
     Mod(api::BoardMod, String),
     /// The boards after one was made or deleted: what was being made, and the board that was showing, are let go.
     Changed(Vec<api::Board>),
+    /// A board or thread read anonymously through the urb engine, with its `urb://` URL and comet post policy.
+    AnonBoard(api::Board, String, Option<bool>),
+    AnonThread(api::Thread, String, Option<bool>),
 }
 
 /// How hot a thread is, as the ship scores one (`+hot-score` in `lattice-forum-rules.hoon`): its
@@ -612,7 +619,7 @@ struct ShipSession {
     remote_from: Option<Front>,
     /// When the engine's start is next looked at (app clock): one wake at a time.
     anon_tick: f64,
-    anon_got: std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<(String, api::Urb), String>)>>>,
+    anon_got: std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<(String, api::Urb, Option<AnonPageMeta>), String>)>>>,
     url: TextEdit,
     code: TextEdit,
     login_err: String,
@@ -2624,13 +2631,14 @@ fn applied(s: &mut App, op: Op) {
         }
         Op::SentRemote(url, body, told) => {
             sent_draft(s, &url, &body);
-            let ours = s.conn.as_ref().map(|c| c.ship().to_owned()).unwrap_or_default();
+            let ours = current_actor(s);
             let sess = &mut s.session;
             let Some(t) = sess.thread.as_mut().filter(|t| t.url == url) else {
                 sess.note = "comment sent".into();
                 return;
             };
-            sess.note = if told { format!("sent to {}", t.ship) } else { format!("{} has not said it took the comment yet", t.ship) };
+            let (ship, key) = (t.ship.clone(), if t.key.is_empty() { format!("/{}", t.page.trim_start_matches('/')) } else { t.key.clone() });
+            sess.note = if told { format!("sent to {ship}") } else { format!("{ship} has not said it took the comment yet") };
             // how many like it were there already: it has shown when there is one more
             let had = like_ours(&t.list, &ours, &body);
             t.sent = Some((body, told, had));
@@ -2640,6 +2648,17 @@ fn applied(s: &mut App, op: Op) {
                     api::pause(std::time::Duration::from_millis(2500));
                     thread_of(&c, &url).map(|l| (url, l))
                 });
+            } else {
+                #[cfg(unix)]
+                if s.anon {
+                    if let Some(e) = s.global.engine.clone() {
+                        s.thread_req.request((e, url, ship, key), |(e, url, ship, key)| {
+                            api::pause(std::time::Duration::from_millis(2500));
+                            let list = e.thread(&ship, &key, engine::PEEK_BUDGET).unwrap_or_default().into_iter().map(pub_comment_to_api).collect();
+                            Ok((url, list))
+                        });
+                    }
+                }
             }
             return;
         }
@@ -6759,6 +6778,33 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     s.note = if f.thread.as_ref().is_some_and(|t| t.board.starts_with('~')) { SENT_AWAY.into() } else { "sent".into() };
                 }
             }
+            (Ok(ForumGot::AnonBoard(b, url, open)), Some(f)) => {
+                (f.board, f.thread, f.anon_url, f.anon_open) = (Some(b), None, Some(url.clone()), open);
+                s.session.nav.go(&url);
+                s.session.urb = TextEdit::new(url.as_str());
+                if s.session.note.starts_with("reading ") {
+                    s.session.note.clear();
+                }
+                if std::mem::take(&mut f.sending) {
+                    f.draft = None;
+                    s.session.note = "sent to the board's ship".into();
+                }
+            }
+            (Ok(ForumGot::AnonThread(th, url, open)), Some(f)) => {
+                if !f.thread.as_ref().is_some_and(|was| (was.board.as_str(), was.post.id) == (th.board.as_str(), th.post.id)) {
+                    f.reply = None;
+                }
+                (f.thread, f.anon_url, f.anon_open) = (Some(th), Some(url.clone()), open);
+                s.session.nav.go(&url);
+                s.session.urb = TextEdit::new(url.as_str());
+                if s.session.note.starts_with("reading ") {
+                    s.session.note.clear();
+                }
+                if std::mem::take(&mut f.sending) {
+                    (f.comment, f.reply) = (TextEdit::new(""), None);
+                    s.session.note = "sent to the board's ship".into();
+                }
+            }
             // what was written stays, to be sent again or changed
             (Err(e), Some(f)) => {
                 f.sending = false;
@@ -7029,7 +7075,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         match r {
             Ok((url, list)) => {
-                let ours = s.conn.as_ref().map(|c| c.ship().to_owned()).unwrap_or_default();
+                let ours = current_actor(s);
                 if let Some(t) = s.thread.as_mut().filter(|t| t.url == url) {
                     t.list = list;
                     settle_sent(t, &ours);
@@ -7187,7 +7233,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         s.anon_reading = None;
         match r {
             Ok(_) if gone_since(s) => {}
-            Ok((url, got)) => urb_got(s, url, got),
+            Ok((url, got, meta)) => urb_got_with(s, url, got, meta),
             // the reader's own words are whole sentences
             Err(e) => s.note = e,
         }
@@ -8703,6 +8749,16 @@ const SENT_AWAY: &str = "sent to the board's ship. It shows here once that ship 
 
 /// Opens the board whose address is typed, or the thread when the address names one.
 fn forum_go(s: &mut App) {
+    #[cfg(unix)]
+    if s.anon {
+        let typed = s.forum.as_ref().map(|f| f.address.text.trim().to_owned()).unwrap_or_default();
+        let addr = if typed.starts_with("urb://") { typed } else { format!("urb://{typed}") };
+        match engine::board_place(&addr) {
+            Some(place) => forum_open_anon(s, place),
+            None => s.note = "a board's address is urb://~ship/forum/board (or urb://~ship/furum/board)".into(),
+        }
+        return;
+    }
     let sess = &mut s.session;
     let Some((c, f)) = sess.conn.as_ref().zip(sess.forum.as_mut()) else { return };
     match api::board_key(&f.address.text, c.ship()) {
@@ -8714,8 +8770,90 @@ fn forum_go(s: &mut App) {
     }
 }
 
+/// Reads a board or thread anonymously through the urb engine.
+#[cfg(unix)]
+fn forum_open_anon(s: &mut App, place: engine::BoardPlace) {
+    let Some(e) = s.global.engine.clone() else {
+        s.note = "the reader has nowhere to keep its files: no home folder".into();
+        return;
+    };
+    if s.forum.is_none() {
+        s.forum = Some(Forum::default());
+    }
+    (s.inbox, s.access, s.shared_open) = (false, false, false);
+    let url = place.url();
+    s.note = format!("reading {url}\u{2026}");
+    s.forum_req.request((e, place, url), |(e, place, url)| {
+        match (&place.app, &place.post) {
+            (engine::BoardApp::Forum, None) => {
+                let res = e.boards(vec![engine::BoardAsk::Forum { host: place.host.clone(), board: place.board.clone() }], engine::BUDGET);
+                let js = res.into_iter().next().ok_or_else(|| "no answer".to_owned())?.map_err(|e| e.words())?;
+                let board = engine::js_to_forum_board(&place, &js);
+                let open = e.forum_open(&place.host, engine::PEEK_BUDGET).map(|l| l.iter().any(|b| b == &place.board));
+                Ok(ForumGot::AnonBoard(board, url, open))
+            }
+            (engine::BoardApp::Forum, Some(post_str)) => {
+                let post = engine::post_int(post_str).ok_or_else(|| "invalid post number".to_owned())?;
+                let res = e.boards(vec![engine::BoardAsk::ForumThread { host: place.host.clone(), board: place.board.clone(), post }], engine::BUDGET);
+                let js = res.into_iter().next().ok_or_else(|| "no answer".to_owned())?.map_err(|e| e.words())?;
+                let th = engine::js_to_forum_thread(&place, &js).ok_or_else(|| "that thread was not found".to_owned())?;
+                let open = e.forum_open(&place.host, engine::PEEK_BUDGET).map(|l| l.iter().any(|b| b == &place.board));
+                Ok(ForumGot::AnonThread(th, url, open))
+            }
+            (engine::BoardApp::Furum, None) => {
+                let res = e.boards(vec![engine::BoardAsk::FurumPosts { host: place.host.clone(), board: place.board.clone() }], engine::BUDGET);
+                let js = res.into_iter().next().ok_or_else(|| "no answer".to_owned())?.map_err(|e| e.words())?;
+                Ok(ForumGot::AnonBoard(engine::js_to_furum_board(&place, &js), url, Some(false)))
+            }
+            (engine::BoardApp::Furum, Some(post_str)) => {
+                let post: u64 = post_str.parse().map_err(|_| "invalid post number".to_owned())?;
+                let res = e.boards(
+                    vec![
+                        engine::BoardAsk::FurumPosts { host: place.host.clone(), board: place.board.clone() },
+                        engine::BoardAsk::FurumComments { host: place.host.clone(), board: place.board.clone(), post },
+                    ],
+                    engine::BUDGET,
+                );
+                let mut it = res.into_iter();
+                let posts_js = it.next().ok_or_else(|| "no answer".to_owned())?.map_err(|e| e.words())?;
+                let comments_js = it.next().ok_or_else(|| "no answer".to_owned())?.map_err(|e| e.words())?;
+                let th = engine::js_to_furum_thread(&place, &posts_js, &comments_js).ok_or_else(|| "that thread was not found".to_owned())?;
+                Ok(ForumGot::AnonThread(th, url, Some(false)))
+            }
+        }
+    });
+}
+
+/// Reconstruct a `BoardPlace` from a `Forum` board key (`~host/board` or `~host/furum/board`) and optional post id.
+#[cfg(unix)]
+fn anon_board_place(board: &str, post: Option<u64>) -> Option<engine::BoardPlace> {
+    let parts: Vec<&str> = board.split('/').collect();
+    match parts.as_slice() {
+        [host, "furum", name] if host.starts_with('~') => Some(engine::BoardPlace {
+            app: engine::BoardApp::Furum,
+            host: (*host).to_owned(),
+            board: (*name).to_owned(),
+            post: post.map(|id| id.to_string()),
+        }),
+        [host, name] if host.starts_with('~') => Some(engine::BoardPlace {
+            app: engine::BoardApp::Forum,
+            host: (*host).to_owned(),
+            board: (*name).to_owned(),
+            post: post.map(|id| id.to_string()),
+        }),
+        _ => None,
+    }
+}
+
 /// Reads a board of the forum, or with a number one of its threads, and shows it when it lands.
 fn forum_open(s: &mut App, board: String, post: Option<u64>) {
+    #[cfg(unix)]
+    if s.anon {
+        if let Some(place) = anon_board_place(&board, post) {
+            forum_open_anon(s, place);
+        }
+        return;
+    }
     let Some(c) = s.conn.clone() else { return };
     // what other ships refused is read with whatever of the forum is opened, however it was come to:
     // by an address or a notice the boards screen, which read it, is never passed
@@ -8996,6 +9134,46 @@ fn forum_board_tags(posts: &[api::ForumPost]) -> Vec<(String, usize)> {
 /// form it refuses as it answers one it takes, so the board is read
 /// again, and a board no longer than it was says the thread was not taken.
 fn forum_submit(s: &mut App) {
+    #[cfg(unix)]
+    if s.anon {
+        let Some(e) = s.global.engine.clone() else { return };
+        let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+        let (Some(b), Some(d)) = (&f.board, &f.draft) else { return };
+        let Some(place) = anon_board_place(&b.board, None).filter(|p| p.app == engine::BoardApp::Forum) else {
+            s.note = "This board takes no posts from readers without a node.".into();
+            return;
+        };
+        let [title, link, body] = [d[0].text.trim().to_owned(), d[1].text.trim().to_owned(), d[2].text.trim_end().to_owned()];
+        if title.is_empty() {
+            s.note = "a thread needs a title".into();
+            return;
+        }
+        if body.len() > engine::FORUM_TEXT_MAX || title.len() > engine::FORUM_TITLE_MAX || link.len() > engine::FORUM_LINK_MAX {
+            s.note = format!("that is too long for an anonymous post: title {} bytes, link {}, text {}", engine::FORUM_TITLE_MAX, engine::FORUM_LINK_MAX, engine::FORUM_TEXT_MAX);
+            return;
+        }
+        f.sending = true;
+        let url = place.board_url();
+        s.forum_req.request((e, place, url, title, link, body), move |(e, place, url, title, link, body)| {
+            match e.forum_open(&place.host, engine::PEEK_BUDGET).map(|l| l.iter().any(|b| b == &place.board)) {
+                Some(false) => return Err("This board takes no posts from readers without a node.".into()),
+                None => return Err(format!("{} hasn't said yet whether this board takes anonymous posts. Try again.", place.host)),
+                Some(true) => {}
+            }
+            let w = engine::ForumWrite::Post {
+                board: place.board.clone(),
+                title,
+                url: (!link.is_empty()).then_some(link),
+                body: (!body.trim().is_empty()).then_some(body),
+            };
+            e.forum_write(&place.host, w, engine::COMMENT_BUDGET).map_err(|e| e.words())?;
+            e.expire(&url);
+            let res = e.boards(vec![engine::BoardAsk::Forum { host: place.host.clone(), board: place.board.clone() }], engine::BUDGET);
+            let js = res.into_iter().next().ok_or_else(|| "no answer".to_owned())?.map_err(|e| e.words())?;
+            Ok(ForumGot::AnonBoard(engine::js_to_forum_board(&place, &js), url, Some(true)))
+        });
+        return;
+    }
     let sess = &mut s.session;
     let Some(f) = sess.forum.as_mut().filter(|f| !f.sending) else { return };
     let (Some(b), Some(d)) = (&f.board, &f.draft) else { return };
@@ -9034,6 +9212,48 @@ fn forum_submit(s: &mut App) {
 
 /// Sends the comment written on the thread showing, under the comment it answers when it answers one.
 fn forum_comment(s: &mut App) {
+    #[cfg(unix)]
+    if s.anon {
+        let Some(e) = s.global.engine.clone() else { return };
+        let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+        let Some(th) = &f.thread else { return };
+        let Some(place) = anon_board_place(&th.board, Some(th.post.id)).filter(|p| p.app == engine::BoardApp::Forum) else {
+            s.note = "This board takes no posts from readers without a node.".into();
+            return;
+        };
+        let body = f.comment.text.trim_end().to_owned();
+        if body.trim().is_empty() {
+            s.note = "there is nothing written to send".into();
+            return;
+        }
+        if body.len() > engine::FORUM_TEXT_MAX {
+            s.note = "that is too long for the board to take: a comment may be 10,000 bytes".into();
+            return;
+        }
+        let (post_id, parent_id) = (th.post.id, f.reply);
+        f.sending = true;
+        let url = place.url();
+        s.forum_req.request((e, place, url, post_id, parent_id, body), move |(e, place, url, post_id, parent_id, body)| {
+            match e.forum_open(&place.host, engine::PEEK_BUDGET).map(|l| l.iter().any(|b| b == &place.board)) {
+                Some(false) => return Err("This board takes no posts from readers without a node.".into()),
+                None => return Err(format!("{} hasn't said yet whether this board takes anonymous posts. Try again.", place.host)),
+                Some(true) => {}
+            }
+            let w = engine::ForumWrite::Reply {
+                board: place.board.clone(),
+                post: engine::int_of_u64(post_id),
+                parent: parent_id.map(engine::int_of_u64),
+                body,
+            };
+            e.forum_write(&place.host, w, engine::COMMENT_BUDGET).map_err(|e| e.words())?;
+            e.expire(&url);
+            let res = e.boards(vec![engine::BoardAsk::ForumThread { host: place.host.clone(), board: place.board.clone(), post: engine::int_of_u64(post_id) }], engine::BUDGET);
+            let js = res.into_iter().next().ok_or_else(|| "no answer".to_owned())?.map_err(|e| e.words())?;
+            let th = engine::js_to_forum_thread(&place, &js).ok_or_else(|| "that thread was not found".to_owned())?;
+            Ok(ForumGot::AnonThread(th, url, Some(true)))
+        });
+        return;
+    }
     let sess = &mut s.session;
     let Some(f) = sess.forum.as_mut().filter(|f| !f.sending) else { return };
     let Some(th) = &f.thread else { return };
@@ -9313,7 +9533,7 @@ fn refusals(f: &Forum, k: &Kit, always: bool) -> Option<El> {
 }
 
 /// The forum: the boards, a board's threads, or a thread with its comments under what they answer.
-fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
+fn forum_view(f: &Forum, ours: &str, anon: bool, pics: &Pics, k: &Kit) -> El {
     let c = &k.c;
     let when = |da: &str| Rev { rev: 0, updated: da.to_owned() }.when();
     let muted = |t: String| text(t).font(k.ty.small).color(c.text_muted);
@@ -9349,21 +9569,23 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
         let act = |label: String, key: &str, help: &str| Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(help.to_owned());
         let (pinned, tags) = (p.pinned, p.tags.join(" "));
         // only what this ship may do here is offered, as the web shows its buttons by role
-        let may = forum_may(&th.board, th.role.as_deref(), ours, &p.author);
-        let mut acts = row().key("forum-acts").gap(4.0).flex_wrap().child(act("\u{25b2} Point".into(), "forum-vote", "Give this thread your point").on_press(|s: &mut App| forum_act(s, ForumAct::Vote)).build(k).key("forum-vote"));
-        if may.pin {
-            acts = acts.child(act(if pinned { "Unpin".into() } else { "Pin".into() }, "forum-pin", "Keep this thread at the top of its board").on_press(move |s: &mut App| forum_act(s, ForumAct::Pin(!pinned))).build(k).key("forum-pin"));
+        let may = if anon { ForumMay { pin: false, change: false } } else { forum_may(&th.board, th.role.as_deref(), ours, &p.author) };
+        if !anon {
+            let mut acts = row().key("forum-acts").gap(4.0).flex_wrap().child(act("\u{25b2} Point".into(), "forum-vote", "Give this thread your point").on_press(|s: &mut App| forum_act(s, ForumAct::Vote)).build(k).key("forum-vote"));
+            if may.pin {
+                acts = acts.child(act(if pinned { "Unpin".into() } else { "Pin".into() }, "forum-pin", "Keep this thread at the top of its board").on_press(move |s: &mut App| forum_act(s, ForumAct::Pin(!pinned))).build(k).key("forum-pin"));
+            }
+            if may.change {
+                acts = acts
+                    .child(act("Tags".into(), "forum-tags", "Set this thread's tags").on_press(move |s: &mut App| {
+                        let mut t = TextEdit::new(tags.as_str());
+                        t.focused = true;
+                        s.prompt = Some(Prompt::ForumTags(t));
+                    }).build(k).key("forum-tags"))
+                    .child(act("Delete".into(), "forum-delete", "Delete this thread").on_press(|s: &mut App| s.prompt = Some(Prompt::ForumDelete(None))).build(k).key("forum-delete"));
+            }
+            page = page.child(acts);
         }
-        if may.change {
-            acts = acts
-                .child(act("Tags".into(), "forum-tags", "Set this thread's tags").on_press(move |s: &mut App| {
-                    let mut t = TextEdit::new(tags.as_str());
-                    t.focused = true;
-                    s.prompt = Some(Prompt::ForumTags(t));
-                }).build(k).key("forum-tags"))
-                .child(act("Delete".into(), "forum-delete", "Delete this thread").on_press(|s: &mut App| s.prompt = Some(Prompt::ForumDelete(None))).build(k).key("forum-delete"));
-        }
-        page = page.child(acts);
         // the link and the text are the poster's Markdown: read as a page is, with no picture fetched
         if let Some(link) = p.link.as_deref().filter(|l| !l.is_empty()) {
             page = page.child(Markdown::new(format!("<{link}>")).selectable(true).on_link_tx(follow).build(k).key("forum-link"));
@@ -9387,6 +9609,7 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
                     .gap(2.0)
                     .child({
                         let id = cm.id;
+                        let can_reply = !anon || f.anon_open != Some(false);
                         row().gap(6.0).center_y().child(muted(match cm.up {
                             // points as the web counts them: those given less those taken
                             Some(up) => {
@@ -9394,18 +9617,21 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
                                 format!("{} \u{b7} {} \u{b7} {n} point{}", cm.author, when(&cm.created), if n == 1 { "" } else { "s" })
                             }
                             None => format!("{} \u{b7} {}", cm.author, when(&cm.created)),
-                        })).children(cm.up.is_some().then(|| Button::new("\u{25b2} Point").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Give this comment your point").on_press(move |s: &mut App| forum_act(s, ForumAct::VoteComment(id))).build(k).key(format!("cvote-{id}")))).child(Button::new("Reply").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Answer this comment").on_press(move |s: &mut App| {
+                        })).children((!anon && cm.up.is_some()).then(|| Button::new("\u{25b2} Point").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Give this comment your point").on_press(move |s: &mut App| forum_act(s, ForumAct::VoteComment(id))).build(k).key(format!("cvote-{id}")))).children(can_reply.then(|| Button::new("Reply").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Answer this comment").on_press(move |s: &mut App| {
                             if let Some(f) = &mut s.forum {
                                 f.reply = Some(id);
                                 f.comment.focused = true;
                             }
-                        }).build(k).key(format!("reply-{id}"))).children(forum_may(&th.board, th.role.as_deref(), ours, &cm.author).change.then(|| Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Delete this comment").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumDelete(Some(id)))).build(k).key(format!("comment-delete-{id}"))))
+                        }).build(k).key(format!("reply-{id}")))).children((!anon && forum_may(&th.board, th.role.as_deref(), ours, &cm.author).change).then(|| Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Delete this comment").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumDelete(Some(id)))).build(k).key(format!("comment-delete-{id}"))))
                     })
                     .child(Markdown::new(md::shallow(&cm.body).into_owned()).selectable(true).on_link_tx(follow).build(k))
                     .children(forum_text_previews(f, pics, &cm.body, &format!("c{}", cm.id), k)),
             );
         }
         // the comment box: what is written goes under the thread, or under the comment being answered
+        if anon && f.anon_open == Some(false) {
+            return page.child(muted("This board takes no posts from readers without a node.".into()).wrap());
+        }
         let to = f.reply.and_then(|id| th.comments.iter().find(|c| c.id == id));
         let mut write = col().key("forum-write").w_full().gap(6.0).pt(8.0);
         if let Some(cm) = to {
@@ -9524,20 +9750,22 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
             page = page.child(chips);
         }
         // a thread is written here, under the board's heading, and sent from here
-        match &f.draft {
-            None => {
-                page = page.child(row().child(Button::new("New thread").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
-                    if let Some(f) = &mut s.forum {
-                        let mut d = Box::new([TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")]);
-                        d[0].focused = true;
-                        f.draft = Some(d);
-                    }
-                }).build(k).key("forum-new")));
-            }
-            Some(d) => {
-                let line = |i: usize, label: &str, hint: &str, key: &str| TextInput::new(&d[i]).label(label).placeholder(hint).on_edit(move |s: &mut App| draft_field(s, i)).build(k).w_full().key(key.to_owned());
-                page = page.child(
-                    col()
+        if anon && f.anon_open == Some(false) {
+            page = page.child(muted("This board takes no posts from readers without a node.".into()).wrap());
+        } else {
+            match &f.draft {
+                None => {
+                    page = page.child(row().child(Button::new("New thread").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+                        if let Some(f) = &mut s.forum {
+                            let mut d = Box::new([TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")]);
+                            d[0].focused = true;
+                            f.draft = Some(d);
+                        }
+                    }).build(k).key("forum-new")));
+                }
+                Some(d) => {
+                    let line = |i: usize, label: &str, hint: &str, key: &str| TextInput::new(&d[i]).label(label).placeholder(hint).on_edit(move |s: &mut App| draft_field(s, i)).build(k).w_full().key(key.to_owned());
+                    let mut draft_box = col()
                         .key("forum-draft")
                         .w_full()
                         .gap(8.0)
@@ -9546,34 +9774,38 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
                         .fill(c.layer_01)
                         .child(line(0, "Title", "What the thread is about", "draft-title"))
                         .child(line(1, "Link", "A link, if it is about one", "draft-link"))
-                        .child(TextArea::new(&d[2]).label("Text (Markdown)").placeholder("The text, if it has one").rows(5).on_edit(|s: &mut App| draft_field(s, 2)).build(k).w_full().key("draft-body"))
-                        .child(line(3, "Tags", "Up to five: lowercase letters, digits and dashes", "draft-tags"))
-                        // the board's own tags that hold what is being typed: pressed, the word becomes the tag
-                        .child({
-                            let mut offer = row().key("draft-tag-offer").gap(2.0).flex_wrap();
-                            for tag in tag_suggest(&board_tags, &d[3].text) {
-                                let t = tag.clone();
-                                offer = offer.child(Button::new(format!("#{tag}")).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Use this tag").on_press(move |s: &mut App| {
-                                    if let Some(d) = s.forum.as_mut().and_then(|f| f.draft.as_mut()) {
-                                        let now = tag_complete(&d[3].text, &t);
-                                        d[3] = TextEdit::new(now.as_str());
-                                        d[3].focused = true;
-                                    }
-                                }).build(k).key(format!("draft-tag-{tag}")));
-                            }
-                            offer
-                        })
-                        .child(
-                            row()
-                                .gap(6.0)
-                                .child(Button::new(if f.sending { "Posting\u{2026}" } else { "Post" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(f.sending).on_press(forum_submit).build(k).key("draft-post"))
-                                .child(Button::new("Cancel").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
-                                    if let Some(f) = &mut s.forum {
-                                        f.draft = None;
-                                    }
-                                }).build(k).key("draft-cancel")),
-                        ),
-                );
+                        .child(TextArea::new(&d[2]).label("Text (Markdown)").placeholder("The text, if it has one").rows(5).on_edit(|s: &mut App| draft_field(s, 2)).build(k).w_full().key("draft-body"));
+                    if !anon {
+                        draft_box = draft_box
+                            .child(line(3, "Tags", "Up to five: lowercase letters, digits and dashes", "draft-tags"))
+                            // the board's own tags that hold what is being typed: pressed, the word becomes the tag
+                            .child({
+                                let mut offer = row().key("draft-tag-offer").gap(2.0).flex_wrap();
+                                for tag in tag_suggest(&board_tags, &d[3].text) {
+                                    let t = tag.clone();
+                                    offer = offer.child(Button::new(format!("#{tag}")).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Use this tag").on_press(move |s: &mut App| {
+                                        if let Some(d) = s.forum.as_mut().and_then(|f| f.draft.as_mut()) {
+                                            let now = tag_complete(&d[3].text, &t);
+                                            d[3] = TextEdit::new(now.as_str());
+                                            d[3].focused = true;
+                                        }
+                                    }).build(k).key(format!("draft-tag-{tag}")));
+                                }
+                                offer
+                            });
+                    }
+                    draft_box = draft_box.child(
+                        row()
+                            .gap(6.0)
+                            .child(Button::new(if f.sending { "Posting\u{2026}" } else { "Post" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(f.sending).on_press(forum_submit).build(k).key("draft-post"))
+                            .child(Button::new("Cancel").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+                                if let Some(f) = &mut s.forum {
+                                    f.draft = None;
+                                }
+                            }).build(k).key("draft-cancel")),
+                    );
+                    page = page.child(draft_box);
+                }
             }
         }
         if b.posts.is_empty() {
@@ -9613,17 +9845,21 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
             }
             // what the web's list has on each row: a vote, and for those who may, pin and delete. They sit
             // beside what opens the thread, not inside it, so a press on one does not open it too
-            let small = |label: &str, help: &str| Button::new(label.to_owned()).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(help.to_owned()).disabled(f.acting);
-            let (vb, pb, db, pinned) = (board.clone(), board.clone(), board.clone(), p.pinned);
-            let may = forum_may(&board, b.role.as_deref(), ours, &p.author);
-            let mut acts = row().px(4.0).gap(2.0).child(small("Vote", "Give this thread your point. Once given it stays").on_press(move |s: &mut App| forum_list_act(s, vb.clone(), id, ForumAct::Vote)).build(k).key(format!("row-vote-{id}")));
-            if may.pin {
-                acts = acts.child(small(if pinned { "Unpin" } else { "Pin" }, "Keep this thread at the top of the board, or let it go").on_press(move |s: &mut App| forum_list_act(s, pb.clone(), id, ForumAct::Pin(!pinned))).build(k).key(format!("row-pin-{id}")));
+            let mut row_box = col().key(format!("post-row-{id}")).w_full().children(lead).child(line).children(forum_preview(f, pics, p.link.as_deref(), id, k));
+            if !anon {
+                let small = |label: &str, help: &str| Button::new(label.to_owned()).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(help.to_owned()).disabled(f.acting);
+                let (vb, pb, db, pinned) = (board.clone(), board.clone(), board.clone(), p.pinned);
+                let may = forum_may(&board, b.role.as_deref(), ours, &p.author);
+                let mut acts = row().px(4.0).gap(2.0).child(small("Vote", "Give this thread your point. Once given it stays").on_press(move |s: &mut App| forum_list_act(s, vb.clone(), id, ForumAct::Vote)).build(k).key(format!("row-vote-{id}")));
+                if may.pin {
+                    acts = acts.child(small(if pinned { "Unpin" } else { "Pin" }, "Keep this thread at the top of the board, or let it go").on_press(move |s: &mut App| forum_list_act(s, pb.clone(), id, ForumAct::Pin(!pinned))).build(k).key(format!("row-pin-{id}")));
+                }
+                if may.change {
+                    acts = acts.child(small("Delete", "Delete this thread").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumRowDelete(db.clone(), id))).build(k).key(format!("row-delete-{id}")));
+                }
+                row_box = row_box.child(acts);
             }
-            if may.change {
-                acts = acts.child(small("Delete", "Delete this thread").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumRowDelete(db.clone(), id))).build(k).key(format!("row-delete-{id}")));
-            }
-            page = page.child(col().key(format!("post-row-{id}")).w_full().children(lead).child(line).children(forum_preview(f, pics, p.link.as_deref(), id, k)).child(acts));
+            page = page.child(row_box);
         }
         // a board with more threads than are held gives the next hundred when asked, from a ship that pages
         if b.page.is_some() && (b.posts.len() as u64) < b.count {
@@ -9642,53 +9878,55 @@ fn forum_view(f: &Forum, ours: &str, pics: &Pics, k: &Kit) -> El {
             .child(TextInput::new(&f.address).label("A board on another ship").placeholder("urb://~sampel-palnet/forum/board").on_edit(|s: &mut App| &mut s.forum.as_mut().expect("the forum is showing").address).on_submit(|s: &mut App, _| forum_go(s)).build(k).grow(1.0).key("board-address"))
             .child(Button::new("Open").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Read a board on another ship by its address").on_press(forum_go).build(k).key("board-go")),
     );
-    match &f.making {
-        None => {
-            page = page.child(row().child(Button::new("New board").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
-                if let Some(f) = &mut s.forum {
-                    let mut d = Box::new([TextEdit::new(""), TextEdit::new(""), TextEdit::new("")]);
-                    d[0].focused = true;
-                    f.making = Some((d, "poster"));
-                }
-            }).build(k).key("board-new")));
-        }
-        Some((d, role)) => {
-            let line = |i: usize, label: &str, hint: &str, key: &str| TextInput::new(&d[i]).label(label).placeholder(hint).on_edit(move |s: &mut App| making_field(s, i)).build(k).w_full().key(key.to_owned());
-            let pick = |label: &str, val: &'static str| {
-                Button::new(label.to_owned()).control_size(ControlSize::Small).variant(if *role == val { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
-                    if let Some((_, r)) = s.forum.as_mut().and_then(|f| f.making.as_mut()) {
-                        *r = val;
+    if !anon {
+        match &f.making {
+            None => {
+                page = page.child(row().child(Button::new("New board").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+                    if let Some(f) = &mut s.forum {
+                        let mut d = Box::new([TextEdit::new(""), TextEdit::new(""), TextEdit::new("")]);
+                        d[0].focused = true;
+                        f.making = Some((d, "poster"));
                     }
-                }).build(k).key(format!("new-role-{val}"))
-            };
-            page = page.child(
-                col()
-                    .key("board-making")
-                    .w_full()
-                    .gap(8.0)
-                    .padding(10.0)
-                    .radius(k.radius.md)
-                    .fill(c.layer_01)
-                    .child(line(0, "Name", "lowercase letters, digits, hyphens", "new-name"))
-                    .child(line(1, "Title", "What the board is called", "new-title"))
-                    .child(TextArea::new(&d[2]).label("Description").rows(3).on_edit(|s: &mut App| making_field(s, 2)).build(k).w_full().key("new-description"))
-                    .child(row().gap(4.0).center_y().child(muted("Those with no role of their own may".into())).child(pick("post", "poster")).child(pick("read", "reader")).child(pick("moderate", "mod")))
-                    .child(
-                        row()
-                            .gap(6.0)
-                            .child(Button::new(if f.sending { "Making\u{2026}" } else { "Create" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(f.sending).on_press(forum_make).build(k).key("new-create"))
-                            .child(Button::new("Cancel").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
-                                if let Some(f) = &mut s.forum {
-                                    f.making = None;
-                                }
-                            }).build(k).key("new-cancel")),
-                    ),
-            );
+                }).build(k).key("board-new")));
+            }
+            Some((d, role)) => {
+                let line = |i: usize, label: &str, hint: &str, key: &str| TextInput::new(&d[i]).label(label).placeholder(hint).on_edit(move |s: &mut App| making_field(s, i)).build(k).w_full().key(key.to_owned());
+                let pick = |label: &str, val: &'static str| {
+                    Button::new(label.to_owned()).control_size(ControlSize::Small).variant(if *role == val { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
+                        if let Some((_, r)) = s.forum.as_mut().and_then(|f| f.making.as_mut()) {
+                            *r = val;
+                        }
+                    }).build(k).key(format!("new-role-{val}"))
+                };
+                page = page.child(
+                    col()
+                        .key("board-making")
+                        .w_full()
+                        .gap(8.0)
+                        .padding(10.0)
+                        .radius(k.radius.md)
+                        .fill(c.layer_01)
+                        .child(line(0, "Name", "lowercase letters, digits, hyphens", "new-name"))
+                        .child(line(1, "Title", "What the board is called", "new-title"))
+                        .child(TextArea::new(&d[2]).label("Description").rows(3).on_edit(|s: &mut App| making_field(s, 2)).build(k).w_full().key("new-description"))
+                        .child(row().gap(4.0).center_y().child(muted("Those with no role of their own may".into())).child(pick("post", "poster")).child(pick("read", "reader")).child(pick("moderate", "mod")))
+                        .child(
+                            row()
+                                .gap(6.0)
+                                .child(Button::new(if f.sending { "Making\u{2026}" } else { "Create" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(f.sending).on_press(forum_make).build(k).key("new-create"))
+                                .child(Button::new("Cancel").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+                                    if let Some(f) = &mut s.forum {
+                                        f.making = None;
+                                    }
+                                }).build(k).key("new-cancel")),
+                        ),
+                );
+            }
         }
     }
     match &f.boards {
         None => page = page.child(muted("reading the boards\u{2026}".into())),
-        Some(b) if b.is_empty() => page = page.child(muted("There are no boards on this ship.".into())),
+        Some(b) if b.is_empty() => page = page.child(muted(if anon { "Enter a board address above (urb://~ship/forum/board or urb://~ship/furum/board) to read anonymously.".into() } else { "There are no boards on this ship.".into() }).wrap()),
         Some(boards) => {
             for b in boards {
                 let name = b.board.clone();
@@ -11309,18 +11547,59 @@ fn browse_anon(s: &mut App) {
     #[cfg(unix)]
     id_refresh(s);
     go_browser(s);
-    s.note = "Reading anonymously. You can browse published pages. Saving and hosting need a node.".into();
+    s.note = "Reading anonymously. You can browse published pages, folders, and forums, and post where allowed. Hosting needs a node.".into();
 }
 
-/// Reads an address with no ship, through the urb engine. A forum's boards are not read this way yet.
+#[cfg(unix)]
+fn pub_comment_to_api(c: engine::PubComment) -> Comment {
+    Comment {
+        id: c.id,
+        page: String::new(),
+        author: c.author,
+        body: c.body,
+        when: if c.when > 0 { api::da_of_ms(c.when) } else { String::new() },
+    }
+}
+
+#[cfg(unix)]
+fn comet_mode_str(m: engine::CometMode) -> &'static str {
+    match m {
+        engine::CometMode::Open => "open",
+        engine::CometMode::Held => "held",
+        engine::CometMode::Off => "off",
+    }
+}
+
+/// Minutes until a comet cap frees, or `None` when not capped.
+fn comet_full_mins(until: Option<u64>) -> Option<u64> {
+    let now = api::since_epoch().map_or(0, |d| d.as_secs());
+    until.filter(|&u| u > now).map(|u| (u - now).div_ceil(60).max(1))
+}
+
+/// The ship or anonymous comet currently acting in this session.
+fn current_actor(s: &App) -> String {
+    if let Some(c) = &s.conn {
+        return c.ship().to_owned();
+    }
+    #[cfg(unix)]
+    if s.anon {
+        if let Some(our) = s.global.engine.as_ref().and_then(engine::Engine::our) {
+            return our;
+        }
+    }
+    String::new()
+}
+
+/// Reads an address with no ship, through the urb engine: pages, folders,
+/// public comments, and lattice forum / furum boards.
 #[cfg(unix)]
 fn urb_go_anon(s: &mut App, to: Option<String>) {
     let Some(url) = to.or_else(|| api::urb_address(&s.urb.text)) else {
         s.note = "an address is urb://~ship/path".into();
         return;
     };
-    if api::urb_is_forum(&url) {
-        s.note = "A forum needs a node to read for now.".into();
+    if let Some(place) = engine::board_place(&url) {
+        forum_open_anon(s, place);
         return;
     }
     let Some(e) = s.global.engine.clone() else {
@@ -11335,8 +11614,57 @@ fn urb_go_anon(s: &mut App, to: Option<String>) {
     spawn(move || {
         let read = || {
             let (ship, path) = engine::place(&url).ok_or_else(|| "an address is urb://~ship/path".to_owned())?;
-            let p = e.read(&url, engine::BUDGET).map_err(|e| e.words())?;
-            Ok((url.clone(), api::Urb::Page { ship, path, kind: engine::kind_of(&p.mark).to_owned(), body: p.body, comments: Vec::new() }))
+            match e.read(&url, engine::BUDGET) {
+                Ok(p) => {
+                    let key = p.key.clone();
+                    let (opened, comments) = std::thread::scope(|sc| {
+                        let th_handle = sc.spawn(|| {
+                            let listed = e.threads(&ship, engine::PEEK_BUDGET).is_some_and(|l| l.iter().any(|n| engine::same_page(n, &key)));
+                            if listed { e.thread(&ship, &key, engine::PEEK_BUDGET).unwrap_or_default() } else { Vec::new() }
+                        });
+                        let opened = e.comments_open(&ship, engine::PEEK_BUDGET);
+                        (opened, th_handle.join().unwrap_or_default())
+                    });
+                    let (comments_open, comets) = match opened {
+                        Some(o) => {
+                            let is_open = o.names.iter().any(|n| engine::same_page(n, &key));
+                            let c = o.comets.iter().flatten().find(|(n, _)| engine::same_page(n, &key)).map_or_else(engine::Comets::default, |(_, c)| *c);
+                            (Some(is_open), c)
+                        }
+                        None => (None, engine::Comets::default()),
+                    };
+                    let meta = AnonPageMeta {
+                        key,
+                        comments_open,
+                        comet_mode: comet_mode_str(comets.mode).to_owned(),
+                        comet_full_until: comets.full_until,
+                    };
+                    let comments = comments.into_iter().map(pub_comment_to_api).collect();
+                    Ok((url.clone(), api::Urb::Page { ship, path, kind: engine::kind_of(&p.mark).to_owned(), body: p.body, comments }, Some(meta)))
+                }
+                Err(engine::ReadError::NotPublished(msg)) => {
+                    // Check if the address names a published or granted folder.
+                    if let Ok(u) = urb_engine::url::de_urb(&url) {
+                        if matches!(u.mount, urb_engine::url::Mount::N) && u.rel.last().is_none_or(|l| l != "index") {
+                            let pages = e.pages(&u.ship).unwrap_or_default();
+                            let titles = e.titles(&u.ship, engine::PEEK_BUDGET).unwrap_or_default();
+                            let mut entries = engine::dir_entries(&u.ship, &u.rel, &pages, &titles);
+                            if entries.is_empty() && !u.rel.is_empty() {
+                                let folder_key = format!("/{}", u.rel.join("/"));
+                                if let engine::DirIndex::Got(dt) = e.dir_index(&u.ship, &folder_key, engine::PEEK_BUDGET) {
+                                    entries = engine::dir_entries(&u.ship, &u.rel, &[], &dt);
+                                }
+                            }
+                            if !entries.is_empty() {
+                                let folder_path = if u.rel.is_empty() { format!("{}/", u.ship) } else { format!("{}/{}/", u.ship, u.rel.join("/")) };
+                                return Ok((url.clone(), api::Urb::Folder { path: folder_path, entries }, None));
+                            }
+                        }
+                    }
+                    Err(msg)
+                }
+                Err(err) => Err(err.words()),
+            }
         };
         let r = read();
         got.lock().unwrap_or_else(|e| e.into_inner()).push((seq, r));
@@ -11711,6 +12039,10 @@ fn gone_since(s: &mut App) -> bool {
 
 /// What was read at an address is shown: a page as another ship's page, a folder as a list under the address.
 fn urb_got(s: &mut App, url: String, got: api::Urb) {
+    urb_got_with(s, url, got, None);
+}
+
+fn urb_got_with(s: &mut App, url: String, got: api::Urb, meta: Option<AnonPageMeta>) {
     // an answer that comes late must not take the page from under an edit begun meanwhile
     if s.editing {
         s.note = format!("{url} was read, but an edit is open: go to it again when the edit is done");
@@ -11740,8 +12072,20 @@ fn urb_got(s: &mut App, url: String, got: api::Urb) {
             }
             // the thread is kept for the pane, and what was sent to it from here stays said until the thread shows it
             let sent = s.thread.take().filter(|t| t.url == url).and_then(|t| t.sent);
-            let mut thread = Thread { url: url.clone(), ship: ship.clone(), page: path.clone(), list: comments, all: false, sent };
-            settle_sent(&mut thread, &s.conn.as_ref().map(|c| c.ship().to_owned()).unwrap_or_default());
+            let m = meta.unwrap_or_default();
+            let mut thread = Thread {
+                url: url.clone(),
+                ship: ship.clone(),
+                page: path.clone(),
+                key: m.key,
+                comments_open: m.comments_open,
+                comet_mode: m.comet_mode,
+                comet_full_until: m.comet_full_until,
+                list: comments,
+                all: false,
+                sent,
+            };
+            settle_sent(&mut thread, &current_actor(s));
             s.thread = Some(thread);
             let note = std::mem::take(&mut s.note);
             show_remote(s, Shared { host: ship, path, mode: "published".into(), when: String::new() }, Page { name, body, kind, rev: 0 });
@@ -11861,20 +12205,59 @@ fn thread_of(c: &Conn, url: &str) -> Result<Vec<Comment>, String> {
     }
 }
 
-/// Sends the comment typed in the pane to the page of another ship in front, as this ship.
+/// Sends the comment typed in the pane to the page of another ship in front,
+/// as this ship or as the anonymous comet identity.
 fn post_remote_comment(s: &mut App) {
-    let (Some(c), Some(t)) = (s.conn.clone(), thread_here(s).cloned()) else { return };
+    let Some(t) = thread_here(s).cloned() else { return };
     let body = s.comment.text.trim().to_owned();
     if body.is_empty() || s.comment_sending {
         return;
     }
-    // the text stays in the field until the ship has answered
-    s.comment_sending = true;
-    s.note = format!("sending to {}\u{2026}", t.ship);
-    s.comment_req.request((c, t, body), |(c, t, body)| {
-        let told = c.comment_remote(&t.ship, &t.page, &body)?;
-        Ok(Op::SentRemote(t.url, body, told))
-    });
+    if let Some(c) = s.conn.clone() {
+        // the text stays in the field until the ship has answered
+        s.comment_sending = true;
+        s.note = format!("sending to {}\u{2026}", t.ship);
+        s.comment_req.request((c, t, body), |(c, t, body)| {
+            let told = c.comment_remote(&t.ship, &t.page, &body)?;
+            Ok(Op::SentRemote(t.url, body, told))
+        });
+        return;
+    }
+    #[cfg(unix)]
+    if s.anon {
+        let Some(e) = s.global.engine.clone() else { return };
+        if body.len() > engine::COMMENT_MAX {
+            s.note = format!("a comment may be {} bytes at most", engine::COMMENT_MAX);
+            return;
+        }
+        s.comment_sending = true;
+        s.note = format!("sending to {}\u{2026}", t.ship);
+        let key = if t.key.is_empty() { format!("/{}", t.page.trim_start_matches('/')) } else { t.key.clone() };
+        s.comment_req.request((e, t, key, body), |(e, t, key, body)| {
+            if let Some(o) = e.comments_open(&t.ship, engine::PEEK_BUDGET) {
+                if !o.names.iter().any(|n| engine::same_page(n, &key)) {
+                    return Err("Comments are off for this page.".into());
+                }
+                if let Some((_, c)) = o.comets.iter().flatten().find(|(n, _)| engine::same_page(n, &key)) {
+                    if c.mode == engine::CometMode::Off {
+                        return Err("This page does not take anonymous comments.".into());
+                    }
+                    if let Some(mins) = engine::full_mins(c) {
+                        return Err(format!("Anonymous comments on this page are full for about {mins} minute{}.", if mins == 1 { "" } else { "s" }));
+                    }
+                }
+            }
+            e.comment(&t.ship, &key, &body, engine::COMMENT_BUDGET).map_err(|e| e.words())?;
+            if let Some(o) = e.comments_open(&t.ship, engine::PEEK_BUDGET) {
+                if let Some((_, c)) = o.comets.iter().flatten().find(|(n, _)| engine::same_page(n, &key)) {
+                    if let Some(mins) = engine::full_mins(c) {
+                        return Err(format!("Anonymous comments on this page are full for about {mins} minute{}.", if mins == 1 { "" } else { "s" }));
+                    }
+                }
+            }
+            Ok(Op::SentRemote(t.url, body, true))
+        });
+    }
 }
 
 /// Posts the comment typed in the pane on the open page.
@@ -12217,16 +12600,53 @@ fn thread_view(t: &Thread, s: &App, k: &Kit) -> El {
                 .child(text(body.clone()).font(k.ty.ui).color(c.text_muted).wrap()),
         );
     }
-    let url = t.url.clone();
+    let (url, ship, key) = (t.url.clone(), t.ship.clone(), if t.key.is_empty() { format!("/{}", t.page.trim_start_matches('/')) } else { t.key.clone() });
     let again = Button::new("Refresh").help("Read the thread again").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(s.thread_req.is_pending()).on_press(move |s: &mut App| {
         if let Some(c) = s.conn.clone() {
             s.thread_req.request((c, url.clone()), |(c, url)| thread_of(&c, &url).map(|l| (url, l)));
+        } else {
+            #[cfg(unix)]
+            if s.anon {
+                if let Some(e) = s.global.engine.clone() {
+                    s.thread_req.request((e, url.clone(), ship.clone(), key.clone()), |(e, url, ship, key)| {
+                        let list = e.thread(&ship, &key, engine::PEEK_BUDGET).unwrap_or_default().into_iter().map(pub_comment_to_api).collect();
+                        Ok((url, list))
+                    });
+                }
+            }
         }
     }).build(k).key("thread-again");
-    let write = col().key("comment-write").w_full().gap(6.0)
-        .child(TextArea::new(&s.comment).label(format!("Your comment to {}", t.ship)).placeholder("Say something").rows(3).on_edit(|s: &mut App| &mut s.comment).build(k).w_full().key("comment-field"))
-        .child(text(format!("Sent as your ship. {} decides whether it shows: comments may be off there, or held.", t.ship)).font(k.ty.small).color(c.text_faint).wrap())
-        .child(row().child(Button::new(if s.comment_sending { "Sending\u{2026}".to_owned() } else { format!("Send to {}", t.ship) }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(s.comment_sending).on_press(post_remote_comment).build(k).key("comment-send")));
+    let blocked_msg: Option<String> = if s.anon {
+        if t.comments_open == Some(false) {
+            Some("Comments are off for this page.".into())
+        } else if t.comet_mode == "off" {
+            Some("This page does not take anonymous comments.".into())
+        } else if let Some(mins) = comet_full_mins(t.comet_full_until) {
+            Some(format!("Anonymous comments on this page are full for about {mins} minute{}.", if mins == 1 { "" } else { "s" }))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let write = match blocked_msg {
+        Some(why) => col().key("comment-write").w_full().child(text(why).font(k.ty.small).color(c.text_muted).wrap()),
+        None => {
+            let note = if s.anon {
+                if t.comet_mode == "held" {
+                    format!("Sent as your anonymous identity. Comments from anonymous readers are held for review by {}.", t.ship)
+                } else {
+                    format!("Sent as your anonymous identity. {} decides whether it shows: comments may be off or held.", t.ship)
+                }
+            } else {
+                format!("Sent as your ship. {} decides whether it shows: comments may be off there, or held.", t.ship)
+            };
+            col().key("comment-write").w_full().gap(6.0)
+                .child(TextArea::new(&s.comment).label(format!("Your comment to {}", t.ship)).placeholder("Say something").rows(3).on_edit(|s: &mut App| &mut s.comment).build(k).w_full().key("comment-field"))
+                .child(text(note).font(k.ty.small).color(c.text_faint).wrap())
+                .child(row().child(Button::new(if s.comment_sending { "Sending\u{2026}".to_owned() } else { format!("Send to {}", t.ship) }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(s.comment_sending).on_press(post_remote_comment).build(k).key("comment-send")))
+        }
+    };
     col()
         .key("comments")
         .w_full()
@@ -14469,6 +14889,15 @@ enum CommentUndo {
     Comets(String, String),
 }
 
+/// Comment policy metadata read alongside a page through the anonymous urb engine.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct AnonPageMeta {
+    key: String,
+    comments_open: Option<bool>,
+    comet_mode: String,
+    comet_full_until: Option<u64>,
+}
+
 /// Another ship's page's public thread, and what this ship last sent to it.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Thread {
@@ -14476,6 +14905,14 @@ struct Thread {
     url: String,
     ship: String,
     page: String,
+    /// Publisher's exact vault key (for anonymous comet comment pokes).
+    key: String,
+    /// Anonymous mode: whether `/pub/comments` lists this page.
+    comments_open: Option<bool>,
+    /// Anonymous mode: comet policy from `/pub/comets` (`open`, `held`, `off`).
+    comet_mode: String,
+    /// Anonymous mode: unix second until which comet comments are at cap.
+    comet_full_until: Option<u64>,
     list: Vec<Comment>,
     /// The older ones are shown too: fifty are until asked.
     all: bool,
@@ -14584,8 +15021,7 @@ const THREAD_SHOWN: usize = 50;
 
 /// The thread that belongs to the page of another ship in front, when it was read by address.
 fn thread_here(s: &App) -> Option<&Thread> {
-    // with no ship there is no thread read and nobody to send as
-    let sh = s.remote.as_ref().filter(|_| !s.anon)?;
+    let sh = s.remote.as_ref()?;
     s.thread.as_ref().filter(|t| t.ship == sh.host && t.page == sh.path)
 }
 
@@ -15127,7 +15563,7 @@ fn page_body(s: &App, k: &Kit) -> El {
             Some(bk) => (bk, bk.c.bg_base),
             None => (k, rune::Color::TRANSPARENT),
         };
-        return col().key("forum-pane").w_full().h_full().min_h(0.0).fill(ground).child(col().w_full().items_center().child(forum_view(f, s.conn.as_ref().map_or("", |c| c.ship()), &Pics { had: &s.pics, failed: &s.pics_failed }, k))).scroll(ScrollSpec { stick_bottom: false });
+        return col().key("forum-pane").w_full().h_full().min_h(0.0).fill(ground).child(col().w_full().items_center().child(forum_view(f, s.conn.as_ref().map_or("", |c| c.ship()), s.anon, &Pics { had: &s.pics, failed: &s.pics_failed }, k))).scroll(ScrollSpec { stick_bottom: false });
     }
     if s.shared_open && !s.editing {
         return shared_view(s, k);

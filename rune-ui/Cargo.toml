@@ -49,8 +49,8 @@ base64 = "0.22"
 # pins. Unix only: the desktop has never built libmesa for Windows. mesa-sys compiles libmesa's C, which
 # needs clang 18 or newer and MESA_SYS_DEPS (`.cargo/config.toml`, filled by `scripts/mesa-deps.sh`).
 [target.'cfg(unix)'.dependencies]
-urb-engine = { package = "urb", git = "https://github.com/nisfeb/urb-fetch.git", rev = "3f584bf3567dd8c8e80365197994b6330cb95338", features = ["native"] }
-urb-gateway = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "3f584bf3567dd8c8e80365197994b6330cb95338" }
+urb-engine = { package = "urb", git = "https://github.com/nisfeb/urb-fetch.git", rev = "f7a5b1ca5f79e1b84bc68110e3a959eaa9088633", features = ["native"] }
+urb-gateway = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "f7a5b1ca5f79e1b84bc68110e3a959eaa9088633" }
 # Rune hashes pictures with the blake3 crate, which by default compiles BLAKE3's own C and assembly, and
 # libmesa's urcrypt carries the same files: two of every symbol, and the link fails. `pure` is the crate
 # without them, in Rust alone. Nothing here calls blake3 itself
