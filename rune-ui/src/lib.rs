@@ -19404,6 +19404,10 @@ fn skill_toggle_tag(s: &mut App, name: String, tag: String, on: bool) {
         s.note = "saving skill; please wait".into();
         return;
     }
+    if skill_dirty(s) {
+        s.note = "save or cancel your skill edits first".into();
+        return;
+    }
     let tag = tag.trim().to_ascii_lowercase();
     if tag.is_empty() {
         return;
@@ -19434,6 +19438,10 @@ fn skill_toggle_tag(s: &mut App, name: String, tag: String, on: bool) {
 fn skill_toggle_sensitive(s: &mut App, name: String) {
     if skill_saving(s) {
         s.note = "saving skill; please wait".into();
+        return;
+    }
+    if skill_dirty(s) {
+        s.note = "save or cancel your skill edits first".into();
         return;
     }
     let Some((body, updated, was)) = s
@@ -19968,6 +19976,7 @@ fn skills_view(s: &App, sk: &SkillsState, k: &Kit) -> El {
                 Button::new(if is_core { "Core: on" } else { "Core" })
                     .control_size(ControlSize::Small)
                     .variant(if is_core { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted })
+                    .disabled(cur.edit || cur.saving)
                     .on_press(move |s: &mut App| skill_toggle_tag(s, core_name.clone(), "core".into(), !is_core))
                     .build(k)
                     .key("skill-core"),
@@ -19976,6 +19985,7 @@ fn skills_view(s: &App, sk: &SkillsState, k: &Kit) -> El {
                 Button::new(if is_sens { "Sensitive: on" } else { "Sensitive" })
                     .control_size(ControlSize::Small)
                     .variant(if is_sens { ButtonVariant::Danger } else { ButtonVariant::GhostMuted })
+                    .disabled(cur.edit || cur.saving)
                     .on_press(move |s: &mut App| skill_toggle_sensitive(s, sens_name.clone()))
                     .build(k)
                     .key("skill-sensitive"),
@@ -24101,7 +24111,7 @@ mod tests {
         // Seed an attached file so we can verify skill_create_file does not overwrite existing files.
         s.skills.as_mut().unwrap().cur.as_mut().unwrap().detail.files.push(skills::SkillFile { path: "notes.md".into(), bytes: 12 });
 
-        // Mark dirty and verify switching skills, viewing revisions, or navigating away is blocked.
+        // Mark dirty and verify switching skills, viewing revisions, toggling tags/sensitive, or navigating away is blocked.
         let cur = s.skills.as_mut().unwrap().cur.as_mut().unwrap();
         cur.edit = true;
         cur.editor = TextEdit::new("changed");
@@ -24110,6 +24120,12 @@ mod tests {
         assert_eq!(s.skills.as_ref().unwrap().cur.as_ref().unwrap().detail.name, "sample-skill");
         assert!(s.note.contains("save or cancel"));
         skill_view_rev(&mut s, "sample-skill".into(), 1);
+        assert!(s.note.contains("save or cancel"));
+        skill_toggle_tag(&mut s, "sample-skill".into(), "ops".into(), true);
+        assert!(!s.skills.as_ref().unwrap().cur.as_ref().unwrap().detail.tags.iter().any(|t| t == "ops"));
+        assert!(s.note.contains("save or cancel"));
+        skill_toggle_sensitive(&mut s, "sample-skill".into());
+        assert!(!s.skills.as_ref().unwrap().cur.as_ref().unwrap().detail.sensitive);
         assert!(s.note.contains("save or cancel"));
         open_page(&mut s, "welcome");
         assert!(s.skills.is_some(), "dirty skill must block navigating away");
@@ -24131,17 +24147,21 @@ mod tests {
     #[test]
     fn ship_page_errors_accept_wanted_page_and_tree_job_handles_timeout_and_drop() {
         let mut s = sample("welcome");
-        // Page not yet in s.open (first open, s.want matches): page-errors answer is kept.
+        let mut tx = Tx::default();
+        // Page not yet in s.open (first open, s.want matches): poll keeps the /page-errors answer.
         s.open = Some(Page { name: "other".into(), kind: "md".into(), body: String::new(), rev: 1 });
         s.want = Some("app".into());
-        let matches = s.open.as_ref().is_some_and(|p| p.name == "app") || s.want.as_deref() == Some("app");
-        assert!(matches);
+        s.page_err_req.request((), |()| ("app".into(), "ford: syntax error".into()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while s.page_err.is_none() && std::time::Instant::now() < deadline {
+            poll(&mut s, 0.0, &mut tx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(s.page_err, Some(("app".into(), "ford: syntax error".into())));
         s.open = Some(Page { name: "app".into(), kind: "hoon".into(), body: "bad".into(), rev: 1 });
-        s.page_err = Some(("app".into(), "ford: syntax error".into()));
         assert_eq!(page_issue(&s).as_deref(), Some("Ship error: ford: syntax error"));
 
         // Tree job active: clears offline, sets job_wait, and fires dropped warning once per timestamp.
-        let mut tx = Tx::default();
         s.offline = Some("just now".into());
         s.job_from_timeout = true;
         handle_tree_job(
