@@ -18,9 +18,15 @@ pub struct Heading {
 }
 
 /// The headings of a page: Markdown's `#` to `######` with a space after,
-/// gemtext's `#` to `###` with one, and nothing inside a fence. Any other
-/// kind has none.
+/// gemtext's `#` to `###` with one, flat ODT (`fodt`) `<text:h>` headings,
+/// and nothing inside a fence. Any other kind has none.
 pub fn outline(body: &str, kind: &str) -> Vec<Heading> {
+    if kind == "fodt" {
+        return crate::writer::fodt_outline(body)
+            .into_iter()
+            .map(|(level, text, idx)| Heading { level, text, line: idx + 1, at: idx, words: 0..0 })
+            .collect();
+    }
     let gmi = kind == "gmi";
     if kind != "md" && !gmi {
         return Vec::new();

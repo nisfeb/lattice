@@ -51,6 +51,7 @@ mod topbar;
 mod upload;
 mod vault;
 mod view3d;
+mod writer;
 #[cfg(not(target_arch = "wasm32"))]
 mod htmlview;
 #[cfg(not(target_arch = "wasm32"))]
@@ -344,6 +345,19 @@ struct SheetView {
     stale: std::collections::BTreeSet<(usize, usize, usize)>,
 }
 
+/// A Writer document (`fodt`) on screen: parsed ODF model, active block editor, and undo/redo history.
+struct WriterView {
+    name: String,
+    rev: u64,
+    doc: writer::Doc,
+    cursor: Option<writer::BlockPath>,
+    entry: TextEdit,
+    entry_was: String,
+    undo: Vec<writer::Doc>,
+    redo: Vec<writer::Doc>,
+    draft_dismissed: bool,
+}
+
 /// A question the window is asking: a name for a new page, a new name for
 /// the open one, or whether to delete it.
 enum Prompt {
@@ -357,6 +371,8 @@ enum Prompt {
     #[cfg(unix)]
     IdUse(Box<cometid::Identity>, Option<String>),
     New(TextEdit),
+    NewWriter(TextEdit),
+    WriterLink(TextEdit),
     Rename(String, TextEdit),
     Delete(String),
     /// The address for a link on the editor's selection.
@@ -844,6 +860,7 @@ struct ShipSession {
     notes_req: Latest<Result<ForumGot, String>>,
     /// The open page as a spreadsheet, when it is one.
     sheet: Option<SheetView>,
+    writer: Option<WriterView>,
     /// The open page as a map, when it is one.
     map: Option<MapView>,
     /// The pages visited, oldest first, and where in them the window is.
@@ -1215,6 +1232,7 @@ impl Default for ShipSession {
             notes_req: Latest::default(),
 
             sheet: None,
+            writer: None,
             map: None,
             trail: Vec::new(),
             trail_at: 0,
@@ -2166,6 +2184,38 @@ fn confirm(s: &mut App) {
                 s.open = None;
                 open_page(s, &name);
             }
+        }
+        return;
+    }
+    if let Prompt::WriterLink(t) = &p {
+        let url = t.text.trim().to_owned();
+        let href = (!url.is_empty()).then_some(url);
+        let range = s.writer.as_ref().map(|v| v.entry.range()).unwrap_or((0, 0));
+        writer_apply(s, move |doc, path| doc.set_link(path, range.0, range.1, href.clone()));
+        return;
+    }
+    if let Prompt::NewWriter(t) = &p {
+        let Some(rn) = api::real_name(&t.text) else {
+            s.note = "that name has nothing a path can keep".into();
+            s.prompt = Some(p);
+            return;
+        };
+        if s.names.contains(&rn.name) {
+            s.note = "there is a page of that name".into();
+            s.prompt = Some(p);
+            return;
+        }
+        let page = Page { name: rn.name.clone(), body: writer::BLANK_FODT.to_owned(), kind: "fodt".into(), rev: 1 };
+        let say = format!("created {}", page.name);
+        match s.conn.clone() {
+            Some(c) => s.op_req.request((c, page, rn), |(c, page, rn)| {
+                c.save(&page, None)?;
+                if !rn.dnames.is_empty() || !rn.dname.is_empty() {
+                    let _ = c.rename_as(&rn.name, &rn);
+                }
+                Ok(Op::Wrote(page.name, None, say))
+            }),
+            None => applied(s, Op::Wrote(page.name.clone(), Some(page), say)),
         }
         return;
     }
@@ -3228,6 +3278,7 @@ fn sync_beside(s: &mut App) {
                 Beside::Sheet(sheets, at, table)
             }),
             "geojson" => map::parse(&p.body).map(Beside::Map),
+            "fodt" => Some(Beside::Read(writer::to_markdown(&p.body))),
             "html" => Some(Beside::Read(html::to_markdown(&p.body))),
             "gmi" => Some(Beside::Read(html::gemtext(&p.body))),
             _ => None,
@@ -3236,11 +3287,921 @@ fn sync_beside(s: &mut App) {
     }
 }
 
+/// Keeps `s.writer` in step with the open Writer (`fodt`) page.
+fn sync_writer(s: &mut App) {
+    let sess = &mut s.session;
+    let Some(p) = sess.open.as_ref().filter(|p| p.kind == "fodt") else {
+        sess.writer = None;
+        return;
+    };
+    if sess.writer.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
+        return;
+    }
+    let old = sess.writer.take().filter(|v| v.name == p.name);
+    let Ok(doc) = writer::parse_fodt(&p.body) else {
+        sess.writer = None;
+        return;
+    };
+    let (cursor, undo, redo, draft_dismissed) = match old {
+        Some(v) => (v.cursor.filter(|path| doc.block_at(path).is_some()), v.undo, v.redo, v.draft_dismissed),
+        None => (None, Vec::new(), Vec::new(), false),
+    };
+    let entry_was = cursor
+        .as_ref()
+        .and_then(|path| doc.block_at(path))
+        .map(|b| match b {
+            writer::Block::Paragraph { inlines, .. } | writer::Block::Heading { inlines, .. } => writer::inlines_text(inlines),
+            _ => String::new(),
+        })
+        .unwrap_or_default();
+    let entry = TextEdit::new(entry_was.as_str());
+    sess.writer = Some(WriterView { name: p.name.clone(), rev: p.rev, doc, cursor, entry, entry_was, undo, redo, draft_dismissed });
+}
+
+fn writer_editable(s: &App) -> bool {
+    page_changes(s) && s.writer.as_ref().is_some_and(|v| !v.doc.tracking)
+}
+
+/// Picks a text block in the open Writer document to edit in the bar/editor.
+fn writer_pick(s: &mut App, path: writer::BlockPath) {
+    if !writer_editable(s) {
+        return;
+    }
+    // Commit any pending text edit on the previously selected block first.
+    if s.writer.as_ref().is_some_and(|v| v.cursor.as_ref() != Some(&path) && v.entry.text != v.entry_was) {
+        writer_commit(s);
+    }
+    let Some(v) = &mut s.session.writer else { return };
+    let txt = match v.doc.block_at(&path) {
+        Some(writer::Block::Paragraph { inlines, .. } | writer::Block::Heading { inlines, .. }) => writer::inlines_text(inlines),
+        _ => return,
+    };
+    v.cursor = Some(path);
+    v.entry_was = txt.clone();
+    v.entry = TextEdit::new(txt.as_str());
+    v.entry.focused = true;
+}
+
+/// Applies a mutation to the active Writer document, saves via minimal-diff
+/// `writer::serialize_fodt`, and pushes the previous snapshot onto the undo stack.
+fn writer_mutate(s: &mut App, f: impl FnOnce(&mut writer::Doc, Option<&writer::BlockPath>) -> (bool, Option<writer::BlockPath>)) {
+    let Some(p) = s.open.clone().filter(|p| p.kind == "fodt") else { return };
+    if !writer_editable(s) {
+        s.note = "this document is read-only here".into();
+        return;
+    }
+    let Some(v) = &mut s.session.writer else { return };
+    if v.name != p.name {
+        return;
+    }
+    let mut next = v.doc.clone();
+    let cur = v.cursor.clone();
+    let (changed, next_cursor) = f(&mut next, cur.as_ref());
+    if !changed {
+        return;
+    }
+    let body = match writer::serialize_fodt(&next) {
+        Ok(xml) => xml,
+        Err(why) => {
+            s.note = why;
+            return;
+        }
+    };
+    let prev = std::mem::replace(&mut v.doc, next);
+    v.undo.push(prev);
+    if v.undo.len() > 64 {
+        v.undo.remove(0);
+    }
+    v.redo.clear();
+    if let Some(nc) = next_cursor {
+        v.cursor = Some(nc);
+    }
+    if let Some(path) = v.cursor.clone() {
+        if let Some(writer::Block::Paragraph { inlines, .. } | writer::Block::Heading { inlines, .. }) = v.doc.block_at(&path) {
+            let txt = writer::inlines_text(inlines);
+            v.entry_was = txt.clone();
+            v.entry = TextEdit::new(txt.as_str());
+            v.entry.focused = true;
+        }
+    }
+    if body != p.body {
+        save_body(s, p, body);
+    }
+}
+
+fn writer_apply(s: &mut App, f: impl FnOnce(&mut writer::Doc, &writer::BlockPath) -> bool) {
+    writer_mutate(s, |doc, cur| {
+        let Some(path) = cur else { return (false, None) };
+        (f(doc, path), None)
+    });
+}
+
+fn writer_commit(s: &mut App) {
+    let Some((path, typed, was)) = s.writer.as_ref().and_then(|v| Some((v.cursor.clone()?, v.entry.text.clone(), v.entry_was.clone()))) else { return };
+    if typed == was {
+        return;
+    }
+    writer_mutate(s, |doc, _| (doc.set_block_text(&path, &typed), Some(path.clone())));
+}
+
+fn writer_undo(s: &mut App) {
+    let Some(p) = s.open.clone().filter(|p| p.kind == "fodt") else { return };
+    if !writer_editable(s) {
+        return;
+    }
+    let Some(v) = &mut s.session.writer else { return };
+    let Some(prev) = v.undo.pop() else { return };
+    let body = match writer::serialize_fodt(&prev) {
+        Ok(xml) => xml,
+        Err(why) => {
+            v.undo.push(prev);
+            s.note = why;
+            return;
+        }
+    };
+    let cur = std::mem::replace(&mut v.doc, prev);
+    v.redo.push(cur);
+    if let Some(path) = v.cursor.clone() {
+        if let Some(writer::Block::Paragraph { inlines, .. } | writer::Block::Heading { inlines, .. }) = v.doc.block_at(&path) {
+            let txt = writer::inlines_text(inlines);
+            v.entry_was = txt.clone();
+            v.entry = TextEdit::new(txt.as_str());
+        } else {
+            v.cursor = None;
+        }
+    }
+    if body != p.body {
+        save_body(s, p, body);
+    }
+}
+
+fn writer_redo(s: &mut App) {
+    let Some(p) = s.open.clone().filter(|p| p.kind == "fodt") else { return };
+    if !writer_editable(s) {
+        return;
+    }
+    let Some(v) = &mut s.session.writer else { return };
+    let Some(next) = v.redo.pop() else { return };
+    let body = match writer::serialize_fodt(&next) {
+        Ok(xml) => xml,
+        Err(why) => {
+            v.redo.push(next);
+            s.note = why;
+            return;
+        }
+    };
+    let cur = std::mem::replace(&mut v.doc, next);
+    v.undo.push(cur);
+    if let Some(path) = v.cursor.clone() {
+        if let Some(writer::Block::Paragraph { inlines, .. } | writer::Block::Heading { inlines, .. }) = v.doc.block_at(&path) {
+            let txt = writer::inlines_text(inlines);
+            v.entry_was = txt.clone();
+            v.entry = TextEdit::new(txt.as_str());
+        } else {
+            v.cursor = None;
+        }
+    }
+    if body != p.body {
+        save_body(s, p, body);
+    }
+}
+
+/// Renders styled inline runs of a Writer block into a Rune rich-text element,
+/// plus clickable link chips for any safe `<text:a>` links inside the block.
+fn writer_inlines_el(doc: &writer::Doc, inlines: &[writer::Inline], base_font: rune::TextStyle, k: &Kit, key: String) -> El {
+    let c = &k.c;
+    let mut full = String::new();
+    let mut spans: Vec<Span> = Vec::new();
+    let mut strikes: Vec<(usize, usize)> = Vec::new();
+    let mut links: Vec<(String, String)> = Vec::new();
+    for inl in inlines {
+        match inl {
+            writer::Inline::Text { text, marks } => {
+                let start = full.len();
+                full.push_str(text);
+                let end = full.len();
+                if end > start {
+                    let mut sp = Span::new(start, end);
+                    let mut touched = false;
+                    if marks.strong.is_some() {
+                        sp = sp.weight(700.0);
+                        touched = true;
+                    }
+                    if marks.em.is_some() {
+                        sp = sp.italic();
+                        touched = true;
+                    }
+                    if marks.underline.is_some() {
+                        sp = sp.underline(c.text_base);
+                        touched = true;
+                    }
+                    if let Some(lm) = &marks.link {
+                        if writer::safe_href(&lm.href) {
+                            sp = sp.color(c.text_accent).underline(c.text_accent);
+                            touched = true;
+                            if !links.iter().any(|(_, h)| h == &lm.href) {
+                                links.push((text.trim().to_owned(), lm.href.clone()));
+                            }
+                        }
+                    } else if let Some(ss) = &marks.span_style {
+                        if let Some(hex) = ss.rest.iter().find(|(k, _)| k == "fo:color").and_then(|(_, v)| rune::color::hex(v)) {
+                            sp = sp.color(hex);
+                            touched = true;
+                        }
+                        if let Some(bg) = ss.rest.iter().find(|(k, _)| k == "fo:background-color").and_then(|(_, v)| rune::color::hex(v)) {
+                            sp = sp.bg(bg, 1.0);
+                            touched = true;
+                        }
+                    } else if let Some(cs) = &marks.char_style {
+                        let resolved = doc.styles.resolve("text", Some(cs), "style:text-properties");
+                        if resolved.get("fo:font-weight").is_some_and(|w| matches!(w.as_str(), "bold" | "600" | "700" | "800" | "900")) {
+                            sp = sp.weight(700.0);
+                            touched = true;
+                        }
+                        if resolved.get("fo:font-style").is_some_and(|s| matches!(s.as_str(), "italic" | "oblique")) {
+                            sp = sp.italic();
+                            touched = true;
+                        }
+                    }
+                    if touched {
+                        spans.push(sp);
+                    }
+                    if marks.strike.is_some() {
+                        strikes.push((start, end));
+                    }
+                }
+            }
+            writer::Inline::HardBreak { .. } => full.push('\n'),
+            writer::Inline::OpaqueInline { label, .. } if !label.is_empty() => {
+                let start = full.len();
+                full.push_str(label);
+                let end = full.len();
+                spans.push(Span::new(start, end).color(c.text_muted).bg(c.layer_02, 2.0));
+            }
+            _ => {}
+        }
+    }
+    let mut el = if full.is_empty() {
+        text(" ").font(base_font).color(c.text_faint)
+    } else {
+        let mut r = rune::rich(full, spans).font(base_font).color(c.text_base).wrap().selectable(true);
+        for (a, b) in strikes {
+            r = r.strike(a, b, None);
+        }
+        r
+    };
+    if !links.is_empty() {
+        let mut link_row = row().gap(6.0).flex_wrap();
+        for (li, (label, href)) in links.into_iter().enumerate() {
+            let show = if label.is_empty() { href.clone() } else { format!("\u{2197} {label}") };
+            let to = href.clone();
+            link_row = link_row.child(
+                Button::new(show)
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .help(href)
+                    .on_press_tx(move |s: &mut App, tx| follow(s, &to, tx))
+                    .build(k)
+                    .key(format!("{key}-lnk-{li}")),
+            );
+        }
+        el = col().w_full().gap(2.0).child(el).child(link_row);
+    }
+    el.key(key)
+}
+
+fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(usize) -> writer::BlockPath, editable: bool, outline_at: Option<usize>, heading_idx: &mut usize, depth: usize, k: &Kit, prefix: &str) -> Vec<El> {
+    let c = &k.c;
+    let mut out = Vec::new();
+    for (idx, b) in blocks.iter().enumerate() {
+        let path = parent(idx);
+        let picked = v.cursor.as_ref() == Some(&path);
+        match b {
+            writer::Block::Paragraph { page_break, quote, inlines, style, .. } => {
+                if *page_break {
+                    out.push(
+                        row()
+                            .key(format!("{prefix}-pb-{idx}"))
+                            .w_full()
+                            .center_y()
+                            .gap(8.0)
+                            .py(4.0)
+                            .child(Divider::horizontal().build(k).grow(1.0))
+                            .child(text("Page break").font(k.ty.small).color(c.text_faint))
+                            .child(Divider::horizontal().build(k).grow(1.0)),
+                    );
+                }
+                let align = style
+                    .as_deref()
+                    .and_then(|sn| v.doc.styles.resolve("paragraph", Some(sn), "style:paragraph-properties").get("fo:text-align").cloned());
+                let content = writer_inlines_el(&v.doc, inlines, k.ty.body, k, format!("{prefix}-p-{idx}"));
+                let mut inner = col().grow(1.0).min_w(0.0).child(content);
+                if align.as_deref() == Some("center") {
+                    inner = inner.items_center();
+                } else if matches!(align.as_deref(), Some("right" | "end")) {
+                    inner = inner.items_end();
+                }
+                let mut box_el = if *quote {
+                    row()
+                        .w_full()
+                        .px(8.0)
+                        .py(4.0)
+                        .gap(10.0)
+                        .radius(k.radius.sm)
+                        .child(col().w(2.0).h_full().fill(c.border_strong))
+                        .child(inner)
+                } else {
+                    col().w_full().px(8.0).py(4.0).radius(k.radius.sm).child(inner)
+                };
+                if picked && editable {
+                    box_el = box_el.fill(c.layer_01).border(1.0, c.text_accent);
+                } else if editable {
+                    box_el = box_el.hover(c.layer_01);
+                }
+                if editable {
+                    let p2 = path.clone();
+                    box_el = box_el.on_press(move |s: &mut App| writer_pick(s, p2.clone()));
+                }
+                out.push(box_el.key(format!("{prefix}-pbx-{idx}")));
+            }
+            writer::Block::Heading { page_break, level, inlines, .. } => {
+                let hi = *heading_idx;
+                *heading_idx += 1;
+                if *page_break {
+                    out.push(
+                        row()
+                            .key(format!("{prefix}-hpb-{idx}"))
+                            .w_full()
+                            .center_y()
+                            .gap(8.0)
+                            .py(4.0)
+                            .child(Divider::horizontal().build(k).grow(1.0))
+                            .child(text("Page break").font(k.ty.small).color(c.text_faint))
+                            .child(Divider::horizontal().build(k).grow(1.0)),
+                    );
+                }
+                let size = match level {
+                    1 => 24.0,
+                    2 => 20.0,
+                    3 => 17.0,
+                    _ => 15.0,
+                };
+                let face = rune::TextStyle { size, weight: 650.0, ..k.ty.body };
+                let content = writer_inlines_el(&v.doc, inlines, face, k, format!("{prefix}-ht-{idx}"));
+                let mut box_el = col().key(format!("wr-h-{hi}")).w_full().px(8.0).pt(10.0).pb(4.0).radius(k.radius.sm).child(content);
+                if outline_at == Some(hi) {
+                    box_el = box_el.fill(k.selection());
+                } else if picked && editable {
+                    box_el = box_el.fill(c.layer_01).border(1.0, c.text_accent);
+                } else if editable {
+                    box_el = box_el.hover(c.layer_01);
+                }
+                if editable {
+                    let p2 = path.clone();
+                    box_el = box_el.on_press(move |s: &mut App| writer_pick(s, p2.clone()));
+                }
+                out.push(box_el);
+            }
+            writer::Block::List { xattrs, items, .. } => {
+                let kind = xattrs
+                    .iter()
+                    .find(|(k, _)| k == "text:style-name")
+                    .and_then(|(_, val)| v.doc.styles.list_kind(&writer::decode(val)))
+                    .unwrap_or("bullet");
+                let mut list_col = col().key(format!("{prefix}-lst-{idx}")).w_full().pl(16.0 * (depth.min(4) as f32 + 1.0)).gap(2.0);
+                for (ii, it) in items.iter().enumerate() {
+                    let marker = if kind == "number" { format!("{}.", ii + 1) } else { "\u{2022}".into() };
+                    let lp = path.clone();
+                    let kids = writer_blocks_el(
+                        v,
+                        &it.blocks,
+                        &move |bi| writer::BlockPath::ListItem { path: Box::new(lp.clone()), item: ii, block: bi },
+                        editable,
+                        outline_at,
+                        heading_idx,
+                        depth + 1,
+                        k,
+                        &format!("{prefix}-li-{idx}-{ii}"),
+                    );
+                    list_col = list_col.child(
+                        row()
+                            .key(format!("{prefix}-lir-{idx}-{ii}"))
+                            .w_full()
+                            .gap(6.0)
+                            .child(text(marker).font(k.ty.body).color(c.text_muted).pt(4.0))
+                            .child(col().grow(1.0).min_w(0.0).children(kids)),
+                    );
+                }
+                out.push(list_col);
+            }
+            writer::Block::Table { rows, .. } => {
+                let mut tbl = col().key(format!("{prefix}-tbl-{idx}")).w_full().border(1.0, c.border_weak).radius(k.radius.sm);
+                for (ri, r) in rows.iter().enumerate() {
+                    if ri > 0 {
+                        tbl = tbl.child(Divider::horizontal().build(k));
+                    }
+                    let mut r_el = row().key(format!("{prefix}-tr-{idx}-{ri}")).w_full();
+                    if r.header {
+                        r_el = r_el.fill(c.layer_01);
+                    }
+                    for (ci, cell) in r.cells.iter().enumerate() {
+                        if ci > 0 {
+                            r_el = r_el.child(Divider::vertical().build(k));
+                        }
+                        let tp = path.clone();
+                        let kids = writer_blocks_el(
+                            v,
+                            &cell.blocks,
+                            &move |bi| writer::BlockPath::TableCell { path: Box::new(tp.clone()), row: ri, col: ci, block: bi },
+                            editable,
+                            outline_at,
+                            heading_idx,
+                            depth + 1,
+                            k,
+                            &format!("{prefix}-tc-{idx}-{ri}-{ci}"),
+                        );
+                        let c_el = col().key(format!("{prefix}-td-{idx}-{ri}-{ci}")).grow(1.0).min_w(0.0).padding(6.0).children(kids);
+                        r_el = r_el.child(c_el);
+                    }
+                    tbl = tbl.child(r_el);
+                }
+                out.push(tbl);
+            }
+            writer::Block::Section { blocks: sub, .. } => {
+                let sp = path.clone();
+                let kids = writer_blocks_el(
+                    v,
+                    sub,
+                    &move |bi| writer::BlockPath::Section { path: Box::new(sp.clone()), block: bi },
+                    editable,
+                    outline_at,
+                    heading_idx,
+                    depth,
+                    k,
+                    &format!("{prefix}-sec-{idx}"),
+                );
+                out.push(col().key(format!("{prefix}-s-{idx}")).w_full().children(kids));
+            }
+            writer::Block::OpaqueBlock { name, label, .. } => {
+                if !label.is_empty() {
+                    out.push(
+                        col()
+                            .key(format!("{prefix}-op-{idx}"))
+                            .w_full()
+                            .padding(8.0)
+                            .radius(k.radius.sm)
+                            .fill(c.layer_01)
+                            .border(1.0, c.border_weak)
+                            .child(text(format!("{name}")).font(k.ty.small).color(c.text_faint))
+                            .child(text(label.clone()).font(k.ty.small).color(c.text_muted).wrap()),
+                    );
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Native Writer (`fodt`) document viewer and rich block editor.
+fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let editable = writer_editable(s);
+    let active_block = v.cursor.as_ref().and_then(|p| v.doc.block_at(p));
+    let cur_level: Option<u8> = match active_block {
+        Some(writer::Block::Heading { level, .. }) => Some(*level),
+        _ => None,
+    };
+    let cur_style: Option<&str> = match active_block {
+        Some(writer::Block::Paragraph { style, .. } | writer::Block::Heading { style, .. }) => style.as_deref(),
+        _ => None,
+    };
+    let cur_quote = matches!(active_block, Some(writer::Block::Paragraph { quote: true, .. } | writer::Block::Heading { quote: true, .. }));
+    let cur_pb = matches!(active_block, Some(writer::Block::Paragraph { page_break: true, .. } | writer::Block::Heading { page_break: true, .. }));
+    let in_table = matches!(v.cursor.as_ref(), Some(writer::BlockPath::TableCell { .. }));
+    let in_list = matches!(v.cursor.as_ref(), Some(writer::BlockPath::ListItem { .. }));
+    let has_cur = v.cursor.is_some();
+
+    let mut bar = row().key("writer-bar").w_full().gap(4.0).px(12.0).py(6.0).center_y().flex_wrap();
+    if editable {
+        let styles = v.doc.styles.named_styles("paragraph");
+        let style_label = cur_style
+            .and_then(|sn| styles.iter().find(|(n, _)| n == sn).map(|(_, d)| d.clone()))
+            .or_else(|| cur_style.map(String::from))
+            .unwrap_or_else(|| "Body".into());
+        bar = bar.child(
+            Button::new(format!("Style: {style_label}"))
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::Ghost)
+                .disabled(!has_cur || styles.is_empty())
+                .help("Cycle paragraph style from the document's named styles")
+                .on_press(move |s: &mut App| {
+                    let Some(v) = &s.writer else { return };
+                    let list = v.doc.styles.named_styles("paragraph");
+                    if list.is_empty() {
+                        return;
+                    }
+                    let cur = v.cursor.as_ref().and_then(|p| v.doc.block_at(p)).and_then(|b| match b {
+                        writer::Block::Paragraph { style, .. } | writer::Block::Heading { style, .. } => style.as_deref(),
+                        _ => None,
+                    });
+                    let idx = cur.and_then(|cn| list.iter().position(|(n, _)| n == cn)).map_or(0, |i| (i + 1) % list.len());
+                    let next_name = list[idx].0.clone();
+                    writer_apply(s, move |doc, path| doc.set_block_kind(path, None, Some(next_name.clone())));
+                })
+                .build(k)
+                .key("wr-style"),
+        );
+        let h_label = match cur_level {
+            Some(lv) => format!("H{lv}"),
+            None => "Body".into(),
+        };
+        bar = bar.child(
+            Button::new(h_label)
+                .control_size(ControlSize::Small)
+                .variant(if cur_level.is_some() { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                .disabled(!has_cur)
+                .help("Cycle heading level (Body, H1 to H6)")
+                .on_press(|s: &mut App| {
+                    let next_lv = match s.writer.as_ref().and_then(|v| v.cursor.as_ref().and_then(|p| v.doc.block_at(p))) {
+                        Some(writer::Block::Heading { level, .. }) if *level < 6 => Some(level + 1),
+                        Some(writer::Block::Heading { .. }) => None,
+                        _ => Some(1),
+                    };
+                    writer_apply(s, move |doc, path| {
+                        let st = match next_lv {
+                            Some(lv) => doc.styles.heading_style(lv),
+                            None => doc.styles.body_style(),
+                        };
+                        doc.set_block_kind(path, next_lv, st)
+                    });
+                })
+                .build(k)
+                .key("wr-heading"),
+        );
+        let fmt_btn = |key: &str, label: &str, help: &str, fmt: writer::InlineFmt| {
+            Button::new(label)
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::Ghost)
+                .disabled(!has_cur)
+                .help(help)
+                .on_press(move |s: &mut App| {
+                    writer_commit(s);
+                    let range = s.writer.as_ref().map(|v| v.entry.range()).unwrap_or((0, 0));
+                    writer_apply(s, move |doc, path| doc.toggle_inline_fmt(path, range.0, range.1, fmt));
+                })
+                .build(k)
+                .key(key)
+        };
+        bar = bar
+            .child(fmt_btn("wr-bold", "B", "Toggle bold on selection or block", writer::InlineFmt::Strong))
+            .child(fmt_btn("wr-italic", "I", "Toggle italic on selection or block", writer::InlineFmt::Em))
+            .child(fmt_btn("wr-under", "U", "Toggle underline on selection or block", writer::InlineFmt::Underline))
+            .child(fmt_btn("wr-strike", "S", "Toggle strikethrough on selection or block", writer::InlineFmt::Strike))
+            .child(
+                Button::new("Link")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .disabled(!has_cur)
+                    .help("Set or remove link on selection or block")
+                    .on_press(|s: &mut App| {
+                        writer_commit(s);
+                        let mut t = TextEdit::new("");
+                        t.focused = true;
+                        s.prompt = Some(Prompt::WriterLink(t));
+                    })
+                    .build(k)
+                    .key("wr-link"),
+            )
+            .child(
+                Button::new("Quote")
+                    .control_size(ControlSize::Small)
+                    .variant(if cur_quote { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                    .disabled(!has_cur)
+                    .help("Toggle Quotations block style")
+                    .on_press(|s: &mut App| {
+                        writer_commit(s);
+                        writer_apply(s, |doc, path| doc.toggle_quote(path));
+                    })
+                    .build(k)
+                    .key("wr-quote"),
+            )
+            .child(
+                Button::new("List")
+                    .control_size(ControlSize::Small)
+                    .variant(if in_list { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                    .disabled(!has_cur)
+                    .help("Toggle bullet list on this block")
+                    .on_press(|s: &mut App| {
+                        writer_commit(s);
+                        writer_mutate(s, |doc, cur| {
+                            let Some(path) = cur else { return (false, None) };
+                            let ti = writer::top_index(path);
+                            match doc.toggle_top_list(ti, "bullet") {
+                                Some(np) => (true, Some(np)),
+                                None => (false, None),
+                            }
+                        });
+                    })
+                    .build(k)
+                    .key("wr-bullet"),
+            )
+            .child(
+                Button::new("1. List")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .disabled(!has_cur)
+                    .help("Toggle numbered list on this block")
+                    .on_press(|s: &mut App| {
+                        writer_commit(s);
+                        writer_mutate(s, |doc, cur| {
+                            let Some(path) = cur else { return (false, None) };
+                            let ti = writer::top_index(path);
+                            match doc.toggle_top_list(ti, "number") {
+                                Some(np) => (true, Some(np)),
+                                None => (false, None),
+                            }
+                        });
+                    })
+                    .build(k)
+                    .key("wr-number"),
+            )
+            .child(
+                Button::new("Page break")
+                    .control_size(ControlSize::Small)
+                    .variant(if cur_pb { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                    .disabled(!has_cur)
+                    .help("Toggle page break before this block")
+                    .on_press(|s: &mut App| {
+                        writer_commit(s);
+                        writer_apply(s, |doc, path| doc.toggle_page_break(path));
+                    })
+                    .build(k)
+                    .key("wr-pb"),
+            )
+            .child(
+                Button::new("+ Para")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .help("Insert a new paragraph after the current block")
+                    .on_press(|s: &mut App| {
+                        writer_commit(s);
+                        writer_mutate(s, |doc, cur| {
+                            if let Some(writer::BlockPath::ListItem { path, item, .. }) = cur {
+                                let ti = writer::top_index(path);
+                                if let Some(np) = doc.add_list_item(ti, *item) {
+                                    return (true, Some(np));
+                                }
+                            }
+                            let ti = cur.map(writer::top_index).unwrap_or_else(|| doc.blocks.len().saturating_sub(1));
+                            let np = doc.insert_paragraph_after(ti);
+                            (true, Some(np))
+                        });
+                    })
+                    .build(k)
+                    .key("wr-add-p"),
+            )
+            .child(
+                Button::new("+ Table")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .help("Insert a 2x2 table after the current block")
+                    .on_press(|s: &mut App| {
+                        writer_commit(s);
+                        writer_mutate(s, |doc, cur| {
+                            let ti = cur.map(writer::top_index).unwrap_or_else(|| doc.blocks.len().saturating_sub(1));
+                            let np = doc.insert_table_after(ti, 2, 2);
+                            (true, Some(np))
+                        });
+                    })
+                    .build(k)
+                    .key("wr-add-tbl"),
+            );
+        if in_table {
+            bar = bar
+                .child(
+                    Button::new("+ Row")
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Ghost)
+                        .help("Add a row to this table")
+                        .on_press(|s: &mut App| {
+                            writer_commit(s);
+                            writer_mutate(s, |doc, cur| {
+                                let Some(writer::BlockPath::TableCell { path, row, .. }) = cur else { return (false, None) };
+                                match doc.table_add_row(writer::top_index(path), *row) {
+                                    Some(np) => (true, Some(np)),
+                                    None => (false, None),
+                                }
+                            });
+                        })
+                        .build(k)
+                        .key("wr-row-add"),
+                )
+                .child(
+                    Button::new("- Row")
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Ghost)
+                        .help("Remove this table row")
+                        .on_press(|s: &mut App| {
+                            writer_commit(s);
+                            writer_mutate(s, |doc, cur| {
+                                let Some(writer::BlockPath::TableCell { path, row, .. }) = cur else { return (false, None) };
+                                let ti = writer::top_index(path);
+                                (doc.table_del_row(ti, *row), Some(writer::BlockPath::Top(ti)))
+                            });
+                        })
+                        .build(k)
+                        .key("wr-row-del"),
+                );
+        }
+        bar = bar
+            .child(
+                Button::new("Undo")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .disabled(v.undo.is_empty())
+                    .on_press(writer_undo)
+                    .build(k)
+                    .key("wr-undo"),
+            )
+            .child(
+                Button::new("Redo")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .disabled(v.redo.is_empty())
+                    .on_press(writer_redo)
+                    .build(k)
+                    .key("wr-redo"),
+            );
+    }
+    bar = bar
+        .child(el().grow(1.0))
+        .child(
+            Button::new("Export .odt")
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::Ghost)
+                .help("Save as a LibreOffice .odt document")
+                .on_press_tx(ask_odt)
+                .build(k)
+                .key("wr-odt"),
+        )
+        .child(
+            Button::new("Export PDF")
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::Ghost)
+                .help("Print this document as PDF")
+                .on_press_tx(ask_pdf)
+                .build(k)
+                .key("wr-pdf"),
+        );
+
+    let mut notices = col().w_full().gap(6.0);
+    if v.doc.tracking {
+        notices = notices.child(
+            row()
+                .key("wr-track")
+                .w_full()
+                .padding(10.0)
+                .radius(k.radius.sm)
+                .fill(c.layer_01)
+                .border(1.0, c.border_weak)
+                .child(
+                    text("This document records tracked changes, so lattice opens it read-only. Edit it in LibreOffice, or turn off Edit, Track Changes, Record there to edit it here.")
+                        .font(k.ty.small)
+                        .color(c.text_muted)
+                        .wrap(),
+                ),
+        );
+    }
+    if v.doc.macros {
+        notices = notices.child(
+            row()
+                .key("wr-macros")
+                .w_full()
+                .padding(8.0)
+                .radius(k.radius.sm)
+                .fill(c.layer_01)
+                .child(text("This document contains macros. Lattice does not run them and preserves them untouched.").font(k.ty.small).color(c.text_muted).wrap()),
+        );
+    }
+    if !v.draft_dismissed {
+        notices = notices.child(
+            row()
+                .key("wr-draft")
+                .w_full()
+                .padding(8.0)
+                .gap(8.0)
+                .center_y()
+                .radius(k.radius.sm)
+                .fill(c.layer_01)
+                .child(
+                    text("Draft layout: lines and page breaks will not fall where LibreOffice puts them, and headers, footers and page numbers are kept in the file.")
+                        .font(k.ty.small)
+                        .color(c.text_muted)
+                        .wrap()
+                        .grow(1.0)
+                        .min_w(0.0),
+                )
+                .child(
+                    Button::new("Got it")
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Ghost)
+                        .on_press(|s: &mut App| {
+                            if let Some(v) = &mut s.writer {
+                                v.draft_dismissed = true;
+                            }
+                        })
+                        .build(k)
+                        .key("wr-draft-ok"),
+                ),
+        );
+    }
+
+    let mut editor_bar: Option<El> = None;
+    if editable && v.cursor.is_some() {
+        let dirty = v.entry.text != v.entry_was;
+        editor_bar = Some(
+            col()
+                .key("writer-edit-bar")
+                .w_full()
+                .child(
+                    row()
+                        .w_full()
+                        .gap(8.0)
+                        .px(12.0)
+                        .py(6.0)
+                        .center_y()
+                        .child(
+                            TextArea::new(&v.entry)
+                                .label("Selected block text")
+                                .placeholder("Type text for the selected block")
+                                .rows(2)
+                                .on_edit(|s: &mut App| &mut s.writer.as_mut().expect("writer open").entry)
+                                .build(k)
+                                .grow(1.0)
+                                .key("wr-entry"),
+                        )
+                        .child(
+                            col()
+                                .gap(4.0)
+                                .child(
+                                    Button::new("Apply")
+                                        .control_size(ControlSize::Small)
+                                        .variant(if dirty { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                                        .disabled(!dirty)
+                                        .on_press(writer_commit)
+                                        .build(k)
+                                        .key("wr-apply"),
+                                )
+                                .child(
+                                    Button::new("Delete block")
+                                        .control_size(ControlSize::Small)
+                                        .variant(ButtonVariant::GhostMuted)
+                                        .disabled(v.doc.blocks.len() <= 1)
+                                        .on_press(|s: &mut App| {
+                                            writer_mutate(s, |doc, cur| {
+                                                let Some(path) = cur else { return (false, None) };
+                                                let ti = writer::top_index(path);
+                                                let ok = doc.delete_top_block(ti);
+                                                (ok, Some(writer::BlockPath::Top(ti.min(doc.blocks.len().saturating_sub(1)))))
+                                            });
+                                        })
+                                        .build(k)
+                                        .key("wr-del-blk"),
+                                ),
+                        ),
+                )
+                .child(Divider::horizontal().build(k)),
+        );
+    }
+
+    let mut heading_idx = 0usize;
+    let body_els = writer_blocks_el(v, &v.doc.blocks, &writer::BlockPath::Top, editable, s.outline_at, &mut heading_idx, 0, k, "wr");
+    let sheet = col()
+        .key(format!("writer-sheet:{}", v.name))
+        .w_full()
+        .max_w(760.0)
+        .padding(28.0)
+        .gap(4.0)
+        .child(notices)
+        .children(body_els);
+
+    col()
+        .key("writer")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .child(bar)
+        .child(Divider::horizontal().build(k))
+        .children(editor_bar)
+        .child(col().w_full().grow(1.0).min_h(0.0).items_center().child(sheet).scroll(ScrollSpec { stick_bottom: false }))
+}
+
 /// Keeps `s.sheet` in step with the open page, as +sync_map does for a map.
 fn sync_sheet(s: &mut App) {
     sync_read(s);
     sync_scad(s);
     sync_beside(s);
+    sync_writer(s);
     let sess = &mut s.session;
     let Some(p) = sess.open.as_ref().filter(|p| p.kind == "fods") else {
         sess.sheet = None;
@@ -4962,12 +5923,33 @@ fn links_view(s: &App, k: &Kit, back: bool) -> El {
         here
     } else {
         let mut out = col().key("links-out").w_full().gap(2.0).child(text("Links out").font(k.ty.small_medium).color(c.text_muted));
-        let outs = if p.kind == "md" { md::links(&p.body) } else { Vec::new() };
-        for n in &outs {
-            out = out.child(line(n, format!("out-{n}"), ghost(s, n)));
-        }
-        if outs.is_empty() {
-            out = out.child(text("No links to other pages.").font(k.ty.small).color(c.text_faint));
+        if p.kind == "fodt" {
+            let hrefs = writer::fodt_links(&p.body);
+            for (i, href) in hrefs.iter().enumerate() {
+                if !writer::safe_href(href) {
+                    continue;
+                }
+                let to = href.clone();
+                out = out.child(row().w_full().child(
+                    Button::new(href.clone())
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Ghost)
+                        .on_press_tx(move |s: &mut App, tx| follow(s, &to, tx))
+                        .build(k)
+                        .key(format!("out-fodt-{i}")),
+                ));
+            }
+            if hrefs.iter().all(|h| !writer::safe_href(h)) {
+                out = out.child(text("No links in this document.").font(k.ty.small).color(c.text_faint));
+            }
+        } else {
+            let outs = if p.kind == "md" { md::links(&p.body) } else { Vec::new() };
+            for n in &outs {
+                out = out.child(line(n, format!("out-{n}"), ghost(s, n)));
+            }
+            if outs.is_empty() {
+                out = out.child(text("No links to other pages.").font(k.ty.small).color(c.text_faint));
+            }
         }
         out
     };
@@ -5030,7 +6012,11 @@ fn go_heading(s: &mut App, i: usize, tx: &mut Tx) {
         editor_reveal(s, tx);
     } else {
         s.outline_at = Some(i);
-        tx.scroll_into_view("md-outline");
+        if s.open.as_ref().is_some_and(|p| p.kind == "fodt") {
+            tx.scroll_into_view(format!("wr-h-{i}"));
+        } else {
+            tx.scroll_into_view("md-outline");
+        }
     }
 }
 
@@ -5039,7 +6025,7 @@ fn outline_view(s: &App, k: &Kit) -> El {
     let c = &k.c;
     let said = |t: &str| col().key("outline").w_full().padding(12.0).child(text(t.to_owned()).key("outline-none").font(k.ty.small).color(c.text_muted).wrap());
     let Some(p) = &s.open else { return said("Open a page to see its headings.") };
-    if !matches!(p.kind.as_str(), "md" | "gmi") {
+    if !matches!(p.kind.as_str(), "md" | "gmi" | "fodt") {
         return said("Nothing here for this kind of page.");
     }
     let heads = outline_of(s);
@@ -7526,33 +8512,58 @@ fn ask_download(s: &mut App, tx: &mut Tx) {
     });
 }
 
-/// Exports the page in front as a PDF, as the ship renders it. The file
-/// is named in the save dialog, and a headless Chromium or Chrome prints it.
+/// Exports the page in front as a PDF. Writer (`fodt`) pages render locally
+/// with their own styles and `@page` margins; other kinds print as the ship renders them.
 fn ask_pdf(s: &mut App, tx: &mut Tx) {
-    let (Some(p), Some(c)) = (s.open.clone(), s.conn.clone()) else {
+    let Some(p) = s.open.clone() else { return };
+    if p.kind != "fodt" && s.conn.is_none() {
         s.note = "PDF export prints the page as the ship renders it, so it needs a ship".into();
         return;
-    };
+    }
     let Some(browser) = pdf::browser() else {
         s.note = "PDF export needs Chromium or Chrome installed: this app cannot print by itself".into();
         return;
     };
+    let conn = s.conn.clone();
     let leaf = p.name.rsplit('/').next().unwrap_or(&p.name).to_owned();
     let title = s.dnames.get(&p.name).cloned().unwrap_or_else(|| leaf.clone());
     let options = rune::FileDialogOptions { title: "Export PDF".into(), file_name: Some(format!("{leaf}.pdf")), ..Default::default() }.filter("PDF", &["pdf"]);
     tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
         Ok(Some(path)) => {
             s.note = format!("printing {} to {}", p.name, path.display());
-            s.op_req.request((c, p, browser, title, path), |(c, p, browser, title, path)| {
-                // what the ship's preview shows, or the source for a kind it does not render
-                let html = c.rendered(&p.name).unwrap_or_default();
-                let body = if html.trim().is_empty() { pdf::source(&p.body) } else { html };
-                Ok(Op::Said(match pdf::print(&browser, &pdf::document(&title, &body), &path) {
+            s.op_req.request((conn, p, browser, title, path), |(conn, p, browser, title, path)| {
+                let doc = if p.kind == "fodt" {
+                    writer::render_html(&p.body, &title, true).unwrap_or_else(|| pdf::document(&title, &pdf::source(&p.body)))
+                } else {
+                    let html = conn.as_ref().and_then(|c| c.rendered(&p.name).ok()).unwrap_or_default();
+                    let body = if html.trim().is_empty() { pdf::source(&p.body) } else { html };
+                    pdf::document(&title, &body)
+                };
+                Ok(Op::Said(match pdf::print(&browser, &doc, &path) {
                     Ok(()) => format!("exported to {}", path.display()),
                     Err(e) => format!("not exported: {e}"),
                 }))
             });
         }
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
+/// Exports the open Writer (`fodt`) document as a LibreOffice `.odt` zip package.
+fn ask_odt(s: &mut App, tx: &mut Tx) {
+    let Some(p) = s.open.clone().filter(|p| p.kind == "fodt") else {
+        s.note = "only a Writer document exports as .odt".into();
+        return;
+    };
+    let leaf = p.name.rsplit('/').next().unwrap_or(&p.name).to_owned();
+    let body = if s.editing { edited(s) } else { p.body.clone() };
+    let options = rune::FileDialogOptions { title: "Export .odt".into(), file_name: Some(format!("{leaf}.odt")), ..Default::default() }.filter("OpenDocument Text", &["odt"]);
+    tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => match writer::export_odt(&body) {
+            Ok(bytes) => write_file(s, path, bytes),
+            Err(e) => s.note = e,
+        },
         Ok(None) => {}
         Err(e) => s.note = format!("no file dialog could open: {e}"),
     });
@@ -10689,6 +11700,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("template", "New from a template"),
     ("upload", "Upload a file as a page"),
     ("upload-folder", "Upload a folder of files as pages"),
+    ("new-writer", "New Writer document"),
     ("capture", "Capture a page to the inbox"),
     ("today", "Today's journal page"),
     ("open", "Open a page"),
@@ -10705,6 +11717,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("copy-link", "Copy a link to this page"),
     ("copy-name", "Copy this page's name"),
     ("download", "Download this page as a file"),
+    ("export-odt", "Writer: export as .odt"),
     ("pdf", "Export this page as PDF"),
     ("tex", "Convert this LaTeX page to HTML"),
     ("map-base", "Map: next base map"),
@@ -10741,6 +11754,8 @@ fn usable(s: &App, id: &str) -> bool {
         "delete" => own,
         "download" | "copy-name" => page,
         "duplicate" | "copy-link" | "pdf" => own && !s.memory && !s.editing,
+        "new-writer" => !s.memory && !s.anon,
+        "export-odt" => page && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "fodt"),
         "tex" => own && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "tex"),
         // a sheet, a document and a map are files of their own shape: their kind is not one to type over
         "kind" => own && !s.memory && !s.editing && s.open.as_ref().is_some_and(|p| PAGE_KINDS.contains(&p.kind.as_str()) && s.links.get(&p.name).is_none()),
@@ -10781,6 +11796,13 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
     save_prefs(s);
     match id {
         "new" => ask_new(s),
+        "new-writer" => {
+            if !no_node(s) && leave_edit(s) {
+                let mut t = TextEdit::new("");
+                t.focused = true;
+                s.prompt = Some(Prompt::NewWriter(t));
+            }
+        }
         "kind" => {
             if let Some(p) = &s.open {
                 let mut t = TextEdit::new(p.kind.clone());
@@ -10825,6 +11847,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "delete" => ask_delete(s),
         "share" => open_share(s),
         "download" => ask_download(s, tx),
+        "export-odt" => ask_odt(s, tx),
         "pdf" => ask_pdf(s, tx),
         "tex" => convert_tex(s),
         "duplicate" => ask_duplicate(s),
@@ -11074,7 +12097,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::ShipLabel(_, t) | Prompt::Kind(t) | Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
+                Prompt::ShipLabel(_, t) | Prompt::Kind(t) | Prompt::New(t) | Prompt::NewWriter(t) | Prompt::WriterLink(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
                 Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::ForumRowDelete(..) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) | Prompt::ShipOut(_) => unreachable!("it has no field of this kind"),
                 #[cfg(unix)]
                 Prompt::IdOut(..) | Prompt::IdIn(..) | Prompt::IdUse(..) => unreachable!("it has fields of its own"),
@@ -11114,6 +12137,8 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             ("Use this anonymous identity?", body, "Use it", ButtonVariant::Danger)
         }
         Prompt::New(t) => ("New page", field(t, "folder/name"), "Create", ButtonVariant::Contrast),
+        Prompt::NewWriter(t) => ("New Writer document", field(t, "folder/document-name"), "Create", ButtonVariant::Contrast),
+        Prompt::WriterLink(t) => ("Link URL (empty removes link)", field(t, "https:// or urb://"), "Apply", ButtonVariant::Contrast),
         Prompt::NewFolder(t) => ("New folder", field(t, "A folder's name, as notes or notes/sub"), "Create", ButtonVariant::Contrast),
         Prompt::Rename(_, t) => ("Rename or move", field(t, "folder/name"), "Rename", ButtonVariant::Contrast),
         Prompt::Link(t) => ("Link the selection to", field(t, "https://"), "Link", ButtonVariant::Contrast),
@@ -11182,6 +12207,15 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
     };
     let mut buttons = row().w_full().gap(8.0).justify_end();
     if matches!(p, Prompt::New(_)) && !s.memory {
+        buttons = buttons.child(Button::new("New document").variant(ButtonVariant::Ghost).help("Create a blank Writer (.fodt) document").on_press(|s: &mut App| {
+            let typed = match &s.prompt {
+                Some(Prompt::New(t)) => t.text.clone(),
+                _ => String::new(),
+            };
+            let mut t = TextEdit::new(typed.as_str());
+            t.focused = true;
+            s.prompt = Some(Prompt::NewWriter(t));
+        }).build(k).key("prompt-new-writer"));
         buttons = buttons.child(Button::new("Upload").variant(ButtonVariant::Ghost).help("Make pages from a file on this machine").on_press_tx(|s: &mut App, tx| {
             s.prompt = None;
             ask_upload(s, false, tx);
@@ -15180,6 +16214,9 @@ fn page_body(s: &App, k: &Kit) -> El {
     }
     if let Some(v) = s.sheet.as_ref().filter(|v| v.name == p.name && v.rev == p.rev) {
         return sheet_view(v, s, k);
+    }
+    if let Some(v) = s.writer.as_ref().filter(|v| v.name == p.name && v.rev == p.rev) {
+        return writer_view(v, s, k);
     }
     if let Some(m) = s.map.as_ref().filter(|m| m.name == p.name && m.rev == p.rev) {
         return map_view(m, s, k);
