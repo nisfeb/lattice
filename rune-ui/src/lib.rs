@@ -457,6 +457,23 @@ impl Tab {
             TabKind::Browser(_) | TabKind::Explorer(_) => None,
         }
     }
+
+    /// Whether this tab holds content worth keeping when parked in a split group or moved between groups.
+    fn keep(&self) -> bool {
+        !matches!(self.kind, TabKind::Page) || self.page().is_some()
+    }
+
+    /// Display label for a parked tab in a split group's strip.
+    fn label(&self, dnames: &HashMap<String, String>) -> String {
+        match &self.kind {
+            TabKind::Explorer(et) => et.view.as_ref().map_or_else(|| "Explorer".to_owned(), explorer::View::title),
+            TabKind::Browser(bt) => match bt.open.as_ref() {
+                Some(p) => p.name.rsplit('/').next().unwrap_or(&p.name).to_owned(),
+                None => "Browser".to_owned(),
+            },
+            TabKind::Page => self.page().map_or_else(String::new, |page| dnames.get(page).cloned().unwrap_or_else(|| page.rsplit('/').next().unwrap_or(page).to_owned())),
+        }
+    }
 }
 
 /// A tab of the left pane that shows over the tree.
@@ -843,7 +860,8 @@ struct ShipSession {
     orrery_up: Option<bool>,
     orrery_up_req: Latest<bool>,
     orrery_st: HashMap<String, orrery::Status>,
-    orrery_req: Latest<(String, orrery::Status)>,
+    orrery_in: std::sync::Arc<std::sync::Mutex<Vec<(String, orrery::Status)>>>,
+    orrery_inflight: std::collections::HashSet<String>,
     orrery_polls: HashMap<String, (u32, f64)>,
     orrery_facts: Option<(String, Option<orrery::BodyFacts>)>,
     orrery_facts_req: Latest<(String, Option<orrery::BodyFacts>)>,
@@ -1257,7 +1275,8 @@ impl Default for ShipSession {
             orrery_up: None,
             orrery_up_req: Latest::default(),
             orrery_st: HashMap::new(),
-            orrery_req: Latest::default(),
+            orrery_in: std::sync::Arc::default(),
+            orrery_inflight: std::collections::HashSet::new(),
             orrery_polls: HashMap::new(),
             orrery_facts: None,
             orrery_facts_req: Latest::default(),
@@ -1499,6 +1518,15 @@ impl ShipSession {
         self.save_req.cancel();
         self.rev_req.cancel();
         self.vault_read_req.cancel();
+        self.following_req.cancel();
+        self.follow_act_req.cancel();
+        self.exp_req.cancel();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.exp_raw_req.cancel();
+        self.orrery_up_req.cancel();
+        self.orrery_facts_req.cancel();
+        self.orrery_in = std::sync::Arc::default();
+        self.orrery_inflight.clear();
         self.beacon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.here_stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1685,13 +1713,22 @@ fn load_orrery_status(s: &mut App, path: &str, fresh: bool) {
     if !fresh && s.orrery_st.contains_key(path) {
         return;
     }
-    if let Some(c) = s.conn.clone() {
-        let p = path.to_owned();
-        s.orrery_req.request((c, p), |(c, p)| {
-            let st = c.orrery_status(&p);
-            (p, st)
-        });
+    let Some(c) = s.conn.clone() else { return };
+    if !s.orrery_inflight.insert(path.to_owned()) {
+        return;
     }
+    let p = path.to_owned();
+    let back = s.orrery_in.clone();
+    let waker = s.global.waker.clone();
+    spawn(move || {
+        let st = c.orrery_status(&p);
+        if let Ok(mut list) = back.lock() {
+            list.push((p, st));
+        }
+        if let Some(w) = waker {
+            w();
+        }
+    });
 }
 
 /// Sends a page to orrery (`POST /apps/orrery/api/follow`), resetting poll state.
@@ -1699,9 +1736,16 @@ fn send_to_orrery(s: &mut App, path: String, title: String, text: String) {
     let Some(c) = s.conn.clone() else { return };
     s.orrery_st.insert(path.clone(), orrery::Status::Queued);
     s.orrery_polls.insert(path.clone(), (0, 0.0));
-    s.orrery_req.request((c, path, title, text), |(c, path, title, text)| {
+    let back = s.orrery_in.clone();
+    let waker = s.global.waker.clone();
+    spawn(move || {
         let st = c.orrery_send(&path, &title, &text);
-        (path, st)
+        if let Ok(mut list) = back.lock() {
+            list.push((path, st));
+        }
+        if let Some(w) = waker {
+            w();
+        }
     });
 }
 
@@ -1754,7 +1798,13 @@ fn open_explorer(s: &mut App, path: Option<String>) {
 /// Navigates the explorer to `to` (or what is typed in `s.exp_input`).
 fn explore_go(s: &mut App, to: Option<String>, push_nav: bool) {
     let Some(c) = s.conn.clone() else { return };
-    let path = explorer::normalize_path(&to.unwrap_or_else(|| s.exp_input.text.clone()));
+    let path = match explorer::normalize_path(&to.unwrap_or_else(|| s.exp_input.text.clone())) {
+        Ok(p) => p,
+        Err(e) => {
+            s.note = format!("explorer: {e}");
+            return;
+        }
+    };
     s.exp_input = TextEdit::new(path.as_str());
     s.exp_input.focused = false;
     if push_nav {
@@ -3255,7 +3305,6 @@ fn setup_session(s: &mut App, waker: Waker) {
     #[cfg(not(target_arch = "wasm32"))]
     s.exp_raw_req.set_waker(waker.clone());
     s.orrery_up_req.set_waker(waker.clone());
-    s.orrery_req.set_waker(waker.clone());
     s.orrery_facts_req.set_waker(waker.clone());
     s.sugg_req.set_waker(waker.clone());
     s.visits_req.set_waker(waker.clone());
@@ -6967,7 +7016,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 s.note = said;
                 load_following(s);
             }
-            Err(e) => s.note = format!("follow: {e}"),
+            Err(e) => {
+                s.note = format!("follow: {e}");
+                load_following(s);
+            }
         }
     }
     if s.conn.is_some() && !s.follow_checks.is_empty() {
@@ -7004,13 +7056,14 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if let Some(r) = s.exp_req.take() {
         changed = true;
         match r {
-            Ok((resolved, view)) => {
+            Ok((resolved, view)) if s.exploring => {
                 if s.note.starts_with("exploring ") {
                     s.note.clear();
                 }
                 s.exp_input = TextEdit::new(resolved.as_str());
                 s.exp_view = Some(view);
             }
+            Ok(_) => {}
             Err(e) => s.note = format!("explorer: {e}"),
         }
     }
@@ -7035,8 +7088,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
         }
     }
-    if let Some((path, st)) = s.orrery_req.take() {
+    let orrery_done: Vec<(String, orrery::Status)> = s.orrery_in.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default();
+    for (path, st) in orrery_done {
         changed = true;
+        s.orrery_inflight.remove(&path);
         let queued = st.is_queued();
         s.orrery_st.insert(path.clone(), st);
         if queued {
@@ -8439,7 +8494,7 @@ fn sync_groups(s: &mut App) {
     while d < s.tgroups.len() {
         if d != s.front_at {
             let g = &mut s.tgroups[d];
-            g.tabs.retain(|t| t.page().is_some());
+            g.tabs.retain(Tab::keep);
             g.at = g.at.min(g.tabs.len().saturating_sub(1));
             if g.tabs.is_empty() {
                 s.tgroups.remove(d);
@@ -8515,8 +8570,8 @@ fn focus_group(s: &mut App, d: usize, i: usize) {
     let (was, was_at) = (std::mem::replace(&mut s.tabs, coming.tabs), s.tab);
     let mut going = TabGroup::default();
     for (j, tab) in was.into_iter().enumerate() {
-        // an empty tab has nothing to show beside
-        if tab.page().is_some() {
+        // an empty page tab has nothing to show beside, while browser and explorer tabs are kept
+        if tab.keep() {
             if j == was_at {
                 going.at = going.tabs.len();
             }
@@ -8704,7 +8759,7 @@ fn split_view(d: usize, s: &App, k: &Kit) -> El {
         2 => drag::<2>,
         _ => drag::<3>,
     };
-    let labels: Vec<String> = group.tabs.iter().map(|tab| tab.page().map_or(String::new(), |page| s.dnames.get(page).cloned().unwrap_or_else(|| page.rsplit('/').next().unwrap_or(page).to_owned()))).collect();
+    let labels: Vec<String> = group.tabs.iter().map(|tab| tab.label(&s.dnames)).collect();
     let ids: Vec<String> = (0..group.tabs.len()).map(|i| format!("g{d}-{i}")).collect();
     let at_of = |id: &str| id.rsplit('-').next().and_then(|i| i.parse::<usize>().ok());
     let tabs = rune_kit::shell::TabStrip::new(format!("g{d}-tabs"), rune_kit::shell::TabOrientation::Horizontal)
@@ -8735,17 +8790,29 @@ fn split_view(d: usize, s: &App, k: &Kit) -> El {
         .child(Button::new("Swap").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Bring this group to the front").disabled(s.editing).on_press(move |s: &mut App| focus_group(s, d, at)).build(k).key(format!("g{d}-front")))
         .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close this group").on_press(move |s: &mut App| close_group(s, d)).build(k).key(format!("g{d}-close")));
     let beside = s.cache.get(name).and_then(|p| group.view.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev)).map(|(_, _, v)| v);
-    let shown = match (s.cache.get(name), beside) {
-        (Some(p), _) if p.kind == "md" => reader(&format!("reader-group-{d}"), &p.body, s, k, false),
-        (_, Some(Beside::Read(md))) => reader(&format!("reader-group-{d}"), md, s, k, false),
-        (_, Some(Beside::Sheet(sheets, at, _))) => beside_sheet(d, sheets, *at, s, k),
-        (_, Some(Beside::Map(feats))) => beside_map(feats, k),
-        // any other kind is its source, coloured
-        (Some(p), None) => {
-            let shown = source_shown(&p.body);
-            rune::rich(shown.to_owned(), code_spans(&p.kind, shown, k)).font(k.ty.mono).color(c.text_base).wrap().selectable(true)
+    let active_tab = group.tabs.get(group.at);
+    let shown = match active_tab.map(|t| &t.kind) {
+        Some(TabKind::Browser(bt)) => {
+            let addr = bt.nav.cur();
+            let said = if addr.is_empty() { "Browser start page. Swap to browse.".to_owned() } else { format!("Browser: {addr}") };
+            text(said).font(k.ty.small).color(c.text_muted).wrap()
         }
-        (None, _) => text("This page is not here any more.").font(k.ty.small).color(c.text_muted),
+        Some(TabKind::Explorer(et)) => {
+            let said = format!("Explorer: {}", et.view.as_ref().map_or(et.input.text.as_str(), explorer::View::x_path));
+            text(said).font(k.ty.small).color(c.text_muted).wrap()
+        }
+        _ => match (s.cache.get(name), beside) {
+            (Some(p), _) if p.kind == "md" => reader(&format!("reader-group-{d}"), &p.body, s, k, false),
+            (_, Some(Beside::Read(md))) => reader(&format!("reader-group-{d}"), md, s, k, false),
+            (_, Some(Beside::Sheet(sheets, at, _))) => beside_sheet(d, sheets, *at, s, k),
+            (_, Some(Beside::Map(feats))) => beside_map(feats, k),
+            // any other kind is its source, coloured
+            (Some(p), None) => {
+                let shown = source_shown(&p.body);
+                rune::rich(shown.to_owned(), code_spans(&p.kind, shown, k)).font(k.ty.mono).color(c.text_base).wrap().selectable(true)
+            }
+            (None, _) => text("This page is not here any more.").font(k.ty.small).color(c.text_muted),
+        },
     };
     col()
         .key(format!("group-{d}"))
@@ -8810,6 +8877,7 @@ fn park_tab(s: &mut App) {
     let is_browse = browsing(s);
     let on_page = s.open.is_some() && s.remote.is_none() && !s.capture;
     let sess = &mut s.session;
+    sess.exp_req.cancel();
     sess.tabs[sess.tab] = if sess.exploring {
         Tab {
             trail: Vec::new(),
@@ -9026,7 +9094,7 @@ fn move_tab_to_group(s: &mut App, i: usize, d: usize, at: Option<usize>) {
     }
     // the front tab's history is with the window: put it back in its tab before the tabs are moved
     park_tab(s);
-    if s.tabs[i].page().is_none() {
+    if !s.tabs[i].keep() {
         let front = s.tab;
         load_tab(s, front);
         return;
@@ -9196,6 +9264,11 @@ fn open_browser_tab(s: &mut App, to: Option<String>) {
 
 fn go_browser(s: &mut App) {
     if !leave_edit(s) {
+        return;
+    }
+    if browsing(s) && s.shared_open && s.urb_folder.is_none() && s.remote.is_none() {
+        s.urb.focused = true;
+        browse_home(s);
         return;
     }
     if s.open.is_some() || s.exploring || browsing(s) {
@@ -12496,7 +12569,7 @@ fn urb_got(s: &mut App, url: String, got: api::Urb) {
             s.urb_folder = Some((path, entries));
             // a folder is the browser's own page
             if leave_edit(s) {
-                (s.remote, s.open, s.forum, s.settings, s.access, s.inbox) = (None, None, None, None, false, false);
+                (s.remote, s.open, s.forum, s.settings, s.access, s.inbox, s.exploring) = (None, None, None, None, false, false, false);
                 s.shared_open = true;
             }
         }
@@ -19400,6 +19473,35 @@ mod tests {
         open_following(&mut s, &pid, false);
         assert_eq!(follow::total_new(&s.following), 0, "opening marks the page seen locally");
         assert!(!s.following[0].pages[0].new);
+    }
+
+    #[test]
+    fn splits_keep_browser_and_explorer_tabs_and_go_browser_reuses_home_tab() {
+        let mut s = sample("welcome");
+        // Pressing go_browser from a page opens a browser tab; pressing it again on start page does not duplicate.
+        go_browser(&mut s);
+        assert_eq!(s.tabs.len(), 2);
+        go_browser(&mut s);
+        assert_eq!(s.tabs.len(), 2, "pressing Browser again on start page must not pile up tabs");
+        // Park a split group and focus it: Browser tab in the group left behind must survive.
+        s.tgroups = vec![
+            TabGroup::default(),
+            TabGroup { tabs: vec![Tab { trail: vec!["welcome".into()], at: 0, kind: TabKind::Page }], at: 0, view: None },
+        ];
+        s.front_at = 0;
+        focus_group(&mut s, 1, 0);
+        assert_eq!(s.tgroups.len(), 2);
+        assert_eq!(s.tgroups[0].tabs.len(), 2, "browser tab must not be dropped on focus_group");
+        assert!(matches!(s.tgroups[0].tabs[1].kind, TabKind::Browser(_)));
+        // Move a Browser tab to the parked group via move_tab_to_group.
+        focus_group(&mut s, 0, 1);
+        assert!(browsing(&s));
+        move_tab_to_group(&mut s, 1, 1, None);
+        assert!(s.tgroups[1].tabs.iter().any(|t| matches!(t.kind, TabKind::Browser(_))));
+        // Urb::Folder clears exploring so explorer does not stay on screen.
+        s.exploring = true;
+        urb_got(&mut s, "urb://~bus/notes".into(), api::Urb::Folder { path: "/notes".into(), entries: Vec::new() });
+        assert!(!s.exploring && s.shared_open);
     }
 }
 

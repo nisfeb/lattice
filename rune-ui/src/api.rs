@@ -3167,7 +3167,7 @@ impl Conn {
 
     /// Reads an explorer path (`/apps/lattice/x...`), following up to 3 redirects within `/apps/lattice/x`.
     pub fn explore(&self, x_path: &str, raw: bool) -> Result<(String, crate::explorer::View), String> {
-        let mut cur = crate::explorer::normalize_path(x_path);
+        let mut cur = crate::explorer::normalize_path(x_path)?;
         for _ in 0..4 {
             let query = if raw && cur.ends_with('/') { "?raw=1" } else { "" };
             let full = format!("{}{cur}{query}", self.url);
@@ -3193,7 +3193,7 @@ impl Conn {
                         if !loc.starts_with("/apps/lattice/x") {
                             return Err(format!("unexpected explorer redirect: {loc}"));
                         }
-                        cur = loc.split('?').next().unwrap_or(&loc).to_owned();
+                        cur = crate::explorer::normalize_path(loc.split('?').next().unwrap_or(&loc))?;
                         continue;
                     }
                     Ok(r) => {
@@ -3218,14 +3218,17 @@ impl Conn {
     /// Fetches the raw `?data` bytes of a file in the explorer.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn explore_raw(&self, x_path: &str) -> Result<Vec<u8>, String> {
-        let clean = crate::explorer::normalize_path(x_path);
+        let clean = crate::explorer::normalize_path(x_path)?;
         let full = format!("{}{clean}?data", self.url);
         let mut out = Vec::new();
         match ship_agent().get(&full).timeout(Duration::from_secs(60)).set("cookie", &self.cookie).call() {
             Ok(r) if (300..400).contains(&r.status()) => Err(format!("{}: redirect", r.status())),
             Ok(r) => {
                 use std::io::Read;
-                r.into_reader().take(ANSWER_LIMIT as u64).read_to_end(&mut out).map_err(|e| e.to_string())?;
+                r.into_reader().take(ANSWER_LIMIT.saturating_add(1)).read_to_end(&mut out).map_err(|e| e.to_string())?;
+                if out.len() as u64 > ANSWER_LIMIT {
+                    return Err(format!("the answer is too large to read: over {} MB", ANSWER_LIMIT.div_ceil(1024 * 1024)));
+                }
                 Ok(out)
             }
             Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
