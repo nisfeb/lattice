@@ -30,10 +30,11 @@ pub enum V {
     Range(Rg),
 }
 
-/// A rectangle of cells on one sheet.
+/// A rectangle of cells on one sheet, or across a contiguous span of sheets (`s..=s2`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rg {
     pub s: usize,
+    pub s2: usize,
     pub r1: usize,
     pub c1: usize,
     pub r2: usize,
@@ -51,6 +52,7 @@ pub struct Ctx {
     pub s: usize,
     pub r: usize,
     pub c: usize,
+    pub depth: u8,
 }
 
 impl Rg {
@@ -61,6 +63,15 @@ impl Rg {
     pub fn cols(&self) -> usize {
         self.c2 - self.c1 + 1
     }
+
+    pub fn single_sheet(&self) -> bool {
+        self.s == self.s2
+    }
+}
+
+enum NamedItem {
+    Ref(Ref, usize),
+    Ast(Option<Rc<Node>>, usize),
 }
 
 struct Entry {
@@ -345,6 +356,45 @@ pub fn approx_floor(x: f64) -> f64 {
     approx_value(x).floor()
 }
 
+/// Primary accent-folding key for Latin letters so accented text sorts beside its
+/// base letter (`a < á < b`) as English locale collation does, before exact tie-breaking.
+fn fold_latin(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| c.to_lowercase())
+        .map(|c| match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+            'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
+            'ď' | 'đ' => 'd',
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+            'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
+            'ĥ' | 'ħ' => 'h',
+            'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => 'i',
+            'ĵ' => 'j',
+            'ķ' => 'k',
+            'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => 'l',
+            'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+            'ŕ' | 'ŗ' | 'ř' => 'r',
+            'ś' | 'ŝ' | 'ş' | 'š' => 's',
+            'ţ' | 'ť' | 'ŧ' => 't',
+            'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+            'ŵ' => 'w',
+            'ý' | 'ÿ' | 'ŷ' => 'y',
+            'ź' | 'ż' | 'ž' => 'z',
+            other => other,
+        })
+        .collect()
+}
+
+fn cmp_text(x: &str, y: &str, case_sensitive: bool) -> std::cmp::Ordering {
+    let lx = x.to_lowercase();
+    let ly = y.to_lowercase();
+    if lx == ly {
+        return if case_sensitive { y.cmp(x) } else { std::cmp::Ordering::Equal };
+    }
+    fold_latin(x).cmp(&fold_latin(y)).then_with(|| lx.cmp(&ly))
+}
+
 /// Numbers sort before text, and text compares without case.
 pub fn compare(a: &V, b: &V) -> i32 {
     let fill = |v: &V, other: &V| match v {
@@ -358,22 +408,19 @@ pub fn compare(a: &V, b: &V) -> i32 {
     match (&a, &b) {
         (V::Num(x), V::Num(y)) if approx_eq(*x, *y) => 0,
         (V::Num(x), V::Num(y)) => x.partial_cmp(y).map_or(0, sign),
-        (V::Str(x), V::Str(y)) => sign(x.to_lowercase().cmp(&y.to_lowercase())),
+        (V::Str(x), V::Str(y)) => sign(cmp_text(x, y, false)),
         (V::Num(_), _) => -1,
         _ => 1,
     }
 }
 
-/// The comparison operators: as `compare`, but text differs by case.
-// ponytail: the web orders text by the browser's English collation. This orders it without case first, then a small letter before its capital, which agrees for plain letters and digits
+/// The comparison operators: as `compare`, with accent-aware collation and case tie-break.
 fn compare_op(a: &V, b: &V) -> i32 {
     if let (V::Str(x), V::Str(y)) = (a, b) {
         if x == y {
             return 0;
         }
-        let k = x.to_lowercase().cmp(&y.to_lowercase());
-        let k = if k.is_eq() { y.cmp(x) } else { k };
-        return k as i32;
+        return cmp_text(x, y, true) as i32;
     }
     compare(a, b)
 }
@@ -397,6 +444,8 @@ pub fn power(a: f64, b: f64) -> V {
 pub struct Engine<'a> {
     book: &'a Book,
     styles: &'a Styles,
+    /// Named ranges and named expressions declared in the workbook or sheets.
+    names: HashMap<String, NamedItem>,
     /// What formulas were worked out to, over what the book holds.
     over: HashMap<Key, Put>,
     formulas: Vec<Entry>,
@@ -435,7 +484,24 @@ pub struct Engine<'a> {
 
 impl<'a> Engine<'a> {
     pub fn new(book: &'a Book, styles: &'a Styles) -> Engine<'a> {
-        let mut e = Engine { book, styles, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, walked: 0, walk_all: WALK_ALL, ran_out: Default::default(), done: Vec::new(), depth: 0, first: None, unsure: HashSet::new(), wide: Vec::new(), tainted: false };
+        let mut names = HashMap::new();
+        for (k, def) in &book.names {
+            match def {
+                sheet::Named::Range { addr, home } => {
+                    if let Some(mut refs) = formula::parse_addrs(addr) {
+                        if refs.len() == 1 {
+                            names.insert(k.clone(), NamedItem::Ref(refs.remove(0), *home));
+                        }
+                    }
+                }
+                sheet::Named::Expr { expr, home } => {
+                    let body = formula::body_of(expr).unwrap_or(expr.as_str());
+                    let ast = formula::parse(body, Mode::Of).ok().map(Rc::new);
+                    names.insert(k.clone(), NamedItem::Ast(ast, *home));
+                }
+            }
+        }
+        let mut e = Engine { book, styles, names, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, walked: 0, walk_all: WALK_ALL, ran_out: Default::default(), done: Vec::new(), depth: 0, first: None, unsure: HashSet::new(), wide: Vec::new(), tainted: false };
         for (s, sh) in book.sheets.iter().enumerate() {
             let mut r = 0usize;
             for row in &sh.rows {
@@ -483,44 +549,76 @@ impl<'a> Engine<'a> {
     }
 
     fn deps_of(&self, n: &Node, home: usize, out: &mut Vec<[usize; 5]>, wild: &mut bool) {
-        match n {
-            Node::Ref(r) => match self.range(r, home) {
-                Ok(V::Range(g)) => out.push([g.s, g.r1, g.c1, g.r2, g.c2]),
-                Ok(_) => {}
-                Err(Unsupported) => *wild = true,
-            },
-            // named ranges are not read here: a formula with a name may read anything
-            Node::Name(_) => *wild = true,
-            Node::Paren(x) | Node::Un(_, x) | Node::Pct(x) => self.deps_of(x, home, out, wild),
-            Node::Bin(_, l, r) => {
-                self.deps_of(l, home, out, wild);
-                self.deps_of(r, home, out, wild);
-            }
-            Node::Call(name, args) => {
-                args.iter().for_each(|a| self.deps_of(a, home, out, wild));
-                // these read one range by the shape of another, so past what the formula names:
-                // SUMIF(A1:A3,">0",B1) adds up B1:B3
-                let rect = |n: &Node| match bare(n) {
-                    Node::Ref(r) => match self.range(r, home) {
-                        Ok(V::Range(g)) => Some(g),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                // the range whose shape is used, and which arguments are read by it
-                let (shape, read): (Option<&Node>, Vec<usize>) = match name.as_str() {
-                    "SUMIF" | "AVERAGEIF" => (args.first(), vec![2]),
-                    "SUMIFS" => (args.get(1), std::iter::once(0).chain((1..args.len()).step_by(2)).collect()),
-                    "COUNTIFS" => (args.first(), (0..args.len()).step_by(2).collect()),
-                    _ => (None, Vec::new()),
-                };
-                if let Some(t) = shape.and_then(rect) {
-                    for o in read.into_iter().filter_map(|i| args.get(i).and_then(rect)) {
-                        out.push([o.s, o.r1, o.c1, o.r2.max(o.r1.saturating_add(t.rows() - 1)), o.c2.max(o.c1.saturating_add(t.cols() - 1))]);
+        let mut seen = HashSet::new();
+        let mut stack: Vec<(&Node, usize)> = vec![(n, home)];
+        while let Some((cur, h)) = stack.pop() {
+            match cur {
+                Node::Ref(r) => match self.range(r, h) {
+                    Ok(V::Range(g)) => {
+                        for si in g.s..=g.s2 {
+                            out.push([si, g.r1, g.c1, g.r2, g.c2]);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(Unsupported) => *wild = true,
+                },
+                Node::Name(name) => {
+                    let low = name.to_lowercase();
+                    if !seen.insert(low.clone()) {
+                        continue;
+                    }
+                    match self.names.get(&low) {
+                        Some(NamedItem::Ref(r, nh)) => match self.range(r, *nh) {
+                            Ok(V::Range(g)) => {
+                                for si in g.s..=g.s2 {
+                                    out.push([si, g.r1, g.c1, g.r2, g.c2]);
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(Unsupported) => *wild = true,
+                        },
+                        Some(NamedItem::Ast(Some(ast), nh)) => stack.push((ast, *nh)),
+                        Some(NamedItem::Ast(None, _)) => *wild = true,
+                        None => {}
                     }
                 }
+                Node::Paren(x) | Node::Un(_, x) | Node::Pct(x) => stack.push((x, h)),
+                Node::Bin(_, l, r) => {
+                    stack.push((r, h));
+                    stack.push((l, h));
+                }
+                Node::Call(name, args) => {
+                    for a in args {
+                        stack.push((a, h));
+                    }
+                    let rect = |n: &Node| match bare(n) {
+                        Node::Ref(r) => match self.range(r, h) {
+                            Ok(V::Range(g)) if g.single_sheet() => Some(g),
+                            _ => None,
+                        },
+                        Node::Name(nm) => match self.names.get(&nm.to_lowercase()) {
+                            Some(NamedItem::Ref(r, nh)) => match self.range(r, *nh) {
+                                Ok(V::Range(g)) if g.single_sheet() => Some(g),
+                                _ => None,
+                            },
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let (shape, read): (Option<&Node>, Vec<usize>) = match name.as_str() {
+                        "SUMIF" | "AVERAGEIF" => (args.first(), vec![2]),
+                        "SUMIFS" => (args.get(1), std::iter::once(0).chain((1..args.len()).step_by(2)).collect()),
+                        "COUNTIFS" => (args.first(), (0..args.len()).step_by(2).collect()),
+                        _ => (None, Vec::new()),
+                    };
+                    if let Some(t) = shape.and_then(rect) {
+                        for o in read.into_iter().filter_map(|i| args.get(i).and_then(rect)) {
+                            out.push([o.s, o.r1, o.c1, o.r2.max(o.r1.saturating_add(t.rows() - 1)), o.c2.max(o.c1.saturating_add(t.cols() - 1))]);
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -537,14 +635,16 @@ impl<'a> Engine<'a> {
                     },
                 };
                 let e = b.as_ref().unwrap_or(a);
-                // a range from one sheet to another is not read here
-                if let Some(n) = b.as_ref().and_then(|b| b.sheet.as_ref()) {
-                    if self.sheet_index(n) != Some(s1) {
-                        return Err(Unsupported);
-                    }
-                }
+                let s2 = match b.as_ref().and_then(|b| b.sheet.as_ref()) {
+                    None => s1,
+                    Some(n) => match self.sheet_index(n) {
+                        Some(s) => s,
+                        None => return Ok(err("#REF!")),
+                    },
+                };
+                let (lo_s, hi_s) = (s1.min(s2), s1.max(s2));
                 let (r1, r2, c1, c2) = (a.r.min(e.r), a.r.max(e.r), a.c.min(e.c), a.c.max(e.c));
-                Ok(V::Range(Rg { s: s1, r1: r1 as usize, c1: c1 as usize, r2: r2 as usize, c2: c2 as usize }))
+                Ok(V::Range(Rg { s: lo_s, s2: hi_s, r1: r1 as usize, c1: c1 as usize, r2: r2 as usize, c2: c2 as usize }))
             }
         }
     }
@@ -631,45 +731,47 @@ impl<'a> Engine<'a> {
         u
     }
 
-    /// Calls `f` with the value of every cell of the rectangle that holds something, in row order.
+    /// Calls `f` with the value of every cell of the rectangle (across one or more sheets) that holds something, in sheet then row order.
     pub fn each(&mut self, g: Rg, f: &mut dyn FnMut(V)) -> Result<(), Unsupported> {
         let book = self.book;
-        let Some(sheet) = book.sheets.get(g.s) else { return Ok(()) };
-        let mut r = 0usize;
-        for row in &sheet.rows {
-            let (top, bot) = (r, r.saturating_add(row.rep - 1));
-            r = r.saturating_add(row.rep);
-            if bot < g.r1 {
-                continue;
-            }
-            if top > g.r2 {
-                break;
-            }
-            if !row.cells.iter().any(|c| !c.vt.is_empty() || c.f.is_some()) {
-                continue;
-            }
-            for rr in top.max(g.r1)..=bot.min(g.r2) {
-                let mut c = 0usize;
-                for cell in &row.cells {
-                    let (left, right) = (c, c.saturating_add(cell.rep - 1));
-                    c = c.saturating_add(cell.rep);
-                    if right < g.c1 {
-                        continue;
-                    }
-                    if left > g.c2 {
-                        break;
-                    }
-                    if cell.vt.is_empty() && cell.f.is_none() {
-                        continue;
-                    }
-                    for cc in left.max(g.c1)..=right.min(g.c2) {
-                        // a million rows of sixteen thousand cells are not walked: the formula keeps what it had
-                        if self.leaving() {
-                            return Err(Unsupported);
+        for si in g.s..=g.s2 {
+            let Some(sheet) = book.sheets.get(si) else { continue };
+            let mut r = 0usize;
+            for row in &sheet.rows {
+                let (top, bot) = (r, r.saturating_add(row.rep - 1));
+                r = r.saturating_add(row.rep);
+                if bot < g.r1 {
+                    continue;
+                }
+                if top > g.r2 {
+                    break;
+                }
+                if !row.cells.iter().any(|c| !c.vt.is_empty() || c.f.is_some()) {
+                    continue;
+                }
+                for rr in top.max(g.r1)..=bot.min(g.r2) {
+                    let mut c = 0usize;
+                    for cell in &row.cells {
+                        let (left, right) = (c, c.saturating_add(cell.rep - 1));
+                        c = c.saturating_add(cell.rep);
+                        if right < g.c1 {
+                            continue;
                         }
-                        let v = self.value((g.s, rr, cc));
-                        if v != V::Blank {
-                            f(v);
+                        if left > g.c2 {
+                            break;
+                        }
+                        if cell.vt.is_empty() && cell.f.is_none() {
+                            continue;
+                        }
+                        for cc in left.max(g.c1)..=right.min(g.c2) {
+                            // a million rows of sixteen thousand cells are not walked: the formula keeps what it had
+                            if self.leaving() {
+                                return Err(Unsupported);
+                            }
+                            let v = self.value((si, rr, cc));
+                            if v != V::Blank {
+                                f(v);
+                            }
                         }
                     }
                 }
@@ -682,6 +784,9 @@ impl<'a> Engine<'a> {
     /// or a row is the cell on the formula's own row or column.
     fn one(&mut self, v: V, ctx: Ctx) -> V {
         let V::Range(g) = v else { return v };
+        if !g.single_sheet() {
+            return err("#VALUE!");
+        }
         if g.r1 == g.r2 && g.c1 == g.c2 {
             return self.value((g.s, g.r1, g.c1));
         }
@@ -734,11 +839,20 @@ impl<'a> Engine<'a> {
                 }
             }
             Node::Bin(op, l, r) => {
-                let l = self.ev(l, ctx)?;
-                let l = self.one(l, ctx);
-                let r = self.ev(r, ctx)?;
-                let r = self.one(r, ctx);
-                bin(op, l, r)
+                let mut ops: Vec<(&str, &Node)> = vec![(*op, r)];
+                let mut cur = l.as_ref();
+                while let Node::Bin(op2, l2, r2) = cur {
+                    ops.push((*op2, r2));
+                    cur = l2.as_ref();
+                }
+                let mut acc = self.ev(cur, ctx)?;
+                acc = self.one(acc, ctx);
+                for (op2, r2) in ops.into_iter().rev() {
+                    let rv = self.ev(r2, ctx)?;
+                    let rv = self.one(rv, ctx);
+                    acc = bin(op2, acc, rv);
+                }
+                acc
             }
             // SUMPRODUCT of an expression over ranges works the expression out cell by cell
             Node::Call(name, nodes) if name == "SUMPRODUCT" && nodes.iter().any(|a| !matches!(bare(a), Node::Ref(_)) && ranged(a)) => self.sum_product(nodes, ctx)?,
@@ -759,9 +873,26 @@ impl<'a> Engine<'a> {
                     v => v,
                 }
             }
-            // named ranges and expressions are not read here yet
-            Node::Name(_) => return Err(Unsupported),
+            Node::Name(name) => self.eval_name(name, ctx)?,
         })
+    }
+
+    #[inline(never)]
+    fn eval_name(&mut self, name: &str, ctx: Ctx) -> Result<V, Unsupported> {
+        match self.names.get(&name.to_lowercase()) {
+            None => Ok(err("#NAME?")),
+            Some(NamedItem::Ref(r, home)) => self.range(r, *home),
+            Some(NamedItem::Ast(None, _)) => Err(Unsupported),
+            Some(NamedItem::Ast(Some(ast), home)) => {
+                if ctx.depth > 32 {
+                    Ok(err("Err:522"))
+                } else {
+                    let ast = ast.clone();
+                    let h = *home;
+                    self.ev(&ast, Ctx { s: h, depth: ctx.depth + 1, ..ctx })
+                }
+            }
+        }
     }
 
     /// What an expression comes to cell by cell: a range is its cells, a value is one cell,
@@ -773,7 +904,7 @@ impl<'a> Engine<'a> {
             Node::Paren(x) => self.grid(x, ctx)?,
             Node::Ref(r) => match self.range(r, ctx.s)? {
                 V::Range(g) => {
-                    if g.rows().saturating_mul(g.cols()) > GRID_MOST {
+                    if !g.single_sheet() || g.rows().saturating_mul(g.cols()) > GRID_MOST {
                         return Err(Unsupported);
                     }
                     let mut v = Vec::with_capacity(g.rows() * g.cols());
@@ -788,6 +919,27 @@ impl<'a> Engine<'a> {
                     Grid { rows: g.rows(), cols: g.cols(), v }
                 }
                 v => one(v),
+            },
+            Node::Name(name) => match self.ev(n, ctx)? {
+                V::Range(g) => {
+                    if !g.single_sheet() || g.rows().saturating_mul(g.cols()) > GRID_MOST {
+                        return Err(Unsupported);
+                    }
+                    let mut v = Vec::with_capacity(g.rows() * g.cols());
+                    for r in g.r1..=g.r2 {
+                        for c in g.c1..=g.c2 {
+                            if self.leaving() {
+                                return Err(Unsupported);
+                            }
+                            v.push(self.value((g.s, r, c)));
+                        }
+                    }
+                    Grid { rows: g.rows(), cols: g.cols(), v }
+                }
+                v => {
+                    let _ = name;
+                    one(v)
+                }
             },
             Node::Un(op, x) => {
                 let mut g = self.grid(x, ctx)?;
@@ -862,7 +1014,7 @@ impl<'a> Engine<'a> {
 
     /// A formula's value for the cell it is in.
     fn evaluate(&mut self, ast: &Node, at: Key) -> Result<V, Unsupported> {
-        let ctx = Ctx { s: at.0, r: at.1, c: at.2 };
+        let ctx = Ctx { s: at.0, r: at.1, c: at.2, depth: 0 };
         let v = self.ev(ast, ctx)?;
         let v = self.one(v, ctx);
         // a reference to an empty cell shows 0. A function that hands back an empty cell is blank here
@@ -1147,19 +1299,22 @@ pub enum Fmt {
     Number(&'static str),
 }
 
-/// A flat ODS document with one cell's look or number format changed: a port of the web
-/// client's `Book.format` for one cell. The cell takes a style that is its own with the
-/// change, made when the page has none that says the same. A number given a format takes
-/// the format's type and is shown as it writes it. No value changes, so nothing is worked out.
+/// A flat ODS document with one cell's look or number format changed: delegates to `format_range`.
 pub fn format_cell(src: &str, s: usize, r: usize, c: usize, change: &Fmt) -> Result<String, String> {
+    format_range(src, s, r, c, r, c, change)
+}
+
+/// Formats every non-covered cell in the rectangle `(r1..=r2, c1..=c2)` on sheet `s` in one pass.
+pub fn format_range(src: &str, s: usize, r1: usize, c1: usize, r2: usize, c2: usize, change: &Fmt) -> Result<String, String> {
+    let (r1, r2) = (r1.min(r2), r1.max(r2));
+    let (c1, c2) = (c1.min(c2), c1.max(c2));
+    if (r2 - r1 + 1).saturating_mul(c2 - c1 + 1) > 10_000 {
+        return Err("that selection is too large to format at once".into());
+    }
     let book = sheet::book(src)?;
     let styles = Styles::read(src, book.null_date);
-    let cell = book.at(s, r, c).cloned().unwrap_or_default();
-    if cell.covered {
-        return Err("that cell is part of a merged cell".into());
-    }
-    let base = book.style_at(s, r, c);
-    let mut new = Vec::new();
+    let single = r1 == r2 && c1 == c2;
+    let mut new: Vec<String> = Vec::new();
     let ch = match change {
         Fmt::Bold(on) => crate::styles::Change { bold: Some(*on), ..Default::default() },
         Fmt::Italic(on) => crate::styles::Change { italic: Some(*on), ..Default::default() },
@@ -1167,27 +1322,66 @@ pub fn format_cell(src: &str, s: usize, r: usize, c: usize, change: &Fmt) -> Res
         Fmt::Align(a) => crate::styles::Change { align: Some(*a), ..Default::default() },
         Fmt::Number(kind) => {
             let data = styles.format_for(kind).map(|(name, xml)| {
-                new.extend(xml);
+                if let Some(x) = xml {
+                    if !new.contains(&x) {
+                        new.push(x);
+                    }
+                }
                 name
             });
             crate::styles::Change { data: Some(data), ..Default::default() }
         }
     };
-    let (name, more) = styles.restyle(&base, &ch);
-    new.extend(more);
-    let page = crate::styles::add_auto(src, &new)?;
-    let mut put = Put { f: cell.f.clone(), vt: cell.vt.clone(), v: cell.v.clone().unwrap_or(Val::Blank), text: cell.text.clone(), err: cell.err, st: Some(name.clone()) };
-    // a number given a format is of the format's type, and shows as the format writes it
-    if let (Fmt::Number(kind), Val::Num(n)) = (change, &put.v) {
-        if !put.vt.is_empty() && put.vt != "string" && put.vt != "boolean" {
-            put.vt = if matches!(*kind, "percentage" | "currency" | "date" | "time") { (*kind).to_owned() } else { "float".to_owned() };
-            put.text = Styles::read(&page, book.null_date).text(&name, *n, &put.vt);
+    let mut edits: std::collections::BTreeMap<usize, Vec<(usize, Put)>> = std::collections::BTreeMap::new();
+    let mut touched = false;
+    for r in r1..=r2 {
+        for c in c1..=c2 {
+            let cell = book.at(s, r, c).cloned().unwrap_or_default();
+            if cell.covered {
+                if single {
+                    return Err("that cell is part of a merged cell".into());
+                }
+                continue;
+            }
+            let base = book.style_at(s, r, c);
+            let (name, more) = styles.restyle(&base, &ch);
+            for x in more {
+                if !new.contains(&x) {
+                    new.push(x);
+                }
+            }
+            let mut put = Put { f: cell.f.clone(), vt: cell.vt.clone(), v: cell.v.clone().unwrap_or(Val::Blank), text: cell.text.clone(), err: cell.err, st: Some(name.clone()) };
+            if let (Fmt::Number(kind), Val::Num(_)) = (change, &put.v) {
+                if !put.vt.is_empty() && put.vt != "string" && put.vt != "boolean" {
+                    put.vt = if matches!(*kind, "percentage" | "currency" | "date" | "time") { (*kind).to_owned() } else { "float".to_owned() };
+                }
+            }
+            if name != base || put.vt != cell.vt {
+                touched = true;
+                edits.entry(r).or_default().push((c, put));
+            }
         }
     }
-    if name == base && put.vt == cell.vt && new.is_empty() {
+    if !touched && new.is_empty() {
         return Ok(src.to_owned());
     }
-    sheet::put_cell(&page, s, r, c, &put, Care::Result)
+    let page = crate::styles::add_auto(src, &new)?;
+    if matches!(change, Fmt::Number(_)) {
+        let st_after = Styles::read(&page, book.null_date);
+        for row_edits in edits.values_mut() {
+            for (_, put) in row_edits.iter_mut() {
+                if let (Val::Num(n), Some(name)) = (&put.v, &put.st) {
+                    if !put.vt.is_empty() && put.vt != "string" && put.vt != "boolean" {
+                        put.text = st_after.text(name, *n, &put.vt);
+                    }
+                }
+            }
+        }
+    }
+    if edits.is_empty() {
+        return Ok(page);
+    }
+    sheet::put_cells(&page, s, &edits, Care::Result)
 }
 
 /// A page after something was typed into a cell, and how many formulas
@@ -2327,5 +2521,55 @@ mod tests {
         let rows: Vec<&[&str]> = rows.iter().map(Vec::as_slice).collect();
         let got = enter(&doc(&rows), 0, 0, 0, "10").unwrap();
         assert_eq!((grid(&got.body)[2999][0].as_str(), got.stale.len(), got.done.len()), ("3009", 0, 2999));
+    }
+
+    #[test]
+    fn named_ranges_named_expressions_and_cross_sheet_ranges_evaluate() {
+        let src = r#"<?xml version="1.0"?>
+<office:document xmlns:office="urn:o" xmlns:table="urn:t" xmlns:text="urn:x" xmlns:calcext="urn:c">
+ <office:body><office:spreadsheet>
+  <table:table table:name="Q1">
+   <table:table-row>
+    <table:table-cell office:value-type="float" office:value="10" calcext:value-type="float"><text:p>10</text:p></table:table-cell>
+    <table:table-cell office:value-type="float" office:value="20" calcext:value-type="float"><text:p>20</text:p></table:table-cell>
+    <table:table-cell table:formula="of:=SUM(Prices)+TaxRate*100" office:value-type="float" office:value="0" calcext:value-type="float"><text:p>0</text:p></table:table-cell>
+    <table:table-cell table:formula="of:=SUM([Q1.A1:Q3.A1])" office:value-type="float" office:value="0" calcext:value-type="float"><text:p>0</text:p></table:table-cell>
+   </table:table-row>
+  </table:table>
+  <table:table table:name="Q2">
+   <table:table-row>
+    <table:table-cell office:value-type="float" office:value="15" calcext:value-type="float"><text:p>15</text:p></table:table-cell>
+   </table:table-row>
+  </table:table>
+  <table:table table:name="Q3">
+   <table:table-row>
+    <table:table-cell office:value-type="float" office:value="25" calcext:value-type="float"><text:p>25</text:p></table:table-cell>
+   </table:table-row>
+  </table:table>
+  <table:named-expressions>
+   <table:named-range table:name="Prices" table:cell-range-address="$Q1.$A$1:.$B$1"/>
+   <table:named-expression table:name="TaxRate" table:expression="of:=0.05"/>
+  </table:named-expressions>
+ </office:spreadsheet></office:body>
+</office:document>"#;
+        // Editing Q1.A1 recalculates both the named-range formula (C1) and the 3D cross-sheet sum (D1).
+        let got = enter(src, 0, 0, 0, "12").unwrap();
+        assert!(got.stale.is_empty(), "expected no stale formulas: {:?}", got.stale);
+        let row = &sheet::parse(&got.body)[0].rows[0];
+        assert_eq!(row[2], "37");
+        assert_eq!(row[3], "52");
+        // Editing Q2.A1 also recalculates the 3D cross-sheet sum in Q1.D1.
+        let got2 = enter(&got.body, 1, 0, 0, "20").unwrap();
+        assert_eq!(sheet::parse(&got2.body)[0].rows[0][3], "57");
+        // Range formatting applies to every cell in the rectangle in one call.
+        let styled = format_range(&got2.body, 0, 0, 0, 0, 2, &Fmt::Bold(true)).unwrap();
+        let b = sheet::book(&styled).unwrap();
+        let st = Styles::read(&styled, b.null_date);
+        for c in 0..=2 {
+            assert!(st.look(&b.style_at(0, 0, c)).bold, "col {c} should be bold");
+        }
+        assert!(!st.look(&b.style_at(0, 0, 3)).bold);
+        // Accent-aware collation sorts é before f.
+        assert!(compare(&V::Str("éclair".into()), &V::Str("fig".into())) < 0);
     }
 }

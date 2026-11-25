@@ -335,6 +335,8 @@ struct SheetView {
     repick: bool,
     /// The cell picked to be changed: its row and column.
     cursor: Option<(usize, usize)>,
+    /// Opposite corner when a rectangular range of cells is selected (Shift+click).
+    range_end: Option<(usize, usize)>,
     /// What is being typed into the picked cell.
     entry: TextEdit,
     /// What the bar held when the cell was picked: its text, or its formula as typed.
@@ -3258,7 +3260,11 @@ fn sync_sheet(s: &mut App) {
     // a sheet just added is the one shown, with no cell of the old one picked
     let want = old.as_ref().and_then(|v| v.want);
     let repick = old.as_ref().is_some_and(|v| v.repick);
-    let (at, cursor) = (want.or(old.as_ref().map(|v| v.at)).unwrap_or(0).min(sheets.len() - 1), if want.is_some() { None } else { old.as_ref().and_then(|v| v.cursor) });
+    let (at, cursor, range_end) = (
+        want.or(old.as_ref().map(|v| v.at)).unwrap_or(0).min(sheets.len() - 1),
+        if want.is_some() { None } else { old.as_ref().and_then(|v| v.cursor) },
+        if want.is_some() { None } else { old.as_ref().and_then(|v| v.range_end) },
+    );
     let (entry_was, stale) = (old.as_ref().map_or(String::new(), |v| v.entry_was.clone()), old.as_ref().map_or_else(Default::default, |v| v.stale.clone()));
     // where the grid was scrolled to and how wide its columns were dragged stay through a change
     let (table, entry) = old.map_or_else(|| (TableState::new(), TextEdit::new("")), |v| if want.is_some() { (TableState::new(), TextEdit::new("")) } else { (v.table, v.entry) });
@@ -3266,7 +3272,7 @@ fn sync_sheet(s: &mut App) {
         let styles = styles::Styles::read(&p.body, b.null_date);
         (b, styles)
     });
-    sess.sheet = Some(SheetView { name: p.name.clone(), rev: p.rev, at, sheets, looks, want: None, repick: false, cursor, entry_was, stale, table, entry });
+    sess.sheet = Some(SheetView { name: p.name.clone(), rev: p.rev, at, sheets, looks, want: None, repick: false, cursor, range_end, entry_was, stale, table, entry });
     if let (true, Some((r, c))) = (repick, cursor) {
         pick_cell(s, r, c);
     }
@@ -3291,11 +3297,28 @@ fn page_changes(s: &App) -> bool {
     usable(s, "delete") && !s.editing && !saving(s)
 }
 
+/// The normalized selection rectangle `(r1, c1, r2, c2)` in a sheet, when a cell or range is picked.
+fn sheet_selection(v: &SheetView) -> Option<(usize, usize, usize, usize)> {
+    let (r, c) = v.cursor?;
+    let (er, ec) = v.range_end.unwrap_or((r, c));
+    Some((r.min(er), c.min(ec), r.max(er), c.max(ec)))
+}
+
 /// Picks a cell of the sheet showing, with its text ready to be typed over.
 fn pick_cell(s: &mut App, r: usize, c: usize) {
+    pick_cell_ex(s, r, c, false);
+}
+
+/// Picks a cell, or extends the selection rectangle from the anchor when `extend` (Shift) is held.
+fn pick_cell_ex(s: &mut App, r: usize, c: usize, extend: bool) {
     let sess = &mut s.session;
     let Some(v) = &mut sess.sheet else { return };
+    if extend && v.cursor.is_some() {
+        v.range_end = if v.cursor == Some((r, c)) { None } else { Some((r, c)) };
+        return;
+    }
     v.cursor = Some((r, c));
+    v.range_end = None;
     // a cell with a formula shows the formula, as it is typed, and not what it came to
     let formula = sess.open.as_ref().and_then(|p| sheet::formula_at(&p.body, v.at, r, c)).map(|f| formula::to_user(&f));
     v.entry_was = formula.unwrap_or_else(|| v.sheets[v.at].rows.get(r).and_then(|row| row.get(c)).cloned().unwrap_or_default());
@@ -3337,24 +3360,23 @@ fn commit_cell(s: &mut App) {
     }
 }
 
-/// Changes how the picked cell looks, or how its number is written, and saves the page.
+/// Changes how the picked cell (or selected range) looks, or how its number is written, and saves the page.
 fn format_picked(s: &mut App, change: calc::Fmt) {
     let (Some(p), Some(v)) = (s.open.clone(), &s.sheet) else { return };
-    let Some((r, c)) = v.cursor else { return };
+    let Some((r1, c1, r2, c2)) = sheet_selection(v) else { return };
     if !page_changes(s) || v.name != p.name {
         s.note = "this spreadsheet is not changed here".into();
         return;
     }
-    match guarded(|| calc::format_cell(&p.body, v.at, r, c, &change)) {
+    match guarded(|| calc::format_range(&p.body, v.at, r1, c1, r2, c2, &change)) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(body) if body == p.body => {}
         Ok(body) => save_body(s, p, body),
     }
 }
 
-/// Puts `n` rows in at the picked cell's row and `off` below it, or
-/// takes `-n` out from there, and saves the page. Columns the same,
-/// counted from the picked cell's column.
+/// Puts rows in above/below the selected row(s) or takes the selected row(s) out, and saves the page.
+/// Columns behave the same across the selected column span.
 fn shift_picked(s: &mut App, rows: bool, off: usize, n: i64) {
     // not while a save is on its way: this one would be worked out from the text before it, and sent beside it
     if s.sheet.is_some() && !page_changes(s) {
@@ -3362,12 +3384,21 @@ fn shift_picked(s: &mut App, rows: bool, off: usize, n: i64) {
         return;
     }
     let (Some(p), Some(v)) = (s.open.clone(), &mut s.sheet) else { return };
-    let Some((r, c)) = v.cursor else { return };
+    let Some((r1, c1, r2, c2)) = sheet_selection(v) else { return };
     if v.name != p.name {
         return;
     }
+    let span = if rows { r2 - r1 + 1 } else { c2 - c1 + 1 } as i64;
+    let at = if rows {
+        if off == 0 { r1 } else { r2 + 1 }
+    } else if off == 0 {
+        c1
+    } else {
+        c2 + 1
+    };
+    let delta = if n < 0 { -span * n.abs() } else { span * n };
     let stale: Vec<(usize, usize, usize)> = v.stale.iter().copied().collect();
-    match guarded(|| calc::shift_knowing(&p.body, v.at, rows, if rows { r } else { c } + off, n, &stale)) {
+    match guarded(|| calc::shift_knowing(&p.body, v.at, rows, at, delta, &stale)) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(got) => {
             // what was stale before is told to the change, and comes back among the stale where it moved to
@@ -3658,7 +3689,7 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
     }
     // found once a frame, not once a cell
     let hits: std::collections::HashSet<(usize, usize)> = sheet_matches(s).into_iter().collect();
-    let (accent, ink, held, font, warn, ground) = (c.text_accent, c.text_base, c.layer_02, k.ty.ui, c.danger.icon, c.bg_base);
+    let (accent, ink, held, sel_bg, font, warn, ground) = (c.text_accent, c.text_base, c.layer_02, k.selection(), k.ty.ui, c.danger.icon, c.bg_base);
     let grid = table
         .cell(move |s: &App, i, col| {
             let Some(v) = &s.sheet else { return Cell::text("") };
@@ -3691,12 +3722,18 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
                 _ => ink,
             };
             let color = if hits.contains(&(i, at)) { accent } else if v.stale.contains(&(v.at, i, at)) { warn } else { own };
-            let face = rune::TextStyle { weight: if look.bold { 700.0 } else { font.weight }, italic: look.italic, ..font };
-            let mut words = text(said.to_owned()).font(face).color(color).truncate().grow(1.0).min_w(0.0).inert().align(match look.align.unwrap_or(kind) {
+            let face = rune::TextStyle {
+                size: look.size.unwrap_or(font.size),
+                weight: if look.bold { 700.0 } else { font.weight },
+                italic: look.italic,
+                ..font
+            };
+            let mut words = text(said.to_owned()).font(face).color(color).grow(1.0).min_w(0.0).inert().align(match look.align.unwrap_or(kind) {
                 'r' => rune::Align::End,
                 'c' => rune::Align::Center,
                 _ => rune::Align::Start,
             });
+            words = if look.wrap { words.wrap() } else { words.truncate() };
             if look.underline {
                 words = words.spans(vec![Span::new(0, said.len()).underline(color)]);
             }
@@ -3704,16 +3741,19 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
                 words = words.strike(0, said.len(), None);
             }
             let on = v.cursor == Some((i, at));
+            let in_sel = sheet_selection(v).is_some_and(|(r1, c1, r2, c2)| (r1..=r2).contains(&i) && (c1..=c2).contains(&at));
             let mut cell = row().key(format!("cell-{i}-{at}")).w_full().h_full().center_y().label(format!("{}{}", sheet::column_name(at), i + 1)).child(words);
             if let Some(bg) = look.bg.as_deref().and_then(rune::color::hex) {
                 cell = cell.fill(bg);
             }
-            // a press picks the cell, to type into it in the bar above
+            // a press picks the cell; Shift+click extends a rectangular selection for range formatting and multi-row/col shifts
             if may {
-                cell = cell.on_press(move |s: &mut App| pick_cell(s, i, at));
+                cell = cell.on_press_tx(move |s: &mut App, tx: &mut Tx| pick_cell_ex(s, i, at, tx.mods().shift));
             }
             if on && may {
                 cell = cell.fill(held).radius(3.0);
+            } else if in_sel && may {
+                cell = cell.fill(sel_bg).radius(2.0);
             }
             Cell::el(cell)
         })
@@ -3730,6 +3770,8 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
                 .on_press(move |s: &mut App| {
                     if let Some(v) = &mut s.sheet {
                         v.at = i;
+                        v.cursor = None;
+                        v.range_end = None;
                         v.table = TableState::new();
                     }
                 })
@@ -3749,17 +3791,23 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
     }
     let mut page = col().key("sheet").w_full().h_full().min_h(0.0).padding(12.0).gap(8.0);
     if may {
-        let name = v.cursor.map_or("".to_owned(), |(r, col)| format!("{}{}", sheet::column_name(col), r + 1));
+        let sel = sheet_selection(v);
+        let name = match sel {
+            Some((r1, c1, r2, c2)) if (r1, c1) != (r2, c2) => format!("{}{}:{}{}", sheet::column_name(c1), r1 + 1, sheet::column_name(c2), r2 + 1),
+            Some((r, col, _, _)) => format!("{}{}", sheet::column_name(col), r + 1),
+            None => String::new(),
+        };
         let entry = TextInput::new(&v.entry)
-            .placeholder(if v.cursor.is_some() { "Type text, a number, true or false, or a formula starting with =. Enter saves it" } else { "Press a cell to change it" })
+            .placeholder(if v.cursor.is_some() { "Type text, a number, true or false, or a formula starting with =. Enter saves it" } else { "Press a cell to change it (Shift+click for a range)" })
             .on_edit(|s: &mut App| &mut s.sheet.as_mut().expect("a sheet is showing").entry)
             .on_submit(|s: &mut App, _| commit_cell(s))
             .build(k)
             .grow(1.0)
             .key("cell-entry");
-        page = page.child(row().key("cell-bar").w_full().gap(8.0).center_y().child(text(name).key("cell-name").font(k.ty.ui_medium).color(c.text_muted).w(48.0)).child(entry));
+        page = page.child(row().key("cell-bar").w_full().gap(8.0).center_y().child(text(name).key("cell-name").font(k.ty.ui_medium).color(c.text_muted).min_w(48.0)).child(entry));
         // how the picked cell looks and how its number is written: each press is a change, saved at once
         if let (Some((r, col)), Some((book, styles))) = (v.cursor, &v.looks) {
+            let (rows_n, cols_n) = sel.map_or((1, 1), |(r1, c1, r2, c2)| (r2 - r1 + 1, c2 - c1 + 1));
             let style = book.style_at(v.at, r, col);
             let look = styles.look(&style);
             let kind = styles.kind(&style);
@@ -3767,7 +3815,7 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
             let b = |key: &str, label: &str, on: bool, help: &str, change: calc::Fmt| {
                 Button::new(label).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help(help).on_press(move |s: &mut App| format_picked(s, change.clone())).build(k).key(key.to_owned())
             };
-            let shift = |key: &str, label: &str, help: &str, rows: bool, off: usize, n: i64| {
+            let shift = |key: &str, label: String, help: &str, rows: bool, off: usize, n: i64| {
                 Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(help).on_press(move |s: &mut App| shift_picked(s, rows, off, n)).build(k).key(key.to_owned())
             };
             let align = |a: char| calc::Fmt::Align(Some(a).filter(|a| look.align != Some(*a)));
@@ -3789,16 +3837,26 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
                     .child(b("fmt-date", "Date", kind == Some("date"), "A date. Press again for no format", number("date", kind == Some("date"))))
                     .child(b("fmt-time", "Time", kind == Some("time"), "A time of day. Press again for no format", number("time", kind == Some("time")))),
             );
-            // rows and columns put in beside the picked cell, or its own taken out: a line of their own, so none runs off a narrow window
+            // rows and columns put in beside the picked cell/range, or its own taken out: a line of their own, so none runs off a narrow window
+            let (r_above, r_below, r_del) = if rows_n > 1 {
+                (format!("{rows_n} rows above"), format!("+ {rows_n} rows"), format!("\u{2212} {rows_n} rows"))
+            } else {
+                ("Row above".into(), "+ row".into(), "\u{2212} row".into())
+            };
+            let (c_left, c_right, c_del) = if cols_n > 1 {
+                (format!("{cols_n} cols left"), format!("+ {cols_n} cols"), format!("\u{2212} {cols_n} cols"))
+            } else {
+                ("Col left".into(), "+ col".into(), "\u{2212} col".into())
+            };
             page = page.child(
                 row().key("cell-shift").w_full().gap(4.0).center_y().pl(56.0)
-                    .child(shift("row-above", "Row above", "Put a row in above this one", true, 0, 1))
-                    .child(shift("row-below", "+ row", "Put a row in below this one", true, 1, 1))
-                    .child(shift("row-del", "\u{2212} row", "Take this row out", true, 0, -1))
+                    .child(shift("row-above", r_above, "Put row(s) in above the selection", true, 0, 1))
+                    .child(shift("row-below", r_below, "Put row(s) in below the selection", true, 1, 1))
+                    .child(shift("row-del", r_del, "Take the selected row(s) out", true, 0, -1))
                     .child(Divider::vertical().build(k))
-                    .child(shift("col-left", "Col left", "Put a column in left of this one", false, 0, 1))
-                    .child(shift("col-right", "+ col", "Put a column in right of this one", false, 1, 1))
-                    .child(shift("col-del", "\u{2212} col", "Take this column out", false, 0, -1)),
+                    .child(shift("col-left", c_left, "Put column(s) in left of the selection", false, 0, 1))
+                    .child(shift("col-right", c_right, "Put column(s) in right of the selection", false, 1, 1))
+                    .child(shift("col-del", c_del, "Take the selected column(s) out", false, 0, -1)),
             );
         }
     }
@@ -7529,10 +7587,13 @@ fn ask_download(s: &mut App, tx: &mut Tx) {
 /// Exports the page in front as a PDF, as the ship renders it. The file
 /// is named in the save dialog, and a headless Chromium or Chrome prints it.
 fn ask_pdf(s: &mut App, tx: &mut Tx) {
-    let (Some(p), Some(c)) = (s.open.clone(), s.conn.clone()) else {
+    let Some(p) = s.open.clone() else { return };
+    let local_kind = p.kind == "fods";
+    if !local_kind && s.conn.is_none() {
         s.note = "PDF export prints the page as the ship renders it, so it needs a ship".into();
         return;
-    };
+    }
+    let conn = s.conn.clone();
     let Some(browser) = pdf::browser() else {
         s.note = "PDF export needs Chromium or Chrome installed: this app cannot print by itself".into();
         return;
@@ -7543,10 +7604,14 @@ fn ask_pdf(s: &mut App, tx: &mut Tx) {
     tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
         Ok(Some(path)) => {
             s.note = format!("printing {} to {}", p.name, path.display());
-            s.op_req.request((c, p, browser, title, path), |(c, p, browser, title, path)| {
-                // what the ship's preview shows, or the source for a kind it does not render
-                let html = c.rendered(&p.name).unwrap_or_default();
-                let body = if html.trim().is_empty() { pdf::source(&p.body) } else { html };
+            s.op_req.request((conn, p, browser, title, path), |(conn, p, browser, title, path)| {
+                let body = if p.kind == "fods" {
+                    sheet::render_html(&p.body, &title).unwrap_or_else(|_| pdf::source(&p.body))
+                } else {
+                    // what the ship's preview shows, or the source for a kind it does not render
+                    let html = conn.as_ref().and_then(|c| c.rendered(&p.name).ok()).unwrap_or_default();
+                    if html.trim().is_empty() { pdf::source(&p.body) } else { html }
+                };
                 Ok(Op::Said(match pdf::print(&browser, &pdf::document(&title, &body), &path) {
                     Ok(()) => format!("exported to {}", path.display()),
                     Err(e) => format!("not exported: {e}"),

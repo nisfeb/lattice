@@ -42,7 +42,7 @@ fn to_bool(v: &V) -> V {
 /// One value from an argument: a one-cell range is its cell, a larger one has no single value.
 fn scalar(e: &mut Engine, a: &V) -> V {
     match a {
-        V::Range(g) if g.r1 == g.r2 && g.c1 == g.c2 => e.value((g.s, g.r1, g.c1)),
+        V::Range(g) if g.single_sheet() && g.r1 == g.r2 && g.c1 == g.c2 => e.value((g.s, g.r1, g.c1)),
         V::Range(_) => err(VALUE),
         other => other.clone(),
     }
@@ -210,6 +210,9 @@ fn criterion(e: &mut Engine, c: &V) -> Box<dyn Fn(&V) -> bool> {
 /// The cells of a range and, beside each, the cell at the same place in another range.
 /// The rectangle is walked whole, held to what the sheet has in it.
 fn pairs(e: &mut Engine, test: Rg, other: Option<Rg>, f: &mut dyn FnMut(V, V)) -> Result<(), Unsupported> {
+    if !test.single_sheet() || other.is_some_and(|o| !o.single_sheet()) {
+        return Err(Unsupported);
+    }
     let (rows, cols) = e.used(test.s);
     let r2 = test.r2.min(rows.saturating_sub(1).max(test.r1));
     let c2 = test.c2.min(cols.saturating_sub(1).max(test.c1));
@@ -723,6 +726,9 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         "SUMPRODUCT" => {
             let gs: Vec<Rg> = a.iter().filter_map(|x| if let V::Range(g) = x { Some(*g) } else { None }).collect();
             let Some(f) = gs.first().copied().filter(|_| gs.len() == a.len()) else { return Ok(err(VALUE)) };
+            if gs.iter().any(|g| !g.single_sheet()) {
+                return Err(Unsupported);
+            }
             if gs.iter().any(|g| g.rows() != f.rows() || g.cols() != f.cols()) {
                 return Ok(err(VALUE));
             }
@@ -831,7 +837,7 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             bad => bad,
         },
         "NA" => err(NA),
-        "ISBLANK" => V::Bool(matches!(a.first(), Some(V::Range(g)) if g.r1 == g.r2 && g.c1 == g.c2 && e.value((g.s, g.r1, g.c1)) == V::Blank)),
+        "ISBLANK" => V::Bool(matches!(a.first(), Some(V::Range(g)) if g.single_sheet() && g.r1 == g.r2 && g.c1 == g.c2 && e.value((g.s, g.r1, g.c1)) == V::Blank)),
         "ISNUMBER" => V::Bool(matches!(scalar(e, &arg(0)), V::Num(_) | V::Bool(_))),
         "ISTEXT" => V::Bool(matches!(scalar(e, &arg(0)), V::Str(_))),
         "ISNONTEXT" => V::Bool(!matches!(scalar(e, &arg(0)), V::Str(_))),
@@ -925,13 +931,15 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             for x in a.iter().skip(2) {
                 match x {
                     V::Range(g) => {
-                        let (rows, cols) = e.used(g.s);
-                        for i in 0..g.rows().min(rows.saturating_sub(g.r1)) {
-                            for j in 0..g.cols().min(cols.saturating_sub(g.c1)) {
-                                if e.leaving() {
-                                    return Err(Unsupported);
+                        for si in g.s..=g.s2 {
+                            let (rows, cols) = e.used(si);
+                            for i in 0..g.rows().min(rows.saturating_sub(g.r1)) {
+                                for j in 0..g.cols().min(cols.saturating_sub(g.c1)) {
+                                    if e.leaving() {
+                                        return Err(Unsupported);
+                                    }
+                                    parts.push(e.value((si, g.r1 + i, g.c1 + j)));
                                 }
-                                parts.push(e.value((g.s, g.r1 + i, g.c1 + j)));
                             }
                         }
                     }
@@ -1056,6 +1064,9 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         // lookup
         "VLOOKUP" | "HLOOKUP" => {
             let Some(V::Range(g)) = a.get(1).copied_range() else { return Ok(err(VALUE)) };
+            if !g.single_sheet() {
+                return Err(Unsupported);
+            }
             let down = name == "VLOOKUP";
             let V::Num(at) = to_num(&scalar(e, &arg(2))) else { return Ok(to_num(&scalar(e, &arg(2)))) };
             if at < 1.0 || at > if down { g.cols() } else { g.rows() } as f64 {
@@ -1087,6 +1098,9 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
         }
         "INDEX" => {
             let Some(V::Range(g)) = a.first().copied_range() else { return Ok(err(VALUE)) };
+            if !g.single_sheet() {
+                return Err(Unsupported);
+            }
             let given = |i: usize| a.get(i).is_some_and(|x| *x != V::Missing);
             let r = if given(1) { to_num(&scalar(e, &arg(1))) } else { V::Num(0.0) };
             let c = if given(2) { to_num(&scalar(e, &arg(2))) } else { V::Num(0.0) };
