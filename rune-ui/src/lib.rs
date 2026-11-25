@@ -3361,9 +3361,17 @@ fn writer_mutate(s: &mut App, f: impl FnOnce(&mut writer::Doc, Option<&writer::B
     }
     let mut next = v.doc.clone();
     let cur = v.cursor.clone();
+    let pending = cur
+        .as_ref()
+        .filter(|_| v.entry.text != v.entry_was)
+        .map(|p| (p.clone(), v.entry.text.clone()));
     let step = guarded(move || {
+        let mut text_changed = false;
+        if let Some((ref pp, ref typed)) = pending {
+            text_changed = next.set_block_text(pp, typed);
+        }
         let (changed, next_cursor) = f(&mut next, cur.as_ref());
-        if !changed {
+        if !text_changed && !changed {
             return Ok(None);
         }
         let xml = writer::serialize_fodt(&next)?;
@@ -3409,20 +3417,35 @@ fn writer_apply(s: &mut App, f: impl FnOnce(&mut writer::Doc, &writer::BlockPath
 }
 
 fn writer_commit(s: &mut App) {
-    let Some((path, typed, was)) = s.writer.as_ref().and_then(|v| Some((v.cursor.clone()?, v.entry.text.clone(), v.entry_was.clone()))) else { return };
-    if typed == was {
-        return;
-    }
-    writer_mutate(s, |doc, _| (doc.set_block_text(&path, &typed), Some(path.clone())));
+    let Some(path) = s.writer.as_ref().and_then(|v| (v.entry.text != v.entry_was).then(|| v.cursor.clone()).flatten()) else { return };
+    writer_mutate(s, |_, _| (false, Some(path)));
 }
 
 fn writer_undo(s: &mut App) {
-    writer_commit(s);
     let Some(p) = s.open.clone().filter(|p| p.kind == "fodt") else { return };
     if !writer_editable(s) {
         return;
     }
     let Some(v) = &mut s.session.writer else { return };
+    if v.entry.text != v.entry_was {
+        if let Some(path) = v.cursor.clone() {
+            let typed = v.entry.text.clone();
+            let mut typed_doc = v.doc.clone();
+            match guarded(move || {
+                typed_doc.set_block_text(&path, &typed);
+                Ok(typed_doc)
+            }) {
+                Ok(d) => v.redo.push(d),
+                Err(why) => {
+                    s.note = why;
+                    return;
+                }
+            }
+            v.entry = TextEdit::new(v.entry_was.as_str());
+            v.entry.focused = true;
+            return;
+        }
+    }
     let Some(prev) = v.undo.pop() else { return };
     let body = match guarded(|| writer::serialize_fodt(&prev)) {
         Ok(xml) => xml,
@@ -3451,7 +3474,6 @@ fn writer_undo(s: &mut App) {
 }
 
 fn writer_redo(s: &mut App) {
-    writer_commit(s);
     let Some(p) = s.open.clone().filter(|p| p.kind == "fodt") else { return };
     if !writer_editable(s) {
         return;
@@ -3466,8 +3488,22 @@ fn writer_redo(s: &mut App) {
             return;
         }
     };
-    let cur = std::mem::replace(&mut v.doc, next);
-    v.undo.push(cur);
+    let mut cur = std::mem::replace(&mut v.doc, next);
+    if v.entry.text != v.entry_was {
+        if let Some(path) = v.cursor.clone() {
+            let typed = v.entry.text.clone();
+            if let Ok(d) = guarded(move || {
+                cur.set_block_text(&path, &typed);
+                Ok(cur)
+            }) {
+                v.undo.push(d);
+            }
+        } else {
+            v.undo.push(cur);
+        }
+    } else {
+        v.undo.push(cur);
+    }
     if let Some(path) = v.cursor.clone() {
         if let Some(writer::Block::Paragraph { inlines, .. } | writer::Block::Heading { inlines, .. }) = v.doc.block_at(&path) {
             let txt = writer::inlines_text(inlines);
@@ -3813,7 +3849,6 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                 .disabled(!has_cur || styles.is_empty())
                 .help("Cycle paragraph style from the document's named styles")
                 .on_press(move |s: &mut App| {
-                    writer_commit(s);
                     let Some(v) = &s.writer else { return };
                     let list = v.doc.styles.named_styles("paragraph");
                     if list.is_empty() {
@@ -3847,7 +3882,6 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                 .disabled(!has_cur)
                 .help("Cycle heading level (Body, H1 to H6)")
                 .on_press(|s: &mut App| {
-                    writer_commit(s);
                     let next_lv = match s.writer.as_ref().and_then(|v| v.cursor.as_ref().and_then(|p| v.doc.block_at(p))) {
                         Some(writer::Block::Heading { level, .. }) if *level < 6 => Some(level + 1),
                         Some(writer::Block::Heading { .. }) => None,
@@ -3872,7 +3906,6 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                 .help(help)
                 .on_press(move |s: &mut App| {
                     let range = s.writer.as_ref().map(|v| v.entry.range()).unwrap_or((0, 0));
-                    writer_commit(s);
                     writer_apply(s, move |doc, path| doc.toggle_inline_fmt(path, range.0, range.1, fmt));
                 })
                 .build(k)
@@ -3891,7 +3924,6 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                     .help("Set or remove link on selection or block")
                     .on_press(|s: &mut App| {
                         let range = s.writer.as_ref().map(|v| v.entry.range()).unwrap_or((0, 0));
-                        writer_commit(s);
                         let mut t = TextEdit::new("");
                         t.focused = true;
                         s.prompt = Some(Prompt::WriterLink(t, range));
@@ -3906,7 +3938,6 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                     .disabled(!has_cur)
                     .help("Toggle Quotations block style")
                     .on_press(|s: &mut App| {
-                        writer_commit(s);
                         writer_apply(s, |doc, path| doc.toggle_quote(path));
                     })
                     .build(k)
@@ -3919,7 +3950,6 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                     .disabled(!has_cur)
                     .help("Toggle bullet list on this block")
                     .on_press(|s: &mut App| {
-                        writer_commit(s);
                         writer_mutate(s, |doc, cur| {
                             let Some(path) = cur else { return (false, None) };
                             let ti = writer::top_index(path);
@@ -3939,7 +3969,6 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                     .disabled(!has_cur)
                     .help("Toggle numbered list on this block")
                     .on_press(|s: &mut App| {
-                        writer_commit(s);
                         writer_mutate(s, |doc, cur| {
                             let Some(path) = cur else { return (false, None) };
                             let ti = writer::top_index(path);
@@ -3959,7 +3988,6 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                     .disabled(!has_cur)
                     .help("Toggle page break before this block")
                     .on_press(|s: &mut App| {
-                        writer_commit(s);
                         writer_apply(s, |doc, path| doc.toggle_page_break(path));
                     })
                     .build(k)
@@ -3971,7 +3999,6 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                     .variant(ButtonVariant::Ghost)
                     .help("Insert a new paragraph after the current block")
                     .on_press(|s: &mut App| {
-                        writer_commit(s);
                         writer_mutate(s, |doc, cur| {
                             if let Some(writer::BlockPath::ListItem { path, item, .. }) = cur {
                                 let ti = writer::top_index(path);
@@ -3993,7 +4020,6 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                     .variant(ButtonVariant::Ghost)
                     .help("Insert a 2x2 table after the current block")
                     .on_press(|s: &mut App| {
-                        writer_commit(s);
                         writer_mutate(s, |doc, cur| {
                             let ti = cur.map(writer::top_index).unwrap_or_else(|| doc.blocks.len().saturating_sub(1));
                             let np = doc.insert_table_after(ti, 2, 2);
@@ -4011,7 +4037,6 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                         .variant(ButtonVariant::Ghost)
                         .help("Add a row to this table")
                         .on_press(|s: &mut App| {
-                            writer_commit(s);
                             writer_mutate(s, |doc, cur| {
                                 let Some(writer::BlockPath::TableCell { path, row, .. }) = cur else { return (false, None) };
                                 match doc.table_add_row(writer::top_index(path), *row) {
@@ -4029,7 +4054,6 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                         .variant(ButtonVariant::Ghost)
                         .help("Remove this table row")
                         .on_press(|s: &mut App| {
-                            writer_commit(s);
                             writer_mutate(s, |doc, cur| {
                                 let Some(writer::BlockPath::TableCell { path, row, .. }) = cur else { return (false, None) };
                                 let ti = writer::top_index(path);
@@ -4045,7 +4069,7 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                 Button::new("Undo")
                     .control_size(ControlSize::Small)
                     .variant(ButtonVariant::Ghost)
-                    .disabled(v.undo.is_empty())
+                    .disabled(v.undo.is_empty() && v.entry.text == v.entry_was)
                     .on_press(writer_undo)
                     .build(k)
                     .key("wr-undo"),
@@ -19558,6 +19582,37 @@ mod tests {
         sync_writer(&mut s);
         assert!(s.writer.as_ref().unwrap().undo.is_empty(), "external edit must clear undo");
         assert!(s.writer.as_ref().unwrap().redo.is_empty(), "external edit must clear redo");
+    }
+
+    #[test]
+    fn writer_folds_pending_text_and_action_into_single_save_and_handles_dirty_undo() {
+        let mut s = init();
+        s.open = Some(Page { name: "doc".into(), kind: "fodt".into(), body: writer::BLANK_FODT.to_owned(), rev: 1 });
+        sync_writer(&mut s);
+        let p0 = s.writer.as_ref().unwrap().doc.first_editable_path().unwrap();
+        writer_pick(&mut s, p0.clone());
+
+        // Type text without hitting Apply, then apply bold to "world" in a single save (rev 1 -> 2).
+        s.writer.as_mut().unwrap().entry = TextEdit::new("Hello world");
+        writer_apply(&mut s, |doc, path| doc.toggle_inline_fmt(path, 6, 11, writer::InlineFmt::Strong));
+        assert_eq!(s.open.as_ref().unwrap().rev, 2, "text + format must land in one save");
+        assert!(!s.note.contains("read-only"), "must not refuse as read-only: {}", s.note);
+        let blk = s.writer.as_ref().unwrap().doc.block_at(&p0).unwrap();
+        let writer::Block::Paragraph { inlines, .. } = blk else { panic!("expected paragraph") };
+        assert_eq!(writer::inlines_text(inlines), "Hello world");
+        assert!(inlines.iter().any(|i| matches!(i, writer::Inline::Text { text, marks } if text == "world" && marks.strong.is_some())));
+
+        // Type uncommitted text, then Undo: reverts entry without a save and pushes typed snapshot to redo.
+        s.writer.as_mut().unwrap().entry = TextEdit::new("Hello world typo");
+        writer_undo(&mut s);
+        assert_eq!(s.open.as_ref().unwrap().rev, 2, "undoing uncommitted typing needs no save");
+        assert_eq!(s.writer.as_ref().unwrap().entry.text, "Hello world");
+        assert_eq!(s.writer.as_ref().unwrap().redo.len(), 1);
+
+        // Redo restores the typed snapshot in one save (rev 2 -> 3).
+        writer_redo(&mut s);
+        assert_eq!(s.open.as_ref().unwrap().rev, 3);
+        assert_eq!(s.writer.as_ref().unwrap().entry.text, "Hello world typo");
     }
 }
 
