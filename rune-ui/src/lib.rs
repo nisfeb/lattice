@@ -2213,7 +2213,7 @@ fn confirm(s: &mut App) {
             if move_it {
                 if let Some(c) = src {
                     if let Err(e) = c.delete(&page.name) {
-                        return Err(format!("copied to {label} as {}, but deleting {} here failed: {e}", dest.name, page.name));
+                        return Ok(Op::Said(format!("copied to {label} as {}, but deleting {} here failed: {e}", dest.name, page.name)));
                     }
                 }
                 Ok(Op::Deleted(page.name))
