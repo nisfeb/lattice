@@ -1729,12 +1729,28 @@ pub fn parse_pruned(raw: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Comet comment policy reported by a peer for one of its published pages.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CometPolicy {
+    pub mode: String,
+    pub until: Option<u64>,
+}
+
 /// What stands at a `urb://` address, as the ship reads it (`GET /urb-read`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Urb {
     /// A page: its ship, its path there, its kind and its text, and how many comments its public thread has.
     /// `comments` is the page's public thread as the ship read it, oldest first: who, when and what.
-    Page { ship: String, path: String, kind: String, body: String, comments: Vec<Comment> },
+    /// `comments_open` and `comet` carry the host's public comment policy when the ship reports them.
+    Page {
+        ship: String,
+        path: String,
+        kind: String,
+        body: String,
+        comments: Vec<Comment>,
+        comments_open: Option<bool>,
+        comet: Option<CometPolicy>,
+    },
     /// A folder: its path, and what is in it, each with its address and whether it is a folder too.
     Folder { path: String, entries: Vec<(String, String, bool)> },
     /// A forum board or one of its threads: read as the forum reads it.
@@ -1765,7 +1781,20 @@ pub fn urb_parse(json: &str) -> Result<Urb, String> {
         Some("page") => {
             // this ship's own page comes with its name, another's with its path there
             let path = if v["name"].is_string() { text("name") } else { text("path").trim_start_matches('/').to_owned() };
-            Ok(Urb::Page { ship: text("ship"), path, kind: text("mode"), body: text("body"), comments: serde_json::from_value(v["comments"].clone()).unwrap_or_default() })
+            let comments_open = v["comments-open"].as_bool();
+            let comet = v["comet"].as_object().map(|o| CometPolicy {
+                mode: o.get("mode").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+                until: o.get("until").and_then(|x| x.as_u64()),
+            });
+            Ok(Urb::Page {
+                ship: text("ship"),
+                path,
+                kind: text("mode"),
+                body: text("body"),
+                comments: serde_json::from_value(v["comments"].clone()).unwrap_or_default(),
+                comments_open,
+                comet,
+            })
         }
         Some("folder") => {
             let entries = v["entries"].as_array().map_or_else(Vec::new, |a| a.iter().filter_map(|e| Some((e["name"].as_str()?.to_owned(), e["url"].as_str()?.to_owned(), e["folder"].as_bool().unwrap_or(false)))).collect());
@@ -6087,9 +6116,46 @@ mod tests {
         }
         assert!(urb_is_forum("urb://~nec/forum/chat/3") && urb_is_forum("urb://~nec/forum") && !urb_is_forum("urb://~nec/notes/forum"));
         let page = r##"{"url":"urb://~nec/notes/a","ship":"~nec","own":false,"kind":"page","shared":false,"path":"/notes/a","mode":"md","body":"# A\n","size":4,"comments":[{"author":"~bud","when":"~2026.1.1","body":"hi"}]}"##;
-        assert_eq!(urb_parse(page), Ok(Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: vec![Comment { page: String::new(), id: String::new(), author: "~bud".into(), when: "~2026.1.1".into(), body: "hi".into() }] }));
+        assert_eq!(
+            urb_parse(page),
+            Ok(Urb::Page {
+                ship: "~nec".into(),
+                path: "notes/a".into(),
+                kind: "md".into(),
+                body: "# A\n".into(),
+                comments: vec![Comment { page: String::new(), id: String::new(), author: "~bud".into(), when: "~2026.1.1".into(), body: "hi".into() }],
+                comments_open: None,
+                comet: None,
+            })
+        );
+        let with_policy = r##"{"url":"urb://~nec/notes/p","ship":"~nec","own":false,"kind":"page","shared":false,"path":"/notes/p","mode":"md","body":"hi","size":2,"comments-open":false,"comet":{"mode":"held","until":1900000000},"comments":[]}"##;
+        assert_eq!(
+            urb_parse(with_policy),
+            Ok(Urb::Page {
+                ship: "~nec".into(),
+                path: "notes/p".into(),
+                kind: "md".into(),
+                body: "hi".into(),
+                comments: Vec::new(),
+                comments_open: Some(false),
+                comet: Some(CometPolicy { mode: "held".into(), until: Some(1_900_000_000) }),
+            })
+        );
+        let null_policy = r##"{"url":"urb://~nec/notes/q","ship":"~nec","own":false,"kind":"page","shared":false,"path":"/notes/q","mode":"md","body":"ok","size":2,"comments-open":null,"comet":null,"comments":[]}"##;
+        assert_eq!(
+            urb_parse(null_policy),
+            Ok(Urb::Page {
+                ship: "~nec".into(),
+                path: "notes/q".into(),
+                kind: "md".into(),
+                body: "ok".into(),
+                comments: Vec::new(),
+                comments_open: None,
+                comet: None,
+            })
+        );
         let own = r##"{"url":"urb://~zod/a","ship":"~zod","own":true,"kind":"page","mode":"gmi","name":"a","body":"x","rev":2,"comments":[]}"##;
-        assert_eq!(urb_parse(own), Ok(Urb::Page { ship: "~zod".into(), path: "a".into(), kind: "gmi".into(), body: "x".into(), comments: Vec::new() }));
+        assert_eq!(urb_parse(own), Ok(Urb::Page { ship: "~zod".into(), path: "a".into(), kind: "gmi".into(), body: "x".into(), comments: Vec::new(), comments_open: None, comet: None }));
         let folder = r#"{"url":"urb://~nec/notes/","ship":"~nec","own":false,"kind":"folder","path":"/notes","entries":[{"name":"sub","url":"urb://~nec/notes/sub/","folder":true},{"name":"a","url":"urb://~nec/notes/a","folder":false}]}"#;
         assert_eq!(urb_parse(folder), Ok(Urb::Folder { path: "/notes".into(), entries: vec![("sub".into(), "urb://~nec/notes/sub/".into(), true), ("a".into(), "urb://~nec/notes/a".into(), false)] }));
         assert_eq!(urb_parse(r#"{"kind":"binary","mark":"mime","type":"image/png","size":1234}"#), Ok(Urb::Binary { kind: "image/png".into(), size: 1234 }));
@@ -6108,7 +6174,7 @@ mod tests {
         assert!(matches!(c.send_queued(&name, &q), Sent::Done { .. }));
         c.share(&name, "shared").unwrap();
         let got = c.urb_read(&format!("urb://{}/{name}", c.ship())).unwrap();
-        assert_eq!(got, Urb::Page { ship: c.ship().to_owned(), path: name.clone(), kind: "md".into(), body: "# Read by address\n".into(), comments: Vec::new() });
+        assert_eq!(got, Urb::Page { ship: c.ship().to_owned(), path: name.clone(), kind: "md".into(), body: "# Read by address\n".into(), comments: Vec::new(), comments_open: None, comet: None });
         let folder = c.urb_read(&format!("urb://{}/{dir}/", c.ship()));
         eprintln!("the folder's address: {folder:?}");
         let away = c.urb_read("urb://~nec/notes/a").unwrap_err();

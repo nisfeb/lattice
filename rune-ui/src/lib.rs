@@ -909,7 +909,7 @@ struct ShipSession {
     page_held: HashMap<String, Vec<Comment>>,
     /// The public thread of the page of another ship last read by address, oldest first.
     thread: Option<Thread>,
-    thread_req: Latest<Result<(String, Vec<Comment>), String>>,
+    thread_req: Latest<Result<(String, Vec<Comment>, Option<(Option<bool>, Option<api::CometPolicy>)>), String>>,
     /// A comment being posted. It has a request of its own: on the one the other actions share, any
     /// of them pressed meanwhile dropped the post's answer and left Post waiting for good.
     comment_req: Latest<Result<Op, String>>,
@@ -3479,7 +3479,7 @@ fn applied(s: &mut App, op: Op) {
             if let Some(c) = s.conn.clone() {
                 s.thread_req.request((c, url), |(c, url)| {
                     api::pause(std::time::Duration::from_millis(2500));
-                    thread_of(&c, &url).map(|l| (url, l))
+                    thread_of(&c, &url).map(|(l, pol)| (url, l, Some(pol)))
                 });
             } else {
                 #[cfg(unix)]
@@ -3488,7 +3488,7 @@ fn applied(s: &mut App, op: Op) {
                         s.thread_req.request((e, url, ship, key), |(e, url, ship, key)| {
                             api::pause(std::time::Duration::from_millis(2500));
                             let list = e.thread(&ship, &key, engine::PEEK_BUDGET).unwrap_or_default().into_iter().map(pub_comment_to_api).collect();
-                            Ok((url, list))
+                            Ok((url, list, None))
                         });
                     }
                 }
@@ -9945,10 +9945,20 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if let Some(r) = s.thread_req.take() {
         changed = true;
         match r {
-            Ok((url, list)) => {
+            Ok((url, list, pol)) => {
                 let ours = current_actor(s);
                 if let Some(t) = s.thread.as_mut().filter(|t| t.url == url) {
                     t.list = list;
+                    if let Some((comments_open, comet)) = pol {
+                        t.comments_open = comments_open;
+                        if let Some(cp) = comet {
+                            t.comet_mode = cp.mode;
+                            t.comet_full_until = cp.until;
+                        } else {
+                            t.comet_mode.clear();
+                            t.comet_full_until = None;
+                        }
+                    }
                     settle_sent(t, &ours);
                 }
             }
@@ -15078,7 +15088,7 @@ fn urb_go_anon(s: &mut App, to: Option<String>) {
                         comet_full_until: comets.full_until,
                     };
                     let comments = comments.into_iter().map(pub_comment_to_api).collect();
-                    Ok((url.clone(), api::Urb::Page { ship, path, kind: engine::kind_of(&p.mark).to_owned(), body: p.body, comments }, Some(meta)))
+                    Ok((url.clone(), api::Urb::Page { ship, path, kind: engine::kind_of(&p.mark).to_owned(), body: p.body, comments, comments_open: None, comet: None }, Some(meta)))
                 }
                 Err(engine::ReadError::NotPublished(msg)) => {
                     // Check if the address names a published or granted folder.
@@ -15506,7 +15516,7 @@ fn urb_got_with(s: &mut App, url: String, got: api::Urb, meta: Option<AnonPageMe
         anon_visits_store(&s.visits);
     }
     match got {
-        api::Urb::Page { ship, path, kind, body, comments } => {
+        api::Urb::Page { ship, path, kind, body, comments, comments_open, comet } => {
             let name = format!("{ship}/{path}");
             if !comments.is_empty() {
                 s.note = format!("{} comment{} on this page, in the Comments pane", comments.len(), if comments.len() == 1 { "" } else { "s" });
@@ -15514,14 +15524,18 @@ fn urb_got_with(s: &mut App, url: String, got: api::Urb, meta: Option<AnonPageMe
             // the thread is kept for the pane, and what was sent to it from here stays said until the thread shows it
             let sent = s.thread.take().filter(|t| t.url == url).and_then(|t| t.sent);
             let m = meta.unwrap_or_default();
+            let (comet_mode, comet_full_until) = match comet {
+                Some(cp) => (cp.mode, cp.until),
+                None => (m.comet_mode, m.comet_full_until),
+            };
             let mut thread = Thread {
                 url: url.clone(),
                 ship: ship.clone(),
                 page: path.clone(),
                 key: m.key,
-                comments_open: m.comments_open,
-                comet_mode: m.comet_mode,
-                comet_full_until: m.comet_full_until,
+                comments_open: comments_open.or(m.comments_open),
+                comet_mode,
+                comet_full_until,
                 list: comments,
                 all: false,
                 sent,
@@ -15699,18 +15713,50 @@ fn load_comments(s: &mut App) {
     }
 }
 
-/// Another ship's page's public thread, read at its address.
-fn thread_of(c: &Conn, url: &str) -> Result<Vec<Comment>, String> {
+/// Another ship's page's public thread and comment policy, read at its address.
+fn thread_of(c: &Conn, url: &str) -> Result<(Vec<Comment>, (Option<bool>, Option<api::CometPolicy>)), String> {
     match c.urb_read(url)? {
-        api::Urb::Page { comments, .. } => Ok(comments),
+        api::Urb::Page { comments, comments_open, comet, .. } => Ok((comments, (comments_open, comet))),
         _ => Err("that address is no longer a page".into()),
     }
+}
+
+/// Evaluates a remote page's comment policy (`comments_open`, `comet_mode`, `comet_full_until`)
+/// for both ship-backed and anonymous views. Returns `(blocked_message, composer_note)`.
+fn thread_comment_policy(t: &Thread, anon: bool) -> (Option<String>, String) {
+    let blocked = if t.comments_open == Some(false) {
+        Some("Comments are off on this page.".into())
+    } else if t.comet_mode == "off" {
+        Some("Anonymous comments are off on this page.".into())
+    } else if let Some(mins) = comet_full_mins(t.comet_full_until) {
+        Some(format!("Anonymous comments on this page are full for about {mins} minute{}.", if mins == 1 { "" } else { "s" }))
+    } else {
+        None
+    };
+    let note = if anon {
+        if t.comet_mode == "held" {
+            format!("Sent as your anonymous identity. Anonymous comments are reviewed before they appear on {}.", t.ship)
+        } else {
+            format!("Sent as your anonymous identity. {} decides whether it shows: comments may be off or held.", t.ship)
+        }
+    } else if t.comet_mode == "held" {
+        format!("Posted over Ames from your ship. Anonymous comments are reviewed before they appear on {}.", t.ship)
+    } else if t.comments_open == Some(true) {
+        format!("Posted over Ames from your ship, so {} sees your @p as the author.", t.ship)
+    } else {
+        format!("Sent as your ship. {} decides whether it shows: comments may be off there, or held.", t.ship)
+    };
+    (blocked, note)
 }
 
 /// Sends the comment typed in the pane to the page of another ship in front,
 /// as this ship or as the anonymous comet identity.
 fn post_remote_comment(s: &mut App) {
     let Some(t) = thread_here(s).cloned() else { return };
+    if let (Some(why), _) = thread_comment_policy(&t, s.anon) {
+        s.note = why;
+        return;
+    }
     let body = s.comment.text.trim().to_owned();
     if body.is_empty() || s.comment_sending {
         return;
@@ -16110,48 +16156,28 @@ fn thread_view(t: &Thread, s: &App, k: &Kit) -> El {
     let (url, ship, key) = (t.url.clone(), t.ship.clone(), if t.key.is_empty() { format!("/{}", t.page.trim_start_matches('/')) } else { t.key.clone() });
     let again = Button::new("Refresh").help("Read the thread again").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(s.thread_req.is_pending()).on_press(move |s: &mut App| {
         if let Some(c) = s.conn.clone() {
-            s.thread_req.request((c, url.clone()), |(c, url)| thread_of(&c, &url).map(|l| (url, l)));
+            s.thread_req.request((c, url.clone()), |(c, url)| thread_of(&c, &url).map(|(l, pol)| (url, l, Some(pol))));
         } else {
             #[cfg(unix)]
             if s.anon {
                 if let Some(e) = s.global.engine.clone() {
                     s.thread_req.request((e, url.clone(), ship.clone(), key.clone()), |(e, url, ship, key)| {
                         let list = e.thread(&ship, &key, engine::PEEK_BUDGET).unwrap_or_default().into_iter().map(pub_comment_to_api).collect();
-                        Ok((url, list))
+                        Ok((url, list, None))
                     });
                 }
             }
         }
     }).build(k).key("thread-again");
-    let blocked_msg: Option<String> = if s.anon {
-        if t.comments_open == Some(false) {
-            Some("Comments are off for this page.".into())
-        } else if t.comet_mode == "off" {
-            Some("This page does not take anonymous comments.".into())
-        } else if let Some(mins) = comet_full_mins(t.comet_full_until) {
-            Some(format!("Anonymous comments on this page are full for about {mins} minute{}.", if mins == 1 { "" } else { "s" }))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let (blocked_msg, note) = thread_comment_policy(t, s.anon);
     let write = match blocked_msg {
         Some(why) => col().key("comment-write").w_full().child(text(why).font(k.ty.small).color(c.text_muted).wrap()),
         None => {
-            let note = if s.anon {
-                if t.comet_mode == "held" {
-                    format!("Sent as your anonymous identity. Comments from anonymous readers are held for review by {}.", t.ship)
-                } else {
-                    format!("Sent as your anonymous identity. {} decides whether it shows: comments may be off or held.", t.ship)
-                }
-            } else {
-                format!("Sent as your ship. {} decides whether it shows: comments may be off there, or held.", t.ship)
-            };
+            let verb = if !s.anon && t.comments_open == Some(true) { "Post to" } else { "Send to" };
             col().key("comment-write").w_full().gap(6.0)
                 .child(TextArea::new(&s.comment).label(format!("Your comment to {}", t.ship)).placeholder("Say something").rows(3).on_edit(|s: &mut App| &mut s.comment).build(k).w_full().key("comment-field"))
                 .child(text(note).font(k.ty.small).color(c.text_faint).wrap())
-                .child(row().child(Button::new(if s.comment_sending { "Sending\u{2026}".to_owned() } else { format!("Send to {}", t.ship) }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(s.comment_sending).on_press(post_remote_comment).build(k).key("comment-send")))
+                .child(row().child(Button::new(if s.comment_sending { "Sending\u{2026}".to_owned() } else { format!("{verb} {}", t.ship) }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(s.comment_sending).on_press(post_remote_comment).build(k).key("comment-send")))
         }
     };
     col()
@@ -23875,15 +23901,15 @@ mod tests {
     fn another_ships_thread_belongs_to_the_page_it_was_read_with() {
         let mut s = sample("welcome");
         let m = |who: &str, body: &str| Comment { page: String::new(), id: String::new(), author: who.into(), when: "~2026.1.1".into(), body: body.into() };
-        urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: vec![m("~bus", "one"), m("~wex", "two")] });
+        urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: vec![m("~bus", "one"), m("~wex", "two")], comments_open: None, comet: None });
         let t = thread_here(&s).expect("the page in front has its thread");
         assert_eq!((t.url.as_str(), t.ship.as_str(), t.page.as_str(), t.list.len(), t.all, &t.sent), ("urb://~nec/notes/a", "~nec", "notes/a", 2, false, &None));
         assert!(s.note.contains("2 comments"));
         // what was sent from here stays said across a read of the same address, and goes with another page
         s.thread.as_mut().unwrap().sent = Some(("mine".into(), SentOutcome::Confirmed, 0));
-        urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: Vec::new() });
+        urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: Vec::new(), comments_open: None, comet: None });
         assert_eq!(thread_here(&s).unwrap().sent, Some(("mine".into(), SentOutcome::Confirmed, 0)));
-        urb_got(&mut s, "urb://~nec/notes/b".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/b".into(), kind: "md".into(), body: "# B\n".into(), comments: Vec::new() });
+        urb_got(&mut s, "urb://~nec/notes/b".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/b".into(), kind: "md".into(), body: "# B\n".into(), comments: Vec::new(), comments_open: None, comet: None });
         assert_eq!(thread_here(&s).unwrap().sent, None);
         // one of this ship's own pages has no such thread
         open_page(&mut s, "welcome");
@@ -23953,7 +23979,7 @@ mod tests {
         let mut s = init();
         s.conn = None;
         (s.sample, s.anon) = (true, true);
-        let page = |body: &str| api::Urb::Page { ship: "~nec".into(), path: "a".into(), kind: "md".into(), body: body.into(), comments: Vec::new() };
+        let page = |body: &str| api::Urb::Page { ship: "~nec".into(), path: "a".into(), kind: "md".into(), body: body.into(), comments: Vec::new(), comments_open: None, comet: None };
         urb_got(&mut s, "urb://~nec/a".into(), page("# Alpha\n"));
         urb_got(&mut s, "urb://~nec/a".into(), page("# Alpha\n"));
         assert_eq!(s.visits.iter().map(|x| (x.url.as_str(), x.title.as_str(), x.hits)).collect::<Vec<_>>(), [("urb://~nec/a", "Alpha", 2)]);
@@ -24001,7 +24027,7 @@ mod tests {
         // and one that lands under an edit begun meanwhile leaves the edit alone
         let mut s = sample("welcome");
         start_edit(&mut s);
-        urb_got(&mut s, "urb://~nec/a".into(), api::Urb::Page { ship: "~nec".into(), path: "a".into(), kind: "md".into(), body: "x".into(), comments: Vec::new() });
+        urb_got(&mut s, "urb://~nec/a".into(), api::Urb::Page { ship: "~nec".into(), path: "a".into(), kind: "md".into(), body: "x".into(), comments: Vec::new(), comments_open: None, comet: None });
         assert!(s.editing && s.open.as_ref().unwrap().name == "welcome" && s.remote.is_none() && s.note.contains("an edit is open"));
     }
 
@@ -24719,6 +24745,103 @@ mod tests {
         // Out-of-range line clamps cleanly to the final line.
         jump_scad_line(&mut s, 99, &mut tx);
         assert_eq!(s.edit.range(), (src.len(), src.len()));
+    }
+
+    #[test]
+    fn remote_page_comment_policy_hides_box_and_shows_comet_notes() {
+        let mut s = sample("welcome");
+        // Comments explicitly off: box hidden, post_remote_comment refuses.
+        urb_got(
+            &mut s,
+            "urb://~nec/off".into(),
+            api::Urb::Page {
+                ship: "~nec".into(),
+                path: "off".into(),
+                kind: "md".into(),
+                body: "# Off\n".into(),
+                comments: Vec::new(),
+                comments_open: Some(false),
+                comet: None,
+            },
+        );
+        let t = thread_here(&s).unwrap();
+        let (blocked, _) = thread_comment_policy(t, false);
+        assert_eq!(blocked.as_deref(), Some("Comments are off on this page."));
+        s.comment = TextEdit::new("hello");
+        post_remote_comment(&mut s);
+        assert!(!s.comment_sending);
+        assert_eq!(s.note, "Comments are off on this page.");
+
+        // Comet policy held: box allowed with held review note.
+        urb_got(
+            &mut s,
+            "urb://~nec/held".into(),
+            api::Urb::Page {
+                ship: "~nec".into(),
+                path: "held".into(),
+                kind: "md".into(),
+                body: "# Held\n".into(),
+                comments: Vec::new(),
+                comments_open: Some(true),
+                comet: Some(api::CometPolicy { mode: "held".into(), until: None }),
+            },
+        );
+        let (blocked, note) = thread_comment_policy(thread_here(&s).unwrap(), false);
+        assert!(blocked.is_none());
+        assert!(note.contains("reviewed before they appear"));
+
+        // Comet policy off: box hidden.
+        urb_got(
+            &mut s,
+            "urb://~nec/nocomets".into(),
+            api::Urb::Page {
+                ship: "~nec".into(),
+                path: "nocomets".into(),
+                kind: "md".into(),
+                body: "# No comets\n".into(),
+                comments: Vec::new(),
+                comments_open: Some(true),
+                comet: Some(api::CometPolicy { mode: "off".into(), until: None }),
+            },
+        );
+        let (blocked, _) = thread_comment_policy(thread_here(&s).unwrap(), false);
+        assert_eq!(blocked.as_deref(), Some("Anonymous comments are off on this page."));
+
+        // Comet full until future timestamp: box hidden with minutes note.
+        let future = api::since_epoch().unwrap().as_secs() + 180;
+        urb_got(
+            &mut s,
+            "urb://~nec/full".into(),
+            api::Urb::Page {
+                ship: "~nec".into(),
+                path: "full".into(),
+                kind: "md".into(),
+                body: "# Full\n".into(),
+                comments: Vec::new(),
+                comments_open: Some(true),
+                comet: Some(api::CometPolicy { mode: "open".into(), until: Some(future) }),
+            },
+        );
+        let (blocked, _) = thread_comment_policy(thread_here(&s).unwrap(), false);
+        assert!(blocked.as_deref().is_some_and(|m| m.contains("full for about")));
+
+        // Older ship (comments_open: None, comet: None): box still offered.
+        urb_got(
+            &mut s,
+            "urb://~nec/old".into(),
+            api::Urb::Page {
+                ship: "~nec".into(),
+                path: "old".into(),
+                kind: "md".into(),
+                body: "# Old\n".into(),
+                comments: Vec::new(),
+                comments_open: None,
+                comet: None,
+            },
+        );
+        let (blocked, note) = thread_comment_policy(thread_here(&s).unwrap(), false);
+        assert!(blocked.is_none());
+        assert!(note.contains("decides whether it shows"));
     }
 }
 
