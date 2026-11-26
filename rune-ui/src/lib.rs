@@ -9201,6 +9201,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
     } else {
         s.link_open = None;
+    }
+    if !s.editing {
         s.edit_reveal_pending = false;
     }
     if s.editing {
@@ -25032,7 +25034,16 @@ mod tests {
         s.editing = false;
         jump_scad_line(&mut s, 3, &mut tx);
         assert!(s.edit_reveal_pending);
+        // Polling before EDIT_DRAWN is populated keeps the pending reveal intact (even when !s.rich).
+        poll(&mut s, 0.0, &mut tx);
+        assert!(s.edit_reveal_pending);
         EDIT_DRAWN.set(Some((rune::TextStyle::new(14.0, 400.0), Vec::new())));
+        poll(&mut s, 0.0, &mut tx);
+        assert!(!s.edit_reveal_pending);
+        // Leaving edit mode clears any pending reveal.
+        EDIT_DRAWN.set(None);
+        s.edit_reveal_pending = true;
+        s.editing = false;
         poll(&mut s, 0.0, &mut tx);
         assert!(!s.edit_reveal_pending);
         // Out-of-range line clamps cleanly to the final line.
