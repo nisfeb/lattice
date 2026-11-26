@@ -641,7 +641,7 @@ enum Op {
     Linked(String, String),
     Unlinked(String),
     Created(String, Vec<(String, String)>),
-    Renamed(String, String, Vec<(String, String)>),
+    Renamed(String, String, Vec<(String, String)>, Vec<String>),
     /// A move timed out waiting for the ship's answer: keep `(from, to)` so the next tree reload
     /// remaps open pages, tabs, folders, and waiting saves if the move landed on the ship.
     MoveTimedOut(String, String),
@@ -909,7 +909,7 @@ struct ShipSession {
     page_held: HashMap<String, Vec<Comment>>,
     /// The public thread of the page of another ship last read by address, oldest first.
     thread: Option<Thread>,
-    thread_req: Latest<Result<(String, Vec<Comment>), String>>,
+    thread_req: Latest<Result<(String, Vec<Comment>, Option<(Option<bool>, Option<api::CometPolicy>)>), String>>,
     /// A comment being posted. It has a request of its own: on the one the other actions share, any
     /// of them pressed meanwhile dropped the post's answer and left Post waiting for good.
     comment_req: Latest<Result<Op, String>>,
@@ -1089,9 +1089,12 @@ struct ShipSession {
     /// The tree is to be read once more a moment from now: the ship
     /// answers a batch before it has written all of it.
     resync: bool,
-    /// Find in the page being read: what is typed, and which match is the current one.
+    /// Find in the page being read or edited: what is typed, replacement text, and which match is current.
     find: Option<TextEdit>,
+    find_replace: TextEdit,
     find_at: usize,
+    /// Pending `editor_reveal` deferred until `fill_editor` populates `EDIT_DRAWN` and `edit_wide`.
+    edit_reveal_pending: bool,
     pics: HashMap<String, rune::Image>,
     /// Bumped whenever non-tile page images in `pics` change, to invalidate memoized readers.
     pics_gen: u64,
@@ -1485,7 +1488,9 @@ impl Default for ShipSession {
             groups_room: (0.0, 0.0),
             resync: false,
             find: None,
+            find_replace: TextEdit::new(""),
             find_at: 0,
+            edit_reveal_pending: false,
             pics: HashMap::new(),
             pics_gen: 0,
             pics_order: std::collections::VecDeque::new(),
@@ -3028,7 +3033,7 @@ fn confirm(s: &mut App) {
         Prompt::NewFolder(_) if s.memory => return,
         Prompt::NewFolder(_) if rn.name.is_empty() => return,
         Prompt::NewFolder(_) => Op::FolderMade(rn.name.clone(), shown),
-        Prompt::Rename(from, _) if rn.name != from || !rn.dnames.is_empty() || (!s.memory && s.dnames.contains_key(&from)) => Op::Renamed(from, rn.name.clone(), shown),
+        Prompt::Rename(from, _) if rn.name != from || !rn.dnames.is_empty() || (!s.memory && s.dnames.contains_key(&from)) => Op::Renamed(from, rn.name.clone(), shown, Vec::new()),
         Prompt::Delete(name) => Op::Deleted(name),
         _ => return,
     };
@@ -3053,7 +3058,7 @@ fn confirm(s: &mut App) {
         let kept = change_waiting(s, |ops, saves| match (&op, &made) {
             (_, Some(made)) => api::enqueue(saves, made, None, true, 0),
             (Op::FolderMade(n, _), _) => api::enqueue_op(ops, saves, api::QueuedOp::NewFolder { path: n.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
-            (Op::Renamed(a, b, _), _) => api::enqueue_op(ops, saves, api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
+            (Op::Renamed(a, b, _, _), _) => api::enqueue_op(ops, saves, api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
             (Op::Deleted(n), _) => api::enqueue_op(ops, saves, if page { api::QueuedOp::DelPage(n.clone()) } else { api::QueuedOp::Del(n.clone()) }),
             _ => unreachable!("matched above"),
         });
@@ -3072,18 +3077,18 @@ fn confirm(s: &mut App) {
     let page = matches!(&op, Op::Deleted(n) if s.names.contains(n));
     match s.conn.clone() {
         Some(c) => {
-            if let Op::Renamed(a, b, _) = &op {
+            if let Op::Renamed(a, b, _, _) = &op {
                 s.note = format!("moving {a} to {b}\u{2026}");
             }
             s.op_req.request((c, op), move |(c, op)| {
                 match &op {
                     Op::Created(n, _) if memory => c.know_save(&format!("/{n}"), &format!("{}\n", n.rsplit('/').next().unwrap_or(n)))?,
                     Op::Deleted(n) if memory => c.know_delete(&format!("/{n}"))?,
-                    Op::Renamed(a, b, _) if memory => c.know_move(&format!("/{a}"), &format!("/{b}"))?,
+                    Op::Renamed(a, b, _, _) if memory => c.know_move(&format!("/{a}"), &format!("/{b}"))?,
                     Op::Created(..) => c.create_as(&rn)?,
                     Op::FolderMade(..) => c.folder_new(&rn)?,
-                    Op::Renamed(a, b, _) => match c.rename_as(a, &rn) {
-                        Ok(()) => {}
+                    Op::Renamed(a, b, shown, _) => match c.rename_as(a, &rn) {
+                        Ok(pruned) => return Ok(Op::Renamed(a.clone(), b.clone(), shown.clone(), pruned)),
                         Err(e) if api::timed_out(&e) => return Ok(Op::MoveTimedOut(a.clone(), b.clone())),
                         Err(e) => return Err(e),
                     },
@@ -3201,7 +3206,7 @@ fn applied(s: &mut App, op: Op) {
     if s.conn.is_some() && !s.memory {
         let waits = |at: &str| s.queue.keys().any(|k| api::queued_know(k).is_none() && is_under(k, at));
         let goes = match &op {
-            Op::Renamed(a, b, _) if a != b && waits(a) => Some(api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: String::new(), dnames: String::new() }),
+            Op::Renamed(a, b, _, _) if a != b && waits(a) => Some(api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: String::new(), dnames: String::new() }),
             // a page goes alone, and the saves of the pages under it still wait: the ship keeps those pages (`+page-del-run`). A folder takes all in it
             Op::Deleted(n) if s.names.contains(n) => s.queue.contains_key(n).then(|| api::QueuedOp::DelPage(n.clone())),
             Op::Deleted(n) if waits(n) => Some(api::QueuedOp::Del(n.clone())),
@@ -3231,7 +3236,7 @@ fn applied(s: &mut App, op: Op) {
             open_page(s, &n);
             s.note = "created".into();
         }
-        Op::Renamed(a, b, shown) => {
+        Op::Renamed(a, b, shown, pruned) => {
             // a page, or a folder and every page and empty subfolder under it
             let was_folder = !s.names.contains(&a);
             for old in under(&s.names, &a) {
@@ -3270,6 +3275,20 @@ fn applied(s: &mut App, op: Op) {
                 s.dnames.extend(shown);
                 remap_map(&mut s.shares);
                 remap_map(&mut s.dshares);
+                if !pruned.is_empty() {
+                    let safe_pruned: Vec<&String> = pruned
+                        .iter()
+                        .filter(|g| !is_under(&b, g) && !s.names.iter().any(|n| is_under(n, g)))
+                        .collect();
+                    s.dirs.retain(|d| !safe_pruned.iter().any(|g| *g == d));
+                    for g in &safe_pruned {
+                        s.dnames.remove(*g);
+                        s.dshares.remove(*g);
+                    }
+                    if s.folder.as_ref().is_some_and(|f| safe_pruned.iter().any(|g| *g == f)) {
+                        s.folder = None;
+                    }
+                }
             }
             s.timed_out_moves.retain(|(f, t)| !(f == &a && t == &b));
             remap_moved_views(s, &a, &b, was_folder);
@@ -3467,7 +3486,7 @@ fn applied(s: &mut App, op: Op) {
             if let Some(c) = s.conn.clone() {
                 s.thread_req.request((c, url), |(c, url)| {
                     api::pause(std::time::Duration::from_millis(2500));
-                    thread_of(&c, &url).map(|l| (url, l))
+                    thread_of(&c, &url).map(|(l, pol)| (url, l, Some(pol)))
                 });
             } else {
                 #[cfg(unix)]
@@ -3476,7 +3495,7 @@ fn applied(s: &mut App, op: Op) {
                         s.thread_req.request((e, url, ship, key), |(e, url, ship, key)| {
                             api::pause(std::time::Duration::from_millis(2500));
                             let list = e.thread(&ship, &key, engine::PEEK_BUDGET).unwrap_or_default().into_iter().map(pub_comment_to_api).collect();
-                            Ok((url, list))
+                            Ok((url, list, None))
                         });
                     }
                 }
@@ -4357,9 +4376,114 @@ fn writer_redo(s: &mut App) {
     }
 }
 
+/// Handles Writer keyboard shortcuts (`ui-src/writer/keys.js`):
+/// Ctrl+B/I/U, Ctrl+Shift+X, Ctrl+0..6 / Ctrl+Alt+0..6 (body/headings),
+/// Ctrl+Z (undo), and Ctrl+Shift+Z / Ctrl+Y (redo).
+fn writer_key(s: &mut App, ev: &KeyEvent) -> bool {
+    let over = s.palette.is_some()
+        || s.jump.is_some()
+        || s.prompt.is_some()
+        || s.find.is_some()
+        || s.settings.is_some()
+        || s.grub.is_some()
+        || s.skills.is_some()
+        || s.ships_open
+        || s.tree_menu.is_some()
+        || s.link_menu.is_some();
+    let other_input_focused = s.urb.focused
+        || s.query.focused
+        || s.squery.focused
+        || s.comment.focused
+        || s.grant_to.focused
+        || s.accent_hex.focused
+        || s.marks_q.focused;
+    if over || other_input_focused || s.editing || s.old.is_some() || page_hidden(s) {
+        return false;
+    }
+    let Some(p) = &s.open else { return false };
+    let Some(v) = &s.writer else { return false };
+    if p.kind != "fodt" || v.name != p.name || v.rev != p.rev {
+        return false;
+    }
+    // Check editability excluding `saving(s)` so an in-flight save takes Writer shortcuts
+    // with a note instead of silently dropping them.
+    if !usable(s, "delete") || v.doc.tracking {
+        return false;
+    }
+    let is_redo = (ev.is_command('z') && ev.mods.shift && !ev.mods.alt) || (ev.is_command('y') && !ev.mods.shift && !ev.mods.alt);
+    let is_undo = ev.is_command('z') && !ev.mods.shift && !ev.mods.alt;
+    if is_redo || is_undo {
+        // While the block text bar has unsaved edits (or redo history of its own), let
+        // TextArea undo/redo in small steps instead of throwing away the whole typed text.
+        if v.entry.text != v.entry_was || (is_redo && v.entry.focused && v.entry.history_len().1 > 0) {
+            return false;
+        }
+        if saving(s) {
+            s.note = "wait a moment: saving the last change".into();
+            return true;
+        }
+        if is_redo {
+            writer_redo(s);
+        } else {
+            writer_undo(s);
+        }
+        return true;
+    }
+    if v.cursor.is_none() {
+        return false;
+    }
+    let fmt = if ev.is_command('b') && !ev.mods.shift && !ev.mods.alt {
+        Some(writer::InlineFmt::Strong)
+    } else if ev.is_command('i') && !ev.mods.shift && !ev.mods.alt {
+        Some(writer::InlineFmt::Em)
+    } else if ev.is_command('u') && !ev.mods.shift && !ev.mods.alt {
+        Some(writer::InlineFmt::Underline)
+    } else if ev.is_command('x') && ev.mods.shift && !ev.mods.alt {
+        Some(writer::InlineFmt::Strike)
+    } else {
+        None
+    };
+    if let Some(fmt) = fmt {
+        if saving(s) {
+            s.note = "wait a moment: saving the last change".into();
+            return true;
+        }
+        let range = s.writer.as_ref().map(|v| v.entry.range()).unwrap_or((0, 0));
+        writer_apply(s, move |doc, path| doc.toggle_inline_fmt(path, range.0, range.1, fmt));
+        return true;
+    }
+    if !ev.mods.shift {
+        if ev.is_command('0') {
+            if saving(s) {
+                s.note = "wait a moment: saving the last change".into();
+                return true;
+            }
+            writer_apply(s, |doc, path| {
+                let st = doc.styles.body_style();
+                doc.set_block_kind(path, None, st)
+            });
+            return true;
+        }
+        for lv in 1..=6u8 {
+            if ev.is_command((b'0' + lv) as char) {
+                if saving(s) {
+                    s.note = "wait a moment: saving the last change".into();
+                    return true;
+                }
+                writer_apply(s, move |doc, path| {
+                    let st = doc.styles.heading_style(lv);
+                    doc.set_block_kind(path, Some(lv), st)
+                });
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Renders styled inline runs of a Writer block into a Rune rich-text element,
 /// plus clickable link chips for any safe `<text:a>` links inside the block.
-fn writer_inlines_el(doc: &writer::Doc, inlines: &[writer::Inline], base_font: rune::TextStyle, k: &Kit, key: String) -> El {
+fn writer_inlines_el(doc: &writer::Doc, inlines: &[writer::Inline], base_font: rune::TextStyle, find: Option<(&str, bool)>, k: &Kit, key: String) -> El {
     let c = &k.c;
     let mut full = String::new();
     let mut spans: Vec<Span> = Vec::new();
@@ -4435,6 +4559,12 @@ fn writer_inlines_el(doc: &writer::Doc, inlines: &[writer::Inline], base_font: r
     let mut el = if full.is_empty() {
         text(" ").font(base_font).color(c.text_faint)
     } else {
+        if let Some((q, current)) = find.filter(|(q, _)| !q.is_empty()) {
+            let alpha = if current { 0.55 } else { 0.22 };
+            for r in rune_kit::search::Fold::default().find(&full, q) {
+                spans.push(Span::new(r.start, r.end).bg(c.text_accent.alpha(alpha), 1.0));
+            }
+        }
         let mut r = rune::rich(full, spans).font(base_font).color(c.text_base).wrap().selectable(true);
         for (a, b) in strikes {
             r = r.strike(a, b, None);
@@ -4461,7 +4591,7 @@ fn writer_inlines_el(doc: &writer::Doc, inlines: &[writer::Inline], base_font: r
     el.key(key)
 }
 
-fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(usize) -> writer::BlockPath, editable: bool, outline_at: Option<usize>, heading_idx: &mut usize, depth: usize, k: &Kit, prefix: &str) -> Vec<El> {
+fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(usize) -> writer::BlockPath, editable: bool, outline_at: Option<usize>, find: Option<(&str, Option<&str>)>, heading_idx: &mut usize, depth: usize, k: &Kit, prefix: &str) -> Vec<El> {
     let c = &k.c;
     let mut out = Vec::new();
     for (idx, b) in blocks.iter().enumerate() {
@@ -4469,6 +4599,9 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
         let picked = v.cursor.as_ref() == Some(&path);
         match b {
             writer::Block::Paragraph { page_break, quote, inlines, style, .. } => {
+                let bkey = format!("{prefix}-pbx-{idx}");
+                let find_cur = find.and_then(|(_, cur)| cur) == Some(bkey.as_str());
+                let find_arg = find.map(|(q, _)| (q, find_cur));
                 if *page_break {
                     out.push(
                         row()
@@ -4485,7 +4618,7 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                 let align = style
                     .as_deref()
                     .and_then(|sn| v.doc.styles.resolve("paragraph", Some(sn), "style:paragraph-properties").get("fo:text-align").cloned());
-                let content = writer_inlines_el(&v.doc, inlines, k.ty.body, k, format!("{prefix}-p-{idx}"));
+                let content = writer_inlines_el(&v.doc, inlines, k.ty.body, find_arg, k, format!("{prefix}-p-{idx}"));
                 let mut inner = col().grow(1.0).min_w(0.0).child(content);
                 if align.as_deref() == Some("center") {
                     inner = inner.items_center();
@@ -4506,6 +4639,8 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                 };
                 if picked && editable {
                     box_el = box_el.fill(c.layer_01).border(1.0, c.text_accent);
+                } else if find_cur {
+                    box_el = box_el.fill(k.selection());
                 } else if editable {
                     box_el = box_el.hover(c.layer_01);
                 }
@@ -4513,11 +4648,14 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                     let p2 = path.clone();
                     box_el = box_el.on_press(move |s: &mut App| writer_pick(s, p2.clone()));
                 }
-                out.push(box_el.key(format!("{prefix}-pbx-{idx}")));
+                out.push(box_el.key(bkey));
             }
             writer::Block::Heading { page_break, level, inlines, .. } => {
                 let hi = *heading_idx;
                 *heading_idx += 1;
+                let bkey = format!("wr-h-{hi}");
+                let find_cur = find.and_then(|(_, cur)| cur) == Some(bkey.as_str());
+                let find_arg = find.map(|(q, _)| (q, find_cur));
                 if *page_break {
                     out.push(
                         row()
@@ -4538,9 +4676,9 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                     _ => 15.0,
                 };
                 let face = rune::TextStyle { size, weight: 650.0, ..k.ty.body };
-                let content = writer_inlines_el(&v.doc, inlines, face, k, format!("{prefix}-ht-{idx}"));
-                let mut box_el = col().key(format!("wr-h-{hi}")).w_full().px(8.0).pt(10.0).pb(4.0).radius(k.radius.sm).child(content);
-                if outline_at == Some(hi) {
+                let content = writer_inlines_el(&v.doc, inlines, face, find_arg, k, format!("{prefix}-ht-{idx}"));
+                let mut box_el = col().key(bkey).w_full().px(8.0).pt(10.0).pb(4.0).radius(k.radius.sm).child(content);
+                if outline_at == Some(hi) || find_cur {
                     box_el = box_el.fill(k.selection());
                 } else if picked && editable {
                     box_el = box_el.fill(c.layer_01).border(1.0, c.text_accent);
@@ -4569,6 +4707,7 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                         &move |bi| writer::BlockPath::ListItem { path: Box::new(lp.clone()), item: ii, block: bi },
                         editable,
                         outline_at,
+                        find,
                         heading_idx,
                         depth + 1,
                         k,
@@ -4606,6 +4745,7 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                             &move |bi| writer::BlockPath::TableCell { path: Box::new(tp.clone()), row: ri, col: ci, block: bi },
                             editable,
                             outline_at,
+                            find,
                             heading_idx,
                             depth + 1,
                             k,
@@ -4626,6 +4766,7 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                     &move |bi| writer::BlockPath::Section { path: Box::new(sp.clone()), block: bi },
                     editable,
                     outline_at,
+                    find,
                     heading_idx,
                     depth,
                     k,
@@ -4635,13 +4776,15 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
             }
             writer::Block::OpaqueBlock { name, label, .. } => {
                 if !label.is_empty() {
+                    let bkey = format!("{prefix}-op-{idx}");
+                    let find_cur = find.and_then(|(_, cur)| cur) == Some(bkey.as_str());
                     out.push(
                         col()
-                            .key(format!("{prefix}-op-{idx}"))
+                            .key(bkey)
                             .w_full()
                             .padding(8.0)
                             .radius(k.radius.sm)
-                            .fill(c.layer_01)
+                            .fill(if find_cur { k.selection() } else { c.layer_01 })
                             .border(1.0, c.border_weak)
                             .child(text(format!("{name}")).font(k.ty.small).color(c.text_faint))
                             .child(text(label.clone()).font(k.ty.small).color(c.text_muted).wrap()),
@@ -5024,6 +5167,7 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                                 .placeholder("Type text for the selected block")
                                 .rows(2)
                                 .on_edit(|s: &mut App| &mut s.writer.as_mut().expect("writer open").entry)
+                                .on_key(|s: &mut App, ev: &KeyEvent, _| writer_key(s, ev))
                                 .build(k)
                                 .grow(1.0)
                                 .key("wr-entry"),
@@ -5064,7 +5208,13 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
     }
 
     let mut heading_idx = 0usize;
-    let body_els = writer_blocks_el(v, &v.doc.blocks, &writer::BlockPath::Top, editable, s.outline_at, &mut heading_idx, 0, k, "wr");
+    let wr_find_q = s.find.as_ref().map(|q| q.text.trim()).filter(|q| !q.is_empty());
+    let wr_find_cur = wr_find_q.and_then(|_| {
+        let ms = writer_matches(s);
+        (!ms.is_empty()).then(|| ms[s.find_at.min(ms.len() - 1)].1.clone())
+    });
+    let wr_find = wr_find_q.map(|q| (q, wr_find_cur.as_deref()));
+    let body_els = writer_blocks_el(v, &v.doc.blocks, &writer::BlockPath::Top, editable, s.outline_at, wr_find, &mut heading_idx, 0, k, "wr");
     let sheet = col()
         .key(format!("writer-sheet:{}", v.name))
         .w_full()
@@ -5338,15 +5488,38 @@ fn scad_view(s: &App, p: &Page, k: &Kit) -> El {
         );
     }
     if !d.lines.is_empty() {
-        let mut con = col().key("scad-console").w_full().gap(1.0).padding(8.0).radius(k.radius.md).fill(c.layer_01).child(text(d.head.clone()).font(k.ty.small_medium).color(c.text_muted));
+        let main_file = format!("{}{}.scad", scad::ROOT, p.name);
+        let can_edit = s.old.is_none() && usable(s, "edit");
+        let mut con = col().key("scad-console").w_full().gap(2.0).padding(8.0).radius(k.radius.md).fill(c.layer_01).child(text(d.head.clone()).font(k.ty.small_medium).color(c.text_muted));
         // a model that echoes without end is not drawn to its last line
-        for (level, line) in d.lines.iter().take(200) {
+        for (i, (level, line)) in d.lines.iter().take(200).enumerate() {
             let ink = match level {
                 scadrun::Level::Error => c.danger.icon,
                 scadrun::Level::Warning => c.warning.icon,
                 scadrun::Level::Plain => c.text_base,
             };
-            con = con.child(text(line.clone()).font(k.ty.mono).color(ink).wrap().selectable(true));
+            let msg = text(line.clone()).font(k.ty.mono).color(ink).wrap().selectable(true);
+            if let Some(ln) = (can_edit && *level != scadrun::Level::Plain).then(|| scadrun::console_line(line, &main_file)).flatten() {
+                con = con.child(
+                    row()
+                        .key(format!("scad-line-{i}"))
+                        .w_full()
+                        .gap(8.0)
+                        .center_y()
+                        .child(msg.grow(1.0).min_w(0.0))
+                        .child(
+                            Button::new(format!("line {ln}"))
+                                .control_size(ControlSize::Small)
+                                .variant(ButtonVariant::Ghost)
+                                .help(format!("Open editor at line {ln}"))
+                                .on_press_tx(move |s: &mut App, tx: &mut Tx| jump_scad_line(s, ln, tx))
+                                .build(k)
+                                .key(format!("scad-jump-{i}")),
+                        ),
+                );
+            } else {
+                con = con.child(msg);
+            }
         }
         if d.lines.len() > 200 {
             con = con.child(text(format!("and {} more lines", d.lines.len() - 200)).font(k.ty.small).color(c.text_faint));
@@ -5354,6 +5527,40 @@ fn scad_view(s: &App, p: &Page, k: &Kit) -> El {
         out = out.child(con);
     }
     out
+}
+
+/// Byte offset of the start of a 1-based line in `text`, clamping past EOF to the last line.
+fn line_start_byte(text: &str, line_1based: usize) -> usize {
+    let target = line_1based.saturating_sub(1);
+    let mut cur = 0usize;
+    let mut off = 0usize;
+    for part in text.split('\n') {
+        if cur == target {
+            return off;
+        }
+        off += part.len() + 1;
+        cur += 1;
+    }
+    text.rfind('\n').map_or(0, |i| i + 1)
+}
+
+/// Opens the source editor for the current OpenSCAD page and moves the caret to `line_1based`.
+fn jump_scad_line(s: &mut App, line_1based: usize, tx: &mut Tx) {
+    if s.old.is_some() || !usable(s, "edit") {
+        s.note = "this page is read-only here".into();
+        return;
+    }
+    if !s.editing {
+        start_edit(s);
+    }
+    if !s.editing {
+        return;
+    }
+    let at = line_start_byte(&s.edit.text, line_1based);
+    s.edit.set_selection(at, at);
+    s.edit.focused = true;
+    s.edit_reveal_pending = !editor_reveal(s, tx);
+    tx.focus_when_shown(FIELD, false);
 }
 
 /// Gives an OpenSCAD parameter of the open page a new value, worked
@@ -5614,7 +5821,7 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
         .build(s, k)
         .grow(1.0)
         .min_h(0.0);
-    let mut tabs = row().key("sheet-tabs").gap(4.0).center_y();
+    let mut tabs = row().key("sheet-tabs").w_full().gap(4.0).center_y();
     for (i, sh) in v.sheets.iter().enumerate() {
         tabs = tabs.child(
             Button::new(if sh.name.is_empty() { format!("Sheet {}", i + 1) } else { sh.name.clone() })
@@ -5642,6 +5849,10 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
         let n = v.stale.len();
         tabs = tabs.child(text(format!("{n} formula{} not worked out here: {} the value {} had", if n == 1 { "" } else { "s" }, if n == 1 { "it keeps" } else { "they keep" }, if n == 1 { "it" } else { "they" })).key("sheet-stale").font(k.ty.small).color(c.danger.icon).pl(8.0));
     }
+    tabs = tabs
+        .child(el().grow(1.0))
+        .child(Button::new("Export .ods").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Export this spreadsheet as .ods for LibreOffice").on_press_tx(ask_ods).build(k).key("sheet-export-ods"))
+        .child(Button::new("Export .csv").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Export the active sheet as .csv").on_press_tx(ask_csv).build(k).key("sheet-export-csv"));
     let mut page = col().key("sheet").w_full().h_full().min_h(0.0).padding(12.0).gap(8.0);
     if may {
         let sel = sheet_selection(v);
@@ -6833,6 +7044,27 @@ fn take_pics(s: &mut App) -> bool {
     any
 }
 
+/// Toggles a GFM task list checkbox on the open editable Markdown page and saves it.
+fn toggle_md_task(s: &mut App, rendered: &str, marker_offset: usize, new_checked: bool) {
+    if s.memory || s.old.is_some() || !page_changes(s) || !usable(s, "edit") {
+        return;
+    }
+    let Some(p) = s.open.clone().filter(|p| p.kind == "md") else { return };
+    let rendered_tasks = md::task_states(rendered);
+    let raw_tasks = md::task_states(&p.body);
+    if rendered_tasks.len() != raw_tasks.len() {
+        return;
+    }
+    let Some(idx) = rendered_tasks.iter().position(|&(off, _)| off == marker_offset) else { return };
+    if raw_tasks.get(idx).is_none_or(|&(_, was)| was == new_checked) {
+        return;
+    }
+    let Some(next) = md::toggle_task(&p.body, idx) else { return };
+    if next != p.body {
+        save_body(s, p, next);
+    }
+}
+
 /// A Markdown page as the reader shows it: wiki links, ghost links, and
 /// the pictures had so far. Memoized by `id` so virtual-scroll commits in
 /// the sidebar tree (or unrelated chrome updates) never re-parse or rebuild
@@ -6840,7 +7072,13 @@ fn take_pics(s: &mut App) -> bool {
 fn reader(id: &str, body: &str, s: &App, k: &Kit, found: bool) -> El {
     let style = page_style(k);
     let find_key = s.find.as_ref().filter(|_| found).map(|q| (q.text.as_str(), s.find_at));
-    let version = (body, &s.names, &s.other.1, s.pics_gen, found, find_key, s.outline_at, &style);
+    let interactive_tasks = id == "reader-main"
+        && !s.memory
+        && s.old.is_none()
+        && page_changes(s)
+        && usable(s, "edit")
+        && s.open.as_ref().is_some_and(|p| p.kind == "md");
+    let version = (body, &s.names, &s.other.1, s.pics_gen, found, find_key, s.outline_at, interactive_tasks, &style);
     rune::memo(id, version, || {
         let pics = s.pics.clone();
         let src = md::wikilinks(&md::html_shown(&md::shallow(body)), &|n| ghost(s, n));
@@ -6853,7 +7091,22 @@ fn reader(id: &str, body: &str, s: &App, k: &Kit, found: bool) -> El {
         if let Some(h) = s.outline_at.and_then(|i| outline::outline(&src, "md").into_iter().nth(i)).filter(|h| !h.words.is_empty()) {
             marks.push((vec![h.words], rune_kit::Highlight::new().key("md-outline")));
         }
-        Markdown::new(src).selectable(true).on_link_tx(follow).on_link_secondary(|s: &mut App, url, p, _| s.link_menu = Some((url.to_owned(), p))).images(move |src| pics.get(src).cloned()).highlights(marks).style(style.clone()).build(k)
+        let src_for_task = src.clone();
+        let mut view = Markdown::new(src)
+            .selectable(true)
+            .on_link_tx(follow)
+            .on_link_secondary(|s: &mut App, url, p, _| s.link_menu = Some((url.to_owned(), p)))
+            .images(move |src| pics.get(src).cloned())
+            .highlights(marks)
+            .style(style.clone());
+        if interactive_tasks {
+            view = view.on_task(move |s: &mut App, _block_key, marker_offset, new_checked| {
+                toggle_md_task(s, &src_for_task, marker_offset, new_checked);
+            });
+        } else {
+            view = view.tasks_read_only();
+        }
+        view.build(k)
     })
 }
 
@@ -6904,9 +7157,11 @@ fn find_in(src: &str, query: &str) -> Vec<Vec<std::ops::Range<usize>>> {
 }
 
 /// Where find's query is in the text being edited, as it is typed there.
+/// Keeps leading and trailing spaces when the query is not all whitespace so
+/// highlights, counts, and Replace / Replace all match the exact string typed.
 fn edit_matches(s: &App) -> Vec<std::ops::Range<usize>> {
-    match s.find.as_ref().filter(|_| s.editing) {
-        Some(q) => rune_kit::search::Fold::default().find(&s.edit.text, q.text.trim()),
+    match s.find.as_ref().filter(|q| s.editing && !q.text.trim().is_empty()) {
+        Some(q) => rune_kit::search::Fold::default().find(&s.edit.text, &q.text),
         None => Vec::new(),
     }
 }
@@ -6926,6 +7181,7 @@ enum FindIn {
     #[cfg(not(target_arch = "wasm32"))]
     Web,
     Sheet,
+    Writer,
     Source,
     Nothing,
 }
@@ -6940,6 +7196,8 @@ fn find_where(s: &App) -> FindIn {
         FindIn::Editor
     } else if read_md(s, p).is_some() {
         FindIn::Reader
+    } else if s.old.is_none() && s.writer.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
+        FindIn::Writer
     } else if s.sheet.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
         FindIn::Sheet
     } else if s.map.as_ref().is_some_and(|m| m.name == p.name && m.rev == p.rev) {
@@ -6947,6 +7205,93 @@ fn find_where(s: &App) -> FindIn {
     } else {
         FindIn::Source
     }
+}
+
+fn collect_writer_matches(
+    blocks: &[writer::Block],
+    parent: &dyn Fn(usize) -> writer::BlockPath,
+    prefix: &str,
+    heading_idx: &mut usize,
+    q: &str,
+    fold: &rune_kit::search::Fold,
+    out: &mut Vec<(writer::BlockPath, String)>,
+) {
+    for (idx, b) in blocks.iter().enumerate() {
+        let path = parent(idx);
+        match b {
+            writer::Block::Paragraph { inlines, .. } => {
+                if fold.contains(&writer::inlines_text(inlines), q) {
+                    out.push((path, format!("{prefix}-pbx-{idx}")));
+                }
+            }
+            writer::Block::Heading { inlines, .. } => {
+                let hi = *heading_idx;
+                *heading_idx += 1;
+                if fold.contains(&writer::inlines_text(inlines), q) {
+                    out.push((path, format!("wr-h-{hi}")));
+                }
+            }
+            writer::Block::List { items, .. } => {
+                for (ii, it) in items.iter().enumerate() {
+                    let lp = path.clone();
+                    collect_writer_matches(
+                        &it.blocks,
+                        &move |bi| writer::BlockPath::ListItem { path: Box::new(lp.clone()), item: ii, block: bi },
+                        &format!("{prefix}-li-{idx}-{ii}"),
+                        heading_idx,
+                        q,
+                        fold,
+                        out,
+                    );
+                }
+            }
+            writer::Block::Table { rows, .. } => {
+                for (ri, r) in rows.iter().enumerate() {
+                    for (ci, cell) in r.cells.iter().enumerate() {
+                        let tp = path.clone();
+                        collect_writer_matches(
+                            &cell.blocks,
+                            &move |bi| writer::BlockPath::TableCell { path: Box::new(tp.clone()), row: ri, col: ci, block: bi },
+                            &format!("{prefix}-tc-{idx}-{ri}-{ci}"),
+                            heading_idx,
+                            q,
+                            fold,
+                            out,
+                        );
+                    }
+                }
+            }
+            writer::Block::Section { blocks: sub, .. } => {
+                let sp = path.clone();
+                collect_writer_matches(
+                    sub,
+                    &move |bi| writer::BlockPath::Section { path: Box::new(sp.clone()), block: bi },
+                    &format!("{prefix}-sec-{idx}"),
+                    heading_idx,
+                    q,
+                    fold,
+                    out,
+                );
+            }
+            writer::Block::OpaqueBlock { label, .. } => {
+                if !label.is_empty() && fold.contains(label, q) {
+                    out.push((path, format!("{prefix}-op-{idx}")));
+                }
+            }
+        }
+    }
+}
+
+/// Matching blocks in the open Writer document, in document order, with their scroll keys.
+fn writer_matches(s: &App) -> Vec<(writer::BlockPath, String)> {
+    let (Some(q), Some(v)) = (s.find.as_ref().map(|q| q.text.trim()).filter(|q| !q.is_empty()), &s.writer) else {
+        return Vec::new();
+    };
+    let fold = rune_kit::search::Fold::default();
+    let mut heading_idx = 0usize;
+    let mut out = Vec::new();
+    collect_writer_matches(&v.doc.blocks, &writer::BlockPath::Top, "wr", &mut heading_idx, q, &fold, &mut out);
+    out
 }
 
 /// The cells of the sheet showing that hold find's query, by row then column.
@@ -6987,6 +7332,7 @@ fn find_count(s: &App) -> usize {
         #[cfg(not(target_arch = "wasm32"))]
         (FindIn::Web, ..) => s.web.find_ys.len(),
         (FindIn::Sheet, ..) => sheet_matches(s).len(),
+        (FindIn::Writer, ..) => writer_matches(s).len(),
         (FindIn::Source, ..) => source_matches(s).len(),
         _ => 0,
     }
@@ -6999,6 +7345,7 @@ fn open_find(s: &mut App) {
         return;
     }
     s.find_at = 0;
+    s.find_replace.focused = false;
     let mut q = s.find.take().unwrap_or_else(|| TextEdit::new(""));
     q.focused = true;
     s.find = Some(q);
@@ -7033,13 +7380,92 @@ fn find_step(s: &mut App, by: isize, tx: &mut Tx) {
                 v.table.reveal(row.to_string(), tx);
             }
         }
+        FindIn::Writer => {
+            if let Some((path, key)) = writer_matches(s).get(s.find_at).cloned() {
+                if writer_editable(s) && s.writer.as_ref().is_some_and(|v| v.entry.text == v.entry_was) {
+                    if let Some(v) = &mut s.session.writer {
+                        if let Some(writer::Block::Paragraph { inlines, .. } | writer::Block::Heading { inlines, .. }) = v.doc.block_at(&path) {
+                            let txt = writer::inlines_text(inlines);
+                            v.cursor = Some(path);
+                            v.entry_was = txt.clone();
+                            v.entry = TextEdit::new(txt.as_str());
+                        }
+                    }
+                }
+                tx.scroll_into_view(key);
+            }
+        }
         // ponytail: a source page's match is marked but not scrolled to. The text is one element,
         // and Rune brings elements into view, not places in a text
         FindIn::Source | FindIn::Nothing => {}
     }
 }
 
+/// Replaces the current Find match in the active editor and advances to the next match.
+fn find_replace_one(s: &mut App, tx: &mut Tx) -> bool {
+    if !s.editing || find_where(s) != FindIn::Editor {
+        return false;
+    }
+    if s.rich {
+        if let Some(o) = s.link_open.take() {
+            linkedit::close(&mut s.edit, o);
+        }
+    }
+    let matches = edit_matches(s);
+    if matches.is_empty() {
+        return false;
+    }
+    let idx = s.find_at.min(matches.len() - 1);
+    let r = matches[idx].clone();
+    let rep = s.find_replace.text.clone();
+    s.edit.set_selection(r.start, r.end);
+    s.edit.insert(&rep);
+    let after = s.edit.range().1;
+    let next_matches = edit_matches(s);
+    if next_matches.is_empty() {
+        s.find_at = 0;
+        let caret = after.min(s.edit.text.len());
+        s.edit.set_caret(caret);
+    } else {
+        let next_idx = next_matches.iter().position(|m| m.start >= after).unwrap_or(0);
+        s.find_at = next_idx;
+        let nr = &next_matches[next_idx];
+        s.edit.set_selection(nr.start, nr.end);
+    }
+    editor_reveal(s, tx);
+    true
+}
+
+/// Replaces all Find matches in the active editor as a single undoable edit.
+fn find_replace_all(s: &mut App, tx: &mut Tx) -> usize {
+    if !s.editing || find_where(s) != FindIn::Editor {
+        return 0;
+    }
+    if s.rich {
+        if let Some(o) = s.link_open.take() {
+            linkedit::close(&mut s.edit, o);
+        }
+    }
+    let matches = edit_matches(s);
+    let count = matches.len();
+    if count == 0 {
+        return 0;
+    }
+    let rep = s.find_replace.text.clone();
+    s.edit.undo_group(|ed| {
+        for r in matches.iter().rev() {
+            ed.set_selection(r.start, r.end);
+            ed.insert(&rep);
+        }
+    });
+    s.find_at = 0;
+    s.note = format!("replaced {count} occurrence{}", if count == 1 { "" } else { "s" });
+    editor_reveal(s, tx);
+    count
+}
+
 /// The find bar: the field, where the current match stands among them, and the way round.
+/// While editing, also offers Replace and Replace all.
 fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
     let n = find_count(s);
     let says = match (q.text.trim().is_empty(), n) {
@@ -7057,7 +7483,13 @@ fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
             if find_where(s) == FindIn::Web {
                 s.web.find_jump = true;
             }
-            tx.scroll_into_view(Markdown::highlight_key(0));
+            if find_where(s) == FindIn::Writer {
+                if let Some((_, key)) = writer_matches(s).into_iter().next() {
+                    tx.scroll_into_view(key);
+                }
+            } else {
+                tx.scroll_into_view(Markdown::highlight_key(0));
+            }
         })
         .on_key(|s: &mut App, ev: &KeyEvent, tx: &mut Tx| match ev.key {
             Key::Enter => {
@@ -7066,6 +7498,7 @@ fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
             }
             Key::Escape => {
                 s.find = None;
+                s.find_replace.focused = false;
                 // back to the text, where the match found is selected
                 if s.editing {
                     tx.focus_when_shown(FIELD, false);
@@ -7077,19 +7510,50 @@ fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
         .build(k)
         .key("find-field")
         .w(280.0);
-    row()
-        .key("find-bar")
+    let find_row = row()
         .w_full()
-        .px(16.0)
-        .py(6.0)
         .gap(8.0)
         .center_y()
-        .fill(k.c.layer_01)
         .child(field)
         .child(text(says).key("find-count").font(k.ty.small).color(k.c.text_muted).grow(1.0))
         .child(Button::new("Previous").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(n == 0).on_press_tx(|s: &mut App, tx| find_step(s, -1, tx)).build(k).key("find-prev"))
         .child(Button::new("Next").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(n == 0).on_press_tx(|s: &mut App, tx| find_step(s, 1, tx)).build(k).key("find-next"))
-        .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close find").on_press(|s: &mut App| s.find = None).build(k).key("find-close"))
+        .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close find").on_press(|s: &mut App| {
+            s.find = None;
+            s.find_replace.focused = false;
+        }).build(k).key("find-close"));
+    if s.editing && find_where(s) == FindIn::Editor {
+        let rep_field = TextInput::new(&s.find_replace)
+            .placeholder("Replace with")
+            .on_edit(|s: &mut App| &mut s.find_replace)
+            .on_key(|s: &mut App, ev: &KeyEvent, tx: &mut Tx| match ev.key {
+                Key::Enter => {
+                    find_replace_one(s, tx);
+                    true
+                }
+                Key::Escape => {
+                    s.find = None;
+                    s.find_replace.focused = false;
+                    tx.focus_when_shown(FIELD, false);
+                    true
+                }
+                _ => false,
+            })
+            .build(k)
+            .key("find-replace-field")
+            .w(280.0);
+        let rep_row = row()
+            .key("find-replace-row")
+            .w_full()
+            .gap(8.0)
+            .center_y()
+            .child(rep_field)
+            .child(Button::new("Replace").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(n == 0).on_press_tx(|s: &mut App, tx| { find_replace_one(s, tx); }).build(k).key("find-replace"))
+            .child(Button::new("Replace all").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(n == 0).on_press_tx(|s: &mut App, tx| { find_replace_all(s, tx); }).build(k).key("find-replace-all"));
+        col().key("find-bar").w_full().px(16.0).py(6.0).gap(6.0).fill(k.c.layer_01).child(find_row).child(rep_row)
+    } else {
+        find_row.key("find-bar").px(16.0).py(6.0).fill(k.c.layer_01)
+    }
 }
 
 /// Reads which pages link to the open one when the backlinks are showing.
@@ -8738,7 +9202,14 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     } else {
         s.link_open = None;
     }
+    if !s.editing {
+        s.edit_reveal_pending = false;
+    }
     if s.editing {
+        if s.edit_reveal_pending && editor_reveal(s, tx) {
+            s.edit_reveal_pending = false;
+            changed = true;
+        }
         // debounce live Markdown preview so held keys (like Backspace) never rebuild the full
         // preview tree on every key repeat
         if !s.rich && s.preview {
@@ -9664,10 +10135,20 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if let Some(r) = s.thread_req.take() {
         changed = true;
         match r {
-            Ok((url, list)) => {
+            Ok((url, list, pol)) => {
                 let ours = current_actor(s);
                 if let Some(t) = s.thread.as_mut().filter(|t| t.url == url) {
                     t.list = list;
+                    if let Some((comments_open, comet)) = pol {
+                        t.comments_open = comments_open;
+                        if let Some(cp) = comet {
+                            t.comet_mode = cp.mode;
+                            t.comet_full_until = cp.until;
+                        } else {
+                            t.comet_mode.clear();
+                            t.comet_full_until = None;
+                        }
+                    }
                     settle_sent(t, &ours);
                 }
             }
@@ -10228,6 +10709,45 @@ fn ask_odt(s: &mut App, tx: &mut Tx) {
     tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
         Ok(Some(path)) => match writer::export_odt(&body) {
             Ok(bytes) => write_file(s, path, bytes),
+            Err(e) => s.note = e,
+        },
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
+/// Exports the open spreadsheet (`fods`) page as a LibreOffice `.ods` zip package.
+fn ask_ods(s: &mut App, tx: &mut Tx) {
+    let Some(p) = s.open.clone().filter(|p| p.kind == "fods") else {
+        s.note = "only a spreadsheet exports as .ods".into();
+        return;
+    };
+    let leaf = p.name.rsplit('/').next().unwrap_or(&p.name).to_owned();
+    let body = if s.editing { edited(s) } else { p.body.clone() };
+    let options = rune::FileDialogOptions { title: "Export .ods".into(), file_name: Some(format!("{leaf}.ods")), ..Default::default() }.filter("OpenDocument Spreadsheet", &["ods"]);
+    tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => match writer::export_ods(&body) {
+            Ok(bytes) => write_file(s, path, bytes),
+            Err(e) => s.note = e,
+        },
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
+/// Exports the active sheet of the open spreadsheet (`fods`) page as RFC 4180 CSV.
+fn ask_csv(s: &mut App, tx: &mut Tx) {
+    let Some(p) = s.open.clone().filter(|p| p.kind == "fods") else {
+        s.note = "only a spreadsheet exports as .csv".into();
+        return;
+    };
+    let leaf = p.name.rsplit('/').next().unwrap_or(&p.name).to_owned();
+    let body = if s.editing { edited(s) } else { p.body.clone() };
+    let sheet_idx = s.sheet.as_ref().filter(|v| v.name == p.name).map_or(0, |v| v.at);
+    let options = rune::FileDialogOptions { title: "Export .csv".into(), file_name: Some(format!("{leaf}.csv")), ..Default::default() }.filter("CSV", &["csv"]);
+    tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => match sheet::export_csv(&body, sheet_idx) {
+            Ok(text) => write_file(s, path, text.into_bytes()),
             Err(e) => s.note = e,
         },
         Ok(None) => {}
@@ -13876,6 +14396,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("copy-name", "Copy this page's name"),
     ("download", "Download this page as a file"),
     ("export-odt", "Writer: export as .odt"),
+    ("export-ods", "Spreadsheet: export as .ods"),
+    ("export-csv", "Spreadsheet: export active sheet as .csv"),
     ("open-raw", "Open raw page source in browser"),
     ("wrap", "Toggle line wrap"),
     ("pdf", "Export this page as PDF"),
@@ -13898,6 +14420,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("link-in", "Move into my pages"),
     ("link-back", "Move back to shared with me"),
     ("access", "Access"),
+    ("published", "Published pages"),
     ("half", "Switch between pages and memory"),
     ("theme", "Next theme"),
     ("sidebar", "Show or hide the tree"),
@@ -13922,6 +14445,7 @@ fn usable(s: &App, id: &str) -> bool {
         "duplicate" | "copy-link" | "pdf" => own && !s.memory && !s.editing,
         "new-writer" => !s.memory && !s.anon,
         "export-odt" => page && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "fodt"),
+        "export-ods" | "export-csv" => page && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "fods"),
         "send-ship" => own && !s.memory && !s.editing && s.ships.len() > 1 && !cfg!(target_arch = "wasm32"),
         "retry-waiting" => s.conn.is_some() && s.queue.values().any(|q| q.tries >= api::MAX_RETRIES),
         "tex" => own && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "tex"),
@@ -14018,6 +14542,8 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "share" => open_share(s),
         "download" => ask_download(s, tx),
         "export-odt" => ask_odt(s, tx),
+        "export-ods" => ask_ods(s, tx),
+        "export-csv" => ask_csv(s, tx),
         "wrap" => {
             s.prefs.no_wrap ^= true;
             save_prefs(s);
@@ -14097,6 +14623,10 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "link-in" => ask_link_in(s),
         "link-back" => link_back(s),
         "access" => go_access(s),
+        "published" => {
+            go_access(s);
+            tx.scroll_into_view("access-published");
+        }
         "half" => flip(s),
         "theme" => next_theme(s),
         "sidebar" => s.global.sidebar.toggle(),
@@ -14752,7 +15282,7 @@ fn urb_go_anon(s: &mut App, to: Option<String>) {
                         comet_full_until: comets.full_until,
                     };
                     let comments = comments.into_iter().map(pub_comment_to_api).collect();
-                    Ok((url.clone(), api::Urb::Page { ship, path, kind: engine::kind_of(&p.mark).to_owned(), body: p.body, comments }, Some(meta)))
+                    Ok((url.clone(), api::Urb::Page { ship, path, kind: engine::kind_of(&p.mark).to_owned(), body: p.body, comments, comments_open: None, comet: None }, Some(meta)))
                 }
                 Err(engine::ReadError::NotPublished(msg)) => {
                     // Check if the address names a published or granted folder.
@@ -15180,7 +15710,7 @@ fn urb_got_with(s: &mut App, url: String, got: api::Urb, meta: Option<AnonPageMe
         anon_visits_store(&s.visits);
     }
     match got {
-        api::Urb::Page { ship, path, kind, body, comments } => {
+        api::Urb::Page { ship, path, kind, body, comments, comments_open, comet } => {
             let name = format!("{ship}/{path}");
             if !comments.is_empty() {
                 s.note = format!("{} comment{} on this page, in the Comments pane", comments.len(), if comments.len() == 1 { "" } else { "s" });
@@ -15188,14 +15718,18 @@ fn urb_got_with(s: &mut App, url: String, got: api::Urb, meta: Option<AnonPageMe
             // the thread is kept for the pane, and what was sent to it from here stays said until the thread shows it
             let sent = s.thread.take().filter(|t| t.url == url).and_then(|t| t.sent);
             let m = meta.unwrap_or_default();
+            let (comet_mode, comet_full_until) = match comet {
+                Some(cp) => (cp.mode, cp.until),
+                None => (m.comet_mode, m.comet_full_until),
+            };
             let mut thread = Thread {
                 url: url.clone(),
                 ship: ship.clone(),
                 page: path.clone(),
                 key: m.key,
-                comments_open: m.comments_open,
-                comet_mode: m.comet_mode,
-                comet_full_until: m.comet_full_until,
+                comments_open: comments_open.or(m.comments_open),
+                comet_mode,
+                comet_full_until,
                 list: comments,
                 all: false,
                 sent,
@@ -15373,18 +15907,50 @@ fn load_comments(s: &mut App) {
     }
 }
 
-/// Another ship's page's public thread, read at its address.
-fn thread_of(c: &Conn, url: &str) -> Result<Vec<Comment>, String> {
+/// Another ship's page's public thread and comment policy, read at its address.
+fn thread_of(c: &Conn, url: &str) -> Result<(Vec<Comment>, (Option<bool>, Option<api::CometPolicy>)), String> {
     match c.urb_read(url)? {
-        api::Urb::Page { comments, .. } => Ok(comments),
+        api::Urb::Page { comments, comments_open, comet, .. } => Ok((comments, (comments_open, comet))),
         _ => Err("that address is no longer a page".into()),
     }
+}
+
+/// Evaluates a remote page's comment policy (`comments_open`, `comet_mode`, `comet_full_until`)
+/// for both ship-backed and anonymous views. Returns `(blocked_message, composer_note)`.
+fn thread_comment_policy(t: &Thread, anon: bool) -> (Option<String>, String) {
+    let blocked = if t.comments_open == Some(false) {
+        Some("Comments are off on this page.".into())
+    } else if t.comet_mode == "off" {
+        Some("Anonymous comments are off on this page.".into())
+    } else if let Some(mins) = comet_full_mins(t.comet_full_until) {
+        Some(format!("Anonymous comments on this page are full for about {mins} minute{}.", if mins == 1 { "" } else { "s" }))
+    } else {
+        None
+    };
+    let note = if anon {
+        if t.comet_mode == "held" {
+            format!("Sent as your anonymous identity. Anonymous comments are reviewed before they appear on {}.", t.ship)
+        } else {
+            format!("Sent as your anonymous identity. {} decides whether it shows: comments may be off or held.", t.ship)
+        }
+    } else if t.comet_mode == "held" {
+        format!("Posted over Ames from your ship. Anonymous comments are reviewed before they appear on {}.", t.ship)
+    } else if t.comments_open == Some(true) {
+        format!("Posted over Ames from your ship, so {} sees your @p as the author.", t.ship)
+    } else {
+        format!("Sent as your ship. {} decides whether it shows: comments may be off there, or held.", t.ship)
+    };
+    (blocked, note)
 }
 
 /// Sends the comment typed in the pane to the page of another ship in front,
 /// as this ship or as the anonymous comet identity.
 fn post_remote_comment(s: &mut App) {
     let Some(t) = thread_here(s).cloned() else { return };
+    if let (Some(why), _) = thread_comment_policy(&t, s.anon) {
+        s.note = why;
+        return;
+    }
     let body = s.comment.text.trim().to_owned();
     if body.is_empty() || s.comment_sending {
         return;
@@ -15784,48 +16350,28 @@ fn thread_view(t: &Thread, s: &App, k: &Kit) -> El {
     let (url, ship, key) = (t.url.clone(), t.ship.clone(), if t.key.is_empty() { format!("/{}", t.page.trim_start_matches('/')) } else { t.key.clone() });
     let again = Button::new("Refresh").help("Read the thread again").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(s.thread_req.is_pending()).on_press(move |s: &mut App| {
         if let Some(c) = s.conn.clone() {
-            s.thread_req.request((c, url.clone()), |(c, url)| thread_of(&c, &url).map(|l| (url, l)));
+            s.thread_req.request((c, url.clone()), |(c, url)| thread_of(&c, &url).map(|(l, pol)| (url, l, Some(pol))));
         } else {
             #[cfg(unix)]
             if s.anon {
                 if let Some(e) = s.global.engine.clone() {
                     s.thread_req.request((e, url.clone(), ship.clone(), key.clone()), |(e, url, ship, key)| {
                         let list = e.thread(&ship, &key, engine::PEEK_BUDGET).unwrap_or_default().into_iter().map(pub_comment_to_api).collect();
-                        Ok((url, list))
+                        Ok((url, list, None))
                     });
                 }
             }
         }
     }).build(k).key("thread-again");
-    let blocked_msg: Option<String> = if s.anon {
-        if t.comments_open == Some(false) {
-            Some("Comments are off for this page.".into())
-        } else if t.comet_mode == "off" {
-            Some("This page does not take anonymous comments.".into())
-        } else if let Some(mins) = comet_full_mins(t.comet_full_until) {
-            Some(format!("Anonymous comments on this page are full for about {mins} minute{}.", if mins == 1 { "" } else { "s" }))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let (blocked_msg, note) = thread_comment_policy(t, s.anon);
     let write = match blocked_msg {
         Some(why) => col().key("comment-write").w_full().child(text(why).font(k.ty.small).color(c.text_muted).wrap()),
         None => {
-            let note = if s.anon {
-                if t.comet_mode == "held" {
-                    format!("Sent as your anonymous identity. Comments from anonymous readers are held for review by {}.", t.ship)
-                } else {
-                    format!("Sent as your anonymous identity. {} decides whether it shows: comments may be off or held.", t.ship)
-                }
-            } else {
-                format!("Sent as your ship. {} decides whether it shows: comments may be off there, or held.", t.ship)
-            };
+            let verb = if !s.anon && t.comments_open == Some(true) { "Post to" } else { "Send to" };
             col().key("comment-write").w_full().gap(6.0)
                 .child(TextArea::new(&s.comment).label(format!("Your comment to {}", t.ship)).placeholder("Say something").rows(3).on_edit(|s: &mut App| &mut s.comment).build(k).w_full().key("comment-field"))
                 .child(text(note).font(k.ty.small).color(c.text_faint).wrap())
-                .child(row().child(Button::new(if s.comment_sending { "Sending\u{2026}".to_owned() } else { format!("Send to {}", t.ship) }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(s.comment_sending).on_press(post_remote_comment).build(k).key("comment-send")))
+                .child(row().child(Button::new(if s.comment_sending { "Sending\u{2026}".to_owned() } else { format!("{verb} {}", t.ship) }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(s.comment_sending).on_press(post_remote_comment).build(k).key("comment-send")))
         }
     };
     col()
@@ -15937,6 +16483,27 @@ fn new_group(s: &mut App) {
         }
         Err(e) => s.note = e,
     }
+}
+
+/// Groups live published pages from `shares` into `(shared_over_urbit, clearweb)` sorted by path,
+/// each paired with its copyable address when a ship is connected.
+fn published_pages(pages: &[String], shares: &HashMap<String, String>, conn: Option<&Conn>) -> (Vec<(String, Option<String>)>, Vec<(String, Option<String>)>) {
+    let live: std::collections::HashSet<&str> = pages.iter().map(String::as_str).collect();
+    let mut shared = Vec::new();
+    let mut clearweb = Vec::new();
+    for (path, mode) in shares {
+        if !live.contains(path.as_str()) {
+            continue;
+        }
+        match mode.as_str() {
+            "shared" => shared.push((path.clone(), conn.and_then(|c| c.address(path, "shared")))),
+            "clearweb" => clearweb.push((path.clone(), conn.and_then(|c| c.address(path, "clearweb")))),
+            _ => {}
+        }
+    }
+    shared.sort_by(|a, b| a.0.cmp(&b.0));
+    clearweb.sort_by(|a, b| a.0.cmp(&b.0));
+    (shared, clearweb)
 }
 
 /// The access screen: every group, its ships and how many pages it reads,
@@ -16103,6 +16670,67 @@ fn access_view(s: &App, k: &Kit) -> El {
         }
         asks = asks.child(col().key(format!("ask-{i}")).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01).child(top).child(text(if a.note.is_empty() { "(no note)".to_owned() } else { a.note.clone() }).font(k.ty.ui).color(c.text_base).wrap()));
     }
+    let (pub_shared, pub_web) = published_pages(page_names(s), &s.shares, s.conn.as_ref());
+    let mut published = col().key("access-published").w_full().gap(8.0).child(text("Published pages").font(k.ty.ui_medium).color(c.text_base));
+    if pub_shared.is_empty() && pub_web.is_empty() {
+        published = published.child(text("Nothing is published. Share a page from its Page tab and it shows here.").font(k.ty.small).color(c.text_muted).wrap());
+    } else {
+        for (title, kind_key, rows) in [("Shared over Urbit", "shared", pub_shared), ("Clearweb", "clearweb", pub_web)] {
+            if rows.is_empty() {
+                continue;
+            }
+            published = published.child(text(format!("{title} ({})", rows.len())).font(k.ty.small_medium).color(c.text_muted));
+            for (i, (path, addr)) in rows.into_iter().enumerate() {
+                let open_path = path.clone();
+                let mut r = row()
+                    .key(format!("pub-{kind_key}-{i}"))
+                    .w_full()
+                    .px(10.0)
+                    .py(6.0)
+                    .gap(8.0)
+                    .center_y()
+                    .radius(k.radius.sm)
+                    .fill(c.layer_01)
+                    .child(
+                        col()
+                            .gap(2.0)
+                            .grow(1.0)
+                            .min_w(0.0)
+                            .child(text(path).font(k.ty.small_medium).color(c.text_base).truncate())
+                            .children(addr.as_ref().map(|u| text(u.clone()).font(k.ty.mono).color(c.text_muted).truncate().selectable(true))),
+                    )
+                    .child(
+                        Button::new("Open")
+                            .control_size(ControlSize::Small)
+                            .variant(ButtonVariant::Ghost)
+                            .on_press(move |s: &mut App| {
+                                if s.memory {
+                                    flip(s);
+                                }
+                                open_page(s, &open_path);
+                            })
+                            .build(k)
+                            .key(format!("pub-open-{kind_key}-{i}")),
+                    );
+                if let Some(u) = addr {
+                    let copy_u = u.clone();
+                    r = r.child(
+                        Button::new("Copy")
+                            .control_size(ControlSize::Small)
+                            .variant(ButtonVariant::Ghost)
+                            .help("Copy address")
+                            .on_press_tx(move |s: &mut App, tx| {
+                                tx.copy(copy_u.clone());
+                                s.note = "address copied".into();
+                            })
+                            .build(k)
+                            .key(format!("pub-copy-{kind_key}-{i}")),
+                    );
+                }
+                published = published.child(r);
+            }
+        }
+    }
     let head = col()
         .gap(4.0)
         .child(text("Access").font(k.ty.body_medium).color(c.text_base))
@@ -16112,7 +16740,7 @@ fn access_view(s: &App, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(asks).child(list).child(Divider::horizontal().build(k)).child(form).child(Divider::horizontal().build(k)).child(banned)))
+        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(asks).child(list).child(Divider::horizontal().build(k)).child(form).child(Divider::horizontal().build(k)).child(banned).child(Divider::horizontal().build(k)).child(published)))
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
@@ -18860,10 +19488,13 @@ fn fill_editor(s: &App, label: &str, spans: Vec<Span>, k: &Kit) -> El {
         view.scroll(ScrollSpec { stick_bottom: false }).child(field.w_full().wrap_anywhere())
     };
     let view = view.on_layout_tx(|s: &mut App, r: [f32; 4], tx: &mut Tx| {
-        if s.edit_wide == r[2] {
+        if s.edit_wide == r[2] && !s.edit_reveal_pending {
             tx.live_only();
         }
         s.edit_wide = r[2];
+        if s.edit_reveal_pending && editor_reveal(s, tx) {
+            s.edit_reveal_pending = false;
+        }
     });
     let mut boxed = col().role("textbox").padding(8.0).min_h(inner + 16.0).w_full().min_w(0.0).radius(k.radius.md).fill(c.bg_base).child(view);
     if s.edit.focused {
@@ -18898,11 +19529,13 @@ fn caret_down(text: &str, at: usize, style: rune::TextStyle, spans: &[Span], wid
 
 /// Brings the caret's line into the editor's view, a third of the way down it. Rune keeps a caret
 /// in view as it is typed at, and not one put somewhere by the app, as the outline and find put it.
-fn editor_reveal(s: &App, tx: &mut Tx) {
-    let Some((style, spans)) = EDIT_DRAWN.with_borrow(|d| d.clone()) else { return };
+/// Returns `true` when `EDIT_DRAWN` was available and the scroll was scheduled.
+fn editor_reveal(s: &App, tx: &mut Tx) -> bool {
+    let Some((style, spans)) = EDIT_DRAWN.with_borrow(|d| d.clone()) else { return false };
     let wide = (!s.prefs.no_wrap && s.edit_wide > 0.0).then_some(s.edit_wide);
     let down = caret_down(&s.edit.text, s.edit.range().0, style, &spans, wide);
     tx.scroll_to_y(FIELD_SCROLL, (down - s.edit_room.max(120.0) * 0.3).max(0.0));
+    true
 }
 
 /// Returns the pages list regardless of whether Knowledge (memories) or Pages is active.
@@ -21170,6 +21803,9 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
             _ => {}
         }
     }
+    if !over && writer_key(s, ev) {
+        return true;
+    }
     if ev.is_command('n') && !s.editing {
         ask_new(s);
         return true;
@@ -21180,6 +21816,24 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if ev.is_command('f') {
         open_find(s);
+        return true;
+    }
+    if ev.is_command('h') && s.editing && !page_hidden(s) && find_where(s) == FindIn::Editor {
+        let had_query = s.find.as_ref().is_some_and(|q| !q.text.trim().is_empty());
+        if s.find.is_none() {
+            open_find(s);
+        }
+        if had_query {
+            if let Some(q) = &mut s.find {
+                q.focused = false;
+            }
+            s.find_replace.focused = true;
+        } else {
+            if let Some(q) = &mut s.find {
+                q.focused = true;
+            }
+            s.find_replace.focused = false;
+        }
         return true;
     }
     if ev.is_command('t') && !s.editing {
@@ -23464,15 +24118,15 @@ mod tests {
     fn another_ships_thread_belongs_to_the_page_it_was_read_with() {
         let mut s = sample("welcome");
         let m = |who: &str, body: &str| Comment { page: String::new(), id: String::new(), author: who.into(), when: "~2026.1.1".into(), body: body.into() };
-        urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: vec![m("~bus", "one"), m("~wex", "two")] });
+        urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: vec![m("~bus", "one"), m("~wex", "two")], comments_open: None, comet: None });
         let t = thread_here(&s).expect("the page in front has its thread");
         assert_eq!((t.url.as_str(), t.ship.as_str(), t.page.as_str(), t.list.len(), t.all, &t.sent), ("urb://~nec/notes/a", "~nec", "notes/a", 2, false, &None));
         assert!(s.note.contains("2 comments"));
         // what was sent from here stays said across a read of the same address, and goes with another page
         s.thread.as_mut().unwrap().sent = Some(("mine".into(), SentOutcome::Confirmed, 0));
-        urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: Vec::new() });
+        urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: Vec::new(), comments_open: None, comet: None });
         assert_eq!(thread_here(&s).unwrap().sent, Some(("mine".into(), SentOutcome::Confirmed, 0)));
-        urb_got(&mut s, "urb://~nec/notes/b".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/b".into(), kind: "md".into(), body: "# B\n".into(), comments: Vec::new() });
+        urb_got(&mut s, "urb://~nec/notes/b".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/b".into(), kind: "md".into(), body: "# B\n".into(), comments: Vec::new(), comments_open: None, comet: None });
         assert_eq!(thread_here(&s).unwrap().sent, None);
         // one of this ship's own pages has no such thread
         open_page(&mut s, "welcome");
@@ -23542,7 +24196,7 @@ mod tests {
         let mut s = init();
         s.conn = None;
         (s.sample, s.anon) = (true, true);
-        let page = |body: &str| api::Urb::Page { ship: "~nec".into(), path: "a".into(), kind: "md".into(), body: body.into(), comments: Vec::new() };
+        let page = |body: &str| api::Urb::Page { ship: "~nec".into(), path: "a".into(), kind: "md".into(), body: body.into(), comments: Vec::new(), comments_open: None, comet: None };
         urb_got(&mut s, "urb://~nec/a".into(), page("# Alpha\n"));
         urb_got(&mut s, "urb://~nec/a".into(), page("# Alpha\n"));
         assert_eq!(s.visits.iter().map(|x| (x.url.as_str(), x.title.as_str(), x.hits)).collect::<Vec<_>>(), [("urb://~nec/a", "Alpha", 2)]);
@@ -23590,7 +24244,7 @@ mod tests {
         // and one that lands under an edit begun meanwhile leaves the edit alone
         let mut s = sample("welcome");
         start_edit(&mut s);
-        urb_got(&mut s, "urb://~nec/a".into(), api::Urb::Page { ship: "~nec".into(), path: "a".into(), kind: "md".into(), body: "x".into(), comments: Vec::new() });
+        urb_got(&mut s, "urb://~nec/a".into(), api::Urb::Page { ship: "~nec".into(), path: "a".into(), kind: "md".into(), body: "x".into(), comments: Vec::new(), comments_open: None, comet: None });
         assert!(s.editing && s.open.as_ref().unwrap().name == "welcome" && s.remote.is_none() && s.note.contains("an edit is open"));
     }
 
@@ -24199,6 +24853,468 @@ mod tests {
         handle_tree_job(&mut s, Ok(api::TreeJob { job: None, dropped: None }), 20.0, &mut tx);
         assert!(s.offline.is_none());
         assert!(!s.job_from_timeout);
+    }
+
+    #[test]
+    fn published_pages_groups_sorts_and_formats_live_shares() {
+        let pages = vec!["notes/b".into(), "notes/a".into(), "pub/site".into(), "priv".into()];
+        let mut shares = HashMap::new();
+        shares.insert("notes/b".into(), "shared".into());
+        shares.insert("notes/a".into(), "shared".into());
+        shares.insert("pub/site".into(), "clearweb".into());
+        shares.insert("deleted/page".into(), "clearweb".into());
+        shares.insert("priv".into(), "private".into());
+        let conn = Conn { url: "https://ship.example".into(), cookie: "urbauth-~zod=tok".into() };
+        let (sh, cw) = published_pages(&pages, &shares, Some(&conn));
+        assert_eq!(sh.len(), 2);
+        assert_eq!(sh[0].0, "notes/a");
+        assert_eq!(sh[0].1.as_deref(), Some("urb://~zod/notes/a"));
+        assert_eq!(sh[1].0, "notes/b");
+        assert_eq!(cw.len(), 1);
+        assert_eq!(cw[0].0, "pub/site");
+        assert_eq!(cw[0].1.as_deref(), Some("https://ship.example/apps/lattice/c/pub/site"));
+    }
+
+    #[test]
+    fn writer_shortcuts_and_find_work_across_blocks() {
+        let mut doc = writer::parse_fodt(include_str!("../../ui-src/writer/blank.fodt")).unwrap();
+        let p0 = doc.first_editable_path().unwrap();
+        assert!(doc.set_block_text(&p0, "First needle here"));
+        assert!(doc.set_block_kind(&p0, Some(1), doc.styles.heading_style(1)));
+        let p1 = doc.insert_paragraph_after(writer::top_index(&p0));
+        assert!(doc.set_block_text(&p1, "Second paragraph"));
+        let tp = doc.insert_table_after(writer::top_index(&p1), 1, 2);
+        assert!(doc.set_block_text(&tp, "Table needle cell"));
+        let xml = writer::serialize_fodt(&doc).unwrap();
+
+        let mut s = sample("welcome");
+        s.open = Some(Page { name: "doc".into(), kind: "fodt".into(), body: xml, rev: 1 });
+        sync_writer(&mut s);
+        assert_eq!(find_where(&s), FindIn::Writer);
+
+        // Find matches heading and table cell, skips non-matching paragraph.
+        let mut tx = Tx::default();
+        open_find(&mut s);
+        s.find.as_mut().unwrap().text = "NEEDLE".into();
+        let ms = writer_matches(&s);
+        assert_eq!(ms.len(), 2);
+        assert_eq!(ms[0].1, "wr-h-0");
+        assert!(ms[1].1.starts_with("wr-tc-"));
+        assert_eq!(find_count(&s), 2);
+        // Step forward to second match (table cell), selects its block.
+        find_step(&mut s, 1, &mut tx);
+        assert_eq!(s.find_at, 1);
+        assert_eq!(s.writer.as_ref().unwrap().cursor.as_ref(), Some(&ms[1].0));
+
+        // Close find and test Writer keyboard shortcuts (Ctrl+B, Ctrl+2, Ctrl+Z, Ctrl+Shift+Z).
+        s.find = None;
+        writer_pick(&mut s, p1.clone());
+        let cmd = |ch: char, shift: bool| KeyEvent {
+            key: Key::Command(ch),
+            mods: rune::Mods { cmd: true, ctrl: true, shift, ..rune::Mods::default() },
+        };
+        assert!(on_key(&mut s, &cmd('b', false), &mut tx));
+        assert!(s.open.as_ref().unwrap().body.contains("fo:font-weight=\"bold\""));
+        assert!(on_key(&mut s, &cmd('i', false), &mut tx));
+        assert!(s.open.as_ref().unwrap().body.contains("fo:font-style=\"italic\""));
+        assert!(on_key(&mut s, &cmd('u', false), &mut tx));
+        assert!(s.open.as_ref().unwrap().body.contains("style:text-underline-style=\"solid\""));
+        assert!(on_key(&mut s, &cmd('x', true), &mut tx));
+        assert!(s.open.as_ref().unwrap().body.contains("style:text-line-through-style=\"solid\""));
+        assert!(on_key(&mut s, &cmd('2', false), &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 2, .. })));
+        // Ctrl+Alt+3 sets H3 (matching ui-src/writer/keys.js for browser tab shortcuts), Ctrl+0 returns to Body.
+        let alt_h3 = KeyEvent {
+            key: Key::Command('3'),
+            mods: rune::Mods { cmd: true, ctrl: true, alt: true, ..rune::Mods::default() },
+        };
+        assert!(on_key(&mut s, &alt_h3, &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 3, .. })));
+        assert!(on_key(&mut s, &cmd('0', false), &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Paragraph { .. })));
+        // Undo reverts Body back to H3; Ctrl+Y and Ctrl+Shift+Z both redo.
+        assert!(on_key(&mut s, &cmd('z', false), &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 3, .. })));
+        assert!(on_key(&mut s, &cmd('y', false), &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Paragraph { .. })));
+        assert!(on_key(&mut s, &cmd('z', false), &mut tx));
+        assert!(on_key(&mut s, &cmd('z', true), &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Paragraph { .. })));
+
+        // Dirty block text bar defers Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z to TextArea's own small-step undo/redo.
+        s.writer.as_mut().unwrap().entry.insert(" draft");
+        let dirty_text = s.writer.as_ref().unwrap().entry.text.clone();
+        assert!(!writer_key(&mut s, &cmd('z', false)));
+        assert!(!writer_key(&mut s, &cmd('y', false)));
+        assert!(!writer_key(&mut s, &cmd('z', true)));
+        assert_eq!(s.writer.as_ref().unwrap().entry.text, dirty_text);
+        let was = s.writer.as_ref().unwrap().entry_was.clone();
+        s.writer.as_mut().unwrap().entry = TextEdit::new(was.as_str());
+
+        // While a save is in flight, Writer shortcuts take the key and inform the user instead of dropping silently.
+        s.save_for = Some("doc".into());
+        s.note.clear();
+        assert!(on_key(&mut s, &cmd('b', false), &mut tx));
+        assert!(s.note.contains("saving"));
+        s.save_for = None;
+
+        // Shortcuts do not fire while a prompt overlay, old revision, another input, or tracked-changes doc is active.
+        s.prompt = Some(Prompt::Kind(TextEdit::new("fodt")));
+        assert!(!on_key(&mut s, &cmd('z', false), &mut tx));
+        s.prompt = None;
+        s.comment.focused = true;
+        assert!(!on_key(&mut s, &cmd('z', false), &mut tx));
+        s.comment.focused = false;
+        s.old = Some(Page { name: "doc".into(), kind: "fodt".into(), body: String::new(), rev: 0 });
+        assert_eq!(find_where(&s), FindIn::Source);
+        assert!(!on_key(&mut s, &cmd('z', false), &mut tx));
+        s.old = None;
+        s.writer.as_mut().unwrap().doc.tracking = true;
+        assert!(!on_key(&mut s, &cmd('b', false), &mut tx));
+    }
+
+    #[test]
+    fn move_prunes_empty_folders_and_scad_console_jumps_to_line() {
+        let mut s = sample("welcome");
+        s.names.push("old/sub/note".into());
+        s.names.push("keep/still".into());
+        s.dirs.push("old".into());
+        s.dirs.push("old/sub".into());
+        s.dirs.push("keep".into());
+        s.dirs.push("dest".into());
+        s.dnames.insert("old".into(), "Old".into());
+        s.dnames.insert("keep".into(), "Keep".into());
+        s.dnames.insert("dest".into(), "Dest".into());
+        s.dshares.insert("old/sub".into(), "shared".into());
+        s.dshares.insert("keep".into(), "shared".into());
+        s.folder = Some("old/sub".into());
+
+        // Even if pruned erroneously names the destination or a populated folder, safe_pruned keeps both.
+        applied(
+            &mut s,
+            Op::Renamed(
+                "old/sub/note".into(),
+                "dest/note".into(),
+                Vec::new(),
+                vec!["old/sub".into(), "old".into(), "dest".into(), "keep".into()],
+            ),
+        );
+        assert!(s.names.contains(&"dest/note".to_owned()));
+        assert!(!s.dirs.contains(&"old".to_owned()));
+        assert!(!s.dirs.contains(&"old/sub".to_owned()));
+        assert!(s.dirs.contains(&"keep".to_owned()));
+        assert!(s.dirs.contains(&"dest".to_owned()));
+        assert!(!s.dnames.contains_key("old"));
+        assert!(s.dnames.contains_key("keep") && s.dnames.contains_key("dest"));
+        assert!(!s.dshares.contains_key("old/sub"));
+        assert!(s.dshares.contains_key("keep"));
+        assert!(s.folder.is_none());
+
+        // OpenSCAD console line jump opens editor and positions caret at line start.
+        let mut tx = Tx::default();
+        let src = "w = 10;\nh = 20;\ncube([w, h, 5]);\n";
+        s.open = Some(Page { name: "part".into(), kind: "scad".into(), body: src.into(), rev: 1 });
+        s.editing = false;
+        // Refused on old revisions and read-only linked pages.
+        s.old = Some(Page { name: "part".into(), kind: "scad".into(), body: src.into(), rev: 0 });
+        jump_scad_line(&mut s, 2, &mut tx);
+        assert!(!s.editing && s.note.contains("read-only"));
+        s.old = None;
+        s.links.insert("part".into(), api::LinkTo { host: "~nec".into(), path: "part".into(), mode: "read".into() });
+        jump_scad_line(&mut s, 2, &mut tx);
+        assert!(!s.editing && s.note.contains("read-only"));
+        s.links.remove("part");
+
+        jump_scad_line(&mut s, 3, &mut tx);
+        assert!(s.editing);
+        assert_eq!(s.edit.range(), (16, 16));
+        assert_eq!(&s.edit.text[16..], "cube([w, h, 5]);\n");
+        // When EDIT_DRAWN is empty, jump_scad_line records a pending reveal until the editor draws.
+        EDIT_DRAWN.set(None);
+        s.editing = false;
+        jump_scad_line(&mut s, 3, &mut tx);
+        assert!(s.edit_reveal_pending);
+        // Polling before EDIT_DRAWN is populated keeps the pending reveal intact (even when !s.rich).
+        poll(&mut s, 0.0, &mut tx);
+        assert!(s.edit_reveal_pending);
+        EDIT_DRAWN.set(Some((rune::TextStyle::new(14.0, 400.0), Vec::new())));
+        poll(&mut s, 0.0, &mut tx);
+        assert!(!s.edit_reveal_pending);
+        // Leaving edit mode clears any pending reveal.
+        EDIT_DRAWN.set(None);
+        s.edit_reveal_pending = true;
+        s.editing = false;
+        poll(&mut s, 0.0, &mut tx);
+        assert!(!s.edit_reveal_pending);
+        // Out-of-range line clamps cleanly to the final line.
+        jump_scad_line(&mut s, 99, &mut tx);
+        assert_eq!(s.edit.range(), (src.len(), src.len()));
+
+        // Spreadsheet export commands are usable only on open fods wiki pages.
+        s.editing = false;
+        s.open = Some(Page { name: "sheet".into(), kind: "fods".into(), body: String::new(), rev: 1 });
+        assert!(usable(&s, "export-ods") && usable(&s, "export-csv"));
+        s.memory = true;
+        assert!(!usable(&s, "export-ods") && !usable(&s, "export-csv"));
+        s.memory = false;
+        s.access = true;
+        assert!(!usable(&s, "export-ods") && !usable(&s, "export-csv"));
+        s.access = false;
+        s.open = Some(Page { name: "note".into(), kind: "md".into(), body: String::new(), rev: 1 });
+        assert!(!usable(&s, "export-ods") && !usable(&s, "export-csv"));
+    }
+
+    #[test]
+    fn remote_page_comment_policy_hides_box_and_shows_comet_notes() {
+        let mut s = sample("welcome");
+        // Comments explicitly off: box hidden, post_remote_comment refuses.
+        urb_got(
+            &mut s,
+            "urb://~nec/off".into(),
+            api::Urb::Page {
+                ship: "~nec".into(),
+                path: "off".into(),
+                kind: "md".into(),
+                body: "# Off\n".into(),
+                comments: Vec::new(),
+                comments_open: Some(false),
+                comet: None,
+            },
+        );
+        let t = thread_here(&s).unwrap();
+        let (blocked, _) = thread_comment_policy(t, false);
+        assert_eq!(blocked.as_deref(), Some("Comments are off on this page."));
+        s.comment = TextEdit::new("hello");
+        post_remote_comment(&mut s);
+        assert!(!s.comment_sending);
+        assert_eq!(s.note, "Comments are off on this page.");
+
+        // Comet policy held: box allowed with held review note.
+        urb_got(
+            &mut s,
+            "urb://~nec/held".into(),
+            api::Urb::Page {
+                ship: "~nec".into(),
+                path: "held".into(),
+                kind: "md".into(),
+                body: "# Held\n".into(),
+                comments: Vec::new(),
+                comments_open: Some(true),
+                comet: Some(api::CometPolicy { mode: "held".into(), until: None }),
+            },
+        );
+        let (blocked, note) = thread_comment_policy(thread_here(&s).unwrap(), false);
+        assert!(blocked.is_none());
+        assert!(note.contains("reviewed before they appear"));
+
+        // Comet policy off: box hidden.
+        urb_got(
+            &mut s,
+            "urb://~nec/nocomets".into(),
+            api::Urb::Page {
+                ship: "~nec".into(),
+                path: "nocomets".into(),
+                kind: "md".into(),
+                body: "# No comets\n".into(),
+                comments: Vec::new(),
+                comments_open: Some(true),
+                comet: Some(api::CometPolicy { mode: "off".into(), until: None }),
+            },
+        );
+        let (blocked, _) = thread_comment_policy(thread_here(&s).unwrap(), false);
+        assert_eq!(blocked.as_deref(), Some("Anonymous comments are off on this page."));
+
+        // Comet full until future timestamp: box hidden with minutes note.
+        let future = api::since_epoch().unwrap().as_secs() + 180;
+        urb_got(
+            &mut s,
+            "urb://~nec/full".into(),
+            api::Urb::Page {
+                ship: "~nec".into(),
+                path: "full".into(),
+                kind: "md".into(),
+                body: "# Full\n".into(),
+                comments: Vec::new(),
+                comments_open: Some(true),
+                comet: Some(api::CometPolicy { mode: "open".into(), until: Some(future) }),
+            },
+        );
+        let (blocked, _) = thread_comment_policy(thread_here(&s).unwrap(), false);
+        assert!(blocked.as_deref().is_some_and(|m| m.contains("full for about")));
+
+        // Older ship (comments_open: None, comet: None): box still offered.
+        urb_got(
+            &mut s,
+            "urb://~nec/old".into(),
+            api::Urb::Page {
+                ship: "~nec".into(),
+                path: "old".into(),
+                kind: "md".into(),
+                body: "# Old\n".into(),
+                comments: Vec::new(),
+                comments_open: None,
+                comet: None,
+            },
+        );
+        let (blocked, note) = thread_comment_policy(thread_here(&s).unwrap(), false);
+        assert!(blocked.is_none());
+        assert!(note.contains("decides whether it shows"));
+
+        // Thread refresh updates comments_open/comet policy and clears stale comet fields when None.
+        let mut tx = Tx::default();
+        s.thread_req.request((), move |()| {
+            Ok((
+                "urb://~nec/old".into(),
+                Vec::new(),
+                Some((Some(false), Some(api::CometPolicy { mode: "held".into(), until: Some(future) }))),
+            ))
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while thread_here(&s).unwrap().comments_open != Some(false) && std::time::Instant::now() < deadline {
+            poll(&mut s, 0.0, &mut tx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let t = thread_here(&s).unwrap();
+        assert_eq!((t.comments_open, t.comet_mode.as_str(), t.comet_full_until), (Some(false), "held", Some(future)));
+
+        s.thread_req.request((), |()| Ok(("urb://~nec/old".into(), Vec::new(), Some((Some(true), None)))));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while thread_here(&s).unwrap().comments_open != Some(true) && std::time::Instant::now() < deadline {
+            poll(&mut s, 0.0, &mut tx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let t = thread_here(&s).unwrap();
+        assert_eq!((t.comments_open, t.comet_mode.as_str(), t.comet_full_until), (Some(true), "", None));
+    }
+
+    #[test]
+    fn markdown_task_checkbox_toggle_and_editor_find_replace() {
+        // Interactive Markdown task toggle on own editable page.
+        let mut s = sample("welcome");
+        let body = "# Todo\n\n- [ ] buy [[milk]]\n- [x] walk dog\n";
+        s.open = Some(Page { name: "welcome".into(), kind: "md".into(), body: body.into(), rev: 1 });
+        let rendered = md::wikilinks(&md::html_shown(&md::shallow(body)), &|n| ghost(&s, n));
+        let rendered_tasks = md::task_states(&rendered);
+        assert_eq!(rendered_tasks.len(), 2);
+        toggle_md_task(&mut s, &rendered, rendered_tasks[0].0, true);
+        assert!(s.open.as_ref().unwrap().body.contains("- [x] buy [[milk]]"));
+        assert!(s.open.as_ref().unwrap().body.contains("- [x] walk dog"));
+
+        // Old revision refuses checkbox toggle.
+        let before = s.open.as_ref().unwrap().body.clone();
+        s.old = Some(Page { name: "welcome".into(), kind: "md".into(), body: before.clone(), rev: 0 });
+        toggle_md_task(&mut s, &rendered, rendered_tasks[1].0, false);
+        assert_eq!(s.open.as_ref().unwrap().body, before);
+        s.old = None;
+
+        // Memory entries and read-only linked pages refuse checkbox toggle.
+        s.memory = true;
+        toggle_md_task(&mut s, &rendered, rendered_tasks[1].0, false);
+        assert_eq!(s.open.as_ref().unwrap().body, before);
+        s.memory = false;
+        s.links.insert("welcome".into(), api::LinkTo { host: "~nec".into(), path: "welcome".into(), mode: "read".into() });
+        toggle_md_task(&mut s, &rendered, rendered_tasks[1].0, false);
+        assert_eq!(s.open.as_ref().unwrap().body, before);
+        s.links.remove("welcome");
+
+        // Editor Find-and-Replace: case/accent folding, UTF-8, self-containing replacement,
+        // empty replacement, Replace All count, and single-step undo.
+        let mut tx = Tx::default();
+        let edit_src = "Café foo and FOO plus café 🎉";
+        s.open = Some(Page { name: "welcome".into(), kind: "md".into(), body: edit_src.into(), rev: 2 });
+        start_edit(&mut s);
+        s.rich = false;
+        s.edit = TextEdit::new(edit_src);
+        open_find(&mut s);
+        s.find.as_mut().unwrap().text = "foo".into();
+        s.find_replace = TextEdit::new("foobar");
+        // First Replace replaces "foo" -> "foobar" and advances to "FOO" without looping on "foobar".
+        assert!(find_replace_one(&mut s, &mut tx));
+        assert_eq!(s.edit.text, "Café foobar and FOO plus café 🎉");
+        assert_eq!(s.edit.selected(), "FOO");
+        // Second Replace replaces "FOO" -> "foobar".
+        assert!(find_replace_one(&mut s, &mut tx));
+        assert_eq!(s.edit.text, "Café foobar and foobar plus café 🎉");
+
+        // Replacing the final match empties next_matches, resets find_at, and places caret after replacement.
+        s.find.as_mut().unwrap().text = "plus".into();
+        s.find_replace = TextEdit::new("with");
+        s.find_at = 0;
+        assert!(find_replace_one(&mut s, &mut tx));
+        assert_eq!(s.edit.text, "Café foobar and foobar with café 🎉");
+        assert_eq!(s.find_at, 0);
+        let expected_after = s.edit.text.find("with").unwrap() + "with".len();
+        assert_eq!(s.edit.range(), (expected_after, expected_after));
+
+        // Boundary match creation: "aabb" replacing "ab" -> "" leaves "ab" and wraps to index 0.
+        s.edit = TextEdit::new("aabb");
+        s.find.as_mut().unwrap().text = "ab".into();
+        s.find_replace = TextEdit::new("");
+        s.find_at = 0;
+        assert!(find_replace_one(&mut s, &mut tx));
+        assert_eq!(s.edit.text, "ab");
+        assert_eq!(s.find_at, 0);
+        assert_eq!(s.edit.selected(), "ab");
+
+        // Queries with leading/trailing spaces match and replace exact whitespace rather than trimming.
+        s.edit = TextEdit::new("foo baz and foobar");
+        s.find.as_mut().unwrap().text = "foo ".into();
+        s.find_replace = TextEdit::new("bar ");
+        assert_eq!(find_count(&s), 1);
+        assert_eq!(find_replace_all(&mut s, &mut tx), 1);
+        assert_eq!(s.edit.text, "bar baz and foobar");
+
+        // Ctrl+H: focuses Find when query is empty, preserves find_at and focuses Replace when query is set.
+        let ctrl_h = KeyEvent { key: Key::Command('h'), mods: rune::Mods { cmd: true, ctrl: true, ..rune::Mods::default() } };
+        s.find = None;
+        assert!(on_key(&mut s, &ctrl_h, &mut tx));
+        assert!(s.find.as_ref().unwrap().focused && !s.find_replace.focused);
+        s.edit = TextEdit::new("one one one");
+        s.find.as_mut().unwrap().text = "one".into();
+        s.find_at = 2;
+        assert!(on_key(&mut s, &ctrl_h, &mut tx));
+        assert_eq!(s.find_at, 2);
+        assert!(!s.find.as_ref().unwrap().focused && s.find_replace.focused);
+
+        // Replace All with case/accent-folded UTF-8 query and empty replacement, undone in one step.
+        s.edit = TextEdit::new("Café foobar and foobar plus café 🎉");
+        s.find.as_mut().unwrap().text = "cafe".into();
+        s.find_replace = TextEdit::new("");
+        let before_all = s.edit.text.clone();
+        assert_eq!(find_replace_all(&mut s, &mut tx), 2);
+        assert_eq!(s.edit.text, " foobar and foobar plus  🎉");
+        assert_eq!(s.note, "replaced 2 occurrences");
+        s.edit.undo();
+        assert_eq!(s.edit.text, before_all, "Replace All must undo as one edit");
+
+        // Read mode: Ctrl+H and replace helpers are no-ops.
+        s.editing = false;
+        assert!(!on_key(&mut s, &ctrl_h, &mut tx));
+        assert!(!find_replace_one(&mut s, &mut tx));
+        assert_eq!(find_replace_all(&mut s, &mut tx), 0);
+
+        // Rich-text mode with an open inline link: both Replace and Replace All close s.link_open cleanly.
+        let rich_src = "foo [link](https://example.org/foo) bar\n";
+        s.open = Some(Page { name: "welcome".into(), kind: "md".into(), body: rich_src.into(), rev: 3 });
+        start_edit(&mut s);
+        assert!(s.rich);
+        s.edit.set_caret(5);
+        s.link_open = linkedit::open(&mut s.edit);
+        assert!(s.link_open.is_some());
+        open_find(&mut s);
+        s.find.as_mut().unwrap().text = "foo".into();
+        s.find_replace = TextEdit::new("baz");
+        assert!(find_replace_one(&mut s, &mut tx));
+        assert!(s.link_open.is_none());
+        assert_eq!(edited(&s), "baz [link](https://example.org/foo) bar\n");
+        s.edit.set_caret(5);
+        s.link_open = linkedit::open(&mut s.edit);
+        assert!(s.link_open.is_some());
+        s.find.as_mut().unwrap().text = "baz".into();
+        s.find_replace = TextEdit::new("qux");
+        assert_eq!(find_replace_all(&mut s, &mut tx), 1);
+        assert!(s.link_open.is_none());
+        assert_eq!(edited(&s), "qux [link](https://example.org/foo) bar\n");
     }
 }
 

@@ -18849,8 +18849,16 @@
         (pure:(fiber:fiber:nexus ,(unit [rel=path mode=view-mode:pg body=@t])) pub)
       (read-shared-page shp rel)
     ?^  got
+      ;<  copen=(unit ?)  bind:m
+        ?.  ?=(^ pub)  (pure:(fiber:fiber:nexus ,(unit ?)) ~)
+        (peer-comments-open shp rel.u.got)
+      ;<  crow=(unit comet-row:ls)  bind:m
+        ?.  &(?=(^ pub) (is-comet:ls our))
+          (pure:(fiber:fiber:nexus ,(unit comet-row:ls)) ~)
+        (peer-comet-row shp rel.u.got)
       ;<  thr=(list [id=@ta c=comment:lc])  bind:m
-        ?.  ?=(^ pub)  (pure:(fiber:fiber:nexus ,(list [id=@ta c=comment:lc])) ~)
+        ?.  &(?=(^ pub) !=([~ |] copen))
+          (pure:(fiber:fiber:nexus ,(list [id=@ta c=comment:lc])) ~)
         (page-thread shp our rel.u.got |)
       %+  send-json  eyre-id
       %-  pairs:enjs:format
@@ -18862,6 +18870,13 @@
           ['mode' s+mode.u.got]
           ['body' s+body.u.got]
           ['size' (numb:enjs:format (met 3 body.u.got))]
+          ['comments-open' ?~(copen ~ b+u.copen)]
+          :-  'comet'
+          ?~  crow  ~
+          %-  pairs:enjs:format
+          :~  ['mode' s+mode.u.crow]
+              ['until' ?~(until.u.crow ~ (numb:enjs:format u.until.u.crow))]
+          ==
           :-  'comments'
           :-  %a
           %+  turn  thr

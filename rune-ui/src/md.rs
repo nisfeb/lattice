@@ -36,6 +36,34 @@ pub fn exact(src: &str) -> Option<Doc> {
     (out == src || out.strip_suffix('\n') == Some(src)).then_some(d)
 }
 
+/// Byte offsets and current checked states of every GFM task list marker (`[ ]` / `[x]` / `[X]`)
+/// in `src`, parsed with the same CommonMark + GFM options as `rune-kit::Markdown` (automatically
+/// skipping fenced code blocks, indented code blocks, and inline code).
+pub fn task_states(src: &str) -> Vec<(usize, bool)> {
+    use pulldown_cmark::{Event, Options, Parser};
+    let opts = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
+    let mut out = Vec::new();
+    for (ev, range) in Parser::new_ext(src, opts).into_offset_iter() {
+        if let Event::TaskListMarker(checked) = ev {
+            if range.len() == 3 && src.as_bytes().get(range.start) == Some(&b'[') && src.as_bytes().get(range.start + 2) == Some(&b']') {
+                out.push((range.start, checked));
+            }
+        }
+    }
+    out
+}
+
+/// Toggles the `index`-th GFM task list checkbox in `src`, skipping code blocks and inline code.
+/// Returns `None` if `index` is out of range.
+pub fn toggle_task(src: &str, index: usize) -> Option<String> {
+    let &(start, checked) = task_states(src).get(index)?;
+    let mut out = String::with_capacity(src.len());
+    out.push_str(&src[..start + 1]);
+    out.push(if checked { ' ' } else { 'x' });
+    out.push_str(&src[start + 2..]);
+    Some(out)
+}
+
 /// The scheme a wiki link is given so the reader can tell it from a web one.
 pub const WIKI: &str = "lattice:";
 
@@ -1697,5 +1725,27 @@ mod tests {
             assert_eq!(out.trim_end_matches('\n').trim_end_matches("word").trim_end(), piece.repeat(NEST_MOST / markers).trim_end(), "{piece:?}");
             assert!(out.ends_with("word\n"));
         }
+    }
+
+    #[test]
+    fn toggle_task_flips_checkboxes_and_skips_code_blocks() {
+        let src = "# Tasks\n\n```md\n- [ ] inside fence\n```\n\n    - [ ] indented code\n\n- [ ] first café\n  * [X] nested done\n+ [x] third\n- plain item with `[ ]` inline\n";
+        let states = task_states(src);
+        assert_eq!(states.len(), 3);
+        assert_eq!(states.iter().map(|s| s.1).collect::<Vec<_>>(), vec![false, true, true]);
+
+        let t0 = toggle_task(src, 0).unwrap();
+        assert!(t0.contains("- [x] first café"));
+        assert!(t0.contains("```md\n- [ ] inside fence\n```"));
+        assert!(t0.contains("    - [ ] indented code"));
+        assert!(t0.contains("`[ ]` inline"));
+
+        let t1 = toggle_task(&t0, 1).unwrap();
+        assert!(t1.contains("  * [ ] nested done"));
+
+        let t2 = toggle_task(&t1, 2).unwrap();
+        assert!(t2.contains("+ [ ] third"));
+
+        assert_eq!(toggle_task(src, 3), None);
     }
 }

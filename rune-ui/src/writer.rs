@@ -2684,9 +2684,10 @@ fn render_blocks_html(doc: &Doc, blocks: &[Block], out: &mut String) {
     }
 }
 
-// ---------------------------------------------------------------- .odt export (odt.js)
+// ---------------------------------------------------------------- .odt / .ods export (odt.js, ods.js)
 
 const ODT_MIME: &str = "application/vnd.oasis.opendocument.text";
+const ODS_MIME: &str = "application/vnd.oasis.opendocument.spreadsheet";
 
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc: u32 = 0xffff_ffff;
@@ -2841,10 +2842,10 @@ fn collect_style_refs(xml: &str, out: &mut Vec<String>) {
     }
 }
 
-/// Export flat ODT text as a valid `.odt` zip package (`ui-src/writer/odt.js::exportOdt`).
-pub fn export_odt(text: &str) -> Result<Vec<u8>, String> {
-    let root = parse_xml(text).map_err(|e| format!("This document cannot be exported: {e}."))?;
-    let doc = root.elements().find(|e| e.name == "office:document").ok_or_else(|| "This document cannot be exported: it is not flat ODT.".to_owned())?;
+/// Export flat ODF (`fodt` or `fods`) text as a valid `.odt` or `.ods` zip package (`ui-src/writer/odt.js::exportPackage`).
+fn export_odf_package(text: &str, mime: &str, what: &str, flat_kind: &str) -> Result<Vec<u8>, String> {
+    let root = parse_xml(text).map_err(|e| format!("This {what} cannot be exported: {e}."))?;
+    let doc = root.elements().find(|e| e.name == "office:document").ok_or_else(|| format!("This {what} cannot be exported: it is not {flat_kind}."))?;
     let get = |name: &str| -> String { doc.child(name).map(|k| links_out(&text[k.start..k.end])).unwrap_or_default() };
     let ver = esc_attr(doc.attr("office:version").as_deref().unwrap_or("1.3"));
     let mut at = String::new();
@@ -2853,7 +2854,7 @@ pub fn export_odt(text: &str) -> Result<Vec<u8>, String> {
             at.push(' ');
             at.push_str(k);
             at.push_str("=\"");
-            at.push_str(v);
+            at.push_str(&esc_attr(&decode(v)));
             at.push('"');
         }
     }
@@ -2897,7 +2898,7 @@ pub fn export_odt(text: &str) -> Result<Vec<u8>, String> {
     let manifest_xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\" manifest:version=\"{ver}\">\
-         <manifest:file-entry manifest:full-path=\"/\" manifest:version=\"{ver}\" manifest:media-type=\"{ODT_MIME}\"/>\
+         <manifest:file-entry manifest:full-path=\"/\" manifest:version=\"{ver}\" manifest:media-type=\"{mime}\"/>\
          <manifest:file-entry manifest:full-path=\"content.xml\" manifest:media-type=\"text/xml\"/>\
          <manifest:file-entry manifest:full-path=\"styles.xml\" manifest:media-type=\"text/xml\"/>\
          <manifest:file-entry manifest:full-path=\"meta.xml\" manifest:media-type=\"text/xml\"/>\
@@ -2905,13 +2906,23 @@ pub fn export_odt(text: &str) -> Result<Vec<u8>, String> {
          </manifest:manifest>"
     );
     Ok(zip_stored(&[
-        ("mimetype", ODT_MIME.as_bytes()),
+        ("mimetype", mime.as_bytes()),
         ("content.xml", content_xml.as_bytes()),
         ("styles.xml", styles_xml.as_bytes()),
         ("meta.xml", meta_xml.as_bytes()),
         ("settings.xml", settings_xml.as_bytes()),
         ("META-INF/manifest.xml", manifest_xml.as_bytes()),
     ]))
+}
+
+/// Export flat ODT text as a valid `.odt` zip package (`ui-src/writer/odt.js::exportOdt`).
+pub fn export_odt(text: &str) -> Result<Vec<u8>, String> {
+    export_odf_package(text, ODT_MIME, "document", "flat ODT")
+}
+
+/// Export flat ODS text as a valid `.ods` zip package (`ui-src/sheet/ods.js::exportOds`).
+pub fn export_ods(text: &str) -> Result<Vec<u8>, String> {
+    export_odf_package(text, ODS_MIME, "spreadsheet", "flat ODS")
 }
 
 // ---------------------------------------------------------------- Native editor operations on Doc
@@ -3800,5 +3811,23 @@ mod tests {
         assert_eq!(re.kind, "fodt");
         assert!(fodt_text(&re.text).contains("Intro"));
         assert!(fodt_text(&re.text).contains("Visit example"));
+    }
+
+    #[test]
+    fn ods_export_round_trip() {
+        let fods = crate::sheet::from_csv("Item,Cost\nTea,4.5\n").unwrap();
+        let ods = export_ods(&fods).unwrap();
+        assert!(ods.starts_with(b"PK\x03\x04"));
+        let re = crate::odf::import(&ods, "ods").expect("exported .ods re-imports cleanly");
+        assert_eq!(re.kind, "fods");
+        let sheets = crate::sheet::parse(&re.text);
+        assert_eq!(sheets.len(), 1);
+        assert_eq!(sheets[0].rows, vec![vec!["Item", "Cost"], vec!["Tea", "4.5"]]);
+        assert!(export_ods("<not-odf/>").unwrap_err().contains("flat ODS"));
+        // Single-quoted root attribute containing a double quote must be escaped in exported parts.
+        let tricky = fods.replace("office:version=\"1.4\"", "office:version='1.4\"x'");
+        let ods2 = export_ods(&tricky).unwrap();
+        let re2 = crate::odf::import(&ods2, "ods").expect("escaped root attribute re-imports cleanly");
+        assert_eq!(crate::sheet::parse(&re2.text)[0].rows, vec![vec!["Item", "Cost"], vec!["Tea", "4.5"]]);
     }
 }
