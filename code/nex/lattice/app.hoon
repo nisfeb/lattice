@@ -9282,8 +9282,7 @@
       ?.  ?=([%ball *] dv)  ~[/]
       (murn (collect-tree ball.dv ~) |=([pax=path page=?] ?:(page `pax ~)))
     ::  what a folder granted these pages goes with them: a move takes it
-    ::  out of the old folder, and their own grants follow
-    ::  (+move-grants-in)
+    ::  out of the old folder, and their own grants follow (+move-grants-in)
     ;<  ~  bind:m
       ?.  ?=([%ball *] dv)  (pure:m ~)
       (revoke-folder-grants %page pax.act ball.dv)
@@ -10170,7 +10169,7 @@
   =/  cd  (~(got by fils) (kind-leaf:ls sk))
   =/  cs=cass:clay  (fall (~(get by wfil) (kind-leaf:ls sk)) *cass:clay)
   :_  kids
-  [rel da.cs (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')]
+  [rel da.cs ?-(sk %page (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) ''))]
 ::  +recent-walk: every page's [path mtime code] straight from a deep-peek
 ::  ball+wave, no per-page darts (same technique as +tree-walk/+dump-walk).
 ++  recent-walk
@@ -15083,7 +15082,7 @@
       [%& %| *]  &(!own =(old (scag n p.p.r)))
         [%& %& *]
       ?.  own  =(old (scag n path.p.p.r))
-      &(=(old path.p.p.r) (lien page-own-grubs |=(g=@ta =(g name.p.p.r))))
+      &(=(old path.p.p.r) (lien ?-(sk %page page-own-grubs) |=(g=@ta =(g name.p.p.r))))
     ==
   =/  re
     |=  rs=(set road:tarball)
@@ -15911,12 +15910,16 @@
   ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
   ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| gdir])
   ?^  e  (pure:m ~)
-  =/  fs=(list path)  (folders-granted %page sb peek.old)
+  =/  fs=(list [sk=share-kind:ls f=path])
+    %-  zing
+    %+  turn  kinds:ls
+    |=  sk=share-kind:ls
+    (turn (folders-granted sk sb peek.old) |=(f=path [sk f]))
   ;<  ~  bind:m
     =/  n  (fiber:fiber:nexus ,~)
     |-  ^-  form:n
     ?~  fs  (pure:n ~)
-    ;<  ~  bind:n  (folder-ungrant-do %page up i.fs i.gs)
+    ;<  ~  bind:n  (folder-ungrant-do sk.i.fs up f.i.fs i.gs)
     $(fs t.fs)
   $(gs t.gs, hit +(hit))
 ::  +ban-road: where the banlist lives.
@@ -22598,8 +22601,11 @@
 ++  item-title
   |=  [sk=share-kind:ls text=@t]
   ^-  @t
-  =/  un=(unit [builder=@tas body=@t])  (unwrap-content text)
-  ?~(un '' (page-title-of body.u.un ''))
+  ?-    sk
+      %page
+    =/  un=(unit [builder=@tas body=@t])  (unwrap-content text)
+    ?~(un '' (page-title-of body.u.un ''))
+  ==
 ::  +write-dir-index: a granted folder's index, for the ships and groups it
 ::  is shared with: in the folder and each folder under it, a `dir-index`
 ::  grub with the +titles-cord:ls lines of every page in it. It sits in the
@@ -22746,7 +22752,7 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  rid=@ta  bind:m  acl-rid
-  ;<  ~  bind:m  (poke-eval [%acl-share-page rid shp mode pax])
+  ;<  ~  bind:m  (poke-eval ?-(sk %page [%acl-share-page rid shp mode pax]))
   ;<  ~  bind:m  writer-drain
   ;<  raw=(unit *)  bind:m  (acl-res-get up rid)
   =/  res=(unit $%([%ok ~] [%banned ~] [%refused ~]))
@@ -23638,10 +23644,14 @@
   ?^  e  (acl-res-put up rid [%refused ~])
   ;<  sb=path  bind:m  self-base
   ;<  ~  bind:m
-    =/  fs=(list path)  (folders-granted %page sb peek.old)
+    =/  fs=(list [sk=share-kind:ls f=path])
+      %-  zing
+      %+  turn  kinds:ls
+      |=  sk=share-kind:ls
+      (turn (folders-granted sk sb peek.old) |=(f=path [sk f]))
     |-  ^-  form:m
     ?~  fs  (pure:m ~)
-    ;<  ~  bind:m  (folder-ungrant-do %page up i.fs gname)
+    ;<  ~  bind:m  (folder-ungrant-do sk.i.fs up f.i.fs gname)
     $(fs t.fs)
   ;<  h1=holds:ls  bind:m  holds-now
   ;<  ~  bind:m  (tell-holds-do h0 h1)
