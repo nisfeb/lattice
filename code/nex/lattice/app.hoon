@@ -5016,7 +5016,7 @@
         (peek:fio (rv up (weld /page (pax-of u.name))) ~)
       ?.  ?=([%ball *] dv)  (pure:(fiber:fiber:nexus ,(list path)) ~)
       ;<  sn=(set path)  bind:(fiber:fiber:nexus ,(list path))
-        (tree-sens (pax-of u.name) ball.dv)
+        (tree-sens %page (pax-of u.name) ball.dv)
       (pure:(fiber:fiber:nexus ,(list path)) (sort ~(tap in sn) aor))
     ;<  ~  bind:m  (poke-eval [%share-tree (pax-of u.name) u.mode])
     %+  send-json  eyre-id
@@ -9498,7 +9498,7 @@
     ::  share of its own (+tree-sens). Taking a tree down takes it too.
     ;<  sens=(set path)  bind:m
       ?:  ?=(%private mode.act)  (pure:(fiber:fiber:nexus ,(set path)) ~)
-      (tree-sens pax.act ball.dn)
+      (tree-sens %page pax.act ball.dn)
     =/  rels=(list path)
       %+  murn  (collect-tree ball.dn ~)
       |=([pax=path page=?] ?:(&(page !(~(has in sens) pax)) `pax ~))
@@ -9998,6 +9998,25 @@
 ++  tainted-shared-msg
   ^-  @t
   'this key read sensitive content in the last 12 hours, and that page is published or shared with a ship, so it cannot write there until then'
+::  +item-sensitive: is the item `rel` of kind `sk` marked sensitive? The
+::  nearest `sensitive` flag grub AT or ABOVE it in the kind's root wins.
+::  Absent everywhere = |. A folder mark makes every item under it
+::  sensitive; an item can carry its own mark too.
+::
+++  item-sensitive
+  |=  [sk=share-kind:ls rel=path]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  |-  ^-  form:m
+  =/  fdir=path  (weld (kind-root:ls sk) rel)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rf up fdir %sensitive) ~)
+  ?:  ?=([%file *] seen)
+    ::  a present marker that will not parse fails CLOSED (treat as sensitive):
+    ::  this gates a default-deny feature, so an unreadable flag must not open.
+    (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.y))
+  ?~  rel  (pure:m %.n)
+  $(rel (snip `path`rel))
 ::  +page-sensitive: is `page` marked sensitive? The nearest `sensitive` flag
 ::  grub AT or ABOVE it in /page wins. Absent everywhere = |. A folder mark
 ::  makes every page under it sensitive; a page can carry its own mark too.
@@ -10006,16 +10025,7 @@
   |=  page=path
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  ;<  up=@ud  bind:m  nexus-up
-  |-  ^-  form:m
-  =/  fdir=path  (weld /page page)
-  ;<  seen=view:nexus  bind:m  (peek:fio (rf up fdir %sensitive) ~)
-  ?:  ?=([%file *] seen)
-    ::  a present marker that will not parse fails CLOSED (treat as sensitive):
-    ::  this gates a default-deny feature, so an unreadable flag must not open.
-    (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.y))
-  ?~  page  (pure:m %.n)
-  $(page (snip `path`page))
+  (item-sensitive %page page)
 ::  +comments-on: is `page` comments-enabled? The nearest `comment-on` flag grub
 ::  AT or ABOVE it in /page wins (like find-theme). Absent everywhere = off. One
 ::  flag on a site folder enables all its pages; a page can override its own.
@@ -10140,10 +10150,11 @@
   %-  pure:m
   %+  turn  `(list [pax=path when=@da code=@t])`(scag n sorted)
   |=([pax=path when=@da code=@t] [pax (preview-of code)])
-::  +recent-walk: every page's [path mtime code] straight from a deep-peek
-::  ball+wave, no per-page darts (same technique as +tree-walk/+dump-walk).
-++  recent-walk
-  |=  [b=ball:tarball w=wave:nexus rel=path]
+::  +recent-walk-of: every item of kind `sk` as [path mtime leaf-text]
+::  straight from a deep-peek ball+wave, no per-item darts (same technique
+::  as +tree-walk/+dump-walk). Paths are relative to the kind's root.
+++  recent-walk-of
+  |=  [sk=share-kind:ls b=ball:tarball w=wave:nexus rel=path]
   ^-  (list [pax=path when=@da code=@t])
   =/  fils  ?~(fil.b ~ contents.u.fil.b)
   =/  wfil=(map @ta cass:clay)  ?~(fil.w ~ file.u.fil.w)
@@ -10151,12 +10162,19 @@
     %-  zing
     %+  turn  ~(tap by dir.b)
     |=  [nom=@ta kb=ball:tarball]
-    (recent-walk kb (fall (~(get by dir.w) nom) *wave:nexus) (weld rel /[nom]))
-  ?.  (~(has by fils) %code)  kids
-  =/  cd  (~(got by fils) %code)
-  =/  cs=cass:clay  (fall (~(get by wfil) %code) *cass:clay)
+    =/  kw=wave:nexus  (fall (~(get by dir.w) nom) *wave:nexus)
+    (recent-walk-of sk kb kw (weld rel /[nom]))
+  ?.  (~(has by fils) (kind-leaf:ls sk))  kids
+  =/  cd  (~(got by fils) (kind-leaf:ls sk))
+  =/  cs=cass:clay  (fall (~(get by wfil) (kind-leaf:ls sk)) *cass:clay)
   :_  kids
   [rel da.cs (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')]
+::  +recent-walk: every page's [path mtime code] straight from a deep-peek
+::  ball+wave, no per-page darts (same technique as +tree-walk/+dump-walk).
+++  recent-walk
+  |=  [b=ball:tarball w=wave:nexus rel=path]
+  ^-  (list [pax=path when=@da code=@t])
+  (recent-walk-of %page b w rel)
 ::  +preview-of: a one-line, ~140-char plaintext preview of a page's source.
 ::  Leading markdown '#'/spaces dropped, whitespace flattened to single spaces.
 ::
@@ -14781,7 +14799,7 @@
     ::  nothing there yet, or a page: the road stays
     ?.  ?=([%ball *] fv)  $(ds t.ds)
     ?:  (~(has by (ball-fils ball.fv ~)) %code)  $(ds t.ds)
-    ;<  fs=(set path)  bind:m  (tree-sens frel ball.fv)
+    ;<  fs=(set path)  bind:m  (tree-sens %page frel ball.fv)
     =/  all=(list [p=path page=?])  (collect-tree ball.fv ~)
     =/  rs  (folder-roads:ls d.i.ds all fs ed.i.ds)
     =/  dr=road:tarball  [%& %| d.i.ds]
@@ -20807,6 +20825,24 @@
   %-  pure:m
   %+  sort  (collect-tree ball.sn ~)
   |=([a=[pax=path page=?] b=[pax=path page=?]] (aor pax.a pax.b))
+::  +collect-tree-of: walk the ball of kind `sk`'s tree. A dir with the
+::  kind's leaf grub IS an item (`page` &); any other non-root dir is a
+::  folder. Recurse through items too (an item can also be a parent of
+::  nested items). Paths are relative to the kind's root. A grafted link
+::  comes back as a folder, as +collect-tree says.
+::
+++  collect-tree-of
+  |=  [sk=share-kind:ls b=ball:tarball rel=path]
+  ^-  (list [pax=path page=?])
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  =/  kids=(list [pax=path page=?])
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kid=ball:tarball]
+    (collect-tree-of sk kid (weld rel /[nom]))
+  ?:  (~(has by fils) (kind-leaf:ls sk))  [[rel &] kids]
+  ?~  rel  kids
+  [[rel |] kids]
 ::  +collect-tree: walk a page-tree ball. A dir with a /code grub IS a page; any
 ::  other non-root dir is a folder. Recurse through pages too (a page can also be
 ::  a parent of nested pages). Paths are relative to /page.
@@ -20819,15 +20855,7 @@
 ++  collect-tree
   |=  [b=ball:tarball rel=path]
   ^-  (list [pax=path page=?])
-  =/  fils  ?~(fil.b ~ contents.u.fil.b)
-  =/  kids=(list [pax=path page=?])
-    %-  zing
-    %+  turn  ~(tap by dir.b)
-    |=  [nom=@ta kid=ball:tarball]
-    (collect-tree kid (weld rel /[nom]))
-  ?:  (~(has by fils) %code)  [[rel &] kids]
-  ?~  rel  kids
-  [[rel |] kids]
+  (collect-tree-of %page b rel)
 ::  +collect-visible: +collect-tree for a listing that others read, as the
 ::  data of the page that lists it. A page is listed only when it is shared
 ::  at least as widely as that page, and nothing marked sensitive is
@@ -22566,6 +22594,14 @@
   =/  c=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.u.ms))))
   ?~  c  (pure:m ~)
   (pure:m `(peer-titles:ls u.c))
+::  +item-title: the title an index gives an item of kind `sk`, from its
+::  leaf grub's text. For a page, the title of its unwrapped body, '' when
+::  it will not unwrap.
+++  item-title
+  |=  [sk=share-kind:ls text=@t]
+  ^-  @t
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content text)
+  ?~(un '' (page-title-of body.u.un ''))
 ::  +write-dir-index: a granted folder's index, for the ships and groups it
 ::  is shared with: in the folder and each folder under it, a `dir-index`
 ::  grub with the +titles-cord:ls lines of every page in it. It sits in the
@@ -22585,7 +22621,7 @@
   ?.  ?=([%ball *] dv)  (pure:m ~)
   ::  a sensitive page is in no index, title and all: the index is read by
   ::  every ship the folder is shared with
-  ;<  sens=(set path)  bind:m  (tree-sens pax ball.dv)
+  ;<  sens=(set path)  bind:m  (tree-sens %page pax ball.dv)
   =/  pages=(list [pax=path when=@da code=@t])
     %+  skip  (recent-walk ball.dv wave.dv ~)
     |=([r=path *] (~(has in sens) r))
@@ -22669,7 +22705,7 @@
   =/  at  |=(r=path :(weld sb /page pax r))
   ;<  sens=(set path)  bind:m
     ?.  ?=([%ball *] dv)  (pure:(fiber:fiber:nexus ,(set path)) ~)
-    (tree-sens pax ball.dv)
+    (tree-sens %page pax ball.dv)
   =/  codes=(set road:tarball)
     %-  silt
     %+  murn  all
@@ -22825,12 +22861,12 @@
   $(dir (snip `path`dir))
 ::  +tree-flags: the `sensitive` flags in a folder's ball, by rel ('~'
 ::  the folder itself). A flag that will not read counts as set, as
-::  +page-sensitive fails closed.
+::  +item-sensitive fails closed.
 ++  tree-flags
-  |=  bl=ball:tarball
+  |=  [sk=share-kind:ls bl=ball:tarball]
   ^-  (map path ?)
   %-  ~(gas by *(map path ?))
-  %+  murn  [[`path`~ |] (collect-tree bl ~)]
+  %+  murn  [[`path`~ |] (collect-tree-of sk bl ~)]
   |=  [p=path *]
   ^-  (unit [path ?])
   =/  f  (~(get by (ball-fils bl p)) %sensitive)
@@ -22838,16 +22874,16 @@
   `[p (fall (mole |.(;;(? (sang-noun:tarball sang.u.f)))) &)]
 ::  +tree-sens: the pages under the folder at `pax` (`bl` its ball) that
 ::  are sensitive, by rel: by a flag in the tree (+sens-at:ls) or one at or
-::  above the folder (+page-sensitive)
+::  above the folder (+item-sensitive)
 ++  tree-sens
-  |=  [pax=path bl=ball:tarball]
+  |=  [sk=share-kind:ls pax=path bl=ball:tarball]
   =/  m  (fiber:fiber:nexus ,(set path))
   ^-  form:m
-  ;<  base=?  bind:m  (page-sensitive pax)
-  =/  fl=(map path ?)  (tree-flags bl)
+  ;<  base=?  bind:m  (item-sensitive sk pax)
+  =/  fl=(map path ?)  (tree-flags sk bl)
   %-  pure:m
   %-  ~(gas in *(set path))
-  %+  murn  (collect-tree bl ~)
+  %+  murn  (collect-tree-of sk bl ~)
   |=  [p=path page=?]
   ?.  &(page (sens-at:ls fl base p))  ~
   `p
@@ -22869,7 +22905,7 @@
   ;<  sb=path  bind:m  self-base
   ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page pax)) ~)
   ?.  ?=([%ball *] dv)  (pure:m ~)
-  ;<  sens=(set path)  bind:m  (tree-sens pax ball.dv)
+  ;<  sens=(set path)  bind:m  (tree-sens %page pax ball.dv)
   ?:  =(~ sens)  (pure:m ~)
   ;<  h0=holds:ls  bind:m  holds-now
   ::  folder grants to ships (+revoke-folder-grants, but only these pages,
@@ -22942,7 +22978,7 @@
     ;<  *  bind:m  (ug-drop gname (silt ~[dr]))
     ;<  fv=view:nexus  bind:m  (peek:fio (rv up (weld /page frel)) ~)
     ?.  ?=([%ball *] fv)  $(over t.over)
-    ;<  fs=(set path)  bind:m  (tree-sens frel ball.fv)
+    ;<  fs=(set path)  bind:m  (tree-sens %page frel ball.fv)
     =/  all=(list [p=path page=?])
       (skip (collect-tree ball.fv ~) |=([p=path page=?] ?=(~ p)))
     =/  at  |=(r=path :(weld pre frel r))
@@ -23000,7 +23036,7 @@
     (~(put by old) g mode)
   ;<  dv=view:nexus  bind:m  (peek:fio (rv up fdir) ~)
   ?.  ?=([%ball *] dv)  (pure:m ~)
-  ;<  sens=(set path)  bind:m  (tree-sens pax ball.dv)
+  ;<  sens=(set path)  bind:m  (tree-sens %page pax ball.dv)
   =/  rels=(list path)
     %+  murn  (collect-tree ball.dv ~)
     |=([p=path page=?] ?:(&(?=(^ p) page !(~(has in sens) p)) `p ~))
