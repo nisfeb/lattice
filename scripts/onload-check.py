@@ -73,6 +73,10 @@ HELPERS = {
     'writers-road': '/page/*',
 }
 
+# where a share kind's items live, by the term that names its root. Mirrors
+# +kind-root in lib/lattice-share.hoon: a list once there is more than one.
+KIND_ROOTS = {'(kind-root:ls sk)': '/page'}
+
 WRITES = re.compile(
     r'(?<![\w-])(put-file|over:fio|over-gained:fio|make:fio|over:io|'
     r'over-as-soft:io|make-soft:io|over-fold:io)\s+')
@@ -195,6 +199,8 @@ class Resolver:
             return ''
         if t == 'path.rail':
             return PARAMS.get(f'{self.arm(at)}:path.rail')
+        if t in KIND_ROOTS:
+            return KIND_ROOTS[t]
         m = re.fullmatch(r':?\((weld|welp|snoc)\s+(.*)\)', t, re.S)
         if m:
             args = split_args(m.group(2))

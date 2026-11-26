@@ -140,7 +140,7 @@ def hazardous(body):
 #  +nexus-up DEFINES the depth; it is not a consumer of one. +self-base
 #  names app-base only as the ABSOLUTE path it falls back to returning, and
 #  reads /sys/link by an absolute road: right at every depth, and reached
-#  from them all once a filesystem delete moved grants (+move-grants).
+#  from them all once a filesystem delete moved grants (+move-grants-in).
 #  +old-beacon-put writes under app-base by absolute roads, the same at
 #  every depth, and +bump-beacon reaches it from several.
 sens = {a for a,b in arms.items() if hazardous(b)} - {'nexus-up', 'self-base', 'old-beacon-put'}
