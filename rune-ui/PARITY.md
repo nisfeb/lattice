@@ -10,7 +10,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 
 - [x] Sign in with the access code, stay signed in, sign out
 - [x] Page tree with filter
-- [x] Read Markdown: tables, code, mermaid, selectable text
+- [x] Read Markdown: tables, code, mermaid, selectable text, and interactive GFM task checkboxes (`md::toggle_task` wired via `Markdown::on_task` on own editable pages, saving on click and read-only on old revisions, split view, or remote pages)
 - [x] Wiki links, links into the app, web links, link to a missing page offers to make it
 - [x] Back and forward
 - [x] Source editor with Markdown colour and live preview
@@ -75,7 +75,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Images in a Markdown page. One from another site is not fetched until the page is let to load outside content, with a banner that says why, and the yes is kept for that page. Until then it shows as its alt text. PNG, JPEG, GIF, WebP, BMP and SVG, 8 MB and twenty images a page at most
 - [x] An image on the ship itself, by a path: fetched with the session, from the ship only, with no question asked. A path from the root is used as it is and any other is taken from `/apps/lattice/`, where the web client's page resolves it. Run on a fake ship with the two images it serves, an SVG and a PNG
 - [x] Find in a Markdown page being read: Ctrl+F opens a bar, every match is marked and the current one ringed, Return and Shift-Return go round them and bring each into view. Any case, with or without accents, in the text as read and not in the Markdown's own marks. The web client leaves this to the browser
-- [x] Find while editing, in either editor and for a page of any kind: the same bar, each match washed and the current one stronger and selected in the text. It finds in the text as typed, so a link's address counts. There is no replace
+- [x] Find and Replace while editing, in either editor and for a page of any kind: Ctrl+F (or Ctrl+H to jump straight to Replace) opens the bar with each match washed and the current one stronger and selected in the text. It finds in the text as typed, so a link's address counts. Replace swaps the current match and advances without looping on self-containing replacements; Replace all swaps every match as a single undoable edit and reports the count. Read-mode Find stays unchanged. Checked by unit tests.
 - [x] Find in a sheet and in a page shown as its source, while read. In a sheet the cells that match are in the accent colour and the current one's row is selected and brought into view. In source the matches are washed, but the current one is not scrolled to: the text is one element, and Rune brings elements into view, not places in a text. A map has no find
 - [x] Download a page: its source saved to a file through the system's save dialog, named by its last name and its kind as the web client names it, with what is being typed if it is being edited. From the palette
 - [x] Duplicate a page under a name asked for, seeded `<name>-copy`, with its kind and its text, and copy a page's `urb://` link or its name. From the palette. The duplicate's save on a ship is the one a capture uses, and was not run again here

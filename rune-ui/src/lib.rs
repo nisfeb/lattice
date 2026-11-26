@@ -1089,8 +1089,9 @@ struct ShipSession {
     /// The tree is to be read once more a moment from now: the ship
     /// answers a batch before it has written all of it.
     resync: bool,
-    /// Find in the page being read: what is typed, and which match is the current one.
+    /// Find in the page being read or edited: what is typed, replacement text, and which match is current.
     find: Option<TextEdit>,
+    find_replace: TextEdit,
     find_at: usize,
     pics: HashMap<String, rune::Image>,
     /// Bumped whenever non-tile page images in `pics` change, to invalidate memoized readers.
@@ -1485,6 +1486,7 @@ impl Default for ShipSession {
             groups_room: (0.0, 0.0),
             resync: false,
             find: None,
+            find_replace: TextEdit::new(""),
             find_at: 0,
             pics: HashMap::new(),
             pics_gen: 0,
@@ -7002,6 +7004,27 @@ fn take_pics(s: &mut App) -> bool {
     any
 }
 
+/// Toggles a GFM task list checkbox on the open editable Markdown page and saves it.
+fn toggle_md_task(s: &mut App, rendered: &str, marker_offset: usize, new_checked: bool) {
+    if s.old.is_some() || !page_changes(s) {
+        return;
+    }
+    let Some(p) = s.open.clone().filter(|p| p.kind == "md") else { return };
+    let rendered_tasks = md::task_states(rendered);
+    let raw_tasks = md::task_states(&p.body);
+    if rendered_tasks.len() != raw_tasks.len() {
+        return;
+    }
+    let Some(idx) = rendered_tasks.iter().position(|&(off, _)| off == marker_offset) else { return };
+    if raw_tasks.get(idx).is_none_or(|&(_, was)| was == new_checked) {
+        return;
+    }
+    let Some(next) = md::toggle_task(&p.body, idx) else { return };
+    if next != p.body {
+        save_body(s, p, next);
+    }
+}
+
 /// A Markdown page as the reader shows it: wiki links, ghost links, and
 /// the pictures had so far. Memoized by `id` so virtual-scroll commits in
 /// the sidebar tree (or unrelated chrome updates) never re-parse or rebuild
@@ -7009,7 +7032,8 @@ fn take_pics(s: &mut App) -> bool {
 fn reader(id: &str, body: &str, s: &App, k: &Kit, found: bool) -> El {
     let style = page_style(k);
     let find_key = s.find.as_ref().filter(|_| found).map(|q| (q.text.as_str(), s.find_at));
-    let version = (body, &s.names, &s.other.1, s.pics_gen, found, find_key, s.outline_at, &style);
+    let interactive_tasks = id == "reader-main" && s.old.is_none() && page_changes(s) && s.open.as_ref().is_some_and(|p| p.kind == "md");
+    let version = (body, &s.names, &s.other.1, s.pics_gen, found, find_key, s.outline_at, interactive_tasks, &style);
     rune::memo(id, version, || {
         let pics = s.pics.clone();
         let src = md::wikilinks(&md::html_shown(&md::shallow(body)), &|n| ghost(s, n));
@@ -7022,7 +7046,22 @@ fn reader(id: &str, body: &str, s: &App, k: &Kit, found: bool) -> El {
         if let Some(h) = s.outline_at.and_then(|i| outline::outline(&src, "md").into_iter().nth(i)).filter(|h| !h.words.is_empty()) {
             marks.push((vec![h.words], rune_kit::Highlight::new().key("md-outline")));
         }
-        Markdown::new(src).selectable(true).on_link_tx(follow).on_link_secondary(|s: &mut App, url, p, _| s.link_menu = Some((url.to_owned(), p))).images(move |src| pics.get(src).cloned()).highlights(marks).style(style.clone()).build(k)
+        let src_for_task = src.clone();
+        let mut view = Markdown::new(src)
+            .selectable(true)
+            .on_link_tx(follow)
+            .on_link_secondary(|s: &mut App, url, p, _| s.link_menu = Some((url.to_owned(), p)))
+            .images(move |src| pics.get(src).cloned())
+            .highlights(marks)
+            .style(style.clone());
+        if interactive_tasks {
+            view = view.on_task(move |s: &mut App, _block_key, marker_offset, new_checked| {
+                toggle_md_task(s, &src_for_task, marker_offset, new_checked);
+            });
+        } else {
+            view = view.tasks_read_only();
+        }
+        view.build(k)
     })
 }
 
@@ -7314,7 +7353,61 @@ fn find_step(s: &mut App, by: isize, tx: &mut Tx) {
     }
 }
 
+/// Replaces the current Find match in the active editor and advances to the next match.
+fn find_replace_one(s: &mut App, tx: &mut Tx) -> bool {
+    if !s.editing || find_where(s) != FindIn::Editor {
+        return false;
+    }
+    let matches = edit_matches(s);
+    if matches.is_empty() {
+        return false;
+    }
+    let idx = s.find_at.min(matches.len() - 1);
+    let r = matches[idx].clone();
+    let rep = s.find_replace.text.clone();
+    s.edit.set_selection(r.start, r.end);
+    s.edit.insert(&rep);
+    let after = r.start + rep.len();
+    let next_matches = edit_matches(s);
+    if next_matches.is_empty() {
+        s.find_at = 0;
+        let caret = after.min(s.edit.text.len());
+        s.edit.set_caret(caret);
+    } else {
+        let next_idx = next_matches.iter().position(|m| m.start >= after).unwrap_or(0);
+        s.find_at = next_idx;
+        let nr = &next_matches[next_idx];
+        s.edit.set_selection(nr.start, nr.end);
+    }
+    editor_reveal(s, tx);
+    true
+}
+
+/// Replaces all Find matches in the active editor as a single undoable edit.
+fn find_replace_all(s: &mut App, tx: &mut Tx) -> usize {
+    if !s.editing || find_where(s) != FindIn::Editor {
+        return 0;
+    }
+    let matches = edit_matches(s);
+    let count = matches.len();
+    if count == 0 {
+        return 0;
+    }
+    let rep = s.find_replace.text.clone();
+    s.edit.undo_group(|ed| {
+        for r in matches.iter().rev() {
+            ed.set_selection(r.start, r.end);
+            ed.insert(&rep);
+        }
+    });
+    s.find_at = 0;
+    s.note = format!("replaced {count} occurrence{}", if count == 1 { "" } else { "s" });
+    editor_reveal(s, tx);
+    count
+}
+
 /// The find bar: the field, where the current match stands among them, and the way round.
+/// While editing, also offers Replace and Replace all.
 fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
     let n = find_count(s);
     let says = match (q.text.trim().is_empty(), n) {
@@ -7358,19 +7451,46 @@ fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
         .build(k)
         .key("find-field")
         .w(280.0);
-    row()
-        .key("find-bar")
+    let find_row = row()
         .w_full()
-        .px(16.0)
-        .py(6.0)
         .gap(8.0)
         .center_y()
-        .fill(k.c.layer_01)
         .child(field)
         .child(text(says).key("find-count").font(k.ty.small).color(k.c.text_muted).grow(1.0))
         .child(Button::new("Previous").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(n == 0).on_press_tx(|s: &mut App, tx| find_step(s, -1, tx)).build(k).key("find-prev"))
         .child(Button::new("Next").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(n == 0).on_press_tx(|s: &mut App, tx| find_step(s, 1, tx)).build(k).key("find-next"))
-        .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close find").on_press(|s: &mut App| s.find = None).build(k).key("find-close"))
+        .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close find").on_press(|s: &mut App| s.find = None).build(k).key("find-close"));
+    if s.editing && find_where(s) == FindIn::Editor {
+        let rep_field = TextInput::new(&s.find_replace)
+            .placeholder("Replace with")
+            .on_edit(|s: &mut App| &mut s.find_replace)
+            .on_key(|s: &mut App, ev: &KeyEvent, tx: &mut Tx| match ev.key {
+                Key::Enter => {
+                    find_replace_one(s, tx);
+                    true
+                }
+                Key::Escape => {
+                    s.find = None;
+                    tx.focus_when_shown(FIELD, false);
+                    true
+                }
+                _ => false,
+            })
+            .build(k)
+            .key("find-replace-field")
+            .w(280.0);
+        let rep_row = row()
+            .key("find-replace-row")
+            .w_full()
+            .gap(8.0)
+            .center_y()
+            .child(rep_field)
+            .child(Button::new("Replace").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(n == 0).on_press_tx(|s: &mut App, tx| { find_replace_one(s, tx); }).build(k).key("find-replace"))
+            .child(Button::new("Replace all").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(n == 0).on_press_tx(|s: &mut App, tx| { find_replace_all(s, tx); }).build(k).key("find-replace-all"));
+        col().key("find-bar").w_full().px(16.0).py(6.0).gap(6.0).fill(k.c.layer_01).child(find_row).child(rep_row)
+    } else {
+        find_row.key("find-bar").px(16.0).py(6.0).fill(k.c.layer_01)
+    }
 }
 
 /// Reads which pages link to the open one when the backlinks are showing.
@@ -21619,6 +21739,17 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         open_find(s);
         return true;
     }
+    if ev.is_command('h') && s.editing {
+        let had_query = s.find.as_ref().is_some_and(|q| !q.text.trim().is_empty());
+        open_find(s);
+        if had_query {
+            if let Some(q) = &mut s.find {
+                q.focused = false;
+            }
+            s.find_replace.focused = true;
+        }
+        return true;
+    }
     if ev.is_command('t') && !s.editing {
         new_tab(s);
         return true;
@@ -24842,6 +24973,61 @@ mod tests {
         let (blocked, note) = thread_comment_policy(thread_here(&s).unwrap(), false);
         assert!(blocked.is_none());
         assert!(note.contains("decides whether it shows"));
+    }
+
+    #[test]
+    fn markdown_task_checkbox_toggle_and_editor_find_replace() {
+        // Interactive Markdown task toggle on own editable page.
+        let mut s = sample("welcome");
+        let body = "# Todo\n\n- [ ] buy [[milk]]\n- [x] walk dog\n";
+        s.open = Some(Page { name: "welcome".into(), kind: "md".into(), body: body.into(), rev: 1 });
+        let rendered = md::wikilinks(&md::html_shown(&md::shallow(body)), &|n| ghost(&s, n));
+        let rendered_tasks = md::task_states(&rendered);
+        assert_eq!(rendered_tasks.len(), 2);
+        toggle_md_task(&mut s, &rendered, rendered_tasks[0].0, true);
+        assert!(s.open.as_ref().unwrap().body.contains("- [x] buy [[milk]]"));
+        assert!(s.open.as_ref().unwrap().body.contains("- [x] walk dog"));
+
+        // Old revision refuses checkbox toggle.
+        let before = s.open.as_ref().unwrap().body.clone();
+        s.old = Some(Page { name: "welcome".into(), kind: "md".into(), body: before.clone(), rev: 0 });
+        toggle_md_task(&mut s, &rendered, rendered_tasks[1].0, false);
+        assert_eq!(s.open.as_ref().unwrap().body, before);
+        s.old = None;
+
+        // Editor Find-and-Replace: case/accent folding, UTF-8, self-containing replacement,
+        // empty replacement, Replace All count, and single-step undo.
+        let mut tx = Tx::default();
+        let edit_src = "Café foo and FOO plus café 🎉";
+        s.open = Some(Page { name: "welcome".into(), kind: "md".into(), body: edit_src.into(), rev: 2 });
+        start_edit(&mut s);
+        s.rich = false;
+        s.edit = TextEdit::new(edit_src);
+        open_find(&mut s);
+        s.find.as_mut().unwrap().text = "foo".into();
+        s.find_replace = TextEdit::new("foobar");
+        // First Replace replaces "foo" -> "foobar" and advances to "FOO" without looping on "foobar".
+        assert!(find_replace_one(&mut s, &mut tx));
+        assert_eq!(s.edit.text, "Café foobar and FOO plus café 🎉");
+        assert_eq!(s.edit.selected(), "FOO");
+        // Second Replace replaces "FOO" -> "foobar".
+        assert!(find_replace_one(&mut s, &mut tx));
+        assert_eq!(s.edit.text, "Café foobar and foobar plus café 🎉");
+
+        // Replace All with case/accent-folded UTF-8 query and empty replacement, undone in one step.
+        s.find.as_mut().unwrap().text = "cafe".into();
+        s.find_replace = TextEdit::new("");
+        let before_all = s.edit.text.clone();
+        assert_eq!(find_replace_all(&mut s, &mut tx), 2);
+        assert_eq!(s.edit.text, " foobar and foobar plus  🎉");
+        assert_eq!(s.note, "replaced 2 occurrences");
+        s.edit.undo();
+        assert_eq!(s.edit.text, before_all, "Replace All must undo as one edit");
+
+        // Read mode: replace helpers are no-ops.
+        s.editing = false;
+        assert!(!find_replace_one(&mut s, &mut tx));
+        assert_eq!(find_replace_all(&mut s, &mut tx), 0);
     }
 }
 
