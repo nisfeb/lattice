@@ -346,7 +346,8 @@
 ::  ==  share kinds  ==
 ::  A share kind is a family of shareable items under the app's root:
 ::  where its items live and what their leaf grub is called. Pages are
-::  the only kind so far.
+::  the only kind so far. A new kind goes in +kinds, +kind-root and
+::  +kind-leaf here too, and in KIND_ROOTS in scripts/onload-check.py.
 +$  share-kind  %page
 ::  +kinds: every share kind, in the order +kind-rel tries them.
 ++  kinds  ^-((list share-kind) ~[%page])
