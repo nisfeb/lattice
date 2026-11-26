@@ -13898,6 +13898,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("link-in", "Move into my pages"),
     ("link-back", "Move back to shared with me"),
     ("access", "Access"),
+    ("published", "Published pages"),
     ("half", "Switch between pages and memory"),
     ("theme", "Next theme"),
     ("sidebar", "Show or hide the tree"),
@@ -14096,7 +14097,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "conflicts" => go_conflicts(s),
         "link-in" => ask_link_in(s),
         "link-back" => link_back(s),
-        "access" => go_access(s),
+        "access" | "published" => go_access(s),
         "half" => flip(s),
         "theme" => next_theme(s),
         "sidebar" => s.global.sidebar.toggle(),
@@ -15939,6 +15940,27 @@ fn new_group(s: &mut App) {
     }
 }
 
+/// Groups live published pages from `shares` into `(shared_over_urbit, clearweb)` sorted by path,
+/// each paired with its copyable address when a ship is connected.
+fn published_pages(pages: &[String], shares: &HashMap<String, String>, conn: Option<&Conn>) -> (Vec<(String, Option<String>)>, Vec<(String, Option<String>)>) {
+    let live: std::collections::HashSet<&str> = pages.iter().map(String::as_str).collect();
+    let mut shared = Vec::new();
+    let mut clearweb = Vec::new();
+    for (path, mode) in shares {
+        if !live.contains(path.as_str()) {
+            continue;
+        }
+        match mode.as_str() {
+            "shared" => shared.push((path.clone(), conn.and_then(|c| c.address(path, "shared")))),
+            "clearweb" => clearweb.push((path.clone(), conn.and_then(|c| c.address(path, "clearweb")))),
+            _ => {}
+        }
+    }
+    shared.sort_by(|a, b| a.0.cmp(&b.0));
+    clearweb.sort_by(|a, b| a.0.cmp(&b.0));
+    (shared, clearweb)
+}
+
 /// The access screen: every group, its ships and how many pages it reads,
 /// and a form for a new one. A group's pages are set from a page's share dialog.
 fn access_view(s: &App, k: &Kit) -> El {
@@ -16103,6 +16125,67 @@ fn access_view(s: &App, k: &Kit) -> El {
         }
         asks = asks.child(col().key(format!("ask-{i}")).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01).child(top).child(text(if a.note.is_empty() { "(no note)".to_owned() } else { a.note.clone() }).font(k.ty.ui).color(c.text_base).wrap()));
     }
+    let (pub_shared, pub_web) = published_pages(page_names(s), &s.shares, s.conn.as_ref());
+    let mut published = col().key("access-published").w_full().gap(8.0).child(text("Published pages").font(k.ty.ui_medium).color(c.text_base));
+    if pub_shared.is_empty() && pub_web.is_empty() {
+        published = published.child(text("Nothing is published. Share a page from its Page tab and it shows here.").font(k.ty.small).color(c.text_muted).wrap());
+    } else {
+        for (title, kind_key, rows) in [("Shared over Urbit", "shared", pub_shared), ("Clearweb", "clearweb", pub_web)] {
+            if rows.is_empty() {
+                continue;
+            }
+            published = published.child(text(format!("{title} ({})", rows.len())).font(k.ty.small_medium).color(c.text_muted));
+            for (i, (path, addr)) in rows.into_iter().enumerate() {
+                let open_path = path.clone();
+                let mut r = row()
+                    .key(format!("pub-{kind_key}-{i}"))
+                    .w_full()
+                    .px(10.0)
+                    .py(6.0)
+                    .gap(8.0)
+                    .center_y()
+                    .radius(k.radius.sm)
+                    .fill(c.layer_01)
+                    .child(
+                        col()
+                            .gap(2.0)
+                            .grow(1.0)
+                            .min_w(0.0)
+                            .child(text(path).font(k.ty.small_medium).color(c.text_base).truncate())
+                            .children(addr.as_ref().map(|u| text(u.clone()).font(k.ty.mono).color(c.text_muted).truncate().selectable(true))),
+                    )
+                    .child(
+                        Button::new("Open")
+                            .control_size(ControlSize::Small)
+                            .variant(ButtonVariant::Ghost)
+                            .on_press(move |s: &mut App| {
+                                if s.memory {
+                                    flip(s);
+                                }
+                                open_page(s, &open_path);
+                            })
+                            .build(k)
+                            .key(format!("pub-open-{kind_key}-{i}")),
+                    );
+                if let Some(u) = addr {
+                    let copy_u = u.clone();
+                    r = r.child(
+                        Button::new("Copy")
+                            .control_size(ControlSize::Small)
+                            .variant(ButtonVariant::Ghost)
+                            .help("Copy address")
+                            .on_press_tx(move |s: &mut App, tx| {
+                                tx.copy(copy_u.clone());
+                                s.note = "address copied".into();
+                            })
+                            .build(k)
+                            .key(format!("pub-copy-{kind_key}-{i}")),
+                    );
+                }
+                published = published.child(r);
+            }
+        }
+    }
     let head = col()
         .gap(4.0)
         .child(text("Access").font(k.ty.body_medium).color(c.text_base))
@@ -16112,7 +16195,7 @@ fn access_view(s: &App, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(asks).child(list).child(Divider::horizontal().build(k)).child(form).child(Divider::horizontal().build(k)).child(banned)))
+        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(asks).child(list).child(Divider::horizontal().build(k)).child(form).child(Divider::horizontal().build(k)).child(banned).child(Divider::horizontal().build(k)).child(published)))
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
@@ -24199,6 +24282,26 @@ mod tests {
         handle_tree_job(&mut s, Ok(api::TreeJob { job: None, dropped: None }), 20.0, &mut tx);
         assert!(s.offline.is_none());
         assert!(!s.job_from_timeout);
+    }
+
+    #[test]
+    fn published_pages_groups_sorts_and_formats_live_shares() {
+        let pages = vec!["notes/b".into(), "notes/a".into(), "pub/site".into(), "priv".into()];
+        let mut shares = HashMap::new();
+        shares.insert("notes/b".into(), "shared".into());
+        shares.insert("notes/a".into(), "shared".into());
+        shares.insert("pub/site".into(), "clearweb".into());
+        shares.insert("deleted/page".into(), "clearweb".into());
+        shares.insert("priv".into(), "private".into());
+        let conn = Conn { url: "https://ship.example".into(), cookie: "urbauth-~zod=tok".into() };
+        let (sh, cw) = published_pages(&pages, &shares, Some(&conn));
+        assert_eq!(sh.len(), 2);
+        assert_eq!(sh[0].0, "notes/a");
+        assert_eq!(sh[0].1.as_deref(), Some("urb://~zod/notes/a"));
+        assert_eq!(sh[1].0, "notes/b");
+        assert_eq!(cw.len(), 1);
+        assert_eq!(cw[0].0, "pub/site");
+        assert_eq!(cw[0].1.as_deref(), Some("https://ship.example/apps/lattice/c/pub/site"));
     }
 }
 
