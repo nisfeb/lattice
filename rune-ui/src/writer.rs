@@ -2854,7 +2854,7 @@ fn export_odf_package(text: &str, mime: &str, what: &str, flat_kind: &str) -> Re
             at.push(' ');
             at.push_str(k);
             at.push_str("=\"");
-            at.push_str(v);
+            at.push_str(&esc_attr(&decode(v)));
             at.push('"');
         }
     }
@@ -3824,5 +3824,10 @@ mod tests {
         assert_eq!(sheets.len(), 1);
         assert_eq!(sheets[0].rows, vec![vec!["Item", "Cost"], vec!["Tea", "4.5"]]);
         assert!(export_ods("<not-odf/>").unwrap_err().contains("flat ODS"));
+        // Single-quoted root attribute containing a double quote must be escaped in exported parts.
+        let tricky = fods.replace("office:version=\"1.4\"", "office:version='1.4\"x'");
+        let ods2 = export_ods(&tricky).unwrap();
+        let re2 = crate::odf::import(&ods2, "ods").expect("escaped root attribute re-imports cleanly");
+        assert_eq!(crate::sheet::parse(&re2.text)[0].rows, vec![vec!["Item", "Cost"], vec!["Tea", "4.5"]]);
     }
 }

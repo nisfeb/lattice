@@ -4374,8 +4374,8 @@ fn writer_redo(s: &mut App) {
 }
 
 /// Handles Writer keyboard shortcuts (`ui-src/writer/keys.js`):
-/// Ctrl+B/I/U, Ctrl+Shift+X, Ctrl+0..6 (body/headings), Ctrl+Z (undo),
-/// and Ctrl+Shift+Z / Ctrl+Y (redo).
+/// Ctrl+B/I/U, Ctrl+Shift+X, Ctrl+0..6 / Ctrl+Alt+0..6 (body/headings),
+/// Ctrl+Z (undo), and Ctrl+Shift+Z / Ctrl+Y (redo).
 fn writer_key(s: &mut App, ev: &KeyEvent) -> bool {
     let over = s.palette.is_some()
         || s.jump.is_some()
@@ -4429,7 +4429,7 @@ fn writer_key(s: &mut App, ev: &KeyEvent) -> bool {
         writer_apply(s, move |doc, path| doc.toggle_inline_fmt(path, range.0, range.1, fmt));
         return true;
     }
-    if !ev.mods.shift && !ev.mods.alt {
+    if !ev.mods.shift {
         if ev.is_command('0') {
             writer_apply(s, |doc, path| {
                 let st = doc.styles.body_style();
@@ -5468,7 +5468,7 @@ fn scad_view(s: &App, p: &Page, k: &Kit) -> El {
                 scadrun::Level::Plain => c.text_base,
             };
             let msg = text(line.clone()).font(k.ty.mono).color(ink).wrap().selectable(true);
-            if let Some(ln) = can_edit.then(|| scadrun::console_line(line, &main_file)).flatten() {
+            if let Some(ln) = (can_edit && *level != scadrun::Level::Plain).then(|| scadrun::console_line(line, &main_file)).flatten() {
                 con = con.child(
                     row()
                         .key(format!("scad-line-{i}"))
@@ -7373,6 +7373,11 @@ fn find_replace_one(s: &mut App, tx: &mut Tx) -> bool {
     if !s.editing || find_where(s) != FindIn::Editor {
         return false;
     }
+    if s.rich {
+        if let Some(o) = s.link_open.take() {
+            linkedit::close(&mut s.edit, o);
+        }
+    }
     let matches = edit_matches(s);
     if matches.is_empty() {
         return false;
@@ -7402,6 +7407,11 @@ fn find_replace_one(s: &mut App, tx: &mut Tx) -> bool {
 fn find_replace_all(s: &mut App, tx: &mut Tx) -> usize {
     if !s.editing || find_where(s) != FindIn::Editor {
         return 0;
+    }
+    if s.rich {
+        if let Some(o) = s.link_open.take() {
+            linkedit::close(&mut s.edit, o);
+        }
     }
     let matches = edit_matches(s);
     let count = matches.len();
@@ -14572,7 +14582,11 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "conflicts" => go_conflicts(s),
         "link-in" => ask_link_in(s),
         "link-back" => link_back(s),
-        "access" | "published" => go_access(s),
+        "access" => go_access(s),
+        "published" => {
+            go_access(s);
+            tx.scroll_into_view("access-published");
+        }
         "half" => flip(s),
         "theme" => next_theme(s),
         "sidebar" => s.global.sidebar.toggle(),
@@ -21769,6 +21783,11 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
                 q.focused = false;
             }
             s.find_replace.focused = true;
+        } else {
+            if let Some(q) = &mut s.find {
+                q.focused = true;
+            }
+            s.find_replace.focused = false;
         }
         return true;
     }
@@ -24853,11 +24872,18 @@ mod tests {
         assert!(s.open.as_ref().unwrap().body.contains("fo:font-weight=\"bold\""));
         assert!(on_key(&mut s, &cmd('2', false), &mut tx));
         assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 2, .. })));
+        // Ctrl+Alt+3 sets H3 (matching ui-src/writer/keys.js for browser tab shortcuts).
+        let alt_h3 = KeyEvent {
+            key: Key::Command('3'),
+            mods: rune::Mods { cmd: true, ctrl: true, alt: true, ..rune::Mods::default() },
+        };
+        assert!(on_key(&mut s, &alt_h3, &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 3, .. })));
         // Undo reverts heading level change, redo restores it.
         assert!(on_key(&mut s, &cmd('z', false), &mut tx));
-        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Paragraph { .. })));
-        assert!(on_key(&mut s, &cmd('z', true), &mut tx));
         assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 2, .. })));
+        assert!(on_key(&mut s, &cmd('z', true), &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 3, .. })));
         // Shortcuts do not fire while a prompt overlay, old revision, or another text input is active.
         s.prompt = Some(Prompt::Kind(TextEdit::new("fodt")));
         assert!(!on_key(&mut s, &cmd('z', false), &mut tx));
@@ -25068,6 +25094,21 @@ mod tests {
         s.editing = false;
         assert!(!find_replace_one(&mut s, &mut tx));
         assert_eq!(find_replace_all(&mut s, &mut tx), 0);
+
+        // Rich-text mode with an open inline link: Find & Replace closes s.link_open first so the link stays valid.
+        let rich_src = "foo [link](https://example.org/foo) bar\n";
+        s.open = Some(Page { name: "welcome".into(), kind: "md".into(), body: rich_src.into(), rev: 3 });
+        start_edit(&mut s);
+        assert!(s.rich);
+        s.edit.set_caret(5);
+        s.link_open = linkedit::open(&mut s.edit);
+        assert!(s.link_open.is_some());
+        open_find(&mut s);
+        s.find.as_mut().unwrap().text = "foo".into();
+        s.find_replace = TextEdit::new("baz");
+        assert_eq!(find_replace_all(&mut s, &mut tx), 1);
+        assert!(s.link_open.is_none());
+        assert_eq!(edited(&s), "baz [link](https://example.org/foo) bar\n");
     }
 }
 

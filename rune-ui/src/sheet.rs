@@ -1366,7 +1366,10 @@ pub fn export_csv(src: &str, sheet_idx: usize) -> Result<String, String> {
                 Some(m) if !m.covered => m.text.clone(),
                 _ => String::new(),
             };
-            if mc.is_some_and(|m| m.vt == "string") && t.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+            let is_text = mc.is_some_and(|m| m.vt == "string" || m.vt.is_empty());
+            if (is_text && t.starts_with(['=', '+', '-', '@', '\t', '\r']))
+                || (!is_text && t.starts_with(['=', '@', '\t', '\r']))
+            {
                 t.insert(0, '\'');
             }
             fields.push(quote_csv_field(&t));
@@ -1974,5 +1977,20 @@ mod tests {
         );
         assert_eq!(export_csv(&with_extra_table, 0).unwrap(), csv0);
         assert_eq!(export_csv(&with_extra_table, 1).unwrap(), csv1);
+
+        // Untyped cells and crafted non-string cells starting with formula triggers are also guarded.
+        let crafted = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+ <office:body><office:spreadsheet>
+  <table:table table:name="S">
+   <table:table-row>
+    <table:table-cell><text:p>=cmd</text:p></table:table-cell>
+    <table:table-cell office:value-type="float" office:value="1"><text:p>=HYPERLINK("x")</text:p></table:table-cell>
+    <table:table-cell office:value-type="float" office:value="-5"><text:p>-5</text:p></table:table-cell>
+   </table:table-row>
+  </table:table>
+ </office:spreadsheet></office:body>
+</office:document>"#;
+        assert_eq!(export_csv(crafted, 0).unwrap(), "'=cmd,\"'=HYPERLINK(\"\"x\"\")\",-5\r\n");
     }
 }
