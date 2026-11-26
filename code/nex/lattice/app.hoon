@@ -9142,7 +9142,7 @@
     ::  a new page in a folder shared with ships or groups is theirs too,
     ::  after the save has answered
     ?:  old  (pure:m ~)
-    (grant-new root pax.act)
+    (grant-new %page root pax.act)
       %make-by
     ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head pax.act)
     ::  a claimed base is a page at that rev: gone since is moved past too
@@ -9163,7 +9163,7 @@
     ;<  ~  bind:m  (yield-event root now pen pax.act /writer/yield)
     ;<  ~  bind:m  (prune-page pax.act)
     ?:  old  (pure:m ~)
-    (grant-new root pax.act)
+    (grant-new %page root pax.act)
       %make-new
     ::  create-only: a name taken since the route looked is left as it is
     ;<  taken=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
@@ -9199,7 +9199,7 @@
     ;<  ~  bind:m  (yield-event root now pen pax.act /writer/yield)
     ;<  ~  bind:m  (prune-page pax.act)
     ?:  old  (pure:m ~)
-    (grant-new root pax.act)
+    (grant-new %page root pax.act)
       %make-many
     ::  Same work as %make, once per page, but inside ONE writer transaction.
     ::  The saving is the ~0.5s pier floor an upload used to pay per FILE. The
@@ -9219,7 +9219,7 @@
     ;<  old=?  bind:m  (peek-exists:fio (rf up (weld /page pax.i.pages.act) %code))
     ;<  ~  bind:m  (make-page root pax.i.pages.act src.i.pages.act)
     ;<  *  bind:m  (pub-mark root now pax.i.pages.act src.i.pages.act)
-    ;<  ~  bind:m  ?:(old (pure:m ~) (grant-new root pax.i.pages.act))
+    ;<  ~  bind:m  ?:(old (pure:m ~) (grant-new %page root pax.i.pages.act))
     $(pages.act t.pages.act, done +(done))
       %tmpl-save
     ::  save a page-tree as a template: copy every page's CODE under
@@ -9673,8 +9673,8 @@
     ::  nor does a folder's grant to ships, or a group's folder road: the
     ::  same, for grants (+sens-revoke, +sens-regrant). A page's own share
     ::  stays, the owner's explicit choice, and the share panel says so.
-    ?:  on.act  (sens-revoke root pax.act)
-    (sens-regrant root pax.act)
+    ?:  on.act  (sens-revoke %page root pax.act)
+    (sens-regrant %page root pax.act)
   ==
 ::  +apply-comment: store one comment under /comments/<page>/<id>. `author` is us
 ::  (owner writer) or the poking ship (public inbox), NEVER from the payload,
@@ -22896,14 +22896,14 @@
 ::  indexes are written again without the sensitive pages, and each ship
 ::  that lost a page is told (+share-tell-do).
 ++  sens-revoke
-  |=  [root=@ud pax=path]
+  |=  [sk=share-kind:ls root=@ud pax=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  sb=path  bind:m  self-base
-  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page pax)) ~)
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld (kind-root:ls sk) pax)) ~)
   ?.  ?=([%ball *] dv)  (pure:m ~)
-  ;<  sens=(set path)  bind:m  (tree-sens %page pax ball.dv)
+  ;<  sens=(set path)  bind:m  (tree-sens sk pax ball.dv)
   ?:  =(~ sens)  (pure:m ~)
   ;<  h0=holds:ls  bind:m  holds-now
   ::  folder grants to ships (+revoke-folder-grants, but only these pages,
@@ -22919,14 +22919,14 @@
       ?~  g  ~
       (fall (mole |.(;;((list path) (sang-noun:tarball sang.u.g)))) ~)
     ?~  vias  $(ps t.ps)
-    =/  code=(set road:tarball)  (silt ~[`road:tarball`[%& %& :(weld sb /page rel) %code]])
+    =/  code=(set road:tarball)  (silt ~[`road:tarball`[%& %& :(weld sb (kind-root:ls sk) rel) (kind-leaf:ls sk)]])
     ;<  grants=(map path (map @t @t))  bind:m
       =/  n  (fiber:fiber:nexus ,(map path (map @t @t)))
       =/  vs=(list path)  vias
       =|  acc=(map path (map @t @t))
       |-  ^-  form:n
       ?~  vs  (pure:n acc)
-      ;<  gs=(map @t @t)  bind:n  (read-share-grants %page i.vs)
+      ;<  gs=(map @t @t)  bind:n  (read-share-grants sk i.vs)
       $(vs t.vs, acc (~(put by acc) i.vs gs))
     =/  own=(map @t @t)  (fils-own fils)
     =/  l=(list @t)  ~(tap in (revoke-groups:ls grants vias))
@@ -22939,14 +22939,14 @@
         ?:  =('read' md)  (ug-settle i.l ~ code)
         (ug-drop i.l code)
       $(l t.l)
-    ;<  *  bind:m  (cull-soft:io (rf up (weld /page rel) %'grant-via'))
+    ;<  *  bind:m  (cull-soft:io (rf up (weld (kind-root:ls sk) rel) %'grant-via'))
     $(ps t.ps)
   ::  group folder roads over a sensitive page
   ;<  ub=path  bind:m  ug-dir
   ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ub] ~)
   ;<  ~  bind:m
     ?.  ?=([~ %ball *] vw)  (pure:m ~)
-    =/  pre=path  (weld sb /page)
+    =/  pre=path  (weld sb (kind-root:ls sk))
     =/  n=@ud  (lent pre)
     =/  abs=(list path)  (turn ~(tap in sens) |=(r=path :(weld pre pax r)))
     =/  gs=(list [rel=path gb=ball:tarball])  (all-groups / ball.u.vw)
@@ -22974,27 +22974,27 @@
     =/  dr=road:tarball  [%& %| d.i.over]
     =/  frel=path  (slag n d.i.over)
     ;<  *  bind:m  (ug-drop gname (silt ~[dr]))
-    ;<  fv=view:nexus  bind:m  (peek:fio (rv up (weld /page frel)) ~)
+    ;<  fv=view:nexus  bind:m  (peek:fio (rv up (weld (kind-root:ls sk) frel)) ~)
     ?.  ?=([%ball *] fv)  $(over t.over)
-    ;<  fs=(set path)  bind:m  (tree-sens %page frel ball.fv)
+    ;<  fs=(set path)  bind:m  (tree-sens sk frel ball.fv)
     =/  all=(list [p=path page=?])
-      (skip (collect-tree ball.fv ~) |=([p=path page=?] ?=(~ p)))
+      (skip (collect-tree-of sk ball.fv ~) |=([p=path page=?] ?=(~ p)))
     =/  at  |=(r=path :(weld pre frel r))
     =/  codes=(set road:tarball)
       %-  silt
       %+  murn  all
-      |=([p=path page=?] ?.(&(page !(~(has in fs) p)) ~ `[%& %& (at p) %code]))
+      |=([p=path page=?] ?.(&(page !(~(has in fs) p)) ~ `[%& %& (at p) (kind-leaf:ls sk)]))
     =/  idx=(set road:tarball)
       %-  silt
       ^-  (list road:tarball)
       :-  [%& %& (at ~) %'dir-index']
       (turn ~(tap in (folder-subs:ls all)) |=(p=path `road:tarball`[%& %& (at p) %'dir-index']))
     ;<  *  bind:m  (ug-merge gname ~ (~(uni in codes) idx) ?.(ed.i.over ~ codes))
-    ;<  ~  bind:m  (folder-grant-do %page frel gname ?:(ed.i.over 'edit' 'read'))
-    ;<  ~  bind:m  (write-dir-index %page root frel)
+    ;<  ~  bind:m  (folder-grant-do sk frel gname ?:(ed.i.over 'edit' 'read'))
+    ;<  ~  bind:m  (write-dir-index sk root frel)
     $(over t.over)
   ::  the indexes above and below no longer list them
-  ;<  ~  bind:m  (refresh-dir-index-above %page root pax)
+  ;<  ~  bind:m  (refresh-dir-index-above sk root pax)
   ;<  h1=holds:ls  bind:m  holds-now
   =/  d  (holds-diff:ls h0 h1)
   (share-tell-do add.d del.d)
@@ -23003,17 +23003,17 @@
 ::  grants of the folders above it again (+grant-new), which lists it in
 ::  their indexes too.
 ++  sens-regrant
-  |=  [root=@ud pax=path]
+  |=  [sk=share-kind:ls root=@ud pax=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page pax)) ~)
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld (kind-root:ls sk) pax)) ~)
   ?.  ?=([%ball *] dv)  (pure:m ~)
   =/  ps=(list path)
-    (murn (collect-tree ball.dv ~) |=([p=path page=?] ?:(page `p ~)))
+    (murn (collect-tree-of sk ball.dv ~) |=([p=path page=?] ?:(page `p ~)))
   |-  ^-  form:m
   ?~  ps  (pure:m ~)
-  ;<  ~  bind:m  (grant-new root (weld pax i.ps))
+  ;<  ~  bind:m  (grant-new sk root (weld pax i.ps))
   $(ps t.ps)
 ::  +folder-grant-do: the folder at `pax` notes its grant to group `g`
 ::  (`share-grants`), and each page under it the folder granted
@@ -23081,31 +23081,31 @@
 ::  above it (`share-grants`), and the indexes kept above it
 ::  (+write-dir-index) list it. Run after the save has answered.
 ++  grant-new
-  |=  [root=@ud rel=path]
+  |=  [sk=share-kind:ls root=@ud rel=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?~  rel  (pure:m ~)
   ::  a sensitive page takes no folder's grant, and no index lists it
   ::  (+write-dir-index-in), so nothing changes for it
-  ;<  sens=?  bind:m  (page-sensitive rel)
+  ;<  sens=?  bind:m  (item-sensitive sk rel)
   ?:  sens  (pure:m ~)
   ;<  up=@ud  bind:m  nexus-up
   ;<  sb=path  bind:m  self-base
-  =/  code=road:tarball  [%& %& :(weld sb /page rel) %code]
+  =/  code=road:tarball  [%& %& :(weld sb (kind-root:ls sk) rel) (kind-leaf:ls sk)]
   =/  pdir=path  (snip `path`rel)
   =/  dir=path  pdir
   =|  top=(map @t [d=path md=@t])
   |-  ^-  form:m
-  ;<  gs=(map @t @t)  bind:m  (read-share-grants %page dir)
+  ;<  gs=(map @t @t)  bind:m  (read-share-grants sk dir)
   ::  each group's highest sharing folder, as the walk goes up
   =.  top  (~(gas by top) (turn ~(tap by gs) |=([g=@t md=@t] [g dir md])))
   ;<  ~  bind:m
     ?:  =(~ gs)  (pure:m ~)
-    ;<  ~  bind:m  (add-grant-via %page rel dir)
+    ;<  ~  bind:m  (add-grant-via sk rel dir)
     ::  grant dir-index roads on any intermediate subfolders between dir and pdir
     =/  sub-ixs=(list road:tarball)
       %+  turn  (gulf (lent dir) (lent pdir))
-      |=(n=@ud `road:tarball`[%& %& :(weld sb /page (scag n pdir)) %'dir-index'])
+      |=(n=@ud `road:tarball`[%& %& :(weld sb (kind-root:ls sk) (scag n pdir)) %'dir-index'])
     =/  pk=(set road:tarball)  (silt ^-((list road:tarball) [code sub-ixs]))
     =/  l=(list [g=@t md=@t])  ~(tap by gs)
     |-  ^-  form:m
@@ -23125,12 +23125,12 @@
   =.  ixs  (~(gas in ixs) (turn ~(val by top) |=([d=path md=@t] d)))
   |-  ^-  form:m
   ?^  ups
-    ;<  ix=?  bind:m  (peek-exists:fio (rf up (weld /page i.ups) %'dir-index'))
+    ;<  ix=?  bind:m  (peek-exists:fio (rf up (weld (kind-root:ls sk) i.ups) %'dir-index'))
     $(ups t.ups, ixs ?.(ix ixs (~(put in ixs) i.ups)))
   =/  todo=(list path)  (index-ups:ls pdir ixs)
   |-  ^-  form:m
   ?^  todo
-    ;<  ~  bind:m  (write-dir-index-in %page root i.todo |)
+    ;<  ~  bind:m  (write-dir-index-in sk root i.todo |)
     $(todo t.todo)
   ::  its ships list the folder whole (%dir), so the page needs no notice
   ::  of its own. Once the indexes list it, they are told the highest
@@ -23140,7 +23140,7 @@
   |-  ^-  form:m
   ?~  l  (pure:m ~)
   ;<  ~  bind:m
-    (notice-group g.i.l [%dir (snoc :(weld sb /page d.i.l) %'dir-index') md.i.l])
+    (notice-group g.i.l [%dir (snoc :(weld sb (kind-root:ls sk) d.i.l) %'dir-index') md.i.l])
   $(l t.l)
 ::  +revoke-folder-grants: the pages under `pax` (`bl` its ball) are going:
 ::  each grant a folder made them (`grant-via`) comes out of its groups.
