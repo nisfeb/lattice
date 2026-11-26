@@ -5614,7 +5614,7 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
         .build(s, k)
         .grow(1.0)
         .min_h(0.0);
-    let mut tabs = row().key("sheet-tabs").gap(4.0).center_y();
+    let mut tabs = row().key("sheet-tabs").w_full().gap(4.0).center_y();
     for (i, sh) in v.sheets.iter().enumerate() {
         tabs = tabs.child(
             Button::new(if sh.name.is_empty() { format!("Sheet {}", i + 1) } else { sh.name.clone() })
@@ -5642,6 +5642,10 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
         let n = v.stale.len();
         tabs = tabs.child(text(format!("{n} formula{} not worked out here: {} the value {} had", if n == 1 { "" } else { "s" }, if n == 1 { "it keeps" } else { "they keep" }, if n == 1 { "it" } else { "they" })).key("sheet-stale").font(k.ty.small).color(c.danger.icon).pl(8.0));
     }
+    tabs = tabs
+        .child(el().grow(1.0))
+        .child(Button::new("Export .ods").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Export this spreadsheet as .ods for LibreOffice").on_press_tx(ask_ods).build(k).key("sheet-export-ods"))
+        .child(Button::new("Export .csv").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Export the active sheet as .csv").on_press_tx(ask_csv).build(k).key("sheet-export-csv"));
     let mut page = col().key("sheet").w_full().h_full().min_h(0.0).padding(12.0).gap(8.0);
     if may {
         let sel = sheet_selection(v);
@@ -10235,6 +10239,45 @@ fn ask_odt(s: &mut App, tx: &mut Tx) {
     });
 }
 
+/// Exports the open spreadsheet (`fods`) page as a LibreOffice `.ods` zip package.
+fn ask_ods(s: &mut App, tx: &mut Tx) {
+    let Some(p) = s.open.clone().filter(|p| p.kind == "fods") else {
+        s.note = "only a spreadsheet exports as .ods".into();
+        return;
+    };
+    let leaf = p.name.rsplit('/').next().unwrap_or(&p.name).to_owned();
+    let body = if s.editing { edited(s) } else { p.body.clone() };
+    let options = rune::FileDialogOptions { title: "Export .ods".into(), file_name: Some(format!("{leaf}.ods")), ..Default::default() }.filter("OpenDocument Spreadsheet", &["ods"]);
+    tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => match writer::export_ods(&body) {
+            Ok(bytes) => write_file(s, path, bytes),
+            Err(e) => s.note = e,
+        },
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
+/// Exports the active sheet of the open spreadsheet (`fods`) page as RFC 4180 CSV.
+fn ask_csv(s: &mut App, tx: &mut Tx) {
+    let Some(p) = s.open.clone().filter(|p| p.kind == "fods") else {
+        s.note = "only a spreadsheet exports as .csv".into();
+        return;
+    };
+    let leaf = p.name.rsplit('/').next().unwrap_or(&p.name).to_owned();
+    let body = if s.editing { edited(s) } else { p.body.clone() };
+    let sheet_idx = s.sheet.as_ref().filter(|v| v.name == p.name).map_or(0, |v| v.at);
+    let options = rune::FileDialogOptions { title: "Export .csv".into(), file_name: Some(format!("{leaf}.csv")), ..Default::default() }.filter("CSV", &["csv"]);
+    tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => match sheet::export_csv(&body, sheet_idx) {
+            Ok(text) => write_file(s, path, text.into_bytes()),
+            Err(e) => s.note = e,
+        },
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
 /// Converts the LaTeX page in front to an html page beside it, with the
 /// pandoc on this machine. The output is cleaned before it is kept, and
 /// writes over the last conversion.
@@ -13876,6 +13919,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("copy-name", "Copy this page's name"),
     ("download", "Download this page as a file"),
     ("export-odt", "Writer: export as .odt"),
+    ("export-ods", "Spreadsheet: export as .ods"),
+    ("export-csv", "Spreadsheet: export active sheet as .csv"),
     ("open-raw", "Open raw page source in browser"),
     ("wrap", "Toggle line wrap"),
     ("pdf", "Export this page as PDF"),
@@ -13923,6 +13968,7 @@ fn usable(s: &App, id: &str) -> bool {
         "duplicate" | "copy-link" | "pdf" => own && !s.memory && !s.editing,
         "new-writer" => !s.memory && !s.anon,
         "export-odt" => page && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "fodt"),
+        "export-ods" | "export-csv" => page && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "fods"),
         "send-ship" => own && !s.memory && !s.editing && s.ships.len() > 1 && !cfg!(target_arch = "wasm32"),
         "retry-waiting" => s.conn.is_some() && s.queue.values().any(|q| q.tries >= api::MAX_RETRIES),
         "tex" => own && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "tex"),
@@ -14019,6 +14065,8 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "share" => open_share(s),
         "download" => ask_download(s, tx),
         "export-odt" => ask_odt(s, tx),
+        "export-ods" => ask_ods(s, tx),
+        "export-csv" => ask_csv(s, tx),
         "wrap" => {
             s.prefs.no_wrap ^= true;
             save_prefs(s);

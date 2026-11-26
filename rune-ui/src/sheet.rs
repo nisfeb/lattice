@@ -1308,6 +1308,55 @@ pub fn from_csv(src: &str) -> Result<String, String> {
     Ok(out)
 }
 
+fn quote_csv_field(s: &str) -> String {
+    let needs = s.contains(['"', ',', '\n', '\r'])
+        || s.chars().next().is_some_and(char::is_whitespace)
+        || s.chars().next_back().is_some_and(char::is_whitespace);
+    if needs {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_owned()
+    }
+}
+
+/// Exports one sheet of a flat ODS document as RFC 4180 CSV (`ui-src/sheet/ods.js::exportCsv`).
+/// Text cells that begin with `=`, `+`, `-`, `@`, tab or CR are prefixed with `'`
+/// so spreadsheet apps do not execute them as formulas.
+pub fn export_csv(src: &str, sheet_idx: usize) -> Result<String, String> {
+    let model = book(src).map_err(|e| format!("This spreadsheet cannot be exported: {e}."))?;
+    let shown = parse(src);
+    if model.sheets.is_empty() || shown.is_empty() {
+        return Err("This spreadsheet cannot be exported: no sheets found.".into());
+    }
+    let si = sheet_idx.min(shown.len() - 1);
+    let sh = &shown[si];
+    let cols = sh.width().min(MAX_COLS);
+    let mut lines = Vec::with_capacity(sh.rows.len());
+    for (r, row) in sh.rows.iter().enumerate() {
+        let mut fields = Vec::with_capacity(cols);
+        for c in 0..cols {
+            let mc = model.at(si, r, c);
+            let mut t = if mc.is_some_and(|m| m.covered) {
+                String::new()
+            } else {
+                row.get(c).cloned().unwrap_or_default()
+            };
+            if mc.is_some_and(|m| m.vt == "string") && t.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+                t.insert(0, '\'');
+            }
+            fields.push(quote_csv_field(&t));
+        }
+        lines.push(fields.join(","));
+    }
+    if lines.is_empty() {
+        Ok(String::new())
+    } else {
+        let mut out = lines.join("\r\n");
+        out.push_str("\r\n");
+        Ok(out)
+    }
+}
+
 /// Renders a flat ODS spreadsheet to a styled HTML body fragment for PDF export,
 /// keeping cell formatting, colors, alignment, font sizes, and multi-sheet tables.
 pub fn render_html(src: &str, title: &str) -> Result<String, String> {
@@ -1852,5 +1901,48 @@ mod tests {
         assert_eq!(b.at(0, 2, 11).unwrap().vt, "float");
         let html = render_html(&fods, "Budget").unwrap();
         assert!(html.contains("<h1>Budget</h1>") && html.contains("$1,200.50") && html.contains("50.00%") && html.contains("2026-11-17"));
+    }
+
+    #[test]
+    fn export_csv_quotes_guards_formulas_skips_covered_and_picks_sheet() {
+        let fods = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:mimetype="application/vnd.oasis.opendocument.spreadsheet">
+ <office:body><office:spreadsheet>
+  <table:table table:name="First">
+   <table:table-row>
+    <table:table-cell office:value-type="string"><text:p>Hello, "world"</text:p></table:table-cell>
+    <table:table-cell office:value-type="string"><text:p>=SUM(A1)</text:p></table:table-cell>
+    <table:table-cell office:value-type="float" office:value="-5"><text:p>-5</text:p></table:table-cell>
+    <table:table-cell office:value-type="string"><text:p> padded </text:p></table:table-cell>
+   </table:table-row>
+   <table:table-row>
+    <table:table-cell office:value-type="string"><text:p>line1</text:p><text:p>line2</text:p></table:table-cell>
+    <table:table-cell office:value-type="string"><text:p>+cmd</text:p></table:table-cell>
+    <table:covered-table-cell><text:p>hidden</text:p></table:covered-table-cell>
+    <table:table-cell office:value-type="string"><text:p>@at</text:p></table:table-cell>
+   </table:table-row>
+  </table:table>
+  <table:table table:name="Second">
+   <table:table-row>
+    <table:table-cell office:value-type="string"><text:p>Sheet2</text:p></table:table-cell>
+    <table:table-cell office:value-type="string"><text:p>-dash</text:p></table:table-cell>
+   </table:table-row>
+  </table:table>
+ </office:spreadsheet></office:body>
+</office:document>"#;
+        let csv0 = export_csv(fods, 0).unwrap();
+        assert_eq!(
+            csv0,
+            "\"Hello, \"\"world\"\"\",'=SUM(A1),-5,\" padded \"\r\n\"line1\nline2\",'+cmd,,'@at\r\n"
+        );
+        let csv1 = export_csv(fods, 1).unwrap();
+        assert_eq!(csv1, "Sheet2,'-dash\r\n");
+        // Out-of-range sheet index clamps to last sheet, matching ods.js.
+        assert_eq!(export_csv(fods, 99).unwrap(), csv1);
+        // Blank sheet exports empty string cleanly.
+        let blank = include_str!("../../ui-src/sheet/blank.fods");
+        assert_eq!(export_csv(blank, 0).unwrap(), "");
+        // Invalid XML returns an error.
+        assert!(export_csv("not xml", 0).is_err());
     }
 }
