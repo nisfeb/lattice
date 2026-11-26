@@ -641,7 +641,7 @@ enum Op {
     Linked(String, String),
     Unlinked(String),
     Created(String, Vec<(String, String)>),
-    Renamed(String, String, Vec<(String, String)>),
+    Renamed(String, String, Vec<(String, String)>, Vec<String>),
     /// A move timed out waiting for the ship's answer: keep `(from, to)` so the next tree reload
     /// remaps open pages, tabs, folders, and waiting saves if the move landed on the ship.
     MoveTimedOut(String, String),
@@ -3028,7 +3028,7 @@ fn confirm(s: &mut App) {
         Prompt::NewFolder(_) if s.memory => return,
         Prompt::NewFolder(_) if rn.name.is_empty() => return,
         Prompt::NewFolder(_) => Op::FolderMade(rn.name.clone(), shown),
-        Prompt::Rename(from, _) if rn.name != from || !rn.dnames.is_empty() || (!s.memory && s.dnames.contains_key(&from)) => Op::Renamed(from, rn.name.clone(), shown),
+        Prompt::Rename(from, _) if rn.name != from || !rn.dnames.is_empty() || (!s.memory && s.dnames.contains_key(&from)) => Op::Renamed(from, rn.name.clone(), shown, Vec::new()),
         Prompt::Delete(name) => Op::Deleted(name),
         _ => return,
     };
@@ -3053,7 +3053,7 @@ fn confirm(s: &mut App) {
         let kept = change_waiting(s, |ops, saves| match (&op, &made) {
             (_, Some(made)) => api::enqueue(saves, made, None, true, 0),
             (Op::FolderMade(n, _), _) => api::enqueue_op(ops, saves, api::QueuedOp::NewFolder { path: n.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
-            (Op::Renamed(a, b, _), _) => api::enqueue_op(ops, saves, api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
+            (Op::Renamed(a, b, _, _), _) => api::enqueue_op(ops, saves, api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: rn.dname.clone(), dnames: rn.dnames.clone() }),
             (Op::Deleted(n), _) => api::enqueue_op(ops, saves, if page { api::QueuedOp::DelPage(n.clone()) } else { api::QueuedOp::Del(n.clone()) }),
             _ => unreachable!("matched above"),
         });
@@ -3072,18 +3072,18 @@ fn confirm(s: &mut App) {
     let page = matches!(&op, Op::Deleted(n) if s.names.contains(n));
     match s.conn.clone() {
         Some(c) => {
-            if let Op::Renamed(a, b, _) = &op {
+            if let Op::Renamed(a, b, _, _) = &op {
                 s.note = format!("moving {a} to {b}\u{2026}");
             }
             s.op_req.request((c, op), move |(c, op)| {
                 match &op {
                     Op::Created(n, _) if memory => c.know_save(&format!("/{n}"), &format!("{}\n", n.rsplit('/').next().unwrap_or(n)))?,
                     Op::Deleted(n) if memory => c.know_delete(&format!("/{n}"))?,
-                    Op::Renamed(a, b, _) if memory => c.know_move(&format!("/{a}"), &format!("/{b}"))?,
+                    Op::Renamed(a, b, _, _) if memory => c.know_move(&format!("/{a}"), &format!("/{b}"))?,
                     Op::Created(..) => c.create_as(&rn)?,
                     Op::FolderMade(..) => c.folder_new(&rn)?,
-                    Op::Renamed(a, b, _) => match c.rename_as(a, &rn) {
-                        Ok(()) => {}
+                    Op::Renamed(a, b, shown, _) => match c.rename_as(a, &rn) {
+                        Ok(pruned) => return Ok(Op::Renamed(a.clone(), b.clone(), shown.clone(), pruned)),
                         Err(e) if api::timed_out(&e) => return Ok(Op::MoveTimedOut(a.clone(), b.clone())),
                         Err(e) => return Err(e),
                     },
@@ -3201,7 +3201,7 @@ fn applied(s: &mut App, op: Op) {
     if s.conn.is_some() && !s.memory {
         let waits = |at: &str| s.queue.keys().any(|k| api::queued_know(k).is_none() && is_under(k, at));
         let goes = match &op {
-            Op::Renamed(a, b, _) if a != b && waits(a) => Some(api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: String::new(), dnames: String::new() }),
+            Op::Renamed(a, b, _, _) if a != b && waits(a) => Some(api::QueuedOp::Move { from: a.clone(), to: b.clone(), dname: String::new(), dnames: String::new() }),
             // a page goes alone, and the saves of the pages under it still wait: the ship keeps those pages (`+page-del-run`). A folder takes all in it
             Op::Deleted(n) if s.names.contains(n) => s.queue.contains_key(n).then(|| api::QueuedOp::DelPage(n.clone())),
             Op::Deleted(n) if waits(n) => Some(api::QueuedOp::Del(n.clone())),
@@ -3231,7 +3231,7 @@ fn applied(s: &mut App, op: Op) {
             open_page(s, &n);
             s.note = "created".into();
         }
-        Op::Renamed(a, b, shown) => {
+        Op::Renamed(a, b, shown, pruned) => {
             // a page, or a folder and every page and empty subfolder under it
             let was_folder = !s.names.contains(&a);
             for old in under(&s.names, &a) {
@@ -3263,6 +3263,18 @@ fn applied(s: &mut App, op: Op) {
                 for d in &mut s.dirs {
                     if is_under(d, &a) {
                         *d = format!("{b}{}", &d[a.len()..]);
+                    }
+                }
+                if !pruned.is_empty() {
+                    s.dirs.retain(|d| !pruned.iter().any(|g| g == d));
+                    for g in &pruned {
+                        if !s.names.contains(g) {
+                            s.dnames.remove(g);
+                            s.dshares.remove(g);
+                        }
+                    }
+                    if s.folder.as_ref().is_some_and(|f| pruned.iter().any(|g| g == f)) {
+                        s.folder = None;
                     }
                 }
                 remap_map(&mut s.dnames);
@@ -5434,15 +5446,38 @@ fn scad_view(s: &App, p: &Page, k: &Kit) -> El {
         );
     }
     if !d.lines.is_empty() {
-        let mut con = col().key("scad-console").w_full().gap(1.0).padding(8.0).radius(k.radius.md).fill(c.layer_01).child(text(d.head.clone()).font(k.ty.small_medium).color(c.text_muted));
+        let main_file = format!("{}{}.scad", scad::ROOT, p.name);
+        let can_edit = usable(s, "edit");
+        let mut con = col().key("scad-console").w_full().gap(2.0).padding(8.0).radius(k.radius.md).fill(c.layer_01).child(text(d.head.clone()).font(k.ty.small_medium).color(c.text_muted));
         // a model that echoes without end is not drawn to its last line
-        for (level, line) in d.lines.iter().take(200) {
+        for (i, (level, line)) in d.lines.iter().take(200).enumerate() {
             let ink = match level {
                 scadrun::Level::Error => c.danger.icon,
                 scadrun::Level::Warning => c.warning.icon,
                 scadrun::Level::Plain => c.text_base,
             };
-            con = con.child(text(line.clone()).font(k.ty.mono).color(ink).wrap().selectable(true));
+            let msg = text(line.clone()).font(k.ty.mono).color(ink).wrap().selectable(true);
+            if let Some(ln) = can_edit.then(|| scadrun::console_line(line, &main_file)).flatten() {
+                con = con.child(
+                    row()
+                        .key(format!("scad-line-{i}"))
+                        .w_full()
+                        .gap(8.0)
+                        .center_y()
+                        .child(msg.grow(1.0).min_w(0.0))
+                        .child(
+                            Button::new(format!("line {ln}"))
+                                .control_size(ControlSize::Small)
+                                .variant(ButtonVariant::Ghost)
+                                .help(format!("Open editor at line {ln}"))
+                                .on_press_tx(move |s: &mut App, tx: &mut Tx| jump_scad_line(s, ln, tx))
+                                .build(k)
+                                .key(format!("scad-jump-{i}")),
+                        ),
+                );
+            } else {
+                con = con.child(msg);
+            }
         }
         if d.lines.len() > 200 {
             con = con.child(text(format!("and {} more lines", d.lines.len() - 200)).font(k.ty.small).color(c.text_faint));
@@ -5450,6 +5485,40 @@ fn scad_view(s: &App, p: &Page, k: &Kit) -> El {
         out = out.child(con);
     }
     out
+}
+
+/// Byte offset of the start of a 1-based line in `text`, clamping past EOF to the last line.
+fn line_start_byte(text: &str, line_1based: usize) -> usize {
+    let target = line_1based.saturating_sub(1);
+    let mut cur = 0usize;
+    let mut off = 0usize;
+    for part in text.split('\n') {
+        if cur == target {
+            return off;
+        }
+        off += part.len() + 1;
+        cur += 1;
+    }
+    text.rfind('\n').map_or(0, |i| i + 1)
+}
+
+/// Opens the source editor for the current OpenSCAD page and moves the caret to `line_1based`.
+fn jump_scad_line(s: &mut App, line_1based: usize, tx: &mut Tx) {
+    if !usable(s, "edit") {
+        s.note = "this page is read-only here".into();
+        return;
+    }
+    if !s.editing {
+        start_edit(s);
+    }
+    if !s.editing {
+        return;
+    }
+    let at = line_start_byte(&s.edit.text, line_1based);
+    s.edit.set_selection(at, at);
+    s.edit.focused = true;
+    editor_reveal(s, tx);
+    tx.focus_when_shown(FIELD, false);
 }
 
 /// Gives an OpenSCAD parameter of the open page a new value, worked
@@ -24613,6 +24682,43 @@ mod tests {
         // Shortcuts do not fire while a prompt overlay is open.
         s.prompt = Some(Prompt::Kind(TextEdit::new("fodt")));
         assert!(!on_key(&mut s, &cmd('z', false), &mut tx));
+    }
+
+    #[test]
+    fn move_prunes_empty_folders_and_scad_console_jumps_to_line() {
+        let mut s = sample("welcome");
+        s.names.push("old/sub/note".into());
+        s.dirs.push("old".into());
+        s.dirs.push("old/sub".into());
+        s.dirs.push("keep".into());
+        s.dnames.insert("old".into(), "Old".into());
+        s.dshares.insert("old/sub".into(), "shared".into());
+        s.folder = Some("old/sub".into());
+
+        applied(
+            &mut s,
+            Op::Renamed("old/sub/note".into(), "dest/note".into(), Vec::new(), vec!["old/sub".into(), "old".into()]),
+        );
+        assert!(s.names.contains(&"dest/note".to_owned()));
+        assert!(!s.dirs.contains(&"old".to_owned()));
+        assert!(!s.dirs.contains(&"old/sub".to_owned()));
+        assert!(s.dirs.contains(&"keep".to_owned()));
+        assert!(!s.dnames.contains_key("old"));
+        assert!(!s.dshares.contains_key("old/sub"));
+        assert!(s.folder.is_none());
+
+        // OpenSCAD console line jump opens editor and positions caret at line start.
+        let mut tx = Tx::default();
+        let src = "w = 10;\nh = 20;\ncube([w, h, 5]);\n";
+        s.open = Some(Page { name: "part".into(), kind: "scad".into(), body: src.into(), rev: 1 });
+        s.editing = false;
+        jump_scad_line(&mut s, 3, &mut tx);
+        assert!(s.editing);
+        assert_eq!(s.edit.range(), (16, 16));
+        assert_eq!(&s.edit.text[16..], "cube([w, h, 5]);\n");
+        // Out-of-range line clamps cleanly to the final line.
+        jump_scad_line(&mut s, 99, &mut tx);
+        assert_eq!(s.edit.range(), (src.len(), src.len()));
     }
 }
 

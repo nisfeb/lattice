@@ -1711,6 +1711,24 @@ pub fn lapsed(error: &str) -> bool {
     error.starts_with("401") || error.starts_with("403") || (error.starts_with("30") && error.contains("/~/login"))
 }
 
+/// Parses the optional `pruned` folder list returned by `POST /page-move`.
+/// Returns an empty list for empty or non-JSON answers from older ships.
+pub fn parse_pruned(raw: &str) -> Vec<String> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    v["pruned"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str())
+                .map(|s| s.trim_start_matches('/').to_owned())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// What stands at a `urb://` address, as the ship reads it (`GET /urb-read`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Urb {
@@ -2883,7 +2901,7 @@ impl Conn {
         match op {
             QueuedOp::Del(name) => self.delete_tree(name),
             QueuedOp::DelPage(name) => self.delete(name),
-            QueuedOp::Move { from, to, dname, dnames } => self.rename_as(from, &RealName { name: to.clone(), dname: dname.clone(), dnames: dnames.clone() }),
+            QueuedOp::Move { from, to, dname, dnames } => self.rename_as(from, &RealName { name: to.clone(), dname: dname.clone(), dnames: dnames.clone() }).map(drop),
             QueuedOp::NewFolder { path, dname, dnames } => self.folder_new(&RealName { name: path.clone(), dname: dname.clone(), dnames: dnames.clone() }),
         }
     }
@@ -4563,16 +4581,17 @@ impl Conn {
     }
 
     pub fn rename(&self, from: &str, to: &str) -> Result<(), String> {
-        self.rename_as(from, &RealName { name: to.to_owned(), dname: String::new(), dnames: String::new() })
+        self.rename_as(from, &RealName { name: to.to_owned(), dname: String::new(), dnames: String::new() }).map(drop)
     }
 
     /// Moves a page or folder to `rn.name`, shown under the names typed. A
     /// plain path clears the name the old one was shown under.
     /// Moving a large folder takes minutes on the ship (matching `move-job-ttl`),
     /// so this waits up to 10 minutes instead of the 30-second default.
-    pub fn rename_as(&self, from: &str, rn: &RealName) -> Result<(), String> {
+    /// Returns any empty source folders the ship pruned (`pruned` in `/page-move`'s JSON).
+    pub fn rename_as(&self, from: &str, rn: &RealName) -> Result<Vec<String>, String> {
         let q = if rn.dname.is_empty() { format!("&dname={}", rn.query()) } else { rn.query() };
-        self.call_in(600, "POST", &format!("page-move?from={}&to={}{q}", enc(from), enc(&rn.name)), Some("")).map(drop)
+        self.call_in(600, "POST", &format!("page-move?from={}&to={}{q}", enc(from), enc(&rn.name)), Some("")).map(|raw| parse_pruned(&raw))
     }
 
     /// Deletes a page alone: the pages under it stay (`+page-del-run`, a page-del with no `tree`).
@@ -7037,5 +7056,13 @@ mod tests {
         assert!(paths.iter().any(|p| p.contains("skill-save?name=deploy&path=SKILL.md&expected_updated=") && p.contains("&sensitive=1")));
         assert!(paths.iter().any(|p| p.contains("skill-tag?name=deploy&tag=ops")));
         assert!(paths.iter().any(|p| p.contains("skill-untag?name=deploy&tag=ops")));
+    }
+
+    #[test]
+    fn parse_pruned_reads_page_move_json_and_tolerates_older_ships() {
+        assert_eq!(parse_pruned(r#"{"moved":1,"rev":2,"pruned":["old","old/sub","/extra"]}"#), vec!["old", "old/sub", "extra"]);
+        assert!(parse_pruned(r#"{"moved":1,"rev":2}"#).is_empty());
+        assert!(parse_pruned("ok").is_empty());
+        assert!(parse_pruned("").is_empty());
     }
 }

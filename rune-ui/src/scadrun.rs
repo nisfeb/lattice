@@ -226,6 +226,46 @@ pub fn console(log: &[String], notes: &[String]) -> (Vec<(Level, String)>, Strin
     (lines, head)
 }
 
+/// Extracts a 1-based line number in `main_file` from an OpenSCAD console line
+/// (mirroring `ui-src/scad/view.js::showLog`). Returns `None` when the message
+/// names a different included file or holds no line number.
+pub fn console_line(line: &str, main_file: &str) -> Option<usize> {
+    let parse_num = |s: &str| -> Option<usize> {
+        let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            return None;
+        }
+        let rest = &s[digits.len()..];
+        if !rest.is_empty() && rest.chars().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+        digits.parse::<usize>().ok().filter(|&n| n >= 1)
+    };
+    if let Some(pos) = line.find("in file ") {
+        let after = &line[pos + "in file ".len()..];
+        let (file_raw, rest) = after.split_once(", line ")?;
+        let file = file_raw.trim().trim_matches('"');
+        let main_rel = main_file.strip_prefix(crate::scad::ROOT).unwrap_or(main_file.trim_start_matches('/'));
+        let file_rel = file.strip_prefix(crate::scad::ROOT).unwrap_or(file.trim_start_matches('/'));
+        let matches_main = file == main_file
+            || file_rel == main_rel
+            || main_file.rsplit('/').next().is_some_and(|base| !base.is_empty() && file == base);
+        return matches_main.then(|| parse_num(rest)).flatten();
+    }
+    let mut rest = line;
+    while let Some(pos) = rest.find("line ") {
+        let ok_before = pos == 0 || rest[..pos].chars().next_back().is_some_and(|c| !c.is_ascii_alphanumeric() && c != '_');
+        let after = &rest[pos + "line ".len()..];
+        if ok_before {
+            if let Some(n) = parse_num(after) {
+                return Some(n);
+            }
+        }
+        rest = after;
+    }
+    None
+}
+
 /// A page drawn: what the status line says and whether that is bad
 /// news, the console, and the part when there is one, with its STL.
 pub struct Drawn {
@@ -392,5 +432,19 @@ mod tests {
         assert!(!ran.ok && ran.data.is_none(), "output over 64 MiB must be refused: {:?}", ran.log);
         assert!(ran.log.iter().any(|l| l.contains("over 64 MB")), "{:?}", ran.log);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn console_line_parses_main_file_and_ignores_other_files() {
+        let main = "/w/parts/box.scad";
+        assert_eq!(console_line("ERROR: Parser error: syntax error in file /w/parts/box.scad, line 12", main), Some(12));
+        assert_eq!(console_line("WARNING: Ignoring unknown variable 'x' in file \"parts/box.scad\", line 4", main), Some(4));
+        assert_eq!(console_line("ERROR: syntax error in file box.scad, line 9", main), Some(9));
+        // An error inside an included file must not jump to a line in the main file.
+        assert_eq!(console_line("ERROR: syntax error in file /w/parts/lib.scad, line 3", main), None);
+        // Standalone line reference with no file clause still parses.
+        assert_eq!(console_line("ERROR: Parser error in line 7: unexpected token", main), Some(7));
+        assert_eq!(console_line("ECHO: \"online 3 items\"", main), None);
+        assert_eq!(console_line("WARNING: something on line 0", main), None);
     }
 }
