@@ -3268,14 +3268,16 @@ fn applied(s: &mut App, op: Op) {
                     }
                 }
                 if !pruned.is_empty() {
-                    s.dirs.retain(|d| !pruned.iter().any(|g| g == d));
-                    for g in &pruned {
-                        if !s.names.contains(g) {
-                            s.dnames.remove(g);
-                            s.dshares.remove(g);
-                        }
+                    let safe_pruned: Vec<&String> = pruned
+                        .iter()
+                        .filter(|g| !is_under(&b, g) && !s.names.iter().any(|n| is_under(n, g)))
+                        .collect();
+                    s.dirs.retain(|d| !safe_pruned.iter().any(|g| *g == d));
+                    for g in &safe_pruned {
+                        s.dnames.remove(*g);
+                        s.dshares.remove(*g);
                     }
-                    if s.folder.as_ref().is_some_and(|f| pruned.iter().any(|g| g == f)) {
+                    if s.folder.as_ref().is_some_and(|f| safe_pruned.iter().any(|g| *g == f)) {
                         s.folder = None;
                     }
                 }
@@ -4385,12 +4387,19 @@ fn writer_key(s: &mut App, ev: &KeyEvent) -> bool {
         || s.ships_open
         || s.tree_menu.is_some()
         || s.link_menu.is_some();
-    if over || s.editing || page_hidden(s) || !writer_editable(s) {
+    let other_input_focused = s.urb.focused
+        || s.query.focused
+        || s.squery.focused
+        || s.comment.focused
+        || s.grant_to.focused
+        || s.accent_hex.focused
+        || s.marks_q.focused;
+    if over || other_input_focused || s.editing || s.old.is_some() || page_hidden(s) || !writer_editable(s) {
         return false;
     }
     let Some(p) = &s.open else { return false };
     let Some(v) = &s.writer else { return false };
-    if p.kind != "fodt" || v.name != p.name {
+    if p.kind != "fodt" || v.name != p.name || v.rev != p.rev {
         return false;
     }
     if (ev.is_command('z') && ev.mods.shift && !ev.mods.alt) || (ev.is_command('y') && !ev.mods.shift && !ev.mods.alt) {
@@ -4420,7 +4429,7 @@ fn writer_key(s: &mut App, ev: &KeyEvent) -> bool {
         writer_apply(s, move |doc, path| doc.toggle_inline_fmt(path, range.0, range.1, fmt));
         return true;
     }
-    if !ev.mods.shift {
+    if !ev.mods.shift && !ev.mods.alt {
         if ev.is_command('0') {
             writer_apply(s, |doc, path| {
                 let st = doc.styles.body_style();
@@ -5449,7 +5458,7 @@ fn scad_view(s: &App, p: &Page, k: &Kit) -> El {
     }
     if !d.lines.is_empty() {
         let main_file = format!("{}{}.scad", scad::ROOT, p.name);
-        let can_edit = usable(s, "edit");
+        let can_edit = s.old.is_none() && usable(s, "edit");
         let mut con = col().key("scad-console").w_full().gap(2.0).padding(8.0).radius(k.radius.md).fill(c.layer_01).child(text(d.head.clone()).font(k.ty.small_medium).color(c.text_muted));
         // a model that echoes without end is not drawn to its last line
         for (i, (level, line)) in d.lines.iter().take(200).enumerate() {
@@ -5506,7 +5515,7 @@ fn line_start_byte(text: &str, line_1based: usize) -> usize {
 
 /// Opens the source editor for the current OpenSCAD page and moves the caret to `line_1based`.
 fn jump_scad_line(s: &mut App, line_1based: usize, tx: &mut Tx) {
-    if !usable(s, "edit") {
+    if s.old.is_some() || !usable(s, "edit") {
         s.note = "this page is read-only here".into();
         return;
     }
@@ -7006,7 +7015,7 @@ fn take_pics(s: &mut App) -> bool {
 
 /// Toggles a GFM task list checkbox on the open editable Markdown page and saves it.
 fn toggle_md_task(s: &mut App, rendered: &str, marker_offset: usize, new_checked: bool) {
-    if s.old.is_some() || !page_changes(s) {
+    if s.memory || s.old.is_some() || !page_changes(s) || !usable(s, "edit") {
         return;
     }
     let Some(p) = s.open.clone().filter(|p| p.kind == "md") else { return };
@@ -7032,7 +7041,12 @@ fn toggle_md_task(s: &mut App, rendered: &str, marker_offset: usize, new_checked
 fn reader(id: &str, body: &str, s: &App, k: &Kit, found: bool) -> El {
     let style = page_style(k);
     let find_key = s.find.as_ref().filter(|_| found).map(|q| (q.text.as_str(), s.find_at));
-    let interactive_tasks = id == "reader-main" && s.old.is_none() && page_changes(s) && s.open.as_ref().is_some_and(|p| p.kind == "md");
+    let interactive_tasks = id == "reader-main"
+        && !s.memory
+        && s.old.is_none()
+        && page_changes(s)
+        && usable(s, "edit")
+        && s.open.as_ref().is_some_and(|p| p.kind == "md");
     let version = (body, &s.names, &s.other.1, s.pics_gen, found, find_key, s.outline_at, interactive_tasks, &style);
     rune::memo(id, version, || {
         let pics = s.pics.clone();
@@ -7149,7 +7163,7 @@ fn find_where(s: &App) -> FindIn {
         FindIn::Editor
     } else if read_md(s, p).is_some() {
         FindIn::Reader
-    } else if s.writer.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
+    } else if s.old.is_none() && s.writer.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
         FindIn::Writer
     } else if s.sheet.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
         FindIn::Sheet
@@ -7298,6 +7312,7 @@ fn open_find(s: &mut App) {
         return;
     }
     s.find_at = 0;
+    s.find_replace.focused = false;
     let mut q = s.find.take().unwrap_or_else(|| TextEdit::new(""));
     q.focused = true;
     s.find = Some(q);
@@ -7367,7 +7382,7 @@ fn find_replace_one(s: &mut App, tx: &mut Tx) -> bool {
     let rep = s.find_replace.text.clone();
     s.edit.set_selection(r.start, r.end);
     s.edit.insert(&rep);
-    let after = r.start + rep.len();
+    let after = s.edit.range().1;
     let next_matches = edit_matches(s);
     if next_matches.is_empty() {
         s.find_at = 0;
@@ -7440,6 +7455,7 @@ fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
             }
             Key::Escape => {
                 s.find = None;
+                s.find_replace.focused = false;
                 // back to the text, where the match found is selected
                 if s.editing {
                     tx.focus_when_shown(FIELD, false);
@@ -7459,7 +7475,10 @@ fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
         .child(text(says).key("find-count").font(k.ty.small).color(k.c.text_muted).grow(1.0))
         .child(Button::new("Previous").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(n == 0).on_press_tx(|s: &mut App, tx| find_step(s, -1, tx)).build(k).key("find-prev"))
         .child(Button::new("Next").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(n == 0).on_press_tx(|s: &mut App, tx| find_step(s, 1, tx)).build(k).key("find-next"))
-        .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close find").on_press(|s: &mut App| s.find = None).build(k).key("find-close"));
+        .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close find").on_press(|s: &mut App| {
+            s.find = None;
+            s.find_replace.focused = false;
+        }).build(k).key("find-close"));
     if s.editing && find_where(s) == FindIn::Editor {
         let rep_field = TextInput::new(&s.find_replace)
             .placeholder("Replace with")
@@ -7471,6 +7490,7 @@ fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
                 }
                 Key::Escape => {
                     s.find = None;
+                    s.find_replace.focused = false;
                     tx.focus_when_shown(FIELD, false);
                     true
                 }
@@ -21741,7 +21761,9 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if ev.is_command('h') && s.editing {
         let had_query = s.find.as_ref().is_some_and(|q| !q.text.trim().is_empty());
-        open_find(s);
+        if s.find.is_none() {
+            open_find(s);
+        }
         if had_query {
             if let Some(q) = &mut s.find {
                 q.focused = false;
@@ -24836,9 +24858,17 @@ mod tests {
         assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Paragraph { .. })));
         assert!(on_key(&mut s, &cmd('z', true), &mut tx));
         assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 2, .. })));
-        // Shortcuts do not fire while a prompt overlay is open.
+        // Shortcuts do not fire while a prompt overlay, old revision, or another text input is active.
         s.prompt = Some(Prompt::Kind(TextEdit::new("fodt")));
         assert!(!on_key(&mut s, &cmd('z', false), &mut tx));
+        s.prompt = None;
+        s.comment.focused = true;
+        assert!(!on_key(&mut s, &cmd('z', false), &mut tx));
+        s.comment.focused = false;
+        s.old = Some(Page { name: "doc".into(), kind: "fodt".into(), body: String::new(), rev: 0 });
+        assert_eq!(find_where(&s), FindIn::Source);
+        assert!(!on_key(&mut s, &cmd('z', false), &mut tx));
+        s.old = None;
     }
 
     #[test]
@@ -24994,6 +25024,16 @@ mod tests {
         toggle_md_task(&mut s, &rendered, rendered_tasks[1].0, false);
         assert_eq!(s.open.as_ref().unwrap().body, before);
         s.old = None;
+
+        // Memory entries and read-only linked pages refuse checkbox toggle.
+        s.memory = true;
+        toggle_md_task(&mut s, &rendered, rendered_tasks[1].0, false);
+        assert_eq!(s.open.as_ref().unwrap().body, before);
+        s.memory = false;
+        s.links.insert("welcome".into(), api::LinkTo { host: "~nec".into(), path: "welcome".into(), mode: "read".into() });
+        toggle_md_task(&mut s, &rendered, rendered_tasks[1].0, false);
+        assert_eq!(s.open.as_ref().unwrap().body, before);
+        s.links.remove("welcome");
 
         // Editor Find-and-Replace: case/accent folding, UTF-8, self-containing replacement,
         // empty replacement, Replace All count, and single-step undo.

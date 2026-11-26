@@ -1324,22 +1324,47 @@ fn quote_csv_field(s: &str) -> String {
 /// so spreadsheet apps do not execute them as formulas.
 pub fn export_csv(src: &str, sheet_idx: usize) -> Result<String, String> {
     let model = book(src).map_err(|e| format!("This spreadsheet cannot be exported: {e}."))?;
-    let shown = parse(src);
-    if model.sheets.is_empty() || shown.is_empty() {
+    if model.sheets.is_empty() {
         return Err("This spreadsheet cannot be exported: no sheets found.".into());
     }
-    let si = sheet_idx.min(shown.len() - 1);
-    let sh = &shown[si];
-    let cols = sh.width().min(MAX_COLS);
-    let mut lines = Vec::with_capacity(sh.rows.len());
-    for (r, row) in sh.rows.iter().enumerate() {
+    let si = sheet_idx.min(model.sheets.len() - 1);
+    let sh = &model.sheets[si];
+    let (mut rows, mut cols) = (0usize, 0usize);
+    let mut r_at = 0usize;
+    for row in &sh.rows {
+        if r_at >= MAX_ROWS {
+            break;
+        }
+        let mut c_at = 0usize;
+        let mut row_end = 0usize;
+        for cell in &row.cells {
+            if c_at >= MAX_COLS {
+                break;
+            }
+            let rep = cell.rep.min(MAX_COLS - c_at);
+            if !cell.covered && !cell.text.is_empty() {
+                row_end = c_at + rep;
+            }
+            c_at += rep;
+        }
+        let r_rep = row.rep.min(MAX_ROWS - r_at);
+        if row_end > 0 {
+            rows = r_at + r_rep;
+            cols = cols.max(row_end);
+        }
+        r_at += r_rep;
+    }
+    if rows == 0 || cols == 0 {
+        return Ok(String::new());
+    }
+    let mut lines = Vec::with_capacity(rows);
+    for r in 0..rows {
         let mut fields = Vec::with_capacity(cols);
         for c in 0..cols {
             let mc = model.at(si, r, c);
-            let mut t = if mc.is_some_and(|m| m.covered) {
-                String::new()
-            } else {
-                row.get(c).cloned().unwrap_or_default()
+            let mut t = match mc {
+                Some(m) if !m.covered => m.text.clone(),
+                _ => String::new(),
             };
             if mc.is_some_and(|m| m.vt == "string") && t.starts_with(['=', '+', '-', '@', '\t', '\r']) {
                 t.insert(0, '\'');
@@ -1348,13 +1373,9 @@ pub fn export_csv(src: &str, sheet_idx: usize) -> Result<String, String> {
         }
         lines.push(fields.join(","));
     }
-    if lines.is_empty() {
-        Ok(String::new())
-    } else {
-        let mut out = lines.join("\r\n");
-        out.push_str("\r\n");
-        Ok(out)
-    }
+    let mut out = lines.join("\r\n");
+    out.push_str("\r\n");
+    Ok(out)
 }
 
 /// Renders a flat ODS spreadsheet to a styled HTML body fragment for PDF export,
@@ -1944,5 +1965,14 @@ mod tests {
         assert_eq!(export_csv(blank, 0).unwrap(), "");
         // Invalid XML returns an error.
         assert!(export_csv("not xml", 0).is_err());
+
+        // Extra <table:table> outside <office:spreadsheet> (e.g. in master-styles) must not
+        // shift sheet indices or disable formula-injection quoting and covered-cell skipping.
+        let with_extra_table = fods.replace(
+            "<office:body>",
+            "<office:master-styles><table:table table:name=\"Header\"><table:table-row><table:table-cell><text:p>H</text:p></table:table-cell></table:table-row></table:table></office:master-styles><office:body>",
+        );
+        assert_eq!(export_csv(&with_extra_table, 0).unwrap(), csv0);
+        assert_eq!(export_csv(&with_extra_table, 1).unwrap(), csv1);
     }
 }
