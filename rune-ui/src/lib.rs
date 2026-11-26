@@ -3267,6 +3267,11 @@ fn applied(s: &mut App, op: Op) {
                         *d = format!("{b}{}", &d[a.len()..]);
                     }
                 }
+                remap_map(&mut s.dnames);
+                s.dnames.remove(&b);
+                s.dnames.extend(shown);
+                remap_map(&mut s.shares);
+                remap_map(&mut s.dshares);
                 if !pruned.is_empty() {
                     let safe_pruned: Vec<&String> = pruned
                         .iter()
@@ -3281,11 +3286,6 @@ fn applied(s: &mut App, op: Op) {
                         s.folder = None;
                     }
                 }
-                remap_map(&mut s.dnames);
-                s.dnames.remove(&b);
-                s.dnames.extend(shown);
-                remap_map(&mut s.shares);
-                remap_map(&mut s.dshares);
             }
             s.timed_out_moves.retain(|(f, t)| !(f == &a && t == &b));
             remap_moved_views(s, &a, &b, was_folder);
@@ -21773,7 +21773,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         open_find(s);
         return true;
     }
-    if ev.is_command('h') && s.editing {
+    if ev.is_command('h') && s.editing && !page_hidden(s) && find_where(s) == FindIn::Editor {
         let had_query = s.find.as_ref().is_some_and(|q| !q.text.trim().is_empty());
         if s.find.is_none() {
             open_find(s);
@@ -24870,21 +24870,32 @@ mod tests {
         };
         assert!(on_key(&mut s, &cmd('b', false), &mut tx));
         assert!(s.open.as_ref().unwrap().body.contains("fo:font-weight=\"bold\""));
+        assert!(on_key(&mut s, &cmd('i', false), &mut tx));
+        assert!(s.open.as_ref().unwrap().body.contains("fo:font-style=\"italic\""));
+        assert!(on_key(&mut s, &cmd('u', false), &mut tx));
+        assert!(s.open.as_ref().unwrap().body.contains("style:text-underline-style=\"solid\""));
+        assert!(on_key(&mut s, &cmd('x', true), &mut tx));
+        assert!(s.open.as_ref().unwrap().body.contains("style:text-line-through-style=\"solid\""));
         assert!(on_key(&mut s, &cmd('2', false), &mut tx));
         assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 2, .. })));
-        // Ctrl+Alt+3 sets H3 (matching ui-src/writer/keys.js for browser tab shortcuts).
+        // Ctrl+Alt+3 sets H3 (matching ui-src/writer/keys.js for browser tab shortcuts), Ctrl+0 returns to Body.
         let alt_h3 = KeyEvent {
             key: Key::Command('3'),
             mods: rune::Mods { cmd: true, ctrl: true, alt: true, ..rune::Mods::default() },
         };
         assert!(on_key(&mut s, &alt_h3, &mut tx));
         assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 3, .. })));
-        // Undo reverts heading level change, redo restores it.
+        assert!(on_key(&mut s, &cmd('0', false), &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Paragraph { .. })));
+        // Undo reverts Body back to H3; Ctrl+Y and Ctrl+Shift+Z both redo.
         assert!(on_key(&mut s, &cmd('z', false), &mut tx));
-        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 2, .. })));
-        assert!(on_key(&mut s, &cmd('z', true), &mut tx));
         assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 3, .. })));
-        // Shortcuts do not fire while a prompt overlay, old revision, or another text input is active.
+        assert!(on_key(&mut s, &cmd('y', false), &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Paragraph { .. })));
+        assert!(on_key(&mut s, &cmd('z', false), &mut tx));
+        assert!(on_key(&mut s, &cmd('z', true), &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Paragraph { .. })));
+        // Shortcuts do not fire while a prompt overlay, old revision, another input, or tracked-changes doc is active.
         s.prompt = Some(Prompt::Kind(TextEdit::new("fodt")));
         assert!(!on_key(&mut s, &cmd('z', false), &mut tx));
         s.prompt = None;
@@ -24895,29 +24906,45 @@ mod tests {
         assert_eq!(find_where(&s), FindIn::Source);
         assert!(!on_key(&mut s, &cmd('z', false), &mut tx));
         s.old = None;
+        s.writer.as_mut().unwrap().doc.tracking = true;
+        assert!(!on_key(&mut s, &cmd('b', false), &mut tx));
     }
 
     #[test]
     fn move_prunes_empty_folders_and_scad_console_jumps_to_line() {
         let mut s = sample("welcome");
         s.names.push("old/sub/note".into());
+        s.names.push("keep/still".into());
         s.dirs.push("old".into());
         s.dirs.push("old/sub".into());
         s.dirs.push("keep".into());
+        s.dirs.push("dest".into());
         s.dnames.insert("old".into(), "Old".into());
+        s.dnames.insert("keep".into(), "Keep".into());
+        s.dnames.insert("dest".into(), "Dest".into());
         s.dshares.insert("old/sub".into(), "shared".into());
+        s.dshares.insert("keep".into(), "shared".into());
         s.folder = Some("old/sub".into());
 
+        // Even if pruned erroneously names the destination or a populated folder, safe_pruned keeps both.
         applied(
             &mut s,
-            Op::Renamed("old/sub/note".into(), "dest/note".into(), Vec::new(), vec!["old/sub".into(), "old".into()]),
+            Op::Renamed(
+                "old/sub/note".into(),
+                "dest/note".into(),
+                Vec::new(),
+                vec!["old/sub".into(), "old".into(), "dest".into(), "keep".into()],
+            ),
         );
         assert!(s.names.contains(&"dest/note".to_owned()));
         assert!(!s.dirs.contains(&"old".to_owned()));
         assert!(!s.dirs.contains(&"old/sub".to_owned()));
         assert!(s.dirs.contains(&"keep".to_owned()));
+        assert!(s.dirs.contains(&"dest".to_owned()));
         assert!(!s.dnames.contains_key("old"));
+        assert!(s.dnames.contains_key("keep") && s.dnames.contains_key("dest"));
         assert!(!s.dshares.contains_key("old/sub"));
+        assert!(s.dshares.contains_key("keep"));
         assert!(s.folder.is_none());
 
         // OpenSCAD console line jump opens editor and positions caret at line start.
@@ -24925,6 +24952,16 @@ mod tests {
         let src = "w = 10;\nh = 20;\ncube([w, h, 5]);\n";
         s.open = Some(Page { name: "part".into(), kind: "scad".into(), body: src.into(), rev: 1 });
         s.editing = false;
+        // Refused on old revisions and read-only linked pages.
+        s.old = Some(Page { name: "part".into(), kind: "scad".into(), body: src.into(), rev: 0 });
+        jump_scad_line(&mut s, 2, &mut tx);
+        assert!(!s.editing && s.note.contains("read-only"));
+        s.old = None;
+        s.links.insert("part".into(), api::LinkTo { host: "~nec".into(), path: "part".into(), mode: "read".into() });
+        jump_scad_line(&mut s, 2, &mut tx);
+        assert!(!s.editing && s.note.contains("read-only"));
+        s.links.remove("part");
+
         jump_scad_line(&mut s, 3, &mut tx);
         assert!(s.editing);
         assert_eq!(s.edit.range(), (16, 16));
@@ -24932,6 +24969,19 @@ mod tests {
         // Out-of-range line clamps cleanly to the final line.
         jump_scad_line(&mut s, 99, &mut tx);
         assert_eq!(s.edit.range(), (src.len(), src.len()));
+
+        // Spreadsheet export commands are usable only on open fods wiki pages.
+        s.editing = false;
+        s.open = Some(Page { name: "sheet".into(), kind: "fods".into(), body: String::new(), rev: 1 });
+        assert!(usable(&s, "export-ods") && usable(&s, "export-csv"));
+        s.memory = true;
+        assert!(!usable(&s, "export-ods") && !usable(&s, "export-csv"));
+        s.memory = false;
+        s.access = true;
+        assert!(!usable(&s, "export-ods") && !usable(&s, "export-csv"));
+        s.access = false;
+        s.open = Some(Page { name: "note".into(), kind: "md".into(), body: String::new(), rev: 1 });
+        assert!(!usable(&s, "export-ods") && !usable(&s, "export-csv"));
     }
 
     #[test]
@@ -25029,6 +25079,32 @@ mod tests {
         let (blocked, note) = thread_comment_policy(thread_here(&s).unwrap(), false);
         assert!(blocked.is_none());
         assert!(note.contains("decides whether it shows"));
+
+        // Thread refresh updates comments_open/comet policy and clears stale comet fields when None.
+        let mut tx = Tx::default();
+        s.thread_req.request((), move |()| {
+            Ok((
+                "urb://~nec/old".into(),
+                Vec::new(),
+                Some((Some(false), Some(api::CometPolicy { mode: "held".into(), until: Some(future) }))),
+            ))
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while thread_here(&s).unwrap().comments_open != Some(false) && std::time::Instant::now() < deadline {
+            poll(&mut s, 0.0, &mut tx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let t = thread_here(&s).unwrap();
+        assert_eq!((t.comments_open, t.comet_mode.as_str(), t.comet_full_until), (Some(false), "held", Some(future)));
+
+        s.thread_req.request((), |()| Ok(("urb://~nec/old".into(), Vec::new(), Some((Some(true), None)))));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while thread_here(&s).unwrap().comments_open != Some(true) && std::time::Instant::now() < deadline {
+            poll(&mut s, 0.0, &mut tx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let t = thread_here(&s).unwrap();
+        assert_eq!((t.comments_open, t.comet_mode.as_str(), t.comet_full_until), (Some(true), "", None));
     }
 
     #[test]
@@ -25080,7 +25156,40 @@ mod tests {
         assert!(find_replace_one(&mut s, &mut tx));
         assert_eq!(s.edit.text, "Café foobar and foobar plus café 🎉");
 
+        // Replacing the final match empties next_matches, resets find_at, and places caret after replacement.
+        s.find.as_mut().unwrap().text = "plus".into();
+        s.find_replace = TextEdit::new("with");
+        s.find_at = 0;
+        assert!(find_replace_one(&mut s, &mut tx));
+        assert_eq!(s.edit.text, "Café foobar and foobar with café 🎉");
+        assert_eq!(s.find_at, 0);
+        let expected_after = s.edit.text.find("with").unwrap() + "with".len();
+        assert_eq!(s.edit.range(), (expected_after, expected_after));
+
+        // Boundary match creation: "aabb" replacing "ab" -> "" leaves "ab" and wraps to index 0.
+        s.edit = TextEdit::new("aabb");
+        s.find.as_mut().unwrap().text = "ab".into();
+        s.find_replace = TextEdit::new("");
+        s.find_at = 0;
+        assert!(find_replace_one(&mut s, &mut tx));
+        assert_eq!(s.edit.text, "ab");
+        assert_eq!(s.find_at, 0);
+        assert_eq!(s.edit.selected(), "ab");
+
+        // Ctrl+H: focuses Find when query is empty, preserves find_at and focuses Replace when query is set.
+        let ctrl_h = KeyEvent { key: Key::Command('h'), mods: rune::Mods { cmd: true, ctrl: true, ..rune::Mods::default() } };
+        s.find = None;
+        assert!(on_key(&mut s, &ctrl_h, &mut tx));
+        assert!(s.find.as_ref().unwrap().focused && !s.find_replace.focused);
+        s.edit = TextEdit::new("one one one");
+        s.find.as_mut().unwrap().text = "one".into();
+        s.find_at = 2;
+        assert!(on_key(&mut s, &ctrl_h, &mut tx));
+        assert_eq!(s.find_at, 2);
+        assert!(!s.find.as_ref().unwrap().focused && s.find_replace.focused);
+
         // Replace All with case/accent-folded UTF-8 query and empty replacement, undone in one step.
+        s.edit = TextEdit::new("Café foobar and foobar plus café 🎉");
         s.find.as_mut().unwrap().text = "cafe".into();
         s.find_replace = TextEdit::new("");
         let before_all = s.edit.text.clone();
@@ -25090,12 +25199,13 @@ mod tests {
         s.edit.undo();
         assert_eq!(s.edit.text, before_all, "Replace All must undo as one edit");
 
-        // Read mode: replace helpers are no-ops.
+        // Read mode: Ctrl+H and replace helpers are no-ops.
         s.editing = false;
+        assert!(!on_key(&mut s, &ctrl_h, &mut tx));
         assert!(!find_replace_one(&mut s, &mut tx));
         assert_eq!(find_replace_all(&mut s, &mut tx), 0);
 
-        // Rich-text mode with an open inline link: Find & Replace closes s.link_open first so the link stays valid.
+        // Rich-text mode with an open inline link: both Replace and Replace All close s.link_open cleanly.
         let rich_src = "foo [link](https://example.org/foo) bar\n";
         s.open = Some(Page { name: "welcome".into(), kind: "md".into(), body: rich_src.into(), rev: 3 });
         start_edit(&mut s);
@@ -25106,9 +25216,17 @@ mod tests {
         open_find(&mut s);
         s.find.as_mut().unwrap().text = "foo".into();
         s.find_replace = TextEdit::new("baz");
-        assert_eq!(find_replace_all(&mut s, &mut tx), 1);
+        assert!(find_replace_one(&mut s, &mut tx));
         assert!(s.link_open.is_none());
         assert_eq!(edited(&s), "baz [link](https://example.org/foo) bar\n");
+        s.edit.set_caret(5);
+        s.link_open = linkedit::open(&mut s.edit);
+        assert!(s.link_open.is_some());
+        s.find.as_mut().unwrap().text = "baz".into();
+        s.find_replace = TextEdit::new("qux");
+        assert_eq!(find_replace_all(&mut s, &mut tx), 1);
+        assert!(s.link_open.is_none());
+        assert_eq!(edited(&s), "qux [link](https://example.org/foo) bar\n");
     }
 }
 

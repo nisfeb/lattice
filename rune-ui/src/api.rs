@@ -7083,6 +7083,8 @@ mod tests {
                 answer("200 OK", "content-type: application/json\r\n", br#"{"revisions":[{"rev":1,"updated":"~2026.11.24..12.0.0"},{"rev":2,"updated":"~2026.11.25..12.0.0"}]}"#)
             } else if r.path.starts_with("/apps/lattice/skill-read-at?") {
                 answer("200 OK", "content-type: application/json\r\n", br##"{"body":"# Rev 1\n","description":"Old","updated":"~2026.11.24..12.0.0"}"##)
+            } else if r.path.contains("/page-move?") {
+                answer("200 OK", "content-type: application/json\r\n", br#"{"moved":1,"rev":2,"pruned":["old/sub","old"]}"#)
             } else {
                 answer("200 OK", "", b"ok")
             }
@@ -7122,6 +7124,11 @@ mod tests {
         assert!(paths.iter().any(|p| p.contains("skill-save?name=deploy&path=SKILL.md&expected_updated=") && p.contains("&sensitive=1")));
         assert!(paths.iter().any(|p| p.contains("skill-tag?name=deploy&tag=ops")));
         assert!(paths.iter().any(|p| p.contains("skill-untag?name=deploy&tag=ops")));
+
+        let moved_pruned = c
+            .rename_as("old/sub/a", &RealName { name: "dest/a".into(), dname: String::new(), dnames: String::new() })
+            .unwrap();
+        assert_eq!(moved_pruned, vec!["old/sub", "old"]);
     }
 
     #[test]
