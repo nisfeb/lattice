@@ -939,6 +939,7 @@ struct ShipSession {
     /// ship being typed there.
     groups: Vec<Group>,
     groups_req: Latest<Result<Vec<Group>, String>>,
+    groups_primed: bool,
     /// The sharing groups from before lattice kept its own, for the access screen.
     old_groups: Vec<api::OldGroup>,
     old_groups_req: Latest<Vec<api::OldGroup>>,
@@ -1189,6 +1190,8 @@ struct ShipSession {
     /// How many parts a merge of the other's text would find changed by both, said in the banner, and what it was worked out for.
     merge_said: Option<usize>,
     merge_key: (usize, usize, u64),
+    /// Side-by-side conflict picker for merging a page changed elsewhere.
+    merge_pick: Option<MergePick>,
     /// A page's history being dragged through, when it is.
     scrub: Option<Scrub>,
     /// The top bar's tabs while one is pressed or dragged.
@@ -1390,6 +1393,7 @@ impl Default for ShipSession {
             sens_req: Latest::default(),
             groups: Vec::new(),
             groups_req: Latest::default(),
+            groups_primed: false,
             old_groups: Vec::new(),
             old_groups_req: Latest::default(),
             old_groups_asked: false,
@@ -1547,6 +1551,7 @@ impl Default for ShipSession {
             here_beat: 0.0,
             merge_said: None,
             merge_key: (0, 0, 0),
+            merge_pick: None,
             scrub: None,
             tab_drag: rune_kit::shell::TabDragState::new(),
             marks: None,
@@ -7078,7 +7083,17 @@ fn reader(id: &str, body: &str, s: &App, k: &Kit, found: bool) -> El {
         && page_changes(s)
         && usable(s, "edit")
         && s.open.as_ref().is_some_and(|p| p.kind == "md");
-    let version = (body, &s.names, &s.other.1, s.pics_gen, found, find_key, s.outline_at, interactive_tasks, &style);
+    let remote_blocks = if id == "reader-main"
+        && !s.memory
+        && s.old.is_none()
+        && s.remote.is_none()
+        && s.open.as_ref().is_some_and(|p| p.kind == "md")
+    {
+        here_reader_blocks(s)
+    } else {
+        Vec::new()
+    };
+    let version = (body, &s.names, &s.other.1, s.pics_gen, found, find_key, s.outline_at, interactive_tasks, &remote_blocks, &style);
     rune::memo(id, version, || {
         let pics = s.pics.clone();
         let src = md::wikilinks(&md::html_shown(&md::shallow(body)), &|n| ghost(s, n));
@@ -7087,6 +7102,16 @@ fn reader(id: &str, body: &str, s: &App, k: &Kit, found: bool) -> El {
             Some(q) => find_in(&src, &q.text).into_iter().enumerate().map(|(i, m)| (m, if i == s.find_at { rune_kit::Highlight::current() } else { rune_kit::Highlight::new() })).collect(),
             None => Vec::new(),
         };
+        // blocks another window is currently editing are tinted in the reader too
+        if !remote_blocks.is_empty() {
+            let all = here::places("md", &src);
+            let tint = rune_kit::Highlight::new().bg(k.c.text_accent.alpha(0.16));
+            for block in &remote_blocks {
+                if let Some(r) = here::range_in(&all, &src, block) {
+                    marks.push((vec![r], tint.clone()));
+                }
+            }
+        }
         // the heading the outline last went to, marked so it can be brought into view and seen
         if let Some(h) = s.outline_at.and_then(|i| outline::outline(&src, "md").into_iter().nth(i)).filter(|h| !h.words.is_empty()) {
             marks.push((vec![h.words], rune_kit::Highlight::new().key("md-outline")));
@@ -9718,11 +9743,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.note = format!("bans: {e}"),
         }
     }
+    let show_acl_err = s.access || s.sharing || (s.pane == rpane::Tab::Page && s.inspector.is_open());
     if let Some(r) = s.base_req.take() {
         changed = true;
         match r {
             Ok(b) => s.base = b,
-            Err(e) => s.note = format!("access: {e}"),
+            Err(e) if show_acl_err => s.note = format!("access: {e}"),
+            Err(_) => {}
         }
     }
     if let Some(g) = s.old_groups_req.take() {
@@ -9733,7 +9760,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         match r {
             Ok(g) => s.groups = g,
-            Err(e) => s.note = format!("access list: {e}"),
+            Err(e) if show_acl_err => s.note = format!("access list: {e}"),
+            Err(_) => {}
         }
     }
     if let Some(r) = s.notes_req.take() {
@@ -9947,6 +9975,15 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 let keep = (s.offline.is_none() && news).then(|| nodes.clone());
                 s.since = since;
                 s.shares = nodes.iter().filter(|n| n.page && !n.share.is_empty()).map(|n| (n.path.clone(), n.share.clone())).collect();
+                if !s.groups_primed && !s.groups_req.is_pending() {
+                    s.groups_primed = true;
+                    if let Some(c) = s.conn.clone() {
+                        s.groups_req.request(c.clone(), |c| c.groups());
+                        if s.base.is_empty() && !s.base_req.is_pending() {
+                            s.base_req.request(c, |c| c.base());
+                        }
+                    }
+                }
                 s.dnames = nodes.iter().filter(|n| !n.dname.is_empty()).map(|n| (n.path.clone(), n.dname.clone())).collect();
                 s.dshares = nodes.iter().filter(|n| !n.page && !n.dshare.is_empty()).map(|n| (n.path.clone(), n.dshare.clone())).collect();
                 s.links = nodes.iter().filter_map(|n| n.link.clone().map(|l| (n.path.clone(), l))).collect();
@@ -10442,7 +10479,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
     }
     // after the tree is read, which is where a page is found to be behind
-    sync_merge(s);
+    changed |= sync_merge(s);
     changed |= take_pics(s);
     if changed {
         sync_map(s);
@@ -14174,6 +14211,11 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
             save_prefs(s);
         }).build(k).key("vim-on"))
         .child(text("Modal editing: Esc for normal, i to insert, :w to save.").font(k.ty.small).color(c.text_muted).wrap())
+        .child(Switch::new(s.prefs.auto_merge).label("Auto-merge non-conflicting changes").on_toggle(|s: &mut App| {
+            s.prefs.auto_merge = !s.prefs.auto_merge;
+            save_prefs(s);
+        }).build(k).key("auto-merge"))
+        .child(text("When a page changes elsewhere in other sections while you edit, merge it in automatically.").font(k.ty.small).color(c.text_muted).wrap())
         .child(el().w_full().padding(10.0).radius(k.radius.md).fill(c.layer_01).child(text("The quick brown fox jumps over the lazy dog \u{b7} 0123456789 \u{b7} il1 O0 \u{b7} |= ^- @ud").key("font-sample").font(sample).color(c.text_base).wrap()));
     // what is worn is chosen here as on the web client's settings page. Themes themselves are made there or in Talon
     let worn = &s.prefs.worn;
@@ -18021,17 +18063,34 @@ fn sync_idle(s: &mut App, was_away: bool, clock: f64, tx: &mut Tx) {
 }
 
 /// The page whose table this window is on: the open page, when it is
-/// one of this ship's that is shared and someone is at the window. Not
-/// a memory, not another ship's page, not a private page: nothing is
-/// said of where one is in those.
-// ponytail: only this ship's published pages, and not in the browser build. A page granted to named ships, or one another ship shared with this one, has no table here. The ship saying which pages have readers is the fix
+/// one of this ship's that is shared (published, or granted to named
+/// ships or groups) and someone is at the window. Not a memory, not
+/// another ship's page, not a private page with no grants.
 fn here_page(s: &App) -> Option<String> {
     if s.global.away || s.memory || s.anon || s.sample || s.remote.is_some() || s.conn.is_none() || cfg!(target_arch = "wasm32") {
         return None;
     }
     let p = s.open.as_ref()?;
     // a page made private again keeps its name here, as private
-    s.shares.get(&p.name).is_some_and(|mode| mode != "private").then(|| p.name.clone())
+    let published = s.shares.get(&p.name).is_some_and(|mode| mode != "private");
+    let granted = !api::readers(&s.groups, &p.name).is_empty()
+        || (!s.base.is_empty() && s.groups.iter().any(|g| g.name != "public" && !g.ships.is_empty() && g.level(&s.base, &p.name) != Level::None));
+    (published || granted).then(|| p.name.clone())
+}
+
+/// Active remote-editor block places to tint in the reader view when another window is editing this page.
+fn here_reader_blocks(s: &App) -> Vec<String> {
+    if s.editing || s.here_for.is_none() || s.here_for.as_deref() != s.open.as_ref().map(|p| p.name.as_str()) {
+        return Vec::new();
+    }
+    let mut blocks: Vec<String> = here_others(s)
+        .into_iter()
+        .filter(|r| r.editing() && !r.block.is_empty())
+        .map(|r| r.block)
+        .collect();
+    blocks.sort();
+    blocks.dedup();
+    blocks
 }
 
 /// Who this window is in a page's table.
@@ -18272,26 +18331,104 @@ fn stale_theirs(s: &App) -> Option<&Page> {
     s.cache.get(&p.name).filter(|c| c.rev > p.rev)
 }
 
+/// Side-by-side merge conflict picker state for a page changed elsewhere while editing.
+struct MergePick {
+    page: String,
+    theirs_rev: u64,
+    theirs_body: String,
+    merged: merge::Merged,
+    picks: Vec<merge::Pick>,
+}
+
 /// Keeps what the banner says of a merge true as the owner types on:
 /// how many parts both changed, worked out again when the text, the
 /// caret or their revision moves, and let go when the page is no longer
-/// behind.
+/// behind. When `auto_merge` is enabled and changes do not conflict,
+/// merges them automatically.
 // ponytail: worked out on the window's thread, a merge of the whole page each time the text changes while the banner shows. A thread of its own if a long page stutters there
-fn sync_merge(s: &mut App) {
+fn sync_merge(s: &mut App) -> bool {
     let Some(rev) = stale_theirs(s).filter(|_| s.editing && s.stale).map(|t| t.rev) else {
-        (s.merge_said, s.merge_key) = (None, (0, 0, 0));
-        return;
+        let had = s.merge_said.is_some() || s.merge_pick.is_some();
+        (s.merge_said, s.merge_key, s.merge_pick) = (None, (0, 0, 0), None);
+        return had;
     };
+    let mut changed = false;
+    if s.merge_pick.as_ref().is_some_and(|mp| s.open.as_ref().map(|p| p.name.as_str()) != Some(mp.page.as_str()) || mp.theirs_rev != rev) {
+        s.merge_pick = None;
+        s.note = "The page changed again; reopen Review & merge to resolve against the newest version.".to_owned();
+        changed = true;
+    }
     let key = (s.edit.text.len(), s.edit.focus, rev);
     if key == s.merge_key {
-        return;
+        return changed;
     }
     s.merge_key = key;
+    let prev = s.merge_said;
     s.merge_said = s.open.as_ref().zip(stale_theirs(s)).map(|(p, theirs)| merge::safe(&p.kind, &p.body, &edited(s), &theirs.body).map_or(NO_MERGE, |m| m.conflicts.len()));
+    changed |= s.merge_said != prev;
+    if s.prefs.auto_merge && s.merge_said == Some(0) && s.merge_pick.is_none() && s.link_open.is_none() && !saving(s) {
+        merge_theirs_with(s, true);
+        changed = true;
+    }
+    changed
 }
 
 /// What the banner's count is when the two texts cannot be merged safely (`merge::safe`).
 const NO_MERGE: usize = usize::MAX;
+
+/// Applies a resolved merged text into the active editor, preserving undo history in source mode
+/// and preserving caret column and Vim mode during background auto-merge.
+fn apply_merged_text(s: &mut App, merged_text: String, theirs_body: String, theirs_rev: u64, note: String, auto: bool) {
+    let Some(p) = s.open.clone() else { return };
+    if s.rich {
+        if let Some(o) = s.link_open.take() {
+            linkedit::close(&mut s.edit, o);
+        }
+    }
+    // the caret is a place in the editor's bytes; record column offset so mid-word auto-merge stays in place
+    let (was, caret) = (s.edit.text.clone(), s.edit.focus);
+    let safe_caret = (0..=caret.min(was.len())).rev().find(|i| was.is_char_boundary(*i)).unwrap_or(0);
+    let was_line_start = was[..safe_caret].rfind('\n').map_or(0, |i| i + 1);
+    let col_bytes = safe_caret - was_line_start;
+    if s.rich {
+        // the editor shows the merged text in the way it was showing the page
+        let rich = md::exact(&merged_text);
+        s.rich = rich.is_some();
+        s.edit = match rich {
+            Some(d) => rich_edit(d, &mut s.seps),
+            None => TextEdit::new(merged_text),
+        };
+    } else if s.edit.text != merged_text {
+        // replace in-place as a single undo group so Ctrl+Z reaches back across the merge
+        let old_len = s.edit.text.len();
+        s.edit.undo_group(|ed| {
+            ed.set_selection(0, old_len);
+            ed.insert(&merged_text);
+        });
+    }
+    sync_preview(s);
+    if !auto {
+        s.edit.focused = true;
+    }
+    // the caret stays on the line and column it was on, clamped to the matched line
+    let line_start = here::across(&was, safe_caret, &s.edit.text);
+    let line_len = s.edit.text[line_start..].split('\n').next().map_or(0, str::len);
+    let target = (line_start + col_bytes.min(line_len)).min(s.edit.text.len());
+    let at = (0..=target).rev().find(|i| s.edit.text.is_char_boundary(*i)).unwrap_or(line_start);
+    s.edit.set_selection(at, at);
+    // explicit merge resets vim cleanly; background auto-merge preserves active insert/normal mode
+    if !auto {
+        s.vim = vim::Vim::default();
+        if !s.rich && s.prefs.vim {
+            vim_settle(s);
+        }
+    }
+    s.open = Some(Page { body: theirs_body, rev: theirs_rev, ..p });
+    (s.stale, s.moved_changed, s.merge_pick, s.merge_said) = (false, false, None, None);
+    // the refusal that held autosave is answered: the text is counted from theirs now, and a save of it lands
+    s.auto_held = false;
+    s.note = note;
+}
 
 /// Merges what was saved somewhere else into what is typed here, by the
 /// page's blocks. What only they changed is taken, what only this
@@ -18299,36 +18436,187 @@ const NO_MERGE: usize = usize::MAX;
 /// said. Their text becomes what this window's edits are counted from,
 /// so the next save lands. Nothing is saved by this.
 fn merge_theirs(s: &mut App) {
+    merge_theirs_with(s, false);
+}
+
+fn merge_theirs_with(s: &mut App, auto: bool) {
     let (Some(p), Some(theirs)) = (s.open.clone(), stale_theirs(s).cloned()) else { return };
     let Some(m) = merge::safe(&p.kind, &p.body, &edited(s), &theirs.body) else { return };
-    // the caret is a place in the editor's bytes
-    let (was, caret) = (s.edit.text.clone(), s.edit.focus);
-    // the editor shows the merged text in the way it was showing the page
-    let rich = s.rich.then(|| md::exact(&m.text)).flatten();
-    s.rich = rich.is_some();
-    s.edit = match rich {
-        Some(d) => rich_edit(d, &mut s.seps),
-        None => TextEdit::new(m.text.clone()),
-    };
-    sync_preview(s);
-    s.edit.focused = true;
-    // the caret stays on the line it was on, where that line still is
-    // ponytail: the editor is given the merged text as a new text, so undo does not reach back across a merge. The merge made as one edit of the old text is the fix
-    let at = here::across(&was, caret, &s.edit.text);
-    s.edit.set_selection(at, at);
-    // vim starts again in the new text, with the caret where it was put
-    s.vim = vim::Vim::default();
-    if !s.rich && s.prefs.vim {
-        vim_settle(s);
-    }
-    s.open = Some(Page { body: theirs.body, rev: theirs.rev, ..p });
-    (s.stale, s.moved_changed) = (false, false);
-    // the refusal that held autosave is answered: the text is counted from theirs now, and a save of it lands
-    s.auto_held = false;
-    s.note = match m.conflicts.as_slice() {
+    let note = match m.conflicts.as_slice() {
+        [] if auto => "Auto-merged changes from elsewhere".to_owned(),
         [] => "Merged: their changes are in, and yours are kept".to_owned(),
         all => format!("Merged. Yours was kept {}, where both of you wrote. Theirs is in the page\u{2019}s history", all.iter().map(|c| here::place_said(&c.place)).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(" and ")),
     };
+    apply_merged_text(s, m.text, theirs.body, theirs.rev, note, auto);
+}
+
+/// Opens the side-by-side conflict picker for the current stale page.
+fn open_merge_pick(s: &mut App) {
+    let (Some(p), Some(theirs)) = (s.open.clone(), stale_theirs(s).cloned()) else { return };
+    let Some(merged) = merge::safe(&p.kind, &p.body, &edited(s), &theirs.body) else { return };
+    if merged.conflicts.is_empty() {
+        merge_theirs(s);
+        return;
+    }
+    let picks = vec![merge::Pick::Mine; merged.conflicts.len()];
+    s.merge_pick = Some(MergePick {
+        page: p.name,
+        theirs_rev: theirs.rev,
+        theirs_body: theirs.body,
+        merged,
+        picks,
+    });
+}
+
+/// Applies the choices made in the side-by-side conflict picker.
+fn apply_merge_pick(s: &mut App) {
+    let Some(mp) = s.merge_pick.take() else { return };
+    if !s.editing
+        || s.open.as_ref().map(|p| p.name.as_str()) != Some(mp.page.as_str())
+        || stale_theirs(s).map(|t| t.rev) != Some(mp.theirs_rev)
+    {
+        s.note = "The page changed before the merge could be applied; reopen Review & merge.".to_owned();
+        return;
+    }
+    let merged_text = mp.merged.resolve(&mp.picks);
+    let n = mp.picks.len();
+    let note = format!("Merged with your choices for {n} {}", if n == 1 { "conflict" } else { "conflicts" });
+    apply_merged_text(s, merged_text, mp.theirs_body, mp.theirs_rev, note, false);
+}
+
+/// Side-by-side dialog for resolving conflicting blocks when merging remote changes.
+fn merge_pick_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
+    let Some(mp) = &s.merge_pick else { return };
+    let c = &k.c;
+    let mut cards = col().w_full().gap(12.0);
+    for (i, cf) in mp.merged.conflicts.iter().enumerate() {
+        let cur = mp.picks.get(i).copied().unwrap_or(merge::Pick::Mine);
+        let choice_btn = |label: &'static str, pick: merge::Pick, key_tag: &'static str| {
+            let active = cur == pick;
+            Button::new(label)
+                .control_size(ControlSize::Small)
+                .variant(if active { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                .help(format!("Conflict {}: {label}{}", i + 1, if active { " (selected)" } else { "" }))
+                .on_press(move |s: &mut App| {
+                    if let Some(mp) = &mut s.merge_pick {
+                        if let Some(slot) = mp.picks.get_mut(i) {
+                            *slot = pick;
+                        }
+                    }
+                })
+                .build(k)
+                .key(format!("mp-{i}-{key_tag}"))
+        };
+        let mut header = row()
+            .w_full()
+            .center_y()
+            .gap(6.0)
+            .child(
+                text(format!("Conflict {} ({})", i + 1, here::place_said(&cf.place)))
+                    .font(k.ty.small_medium)
+                    .color(c.text_base)
+                    .grow(1.0)
+                    .min_w(0.0),
+            )
+            .child(choice_btn("Keep yours", merge::Pick::Mine, "mine"))
+            .child(choice_btn("Use theirs", merge::Pick::Theirs, "theirs"));
+        if !cf.mine.is_empty() && !cf.theirs.is_empty() {
+            header = header.child(choice_btn("Keep both", merge::Pick::Both, "both"));
+        }
+        let side = |title: &str, body: &str, active: bool| {
+            let shown = if body.is_empty() { "(deleted)".to_owned() } else { body.to_owned() };
+            let txt_col = if body.is_empty() { c.text_faint } else { c.text_base };
+            col()
+                .grow(1.0)
+                .min_w(0.0)
+                .gap(4.0)
+                .padding(8.0)
+                .radius(k.radius.sm)
+                .fill(c.layer_01)
+                .border(1.0, if active { c.text_accent } else { c.border_weak })
+                .child(text(title.to_owned()).font(k.ty.small_medium).color(c.text_muted))
+                .child(text(shown).font(k.ty.mono).color(txt_col).wrap())
+        };
+        let panes = row()
+            .w_full()
+            .gap(8.0)
+            .child(side("Yours", &cf.mine, matches!(cur, merge::Pick::Mine | merge::Pick::Both)))
+            .child(side("Theirs", &cf.theirs, matches!(cur, merge::Pick::Theirs | merge::Pick::Both)));
+        cards = cards.child(
+            col()
+                .key(format!("mp-card-{i}"))
+                .w_full()
+                .gap(6.0)
+                .padding(10.0)
+                .radius(k.radius.md)
+                .border(1.0, c.border_weak)
+                .child(header)
+                .child(panes),
+        );
+    }
+    let footer = row()
+        .w_full()
+        .gap(8.0)
+        .center_y()
+        .child(
+            Button::new("Keep all yours")
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::Ghost)
+                .on_press(|s: &mut App| {
+                    if let Some(mp) = &mut s.merge_pick {
+                        mp.picks.fill(merge::Pick::Mine);
+                    }
+                })
+                .build(k)
+                .key("mp-all-mine"),
+        )
+        .child(
+            Button::new("Use all theirs")
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::Ghost)
+                .on_press(|s: &mut App| {
+                    if let Some(mp) = &mut s.merge_pick {
+                        mp.picks.fill(merge::Pick::Theirs);
+                    }
+                })
+                .build(k)
+                .key("mp-all-theirs"),
+        )
+        .child(el().grow(1.0))
+        .child(
+            Button::new("Cancel")
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::Ghost)
+                .on_press(|s: &mut App| s.merge_pick = None)
+                .build(k)
+                .key("mp-cancel"),
+        )
+        .child(
+            Button::new("Apply merge")
+                .control_size(ControlSize::Small)
+                .variant(ButtonVariant::Contrast)
+                .on_press(apply_merge_pick)
+                .build(k)
+                .key("mp-apply"),
+        );
+    let body = col()
+        .w_full()
+        .gap(12.0)
+        .child(
+            text("Choose which version to keep for each conflicting section. Changes outside these sections are merged automatically.")
+                .font(k.ty.small)
+                .color(c.text_muted)
+                .wrap(),
+        )
+        .child(col().key("mp-list").w_full().max_h(420.0).child(cards).scroll(ScrollSpec { stick_bottom: false }))
+        .child(footer);
+    Dialog::new("merge-pick", "Resolve merge conflicts")
+        .open(true)
+        .width(740.0)
+        .fit()
+        .on_close(|s: &mut App| s.merge_pick = None)
+        .child(body)
+        .build(k, layer);
 }
 
 /// A page's history being dragged through: every revision, read once,
@@ -18513,8 +18801,11 @@ fn scrub_key(s: &mut App, act: impl FnOnce(&mut App)) -> bool {
 /// Moves the scrubber to a frame, by hand: playing stops.
 fn scrub_to(s: &mut App, at: usize) {
     if let Some(sc) = &mut s.scrub {
-        let last = sc.last();
-        (sc.at, sc.playing) = (at.min(last), false);
+        let target = at.min(sc.last());
+        if target == sc.at && !sc.playing {
+            return;
+        }
+        (sc.at, sc.playing) = (target, false);
     }
 }
 
@@ -18545,12 +18836,28 @@ fn scrub_bar(sc: &Scrub, k: &Kit) -> El {
     };
     let n = film.frames.len();
     let f = &film.frames[sc.at.min(n - 1)];
-    // a mark for each revision, those gone by in the accent, and the one showing larger
-    let mut marks = row().w_full().h_full().justify_between().center_y();
-    for i in 0..n {
-        let (size, fill) = if i == sc.at { (12.0, c.text_accent) } else if i < sc.at { (4.0, c.text_accent) } else { (4.0, c.text_faint) };
-        marks = marks.child(el().w(12.0).h(12.0).center().child(el().w(size).h(size).radius(size / 2.0).fill(fill).transition(rune::Transition::default())));
-    }
+    // individual marks for short histories, or a continuous bar + sliding thumb for long ones so 150 revisions stay smooth
+    let track_inner = if n <= 40 {
+        let mut marks = row().w_full().h_full().justify_between().center_y();
+        for i in 0..n {
+            let (size, fill) = if i == sc.at { (12.0, c.text_accent) } else if i < sc.at { (4.0, c.text_accent) } else { (4.0, c.text_faint) };
+            marks = marks.child(el().w(12.0).h(12.0).center().child(el().w(size).h(size).radius(size / 2.0).fill(fill).transition(rune::Transition::default())));
+        }
+        el()
+            .w_full()
+            .h_full()
+            .child(el().pin(Some(13.0), Some(6.0), None, Some(6.0)).h(2.0).radius(1.0).fill(c.border_muted))
+            .child(marks)
+    } else {
+        let frac = if n > 1 { sc.at.min(n - 1) as f32 / (n - 1) as f32 } else { 1.0 };
+        row()
+            .w_full()
+            .h_full()
+            .center_y()
+            .child(el().grow(frac.max(0.0001)).h(3.0).radius(1.5).fill(c.text_accent))
+            .child(el().w(12.0).h(12.0).radius(6.0).fill(c.text_accent))
+            .child(el().grow((1.0 - frac).max(0.0001)).h(2.0).radius(1.0).fill(c.border_muted))
+    };
     let track = el()
         .key("scrub-track")
         .role("slider")
@@ -18558,8 +18865,7 @@ fn scrub_bar(sc: &Scrub, k: &Kit) -> El {
         .grow(1.0)
         .min_w(80.0)
         .h(28.0)
-        .child(el().pin(Some(13.0), Some(6.0), None, Some(6.0)).h(2.0).radius(1.0).fill(c.border_muted))
-        .child(marks)
+        .child(track_inner)
         .on_drag(move |s: &mut App, d, _| {
             // the marks stand from six points in to six points short of the end
             scrub_to(s, scrub::frame_at(d.x - 6.0, d.w - 12.0, n));
@@ -18590,17 +18896,21 @@ fn scrub_page(s: &App, sc: &Scrub, k: &Kit) -> El {
     let Some(f) = sc.film.as_ref().and_then(|film| film.frames.get(sc.at)) else {
         return col().w_full().h_full();
     };
-    let pics = s.pics.clone();
-    let mark = rune_kit::Highlight::new().bg(k.c.text_accent.alpha(0.16));
-    let marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = f.changed.iter().map(|r| (vec![r.clone()], mark.clone())).collect();
-    // a revision nested too deep to draw is drawn shallow, without the marks and keys that were measured in the text as it stood
-    let page = match md::shallow(&f.src) {
-        std::borrow::Cow::Borrowed(_) => Markdown::new(f.src.clone()).block_keys(f.keys.clone()).highlights(marks),
-        std::borrow::Cow::Owned(shallow) => Markdown::new(shallow),
-    }
-    .images(move |src| pics.get(src).cloned())
-    .style(page_style(k))
-    .build(k);
+    let style = page_style(k);
+    let ship_url = s.conn.as_ref().map_or("", |c| c.url.as_str());
+    let page = rune::memo("scrub-md", (ship_url, sc.name.as_str(), sc.at, f.rev, s.pics_gen, &style), || {
+        let pics = s.pics.clone();
+        let mark = rune_kit::Highlight::new().bg(k.c.text_accent.alpha(0.16));
+        let marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = f.changed.iter().map(|r| (vec![r.clone()], mark.clone())).collect();
+        // a revision nested too deep to draw is drawn shallow, without the marks and keys that were measured in the text as it stood
+        match md::shallow(&f.src) {
+            std::borrow::Cow::Borrowed(_) => Markdown::new(f.src.clone()).block_keys(f.keys.clone()).highlights(marks),
+            std::borrow::Cow::Owned(shallow) => Markdown::new(shallow),
+        }
+        .images(move |src| pics.get(src).cloned())
+        .style(style.clone())
+        .build(k)
+    });
     col().key("scrub-page").w_full().h_full().min_h(0.0).items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(12.0).child(page)).scroll(ScrollSpec { stick_bottom: false })
 }
 
@@ -18673,15 +18983,42 @@ fn banner(key: &str, say: String, verb: &str, act: fn(&mut App), k: &Kit) -> El 
         .child(Button::new(verb).control_size(ControlSize::Small).on_press(act).build(k).key(format!("{key}-act")))
 }
 
+/// Which top banner stands over the page body right now, enforcing banner precedence
+/// (old revision > stale conflict > presence soft-lock warning > find bar > outside content).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TopBanner {
+    Old,
+    Stale,
+    HereWarn,
+    Find,
+    Outside,
+}
+
+fn top_banner(s: &App) -> Option<TopBanner> {
+    if s.old.is_some() && !s.editing {
+        Some(TopBanner::Old)
+    } else if s.editing && s.stale {
+        Some(TopBanner::Stale)
+    } else if here_collides(s).is_some() {
+        Some(TopBanner::HereWarn)
+    } else if s.find.is_some() && !s.access && !s.shared_open && !s.inbox && s.folder.is_none() && find_where(s) != FindIn::Nothing {
+        Some(TopBanner::Find)
+    } else if held_back(s) > 0 && !s.access && !s.shared_open && !s.inbox && s.folder.is_none() {
+        Some(TopBanner::Outside)
+    } else {
+        None
+    }
+}
+
 fn body(s: &App, k: &Kit) -> El {
     // a history being dragged through stands in the page's place
     if let Some(sc) = s.scrub.as_ref().filter(|sc| !s.editing && s.open.as_ref().is_some_and(|p| p.name == sc.name)) {
         return col().w_full().h_full().min_h(0.0).child(scrub_bar(sc, k)).child(col().w_full().grow(1.0).min_h(0.0).child(scrub_page(s, sc, k)));
     }
     let inner = page_body(s, k);
-    let top = if let Some(o) = s.old.as_ref().filter(|_| !s.editing) {
-        // an old revision can be read, restored, or left
-        Some(
+    let top = match top_banner(s) {
+        Some(TopBanner::Old) => s.old.as_ref().map(|o| {
+            // an old revision can be read, restored, or left
             row()
                 .key("old-banner")
                 .w_full()
@@ -18692,58 +19029,84 @@ fn body(s: &App, k: &Kit) -> El {
                 .fill(k.c.layer_01)
                 .child(text(format!("Reading revision {}, not the {} as it is now", o.rev, if s.memory { "memory" } else { "page" })).font(k.ty.small).color(k.c.text_base).grow(1.0))
                 .child(Button::new("Restore this").control_size(ControlSize::Small).variant(ButtonVariant::Contrast).on_press(restore).build(k).key("restore"))
-                .child(Button::new("Back to now").control_size(ControlSize::Small).on_press(|s: &mut App| s.old = None).build(k).key("leave-old")),
-        )
-    } else if s.editing && s.stale {
-        // their text can be merged into what is typed here, by the page's blocks, or written over
-        let say = match s.merge_said {
-            Some(NO_MERGE) => "This page was changed somewhere else while you were editing. Parts were moved or stand twice, so the two cannot be merged safely. Copy what you need, or save over theirs: their text stays in the history.".to_owned(),
-            Some(0) => "This page was changed somewhere else while you were editing. Their changes are in other parts of it than yours.".to_owned(),
-            Some(1) => "This page was changed somewhere else while you were editing. One part was changed both here and there.".to_owned(),
-            Some(n) => format!("This page was changed somewhere else while you were editing. {n} parts were changed both here and there."),
-            None => "This page was changed somewhere else while you were editing. Saving now would be refused.".to_owned(),
-        };
-        let over = Button::new("Save over theirs").control_size(ControlSize::Small).help("Save what is typed here as it is. Their changes go, and stay in the history").on_press(|s: &mut App| {
-            // the owner's choice: take the newest rev as the base, so the save lands
-            if let Some(newest) = s.open.as_ref().and_then(|p| s.cache.get(&p.name)).map(|c| c.rev) {
-                if let Some(p) = &mut s.open {
-                    p.rev = newest;
+                .child(Button::new("Back to now").control_size(ControlSize::Small).on_press(|s: &mut App| s.old = None).build(k).key("leave-old"))
+        }),
+        Some(TopBanner::Stale) => {
+            // their text can be merged into what is typed here, by the page's blocks, or written over
+            let say = match s.merge_said {
+                Some(NO_MERGE) => "This page was changed somewhere else while you were editing. Parts were moved or stand twice, so the two cannot be merged safely. Copy what you need, or save over theirs: their text stays in the history.".to_owned(),
+                Some(0) => "This page was changed somewhere else while you were editing. Their changes are in other parts of it than yours.".to_owned(),
+                Some(1) => "This page was changed somewhere else while you were editing. One part was changed both here and there.".to_owned(),
+                Some(n) => format!("This page was changed somewhere else while you were editing. {n} parts were changed both here and there."),
+                None => "This page was changed somewhere else while you were editing. Saving now would be refused.".to_owned(),
+            };
+            let over = Button::new("Save over theirs").control_size(ControlSize::Small).help("Save what is typed here as it is. Their changes go, and stay in the history").on_press(|s: &mut App| {
+                // the owner's choice: take the newest rev as the base, so the save lands
+                if let Some(newest) = s.open.as_ref().and_then(|p| s.cache.get(&p.name)).map(|c| c.rev) {
+                    if let Some(p) = &mut s.open {
+                        p.rev = newest;
+                    }
+                    (s.stale, s.moved_changed) = (false, false);
+                    save(s);
                 }
-                (s.stale, s.moved_changed) = (false, false);
-                save(s);
-            }
-        }).build(k).key("stale-act");
-        let merge = s.merge_said.filter(|both| *both != NO_MERGE).map(|both| {
-            Button::new(if both == 0 { "Merge theirs in" } else { "Merge, keeping mine there" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).help("Take what they changed into what is typed here. Nothing is saved until you save").on_press(merge_theirs).build(k).key("stale-merge")
-        });
-        Some(row().key("stale").w_full().px(16.0).py(8.0).gap(8.0).center_y().fill(k.c.layer_01).child(text(say).font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0)).children(merge).child(over))
-    } else if let Some(who) = here_collides(s) {
-        // a warning and not a lock: the typing is not stopped
-        Some(row().key("here-warn").w_full().px(16.0).py(8.0).gap(12.0).center_y().fill(k.c.layer_01).child(text(format!("{who} is editing this section too. What you both type here may not both be kept.")).font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0)))
-    } else if let Some(q) = s.find.as_ref().filter(|_| !s.access && !s.shared_open && !s.inbox && s.folder.is_none() && find_where(s) != FindIn::Nothing) {
-        Some(find_bar(q, s, k))
-    } else if held_back(s) > 0 && !s.access && !s.shared_open && !s.inbox && s.folder.is_none() {
-        let n = held_back(s);
-        // an HTML page drawn as a web page names sheets and fonts as well as pictures
-        #[cfg(not(target_arch = "wasm32"))]
-        let web = web_page(s).is_some();
-        #[cfg(target_arch = "wasm32")]
-        let web = false;
-        Some(banner(
-            "outside",
-            if tiles_held(s) { "This map is another ship's. Its background is not loaded: loading it asks the map's maker for the places this page chose, through your ship.".to_owned() } else { format!("{} from another site {} not loaded. Loading {} tells that site your address.", match (n, web) { (1, false) => "An image".to_owned(), (1, true) => "A file".to_owned(), (_, false) => format!("{n} images"), (_, true) => format!("{n} files") }, if n == 1 { "is" } else { "are" }, if n == 1 { "it" } else { "them" }) },
-            "Load outside content for this page",
-            |s| {
-                if let Some(name) = s.open.as_ref().map(|p| p.name.clone()) {
-                    s.prefs.allow_outside(&name);
-                    save_prefs(s);
-                    sync_pics(s);
-                }
-            },
-            k,
-        ))
-    } else {
-        None
+            }).build(k).key("stale-act");
+            let merge_btns: Vec<El> = match s.merge_said {
+                Some(0) => vec![
+                    Button::new("Merge theirs in")
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Contrast)
+                        .help("Take what they changed into what is typed here. Nothing is saved until you save")
+                        .on_press(merge_theirs)
+                        .build(k)
+                        .key("stale-merge"),
+                ],
+                Some(both) if both != NO_MERGE => vec![
+                    Button::new("Review & merge")
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Contrast)
+                        .help("Compare conflicting sections side by side and choose which version to keep")
+                        .on_press(open_merge_pick)
+                        .build(k)
+                        .key("stale-merge"),
+                    Button::new("Keep mine & merge")
+                        .control_size(ControlSize::Small)
+                        .variant(ButtonVariant::Ghost)
+                        .help("Merge non-conflicting parts and keep your text where both changed")
+                        .on_press(merge_theirs)
+                        .build(k)
+                        .key("stale-merge-mine"),
+                ],
+                _ => Vec::new(),
+            };
+            Some(row().key("stale").w_full().px(16.0).py(8.0).gap(8.0).center_y().fill(k.c.layer_01).child(text(say).font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0)).children(merge_btns).child(over))
+        }
+        Some(TopBanner::HereWarn) => here_collides(s).map(|who| {
+            // a warning and not a lock: the typing is not stopped
+            row().key("here-warn").w_full().px(16.0).py(8.0).gap(12.0).center_y().fill(k.c.layer_01).child(text(format!("{who} is editing this section too. What you both type here may not both be kept.")).font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0))
+        }),
+        Some(TopBanner::Find) => s.find.as_ref().map(|q| find_bar(q, s, k)),
+        Some(TopBanner::Outside) => {
+            let n = held_back(s);
+            // an HTML page drawn as a web page names sheets and fonts as well as pictures
+            #[cfg(not(target_arch = "wasm32"))]
+            let web = web_page(s).is_some();
+            #[cfg(target_arch = "wasm32")]
+            let web = false;
+            Some(banner(
+                "outside",
+                if tiles_held(s) { "This map is another ship's. Its background is not loaded: loading it asks the map's maker for the places this page chose, through your ship.".to_owned() } else { format!("{} from another site {} not loaded. Loading {} tells that site your address.", match (n, web) { (1, false) => "An image".to_owned(), (1, true) => "A file".to_owned(), (_, false) => format!("{n} images"), (_, true) => format!("{n} files") }, if n == 1 { "is" } else { "are" }, if n == 1 { "it" } else { "them" }) },
+                "Load outside content for this page",
+                |s| {
+                    if let Some(name) = s.open.as_ref().map(|p| p.name.clone()) {
+                        s.prefs.allow_outside(&name);
+                        save_prefs(s);
+                        sync_pics(s);
+                    }
+                },
+                k,
+            ))
+        }
+        None => None,
     };
     match top {
         Some(t) => col().w_full().h_full().min_h(0.0).child(t).child(col().w_full().grow(1.0).min_h(0.0).child(inner)),
@@ -21002,8 +21365,21 @@ fn page_body(s: &App, k: &Kit) -> El {
         let shown = source_shown(&p.body);
         let style = page_style(k);
         let find_key = s.find.as_ref().filter(|_| !s.memory).map(|q| (q.text.as_str(), s.find_at));
-        rune::memo("reader-source", (&p.kind, shown, s.memory, find_key, &style), || {
+        let remote_blocks = if !s.memory && s.old.is_none() && s.remote.is_none() {
+            here_reader_blocks(s)
+        } else {
+            Vec::new()
+        };
+        rune::memo("reader-source", (&p.kind, shown, s.memory, find_key, &remote_blocks, &style), || {
             let mut spans = code_spans(&p.kind, shown, k);
+            if !remote_blocks.is_empty() {
+                let all = here::places(&p.kind, shown);
+                for block in &remote_blocks {
+                    if let Some(r) = here::range_in(&all, shown, block) {
+                        spans.push(Span::new(r.start, r.end).bg(k.c.text_accent.alpha(0.2), 1.0));
+                    }
+                }
+            }
             if s.find.is_some() && !s.memory {
                 spans.extend(source_matches(s).into_iter().enumerate().map(|(i, r)| Span::new(r.start, r.end).bg(k.c.text_accent.alpha(if i == s.find_at { 0.55 } else { 0.22 }), 1.0)));
             }
@@ -21490,6 +21866,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     prompt_view(s, &k, &mut layer);
     ships_view(s, &k, &mut layer);
     share_view(s, &k, &mut layer);
+    merge_pick_view(s, &k, &mut layer);
     let nav = |key: &str, icon: &'static rune::Icon, name: &str, by: isize, on: bool| IconButton::new(icon).variant(IconButtonVariant::GhostMuted).help(name).disabled(!on).on_press(move |s: &mut App| step(s, by)).build(&k).key(key.to_owned());
     let name = text(title.to_owned()).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate();
     // the name is the way to move or rename the page, as on the web
@@ -21727,8 +22104,8 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if s.conn.is_none() && !s.sample {
         return false;
     }
-    // a question is answered before anything else is done: it acts on what is in front when it is answered, so nothing may be put in front of that meanwhile
-    if s.prompt.is_some() {
+    // a question or merge conflict picker is answered before anything else is done
+    if s.prompt.is_some() || s.merge_pick.is_some() {
         return false;
     }
     // Ctrl+Shift and a figure goes to that ship of those signed in, in the order they were added
@@ -21774,10 +22151,23 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     // a history being dragged through: the arrows step it, and Escape leaves it
-    // Only those three keys, with nothing held, and not while something is open over the page: every other key goes on to what it does
-    let over = s.palette.is_some() || s.jump.is_some() || s.prompt.is_some() || s.find.is_some() || s.settings.is_some() || s.grub.is_some() || s.skills.is_some() || s.ships_open || s.tree_menu.is_some() || s.link_menu.is_some();
+    // Only those three keys, with nothing held, and not while something is open over the page or a text input (such as the tree filter) has focus
+    let over = s.palette.is_some() || s.jump.is_some() || s.prompt.is_some() || s.find.is_some() || s.settings.is_some() || s.grub.is_some() || s.skills.is_some() || s.ships_open || s.tree_menu.is_some() || s.link_menu.is_some() || s.merge_pick.is_some() || s.sharing || s.tmpl.is_some();
+    let input_focused = s.query.focused
+        || s.squery.focused
+        || s.marks_q.focused
+        || s.comment.focused
+        || s.grant_to.focused
+        || s.urb.focused
+        || s.ban_who.focused
+        || s.accent_hex.focused
+        || s.exp_input.focused
+        || s.find_replace.focused
+        || s.tmpl.as_ref().is_some_and(|(_, t)| t.focused)
+        || s.group_edit.as_ref().is_some_and(|(_, t)| t.focused)
+        || s.theme_draft.as_ref().is_some_and(|(_, _, f)| f.iter().any(|t| t.focused));
     let plain = !(ev.mods.cmd || ev.mods.ctrl || ev.mods.alt || ev.mods.shift);
-    if let Some(at) = s.scrub.as_ref().filter(|sc| sc.film.is_some() && !over && plain).map(|sc| sc.at) {
+    if let Some(at) = s.scrub.as_ref().filter(|sc| sc.film.is_some() && !over && !input_focused && plain).map(|sc| sc.at) {
         match ev.key {
             Key::Left => return scrub_key(s, |s| scrub_to(s, at.saturating_sub(1))),
             Key::Right => return scrub_key(s, |s| scrub_to(s, at + 1)),
@@ -25315,6 +25705,210 @@ mod tests {
         assert_eq!(find_replace_all(&mut s, &mut tx), 1);
         assert!(s.link_open.is_none());
         assert_eq!(edited(&s), "qux [link](https://example.org/foo) bar\n");
+    }
+
+    #[test]
+    fn wave4_scrubber_keys_yield_to_focused_filter_field() {
+        let mut s = init();
+        browse_sample(&mut s);
+        open_page(&mut s, "welcome");
+        let mut film = scrub::Film::default();
+        film.push(1, "t1".into(), "First\n".into());
+        film.push(2, "t2".into(), "Second\n".into());
+        film.push(3, "t3".into(), "Third\n".into());
+        s.scrub = Some(Scrub {
+            name: "welcome".into(),
+            film: Some(film),
+            at: 2,
+            playing: false,
+            next: 0.0,
+            load: std::sync::Arc::default(),
+        });
+        let mut tx = Tx::default();
+        let left = KeyEvent { key: Key::Left, mods: rune::Mods::default() };
+        let right = KeyEvent { key: Key::Right, mods: rune::Mods::default() };
+        let esc = KeyEvent { key: Key::Escape, mods: rune::Mods::default() };
+
+        // While the tree filter field has focus, Left/Right/Escape must not be stolen by the scrubber.
+        s.query.focused = true;
+        assert!(!on_key(&mut s, &left, &mut tx));
+        assert_eq!(s.scrub.as_ref().unwrap().at, 2);
+        assert!(!on_key(&mut s, &right, &mut tx));
+        assert!(!on_key(&mut s, &esc, &mut tx));
+        assert!(s.scrub.is_some());
+
+        // Once focus leaves the filter field, arrows step and Escape closes the scrubber.
+        s.query.focused = false;
+        assert!(on_key(&mut s, &left, &mut tx));
+        assert_eq!(s.scrub.as_ref().unwrap().at, 1);
+        assert!(on_key(&mut s, &right, &mut tx));
+        assert_eq!(s.scrub.as_ref().unwrap().at, 2);
+        assert!(on_key(&mut s, &esc, &mut tx));
+        assert!(s.scrub.is_none());
+    }
+
+    #[test]
+    fn wave4_presence_named_grants_reader_blocks_and_soft_lock_precedence() {
+        let mut s = init();
+        s.conn = Some(Conn { url: "http://127.0.0.1:9".into(), cookie: "urbauth-~zod=0v1".into() });
+        let page_body = "# Plan\n\nFirst block.\n\n## Site\n\nSecond block.\n";
+        let page = Page { name: "notes/plan".into(), kind: "md".into(), body: page_body.into(), rev: 1 };
+        s.open = Some(page.clone());
+        s.cache.insert("notes/plan".into(), page);
+        s.base = "/x".into();
+
+        // Private page with no grants has no presence.
+        assert_eq!(here_page(&s), None);
+
+        // Private page granted only to an empty group (0 members) must not activate presence.
+        s.groups = vec![Group {
+            name: "empty".into(),
+            ships: vec![],
+            peek: vec!["/x/page/notes/plan/code".into()],
+            make: vec![],
+            ..Group::default()
+        }];
+        assert_eq!(here_page(&s), None);
+
+        // Private page granted to a named ship (via personal group) activates presence.
+        s.groups = vec![Group {
+            name: "team".into(),
+            ships: vec!["~nec".into()],
+            peek: vec!["/x/page/notes/plan/code".into()],
+            make: vec![],
+            ..Group::default()
+        }];
+        assert_eq!(here_page(&s), Some("notes/plan".into()));
+
+        // Reader mode surfaces remote editor block places only for the matching page, ignoring pure readers.
+        let target_block = here::place("md", page_body, page_body.find("Second block.").unwrap());
+        s.here_for = Some("notes/other".into());
+        s.here_shown = Some(here::Table {
+            page: "notes/other".into(),
+            seq: 1,
+            here: vec![
+                here::Row { who: "~nec/win1".into(), ship: "~nec".into(), block: target_block.clone(), mode: "edit".into() },
+            ],
+        });
+        assert!(here_reader_blocks(&s).is_empty(), "mismatched here_for must not tint the newly opened page");
+        s.here_for = Some("notes/plan".into());
+        s.here_shown = Some(here::Table {
+            page: "notes/plan".into(),
+            seq: 1,
+            here: vec![
+                here::Row { who: here_me(&s), ship: "~zod".into(), block: String::new(), mode: "read".into() },
+                here::Row { who: "~nec/win1".into(), ship: "~nec".into(), block: target_block.clone(), mode: "edit".into() },
+                here::Row { who: "~zod/other".into(), ship: "~zod".into(), block: String::new(), mode: "read".into() },
+            ],
+        });
+        assert_eq!(here_reader_blocks(&s), vec![target_block.clone()]);
+
+        // Entering editor in the same block triggers soft-lock warning (here_collides) and HereWarn banner.
+        start_edit(&mut s);
+        if s.rich {
+            flip_mode(&mut s);
+        }
+        let pos = s.edit.text.find("Second block.").unwrap();
+        s.edit.set_caret(pos);
+        here_work(&mut s);
+        assert_eq!(here_collides(&s), Some("~nec".into()));
+        assert!(here_reader_blocks(&s).is_empty(), "reader blocks clear while editing");
+        assert_eq!(top_banner(&s), Some(TopBanner::HereWarn), "soft-lock banner shows when not stale");
+
+        // Stale banner takes precedence over soft-lock warning when both hold.
+        s.cache.insert("notes/plan".into(), Page { name: "notes/plan".into(), kind: "md".into(), body: page_body.replace("First block.", "First remote."), rev: 2 });
+        s.stale = true;
+        sync_merge(&mut s);
+        assert_eq!(top_banner(&s), Some(TopBanner::Stale), "stale banner must take precedence over here-warn");
+
+        // Rendering body and merge picker views exercises both paths cleanly.
+        let k = Kit::neutral(true);
+        let _ = body(&s, &k);
+        let mut layer = Vec::new();
+        merge_pick_view(&s, &k, &mut layer);
+    }
+
+    #[test]
+    fn wave4_merge_picker_auto_merge_and_undo_preservation() {
+        let base = "# Plan\n\nAlpha.\n\n## Site\n\nBeta.\n\n## Cost\n\nGamma.\n";
+        let mut s = init();
+        browse_sample(&mut s);
+        let page = Page { name: "plan".into(), kind: "md".into(), body: base.into(), rev: 1 };
+        s.open = Some(page.clone());
+        s.cache.insert("plan".into(), page);
+        start_edit(&mut s);
+        if s.rich {
+            flip_mode(&mut s);
+        }
+
+        // Case 1: Auto-merge non-conflicting remote changes in source mode, preserving caret column, Vim insert mode, and single-step undo.
+        s.prefs.auto_merge = true;
+        s.prefs.vim = true;
+        s.vim.mode = vim::Mode::Insert;
+        let mine_only = base.replace("Alpha.", "Alpha mine.");
+        let old_len = s.edit.text.len();
+        s.edit.undo_group(|ed| {
+            ed.set_selection(0, old_len);
+            ed.insert(&mine_only);
+        });
+        let caret_mid = s.edit.text.find("mine.").unwrap() + 2;
+        s.edit.set_selection(caret_mid, caret_mid);
+        let theirs_clean = base.replace("Gamma.", "Gamma theirs.");
+        s.cache.insert("plan".into(), Page { name: "plan".into(), kind: "md".into(), body: theirs_clean.clone(), rev: 2 });
+        s.stale = true;
+        assert!(sync_merge(&mut s));
+        assert!(!s.stale, "non-conflicting change auto-merged");
+        assert_eq!(s.open.as_ref().unwrap().rev, 2);
+        assert!(s.edit.text.contains("Alpha mine.") && s.edit.text.contains("Gamma theirs."));
+        assert_eq!(s.edit.focus, caret_mid, "auto-merge must preserve caret column offset");
+        assert_eq!(s.vim.mode, vim::Mode::Insert, "auto-merge must not drop Vim out of Insert mode");
+        assert_eq!(s.note, "Auto-merged changes from elsewhere");
+        // Single Ctrl+Z reaches back across the merge to our pre-merge text.
+        s.edit.undo();
+        assert_eq!(s.edit.text, mine_only, "undo must revert the merge in one step");
+        s.prefs.vim = false;
+
+        // Case 2: Conflicting remote changes do NOT auto-merge; conflict picker lets user pick per block and preserves undo.
+        let base2 = "# Plan\n\nAlpha.\n\n## Site\n\nBeta.\n\n## Cost\n\nGamma.\n";
+        s.open = Some(Page { name: "plan".into(), kind: "md".into(), body: base2.into(), rev: 2 });
+        s.edit = TextEdit::new(base2);
+        let mine_conf = base2.replace("Alpha.", "Alpha mine.").replace("Beta.", "Beta mine.");
+        let n = s.edit.text.len();
+        s.edit.undo_group(|ed| {
+            ed.set_selection(0, n);
+            ed.insert(&mine_conf);
+        });
+        let theirs_conf = base2
+            .replace("Alpha.", "Alpha theirs.")
+            .replace("Beta.", "Beta theirs.")
+            .replace("Gamma.", "Gamma theirs.");
+        s.cache.insert("plan".into(), Page { name: "plan".into(), kind: "md".into(), body: theirs_conf, rev: 3 });
+        s.stale = true;
+        sync_merge(&mut s);
+        assert!(s.stale, "conflicting changes must never auto-merge");
+        assert_eq!(s.merge_said, Some(2));
+
+        open_merge_pick(&mut s);
+        let k = Kit::neutral(true);
+        let mut layer = Vec::new();
+        merge_pick_view(&s, &k, &mut layer);
+        assert!(!layer.is_empty(), "conflict picker dialog must mount on layer");
+        {
+            let mp = s.merge_pick.as_mut().expect("picker open");
+            assert_eq!(mp.merged.conflicts.len(), 2);
+            mp.picks[0] = merge::Pick::Theirs;
+            mp.picks[1] = merge::Pick::Both;
+        }
+        apply_merge_pick(&mut s);
+        assert!(s.merge_pick.is_none());
+        assert!(!s.stale);
+        assert_eq!(s.open.as_ref().unwrap().rev, 3);
+        assert!(s.edit.text.contains("Alpha theirs.") && !s.edit.text.contains("Alpha mine."));
+        assert!(s.edit.text.contains("Beta mine.\n\nBeta theirs."));
+        assert!(s.edit.text.contains("Gamma theirs."));
+        // Undo restores pre-merge text in one step.
+        s.edit.undo();
+        assert_eq!(s.edit.text, mine_conf);
     }
 }
 

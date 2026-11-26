@@ -256,7 +256,7 @@ pub fn sheets_md(sheets: &[crate::sheet::Sheet]) -> String {
 pub fn source_md(lang: &str, body: &str) -> String {
     let mut out = String::new();
     let mut part: Vec<&str> = Vec::new();
-    let mut close = |part: &mut Vec<&str>, out: &mut String| {
+    let close = |part: &mut Vec<&str>, out: &mut String| {
         if part.is_empty() {
             return;
         }
@@ -310,11 +310,306 @@ pub fn map_md(features: &[crate::map::Feature]) -> String {
     out
 }
 
-/// A document (flat ODT) as Markdown: its headings, paragraphs and list
-/// items, in order, as plain text. What a document has beyond that
-/// (type, tables' shape, pictures) is not shown.
-// ponytail: a document read as plain text by a scan for its tags. Type, tables and pictures are lost. A real XML read if documents are scrubbed often
+/// Escapes inline Markdown syntax characters in a plain text run without trimming surrounding spaces.
+fn plain_inline(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    for ch in text.chars() {
+        if matches!(ch, '\\' | '*' | '_' | '`' | '[' | ']' | '<' | '|' | '#' | '~') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Escapes leading block-level Markdown markers (`1.`, `-`, `+`, `>`, `=`) on a plain paragraph line.
+fn escape_line_start(s: &str) -> String {
+    let t = s.trim();
+    let figures = t.bytes().take_while(u8::is_ascii_digit).count();
+    if figures > 0 && t[figures..].starts_with(['.', ')']) {
+        return format!("{}\\{}", &t[..figures], &t[figures..]);
+    }
+    if t.starts_with(['-', '+', '>', '=']) { format!("\\{t}") } else { t.to_owned() }
+}
+
+/// Derives a readable label for an opaque Writer block/inline (including `draw:frame` / `draw:image`
+/// whose `writer::opaque_label` is empty).
+fn opaque_scrub_label(label: &str, raw: &str) -> String {
+    let l = label.trim();
+    if !l.is_empty() {
+        return l.replace(['\n', '\r'], " ");
+    }
+    if let Some((_, rest)) = raw.split_once("draw:name=\"") {
+        if let Some(name) = rest.split('"').next().filter(|n| !n.trim().is_empty()) {
+            let decoded = crate::writer::decode(name).replace(['\n', '\r'], " ");
+            return format!("[drawing: {decoded}]");
+        }
+    }
+    if raw.contains("<draw:image") {
+        return "[image]".to_owned();
+    }
+    if raw.contains("<draw:frame") {
+        return "[drawing]".to_owned();
+    }
+    String::new()
+}
+
+/// Wraps a non-empty trimmed core in `wrap` while keeping outer whitespace outside Markdown emphasis markers.
+fn wrap_emph(s: &str, wrap: &str) -> String {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return s.to_owned();
+    }
+    let lead = s.len() - s.trim_start().len();
+    let trail = s.len() - s.trim_end().len();
+    format!("{}{wrap}{trimmed}{wrap}{}", &s[..lead], &s[s.len() - trail..])
+}
+
+/// A document (flat ODT) as Markdown, using the native Writer XML parser
+/// so headings, inline formatting (bold, italic, strikethrough, safe
+/// links), blockquotes, bullet and numbered lists, page breaks, tables
+/// (with cell-level change highlights), and opaque objects (pictures and
+/// frames) all show in the history scrubber. Falls back to the legacy
+/// tag scanner if a historical revision is not valid flat ODT XML.
 pub fn doc_md(body: &str) -> String {
+    if let Ok(doc) = crate::writer::parse_fodt(body) {
+        return writer_doc_md(&doc);
+    }
+    doc_md_fallback(body)
+}
+
+fn writer_inlines_md(inlines: &[crate::writer::Inline]) -> String {
+    use crate::writer::{Inline, safe_href};
+    let mut s = String::new();
+    for inl in inlines {
+        match inl {
+            Inline::Text { text, marks } => {
+                let mut piece = plain_inline(text);
+                if marks.strong.is_some() {
+                    piece = wrap_emph(&piece, "**");
+                }
+                if marks.em.is_some() {
+                    piece = wrap_emph(&piece, "*");
+                }
+                if marks.strike.is_some() {
+                    piece = wrap_emph(&piece, "~~");
+                }
+                if let Some(lm) = &marks.link {
+                    if safe_href(&lm.href) {
+                        let href = lm.href.replace('|', "%7C").replace(')', "%29").replace(' ', "%20");
+                        piece = format!("[{piece}]({href})");
+                    }
+                }
+                s.push_str(&piece);
+            }
+            Inline::HardBreak { .. } => s.push_str("  \n"),
+            Inline::OpaqueInline { label, raw, .. } => {
+                let lbl = opaque_scrub_label(label, raw);
+                if !lbl.is_empty() {
+                    s.push_str(&format!("*{}*", plain(&lbl)));
+                }
+            }
+        }
+    }
+    s
+}
+
+fn writer_doc_md(doc: &crate::writer::Doc) -> String {
+    use crate::writer::{Block, decode};
+    fn push_block(out: &mut String, block: &str) {
+        if block.is_empty() {
+            return;
+        }
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(block);
+    }
+    fn escape_multiline(said: &str, quote: bool) -> String {
+        let lines: Vec<String> = said
+            .split('\n')
+            .map(|line| {
+                let hard = line.ends_with("  ");
+                let core = escape_line_start(line);
+                if core.is_empty() {
+                    String::new()
+                } else if quote {
+                    format!("> {core}{}", if hard { "  " } else { "" })
+                } else {
+                    format!("{core}{}", if hard { "  " } else { "" })
+                }
+            })
+            .filter(|l| !l.is_empty())
+            .collect();
+        lines.join("\n")
+    }
+    fn render_list(doc: &crate::writer::Doc, xattrs: &[(String, String)], items: &[crate::writer::ListItem], depth: usize, out: &mut String) {
+        let kind = xattrs
+            .iter()
+            .find(|(k, _)| k == "text:style-name")
+            .and_then(|(_, v)| doc.styles.list_kind(&decode(v)))
+            .unwrap_or("bullet");
+        // 4 spaces per nesting level works cleanly under both bullet (`- `) and ordered (`10. `) items
+        let indent = "    ".repeat(depth.min(6));
+        for (idx, it) in items.iter().enumerate() {
+            let marker = if kind == "number" { format!("{}. ", idx + 1) } else { "- ".to_owned() };
+            let mut emitted_marker = false;
+            for b in &it.blocks {
+                match b {
+                    Block::Paragraph { inlines, .. } | Block::Heading { inlines, .. } => {
+                        let said = writer_inlines_md(inlines).replace(['\n', '\r'], " ");
+                        let trimmed = escape_line_start(&said);
+                        if !trimmed.is_empty() {
+                            if !out.is_empty() {
+                                out.push('\n');
+                            }
+                            if !emitted_marker {
+                                out.push_str(&format!("{indent}{marker}{trimmed}"));
+                                emitted_marker = true;
+                            } else {
+                                out.push_str(&format!("{indent}    {trimmed}"));
+                            }
+                        }
+                    }
+                    Block::List { xattrs, items, .. } => render_list(doc, xattrs, items, depth + 1, out),
+                    Block::Section { blocks, .. } => {
+                        for sb in blocks {
+                            if let Block::Paragraph { inlines, .. } | Block::Heading { inlines, .. } = sb {
+                                let said = writer_inlines_md(inlines).replace(['\n', '\r'], " ");
+                                let trimmed = escape_line_start(&said);
+                                if !trimmed.is_empty() {
+                                    if !out.is_empty() {
+                                        out.push('\n');
+                                    }
+                                    if !emitted_marker {
+                                        out.push_str(&format!("{indent}{marker}{trimmed}"));
+                                        emitted_marker = true;
+                                    } else {
+                                        out.push_str(&format!("{indent}    {trimmed}"));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Block::OpaqueBlock { label, raw, .. } => {
+                        let lbl = opaque_scrub_label(label, raw);
+                        if !lbl.is_empty() {
+                            if !out.is_empty() {
+                                out.push('\n');
+                            }
+                            if !emitted_marker {
+                                out.push_str(&format!("{indent}{marker}*{}*", plain(&lbl)));
+                                emitted_marker = true;
+                            } else {
+                                out.push_str(&format!("{indent}    *{}*", plain(&lbl)));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    fn cell_blocks_md(blocks: &[Block], parts: &mut Vec<String>) {
+        for cb in blocks {
+            match cb {
+                Block::Paragraph { inlines, .. } | Block::Heading { inlines, .. } => {
+                    let s = writer_inlines_md(inlines).replace(['\n', '\r'], " ");
+                    let t = s.trim();
+                    if !t.is_empty() {
+                        parts.push(t.to_owned());
+                    }
+                }
+                Block::List { items, .. } => {
+                    for it in items {
+                        cell_blocks_md(&it.blocks, parts);
+                    }
+                }
+                Block::Section { blocks, .. } => cell_blocks_md(blocks, parts),
+                Block::OpaqueBlock { label, raw, .. } => {
+                    let lbl = opaque_scrub_label(label, raw);
+                    if !lbl.is_empty() {
+                        parts.push(format!("*{}*", plain(&lbl)));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn walk(doc: &crate::writer::Doc, blocks: &[Block], out: &mut String) {
+        for b in blocks {
+            match b {
+                Block::Heading { level, page_break, inlines, .. } => {
+                    if *page_break {
+                        push_block(out, "---");
+                    }
+                    let said = writer_inlines_md(inlines).replace(['\n', '\r'], " ");
+                    let trimmed = said.trim();
+                    if !trimmed.is_empty() {
+                        push_block(out, &format!("{} {trimmed}", "#".repeat((*level as usize).clamp(1, 6))));
+                    }
+                }
+                Block::Paragraph { quote, page_break, inlines, .. } => {
+                    if *page_break {
+                        push_block(out, "---");
+                    }
+                    let said = writer_inlines_md(inlines);
+                    let rendered = escape_multiline(&said, *quote);
+                    push_block(out, &rendered);
+                }
+                Block::List { xattrs, items, .. } => {
+                    let mut list = String::new();
+                    render_list(doc, xattrs, items, 0, &mut list);
+                    push_block(out, &list);
+                }
+                Block::Table { rows, .. } => {
+                    let wide = rows.iter().map(|r| r.cells.len()).max().unwrap_or(0);
+                    if wide == 0 {
+                        continue;
+                    }
+                    let mut tbl = String::new();
+                    for (ri, r) in rows.iter().enumerate() {
+                        tbl.push('|');
+                        for ci in 0..wide {
+                            let cell_txt = r.cells.get(ci).map_or_else(String::new, |c| {
+                                let mut parts = Vec::new();
+                                cell_blocks_md(&c.blocks, &mut parts);
+                                parts.join(" ")
+                            });
+                            tbl.push(' ');
+                            tbl.push_str(&cell_txt);
+                            tbl.push_str(" |");
+                        }
+                        tbl.push('\n');
+                        if ri == 0 {
+                            tbl.push('|');
+                            for _ in 0..wide {
+                                tbl.push_str("---|");
+                            }
+                            tbl.push('\n');
+                        }
+                    }
+                    push_block(out, tbl.trim_end());
+                }
+                Block::Section { blocks, .. } => walk(doc, blocks, out),
+                Block::OpaqueBlock { label, raw, .. } => {
+                    let lbl = opaque_scrub_label(label, raw);
+                    if !lbl.is_empty() {
+                        push_block(out, &format!("*{}*", plain(&lbl)));
+                    }
+                }
+            }
+        }
+    }
+    let mut out = String::new();
+    walk(doc, &doc.blocks, &mut out);
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+fn doc_md_fallback(body: &str) -> String {
     let mut rest = body.split_once("<office:body>").map_or("", |(_, b)| b);
     let (mut out, mut text, mut lead, mut lists) = (String::new(), String::new(), String::new(), 0usize);
     while let Some(lt) = rest.find('<') {
@@ -558,6 +853,43 @@ mod tests {
         assert_eq!(doc_md(doc), "## The shed\n\nA plan, to be done by June & no later.\n\n- Timber\n- Screws \\*\n\n1\\. Not a list\n");
         assert_eq!(blocks(&doc_md(doc)).len(), 4);
         assert_eq!(doc_md("not a document"), "");
+    }
+
+    #[test]
+    fn a_document_keeps_formatting_tables_and_opaque_pictures_in_scrub() {
+        let make = |price: &str| format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+  xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+  xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"
+  xmlns:xlink="http://www.w3.org/1999/xlink">
+  <office:automatic-styles>
+    <style:style style:name="T_B" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>
+    <style:style style:name="T_I" style:family="text"><style:text-properties fo:font-style="italic"/></style:style>
+  </office:automatic-styles>
+  <office:body><office:text>
+    <text:h text:outline-level="1">Budget</text:h>
+    <text:p>Buy <text:span text:style-name="T_B">oak</text:span> and <text:span text:style-name="T_I">pine</text:span> from <text:a xlink:href="https://example.com">yard</text:a>.</text:p>
+    <table:table table:name="T1">
+      <table:table-row><table:table-cell><text:p>Item</text:p></table:table-cell><table:table-cell><text:p>Cost</text:p></table:table-cell></table:table-row>
+      <table:table-row><table:table-cell><text:p>Oak</text:p></table:table-cell><table:table-cell><text:p>{price}</text:p></table:table-cell></table:table-row>
+    </table:table>
+    <draw:frame draw:name="Sketch"><draw:image/></draw:frame>
+  </office:text></office:body>
+</office:document>"#);
+        let one = doc_md(&make("240"));
+        assert!(one.contains("**oak**"), "{one}");
+        assert!(one.contains("*pine*"), "{one}");
+        assert!(one.contains("[yard](https://example.com)"), "{one}");
+        assert!(one.contains("| Item | Cost |\n|---|---|\n| Oak | 240 |"), "{one}");
+        assert!(one.contains("*\\[drawing: Sketch\\]*"), "opaque draw:frame must appear in scrub output: {one}");
+        let mut film = Film::default();
+        film.push(1, String::new(), one);
+        film.push(2, String::new(), doc_md(&make("285")));
+        let f = &film.frames[1];
+        assert_eq!(f.changed.iter().map(|r| &f.src[r.clone()]).collect::<Vec<_>>(), ["285"]);
     }
 
     #[test]
