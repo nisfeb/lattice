@@ -1821,19 +1821,19 @@
     ;<  ~  bind:m  (grant-own-do %page up rel.i.l gname md.i.l)
     $(l t.l)
   ;<  ~  bind:m
-    =/  fs=(list path)  (folders-granted sb peek.old)
+    =/  fs=(list path)  (folders-granted %page sb peek.old)
     |-  ^-  form:m
     ?~  fs  (pure:m ~)
     ;<  sg=(map @t @t)  bind:m  (read-share-grants %page i.fs)
     ?.  %:  folder-out:ls
-          (page-roads-under sb i.fs peek.old)
-          (page-roads-under sb i.fs peek.weir)
+          (page-roads-under %page sb i.fs peek.old)
+          (page-roads-under %page sb i.fs peek.weir)
           (~(has by sg) gname)
           (~(has in named) i.fs)
           |(v2 (~(has in seen) i.fs))
         ==
       $(fs t.fs)
-    ;<  ~  bind:m  (unshare-folder-do up gname i.fs)
+    ;<  ~  bind:m  (unshare-folder-do %page up gname i.fs)
     $(fs t.fs)
   ;<  ~  bind:m
     =/  fs=(list path)  ~(tap in named)
@@ -3698,7 +3698,7 @@
     ;<  isp=?  bind:m  (peek-exists:fio (rf up pdir %code))
     ?.  isp  (share-folder-with eyre-id u.shp mode (pax-of u.name))
     ;<  res=$%([%ok told=?] [%banned ~] [%refused ~])  bind:m
-      (share-page-with u.shp mode (pax-of u.name))
+      (share-page-with %page u.shp mode (pax-of u.name))
     ?-  -.res
       %banned   (send-err eyre-id 403 'that ship is banned, unban it first')
       %refused  (ug-refused eyre-id)
@@ -3833,7 +3833,7 @@
     ;<  st=?(%ok %banned %refused)  bind:m
       ?:  dir.u.rl  (share-folder-grant u.shp 'edit' rel.u.rl)
       ;<  t=$%([%ok told=?] [%banned ~] [%refused ~])  bind:(fiber:fiber:nexus ,?(%ok %banned %refused))
-        (share-page-with u.shp 'edit' rel.u.rl)
+        (share-page-with %page u.shp 'edit' rel.u.rl)
       (pure:(fiber:fiber:nexus ,?(%ok %banned %refused)) -.t)
     ?:  ?=(%banned st)  (send-err eyre-id 403 'that ship is banned, unban it first')
     ?.  ?=(%ok st)  (ug-refused eyre-id)
@@ -9285,7 +9285,7 @@
     ::  out of the old folder, and their own grants follow (+move-grants)
     ;<  ~  bind:m
       ?.  ?=([%ball *] dv)  (pure:m ~)
-      (revoke-folder-grants pax.act ball.dv)
+      (revoke-folder-grants %page pax.act ball.dv)
     ::  a folder's delete yields between pages (+tree-yield), so it is
     ::  noted, and a reload mid-way finishes it as the writer starts
     =/  big=?  (gth (lent rels) 1)
@@ -9380,7 +9380,7 @@
     ;<  ~  bind:m  (put-file (rf up pdir %'page-gone') [/ %noun] now)
     ::  what a folder granted this page goes with it. The ball is cut
     ::  to the page's own grubs, so no page under it is counted.
-    ;<  ~  bind:m  (revoke-folder-grants pax.act ball.dv(dir ~))
+    ;<  ~  bind:m  (revoke-folder-grants %page pax.act ball.dv(dir ~))
     ::  its published copy too. An unpublish of a key with no copy and
     ::  no row is read as a folder's, and takes every page under it, so
     ::  it is sent only for a page that has one of the two.
@@ -14567,7 +14567,7 @@
   |=  [sb=path g=@t rs=(set road:tarball)]
   =/  m  (fiber:fiber:nexus ,(list path))
   ^-  form:m
-  =/  fs=(list path)  (folders-granted sb rs)
+  =/  fs=(list path)  (folders-granted %page sb rs)
   =|  out=(list path)
   |-  ^-  form:m
   ?~  fs  (pure:m out)
@@ -15205,7 +15205,7 @@
   |=  [sb=path g=@t rs=(set road:tarball)]
   =/  m  (fiber:fiber:nexus ,[pk=(list @t) mk=(list @t)])
   ^-  form:m
-  =/  fs=(list path)  (folders-granted sb rs)
+  =/  fs=(list path)  (folders-granted %page sb rs)
   =|  out=[pk=(list @t) mk=(list @t)]
   |-  ^-  form:m
   ?~  fs  (pure:m out)
@@ -15913,7 +15913,7 @@
   ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
   ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| gdir])
   ?^  e  (pure:m ~)
-  =/  fs=(list path)  (folders-granted sb peek.old)
+  =/  fs=(list path)  (folders-granted %page sb peek.old)
   ;<  ~  bind:m
     =/  n  (fiber:fiber:nexus ,~)
     |-  ^-  form:n
@@ -22743,7 +22743,7 @@
 ::  runs serialized in /main.sig; best-effort remote notice runs here in the
 ::  HTTP fiber so /main.sig never blocks on a remote ship.
 ++  share-page-with
-  |=  [shp=@p mode=@t pax=path]
+  |=  [sk=share-kind:ls shp=@p mode=@t pax=path]
   =/  m  (fiber:fiber:nexus ,$%([%ok told=?] [%banned ~] [%refused ~]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -22757,9 +22757,8 @@
   ?~  res  (pure:m [%refused ~])
   ?:  ?=(%banned -.u.res)  (pure:m [%banned ~])
   ?:  ?=(%refused -.u.res)  (pure:m [%refused ~])
-  =/  pdir=path  (weld /page pax)
   ;<  sb=path  bind:m  self-base
-  =/  npax=path  (weld sb (snoc pdir %code))
+  =/  npax=path  (item-path:ls sk sb pax)
   ;<  base=(unit path)  bind:m  (peer-base-cached shp)
   ;<  told=?  bind:m
     %^  remote-load-poke-wait  shp
@@ -23147,13 +23146,13 @@
 ::  each grant a folder made them (`grant-via`) comes out of its groups.
 ::  A grant a page was given by hand (`own-grants`) stays at its mode.
 ++  revoke-folder-grants
-  |=  [pax=path bl=ball:tarball]
+  |=  [sk=share-kind:ls pax=path bl=ball:tarball]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  sb=path  bind:m  self-base
   =/  rels=(list path)
     :-  `path`~
-    (murn (collect-tree bl ~) |=([p=path page=?] ?:(page `p ~)))
+    (murn (collect-tree-of sk bl ~) |=([p=path page=?] ?:(page `p ~)))
   |-  ^-  form:m
   ?~  rels  (pure:m ~)
   =/  fils  (ball-fils bl i.rels)
@@ -23161,14 +23160,14 @@
   =/  vias=(list path)
     ?~  g  ~
     (fall (mole |.(;;((list path) (sang-noun:tarball sang.u.g)))) ~)
-  =/  code=road:tarball  [%& %& :(weld sb /page pax i.rels) %code]
+  =/  code=road:tarball  [%& %& :(weld sb (kind-root:ls sk) pax i.rels) (kind-leaf:ls sk)]
   ;<  grants=(map path (map @t @t))  bind:m
     =/  n  (fiber:fiber:nexus ,(map path (map @t @t)))
     =/  vs=(list path)  vias
     =|  acc=(map path (map @t @t))
     |-  ^-  form:n
     ?~  vs  (pure:n acc)
-    ;<  gs=(map @t @t)  bind:n  (read-share-grants %page i.vs)
+    ;<  gs=(map @t @t)  bind:n  (read-share-grants sk i.vs)
     $(vs t.vs, acc (~(put by acc) i.vs gs))
   =/  l=(list @t)  ~(tap in (revoke-groups:ls grants vias))
   =/  own=(map @t @t)  (fils-own fils)
@@ -23183,21 +23182,21 @@
       $(l t.l)
     ;<  *  bind:m  (ug-drop i.l (silt ~[code]))
     ;<  our=@p  bind:m  bowl-our
-    ;<  ~  bind:m  (notice-group i.l [%del our (snoc :(weld sb /page pax i.rels) %code)])
+    ;<  ~  bind:m  (notice-group i.l [%del our (item-path:ls sk sb (weld pax i.rels))])
     $(l t.l)
   $(rels t.rels)
 ::  +unshare-folder-do: writer-only body of folder unshare for group `g`.
 ::  Removes the folder's share-grants rule directly (no self-poke) and drops
 ::  what the rule granted (+ungrant:ls) from the group's weir.
 ++  unshare-folder-do
-  |=  [up=@ud g=@t pax=path]
+  |=  [sk=share-kind:ls up=@ud g=@t pax=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  sb=path  bind:m  self-base
-  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page pax)) ~)
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld (kind-root:ls sk) pax)) ~)
   ?.  ?=([%ball *] dv)  (pure:m ~)
   =/  all=(list [p=path page=?])
-    (skip (collect-tree ball.dv ~) |=([p=path page=?] ?=(~ p)))
+    (skip (collect-tree-of sk ball.dv ~) |=([p=path page=?] ?=(~ p)))
   =/  vias
     |=  p=path
     ^-  (list path)
@@ -23222,17 +23221,17 @@
     |-  ^-  form:n
     ?~  d  (pure:n acc)
     =/  dd=path  (snip `path`d)
-    ;<  gs=(map @t @t)  bind:n  (read-share-grants %page dd)
+    ;<  gs=(map @t @t)  bind:n  (read-share-grants sk dd)
     $(d dd, acc (~(put by acc) dd gs))
   =/  [pg=(list [rel=path md=@t]) dr=(list path)]  (ungrant:ls grants g pax pages dirs)
-  ;<  ~  bind:m  (folder-ungrant-do %page up pax g)
-  =/  code  |=(r=path `road:tarball`[%& %& :(weld sb /page r) %code])
+  ;<  ~  bind:m  (folder-ungrant-do sk up pax g)
+  =/  code  |=(r=path `road:tarball`[%& %& :(weld sb (kind-root:ls sk) r) (kind-leaf:ls sk)])
   =/  codes=(list road:tarball)
     (murn pg |=([r=path md=@t] ?:(=('' md) `(code r) ~)))
   =/  reads=(list road:tarball)
     (murn pg |=([r=path md=@t] ?:(=('' md) ~ `(code r))))
   =/  idx=(list road:tarball)
-    (turn dr |=(r=path `road:tarball`[%& %& :(weld sb /page r) %'dir-index']))
+    (turn dr |=(r=path `road:tarball`[%& %& :(weld sb (kind-root:ls sk) r) %'dir-index']))
   ;<  *  bind:m
     %^  ug-settle  g
       (~(gas in *(set road:tarball)) (weld codes idx))
@@ -23241,9 +23240,9 @@
 ::  +folders-granted: the folders whose index a group's peek roads list
 ::  (`dir-index`), each one a folder +share-folder-with shared with it
 ++  folders-granted
-  |=  [sb=path rs=(set road:tarball)]
+  |=  [sk=share-kind:ls sb=path rs=(set road:tarball)]
   ^-  (list path)
-  =/  pre=path  (weld sb /page)
+  =/  pre=path  (weld sb (kind-root:ls sk))
   %+  murn  ~(tap in rs)
   |=  r=road:tarball
   ^-  (unit path)
@@ -23254,15 +23253,15 @@
 ::  +page-roads-under: whether any page or folder road in `rs` is at or
 ::  under the folder at `rel` (a folder's own index roads aside)
 ++  page-roads-under
-  |=  [sb=path rel=path rs=(set road:tarball)]
+  |=  [sk=share-kind:ls sb=path rel=path rs=(set road:tarball)]
   ^-  ?
-  =/  f=path  :(weld sb /page rel)
+  =/  f=path  :(weld sb (kind-root:ls sk) rel)
   =/  n=@ud  (lent f)
   %+  lien  ~(tap in rs)
   |=  r=road:tarball
   ?+  r  |
     [%& %| *]  =(f (scag n p.p.r))
-    [%& %& *]  &(=(%code name.p.p.r) =(f (scag n path.p.p.r)))
+    [%& %& *]  &(=((kind-leaf:ls sk) name.p.p.r) =(f (scag n path.p.p.r)))
   ==
 ::  +notice-group: a share notice to each ship in a group, as +grant-new
 ::  and +revoke-folder-grants change what a folder granted. These run in
@@ -23629,7 +23628,7 @@
   ?^  e  (acl-res-put up rid [%refused ~])
   ;<  sb=path  bind:m  self-base
   ;<  ~  bind:m
-    =/  fs=(list path)  (folders-granted sb peek.old)
+    =/  fs=(list path)  (folders-granted %page sb peek.old)
     |-  ^-  form:m
     ?~  fs  (pure:m ~)
     ;<  ~  bind:m  (folder-ungrant-do %page up i.fs gname)
@@ -23642,13 +23641,14 @@
   |=  [root=@ud rid=@ta shp=@p mode=@t pax=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  =/  sk=share-kind:ls  %page
   ;<  up=@ud  bind:m  nexus-up
   ;<  bans=banned:ls  bind:m  read-banned
   ?:  (is-banned:ls bans shp)
     (acl-res-put up rid [%banned ~])
-  =/  pdir=path  (weld /page pax)
+  =/  pdir=path  (weld (kind-root:ls sk) pax)
   ;<  sb=path  bind:m  self-base
-  =/  croad=road:tarball  [%& %& (weld sb pdir) %code]
+  =/  croad=road:tarball  [%& %& (weld sb pdir) (kind-leaf:ls sk)]
   =/  gname=@t  (crip (slag 1 (scow %p shp)))
   ;<  ok=?  bind:m
     %-  ug-merge
@@ -23658,9 +23658,9 @@
     ?.  =('edit' mode)  ~
     (~(gas in *(set road:tarball)) ~[croad])
   ?.  ok  (acl-res-put up rid [%refused ~])
-  ;<  own=(map @t @t)  bind:m  (read-own-grants %page pax)
+  ;<  own=(map @t @t)  bind:m  (read-own-grants sk pax)
   ;<  ~  bind:m
-    (grant-own-do %page up pax gname (mode-max:ls mode (~(gut by own) gname '')))
+    (grant-own-do sk up pax gname (mode-max:ls mode (~(gut by own) gname '')))
   (acl-res-put up rid [%ok ~])
 ::  +apply-acl-share-folder: share one folder with a group atomically in /main.sig.
 ++  apply-acl-share-folder
@@ -23680,17 +23680,18 @@
   |=  [root=@ud rid=@ta shp=@p pax=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  =/  sk=share-kind:ls  %page
   ;<  up=@ud  bind:m  nexus-up
-  =/  pdir=path  (weld /page pax)
+  =/  pdir=path  (weld (kind-root:ls sk) pax)
   =/  gname=@t  (crip (slag 1 (scow %p shp)))
-  ;<  isp=?  bind:m  (peek-exists:fio (rf up pdir %code))
+  ;<  isp=?  bind:m  (peek-exists:fio (rf up pdir (kind-leaf:ls sk)))
   ;<  h0=holds:ls  bind:m  holds-now
   ;<  ~  bind:m
-    ?.  isp  (unshare-folder-do up gname pax)
+    ?.  isp  (unshare-folder-do sk up gname pax)
     ;<  sb=path  bind:m  self-base
-    ;<  ~  bind:m  (grant-own-do %page up pax gname '')
-    ;<  fm=@t  bind:m  (folders-mode %page gname pax)
-    =/  r=(set road:tarball)  (silt ~[`road:tarball`[%& %& (weld sb pdir) %code]])
+    ;<  ~  bind:m  (grant-own-do sk up pax gname '')
+    ;<  fm=@t  bind:m  (folders-mode sk gname pax)
+    =/  r=(set road:tarball)  (silt ~[`road:tarball`[%& %& (weld sb pdir) (kind-leaf:ls sk)]])
     ;<  *  bind:m
       ?:  =('edit' fm)  (pure:(fiber:fiber:nexus ,?) &)
       ?:  =('read' fm)  (ug-settle gname ~ r)
