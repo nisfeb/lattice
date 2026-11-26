@@ -7805,7 +7805,7 @@
 ::  +edit-granted: does any sharing group hold an edit grant on this page,
 ::  on a folder above it, or on anything inside its dir? Such a page runs
 ::  content only, and its own-page views are sandboxed. Soft, like
-::  +move-grants: when lattice may not read the groups it cannot have
+::  +move-grants-in: when lattice may not read the groups it cannot have
 ::  granted one either. No usergroup read means no grant.
 ::
 ++  edit-granted  |=(name=path (granted-via name &))
@@ -9282,7 +9282,8 @@
       ?.  ?=([%ball *] dv)  ~[/]
       (murn (collect-tree ball.dv ~) |=([pax=path page=?] ?:(page `pax ~)))
     ::  what a folder granted these pages goes with them: a move takes it
-    ::  out of the old folder, and their own grants follow (+move-grants)
+    ::  out of the old folder, and their own grants follow
+    ::  (+move-grants-in)
     ;<  ~  bind:m
       ?.  ?=([%ball *] dv)  (pure:m ~)
       (revoke-folder-grants %page pax.act ball.dv)
@@ -9583,7 +9584,8 @@
       %acl-unshare-file
     (apply-acl-unshare-file root rid.act shp.act pax.act)
       %acl-move-grants
-    (move-grants-in from.act to.act own.act)
+    =/  sk=share-kind:ls  %page
+    (move-grants-in sk from.act to.act own.act)
       %dname
     ::  the display name sits beside a page's %code or a folder's flags, as
     ::  a %name grub. '' clears it: the name typed at a rename was a valid
@@ -11082,7 +11084,7 @@
     %+  weld
       ^-  (list eval-action:le)
       ?~(own ~ [%share dst u.own]~)
-    ::  and its own grants, as +move-grants moves their roads
+    ::  and its own grants, as +move-grants-in moves their roads
     %+  turn  ~(tap by (fils-own pf))
     |=([g=@t md=@t] `eval-action:le`[%grant-own dst g md])
   $(todo acts, rels t.rels, count ?:(late count +(count)))
@@ -15055,25 +15057,21 @@
   ?.  isf  $(l t.l, out (~(put in out) r))
   %-  (say 2 ~[leaf+"lattice: a grant on {(spud dp)} named a file as a folder; granted as the file"])
   $(l t.l, out (~(put in out) fr))
-::  +move-grants: grants follow a page. A group road names a path, so a
-::  move would leave the ship it was shared with holding the old one, and
-::  a delete would hand that ship whatever page is made there next. Every
-::  road on `from` or under it moves to `to`, or with `to` = ~ goes. Soft:
+::  +move-grants-in: grants follow a page. A group road names a path, so
+::  a move would leave the ship it was shared with holding the old one,
+::  and a delete would hand that ship whatever page is made there next.
+::  Every road on `from` or under it moves to `to`, or with `to` = ~
+::  goes. With `own`, only the roads on the grubs of the page at `from`
+::  itself do: a page deleted from over the pages under it leaves its
+::  folder, so a road on that folder, or on anything in it, stays. Soft:
 ::  a refused usergroup road leaves the grants as they were, and the move
 ::  or delete stands.
-++  move-grants
-  |=  [from=path to=(unit path)]
-  (move-grants-in from to |)
-::  +move-grants-in: +move-grants, which with `own` takes only the roads
-::  on the grubs of the page at `from` itself. A page deleted from over
-::  the pages under it leaves its folder, so a road on that folder, or
-::  on anything in it, stays.
 ++  move-grants-in
-  |=  [from=path to=(unit path) own=?]
+  |=  [sk=share-kind:ls from=path to=(unit path) own=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  sb=path  bind:m  self-base
-  =/  old=path  (weld sb (weld /page from))
+  =/  old=path  (weld sb (weld (kind-root:ls sk) from))
   =/  n=@ud  (lent old)
   ::  dir roads and file roads alike (a page grant is a file road on its
   ::  code grub, +share-file)
@@ -15091,7 +15089,7 @@
     |=  rs=(set road:tarball)
     ^-  (set road:tarball)
     ?~  to  (~(gas in *(set road:tarball)) (skip ~(tap in rs) under))
-    =/  new=path  (weld sb (weld /page u.to))
+    =/  new=path  (weld sb (weld (kind-root:ls sk) u.to))
     %-  ~(run in rs)
     |=  r=road:tarball
     ?.  (under r)  r
@@ -23375,7 +23373,7 @@
 ::  road or a folder's index road. A folder held whole is one hold, and
 ::  the pages under it are not told one by one (+holds-trim:ls).
 ::  Read before and after a grant or a revoke, so +tell-holds tells just
-::  the difference. Soft, as +move-grants: an install that refused the
+::  the difference. Soft, as +move-grants-in: an install that refused the
 ::  usergroup road holds nothing here, and tells nothing.
 ++  holds-now
   =/  m  (fiber:fiber:nexus ,holds:ls)
@@ -23385,9 +23383,7 @@
   ;<  ub=path  bind:m  ug-dir
   ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ub] ~)
   ?.  ?=([~ %ball *] vw)  (pure:m ~)
-  =/  pre=path  (weld sb /page)
-  =/  n=@ud  (lent pre)
-  =/  ours  |=(p=path =(pre (scag n p)))
+  =/  ours  |=(p=path ?=(^ (kind-rel:ls sb p)))
   =/  gs=(list [g=@t who=(set @p) w=weir:nexus])
     %+  murn  (all-groups / ball.u.vw)
     |=  [rel=path gb=ball:tarball]
@@ -23415,11 +23411,14 @@
   =|  under=(map path (list path))
   |-  ^-  form:m
   ?^  dirs
-    ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page (slag n i.dirs))) ~)
+    =/  kr  (kind-rel:ls sb i.dirs)
+    ?~  kr  $(dirs t.dirs)
+    =/  sk=share-kind:ls  sk.u.kr
+    ;<  dv=view:nexus  bind:m  (peek:fio (rv up (slag (lent sb) i.dirs)) ~)
     =/  ps=(list path)
       ?.  ?=([%ball *] dv)  ~
-      %+  murn  (collect-tree ball.dv ~)
-      |=([p=path page=?] ?.(page ~ `:(weld i.dirs p /code)))
+      %+  murn  (collect-tree-of sk ball.dv ~)
+      |=([p=path page=?] ?.(page ~ `:(weld i.dirs p /[(kind-leaf:ls sk)])))
     $(dirs t.dirs, under (~(put by under) i.dirs ps))
   ::  a folder's index road is a folder shared with a ship whole
   ::  (+share-folder-with). Its share-grants say the mode, read once each.
@@ -23427,7 +23426,10 @@
     |=  r=road:tarball
     ^-  (unit path)
     ?.  ?=([%& %& *] r)  ~
-    ?.  &(=(%'dir-index' name.p.p.r) (ours path.p.p.r) (gth (lent path.p.p.r) n))  ~
+    ?.  =(%'dir-index' name.p.p.r)  ~
+    =/  kr  (kind-rel:ls sb path.p.p.r)
+    ?~  kr  ~
+    ?~  rel.u.kr  ~
     `path.p.p.r
   =/  ixs=(list path)
     %~  tap  in
@@ -23436,7 +23438,9 @@
   =|  sg=(map path (map @t @t))
   |-  ^-  form:m
   ?^  ixs
-    ;<  g=(map @t @t)  bind:m  (read-share-grants %page (slag n i.ixs))
+    =/  kr  (kind-rel:ls sb i.ixs)
+    ?~  kr  $(ixs t.ixs)
+    ;<  g=(map @t @t)  bind:m  (read-share-grants sk.u.kr rel.u.kr)
     $(ixs t.ixs, sg (~(put by sg) i.ixs g))
   ::  the folders a group holds whole (+holds-of), by their dir-index: a
   ::  folder's dir road (a group panel grant, +page-roads), edit when it
@@ -23451,7 +23455,9 @@
       |=  r=road:tarball
       ^-  (unit [path @t])
       ?.  ?=([%& %| *] r)  ~
-      ?.  &((ours p.p.r) (gth (lent p.p.r) n))  ~
+      =/  kr  (kind-rel:ls sb p.p.r)
+      ?~  kr  ~
+      ?~  rel.u.kr  ~
       `[(snoc p.p.r %'dir-index') ?:((~(has in make.w) r) 'edit' 'read')]
     %+  murn  ~(tap in peek.w)
     |=  r=road:tarball
@@ -23470,7 +23476,11 @@
     ^-  (list path)
     ?+  r  ~
       [%& %| *]  (~(gut by under) p.p.r ~)
-      [%& %& *]  ?.(&(=(%code name.p.p.r) (ours path.p.p.r)) ~ ~[(snoc path.p.p.r %code)])
+        [%& %& *]
+      =/  kr  (kind-rel:ls sb path.p.p.r)
+      ?~  kr  ~
+      ?.  =((kind-leaf:ls sk.u.kr) name.p.p.r)  ~
+      ~[(snoc path.p.p.r (kind-leaf:ls sk.u.kr))]
     ==
   %-  pure:m
   %-  holds-of:ls
