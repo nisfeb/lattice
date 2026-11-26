@@ -343,13 +343,49 @@
   =/  d  (mole |.(;;([%& %| p=path] r)))
   ?^  d  `[%| p.u.d]
   ~
-::  +code-page: the page a path to its code grub names, ~ for any other
-::  path. `rel` is under /page: /a/b/code names the page /a/b.
+::  ==  share kinds  ==
+::  A share kind is a family of shareable items under the app's root:
+::  where its items live and what their leaf grub is called. Pages are
+::  the only kind so far.
++$  share-kind  %page
+::  +kinds: every share kind, in the order +kind-rel tries them.
+++  kinds  ^-((list share-kind) ~[%page])
+::  +kind-root: the path under the app's root that a kind's items sit in
+++  kind-root
+  |=  sk=share-kind
+  ^-  path
+  ?-(sk %page /page)
+::  +kind-leaf: the name of a kind's leaf grub, the one a notice names
+++  kind-leaf
+  |=  sk=share-kind
+  ^-  @ta
+  ?-(sk %page %code)
+::  +item-path: the notice path of the item `rel` of kind `sk` under `sb`
+++  item-path
+  |=  [sk=share-kind sb=path rel=path]
+  ^-  path
+  :(weld sb (kind-root sk) rel /[(kind-leaf sk)])
+::  +kind-rel: the kind a path under `sb` belongs to and the path within
+::  that kind's root. The root itself is the kind's, with rel ~. By path
+::  segment, never by text. ~ for a path in no kind.
+++  kind-rel
+  |=  [sb=path p=path]
+  ^-  (unit [sk=share-kind rel=path])
+  =/  ks=(list share-kind)  kinds
+  |-
+  ?~  ks  ~
+  =/  pre=path  (weld sb (kind-root i.ks))
+  ?:  =(pre (scag (lent pre) p))
+    `[i.ks (slag (lent pre) p)]
+  $(ks t.ks)
+::  +code-page: the item a path to its leaf grub names, ~ for any other
+::  path. `rel` is under the kind's root: for pages, /a/b/code names the
+::  page /a/b.
 ++  code-page
-  |=  rel=path
+  |=  [sk=share-kind rel=path]
   ^-  (unit path)
   ?~  rel  ~
-  ?.  =(%code (rear rel))  ~
+  ?.  =((kind-leaf sk) (rear rel))  ~
   =/  pg=path  (snip `path`rel)
   ?~(pg ~ `pg)
 ::  +road-text: an absolute road as an app's groups.json names it,

@@ -1189,12 +1189,30 @@
 ::  +code-page: a path to a page's code grub names the page
 ++  test-code-page
   ;:  weld
-    (expect-eq !>(`/reports/article) !>((code-page:ls /reports/article/code)))
-    (expect-eq !>(`/a) !>((code-page:ls /a/code)))
+    (expect-eq !>(`/reports/article) !>((code-page:ls %page /reports/article/code)))
+    (expect-eq !>(`/a) !>((code-page:ls %page /a/code)))
     ::  the page itself, a bare code, and any other grub name nothing
-    (expect-eq !>(~) !>((code-page:ls /reports/article)))
-    (expect-eq !>(~) !>((code-page:ls /code)))
-    (expect-eq !>(~) !>((code-page:ls /reports/article/data)))
+    (expect-eq !>(~) !>((code-page:ls %page /reports/article)))
+    (expect-eq !>(~) !>((code-page:ls %page /code)))
+    (expect-eq !>(~) !>((code-page:ls %page /reports/article/data)))
+  ==
+++  test-kind-page
+  ;:  weld
+    (expect-eq !>(`path`/page) !>((kind-root:ls %page)))
+    (expect-eq !>(`@ta`%code) !>((kind-leaf:ls %page)))
+    (expect-eq !>(`(list share-kind:ls)`~[%page]) !>(kinds:ls))
+    (expect-eq !>(`path`/apps/x/page/notes/a/code) !>((item-path:ls %page /apps/x /notes/a)))
+  ==
+++  test-kind-rel
+  ;:  weld
+    (expect-eq !>(`(unit [share-kind:ls path])``[%page /a/code]) !>((kind-rel:ls /apps/x /apps/x/page/a/code)))
+    ::  the root itself is ours, as the prefix test in +holds-now had it
+    (expect-eq !>(`(unit [share-kind:ls path])``[%page ~]) !>((kind-rel:ls /apps/x /apps/x/page)))
+    ::  by segment, never by text
+    (expect-eq !>(`(unit [share-kind:ls path])`~) !>((kind-rel:ls /apps/x /apps/x/pages/a)))
+    (expect-eq !>(`(unit [share-kind:ls path])`~) !>((kind-rel:ls /apps/x /apps/x/page-x/a)))
+    (expect-eq !>(`(unit [share-kind:ls path])`~) !>((kind-rel:ls /apps/x /apps/y/page/a)))
+    (expect-eq !>(`(unit [share-kind:ls path])`~) !>((kind-rel:ls /apps/x /apps/x/know/vault/a/entry)))
   ==
 ::  +folder-roads excludes root page [~ &] and grants dir-index to dual-role subfolders
 ++  test-folder-roads-dual-role

@@ -14587,7 +14587,7 @@
   ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))  $(ps t.ps)
   ;<  dx=?  bind:m  (peek-exists:fio (rv up (weld /page rel)))
   ?:  dx  $(ps t.ps)
-  =/  cp=(unit path)  (code-page:ls rel)
+  =/  cp=(unit path)  (code-page:ls %page rel)
   ;<  cx=?  bind:m
     ?~  cp  (pure:(fiber:fiber:nexus ,?) |)
     (peek-exists:fio (rf up (weld /page u.cp) %code))
@@ -14656,7 +14656,7 @@
   ::  this shape). As a dir road it would grant nothing, code being a
   ::  file, so it is the file road on that page's code, as the page's own
   ::  path gives (+code-page:ls)
-  =/  cp=(unit path)  ?.(ours ~ (code-page:ls rel))
+  =/  cp=(unit path)  ?.(ours ~ (code-page:ls %page rel))
   ;<  pc=?  bind:m
     ?:  |(pe ?=(~ cp))  (pure:(fiber:fiber:nexus ,?) |)
     (peek-exists:fio (rf up (weld /page u.cp) %code))
