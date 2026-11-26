@@ -1093,6 +1093,8 @@ struct ShipSession {
     find: Option<TextEdit>,
     find_replace: TextEdit,
     find_at: usize,
+    /// Pending `editor_reveal` deferred until `fill_editor` populates `EDIT_DRAWN` and `edit_wide`.
+    edit_reveal_pending: bool,
     pics: HashMap<String, rune::Image>,
     /// Bumped whenever non-tile page images in `pics` change, to invalidate memoized readers.
     pics_gen: u64,
@@ -1488,6 +1490,7 @@ impl Default for ShipSession {
             find: None,
             find_replace: TextEdit::new(""),
             find_at: 0,
+            edit_reveal_pending: false,
             pics: HashMap::new(),
             pics_gen: 0,
             pics_order: std::collections::VecDeque::new(),
@@ -4394,7 +4397,7 @@ fn writer_key(s: &mut App, ev: &KeyEvent) -> bool {
         || s.grant_to.focused
         || s.accent_hex.focused
         || s.marks_q.focused;
-    if over || other_input_focused || s.editing || s.old.is_some() || page_hidden(s) || !writer_editable(s) {
+    if over || other_input_focused || s.editing || s.old.is_some() || page_hidden(s) {
         return false;
     }
     let Some(p) = &s.open else { return false };
@@ -4402,12 +4405,28 @@ fn writer_key(s: &mut App, ev: &KeyEvent) -> bool {
     if p.kind != "fodt" || v.name != p.name || v.rev != p.rev {
         return false;
     }
-    if (ev.is_command('z') && ev.mods.shift && !ev.mods.alt) || (ev.is_command('y') && !ev.mods.shift && !ev.mods.alt) {
-        writer_redo(s);
-        return true;
+    // Check editability excluding `saving(s)` so an in-flight save takes Writer shortcuts
+    // with a note instead of silently dropping them.
+    if !usable(s, "delete") || v.doc.tracking {
+        return false;
     }
-    if ev.is_command('z') && !ev.mods.shift && !ev.mods.alt {
-        writer_undo(s);
+    let is_redo = (ev.is_command('z') && ev.mods.shift && !ev.mods.alt) || (ev.is_command('y') && !ev.mods.shift && !ev.mods.alt);
+    let is_undo = ev.is_command('z') && !ev.mods.shift && !ev.mods.alt;
+    if is_redo || is_undo {
+        // While the block text bar has unsaved edits (or redo history of its own), let
+        // TextArea undo/redo in small steps instead of throwing away the whole typed text.
+        if v.entry.text != v.entry_was || (is_redo && v.entry.focused && v.entry.history_len().1 > 0) {
+            return false;
+        }
+        if saving(s) {
+            s.note = "wait a moment: saving the last change".into();
+            return true;
+        }
+        if is_redo {
+            writer_redo(s);
+        } else {
+            writer_undo(s);
+        }
         return true;
     }
     if v.cursor.is_none() {
@@ -4425,12 +4444,20 @@ fn writer_key(s: &mut App, ev: &KeyEvent) -> bool {
         None
     };
     if let Some(fmt) = fmt {
+        if saving(s) {
+            s.note = "wait a moment: saving the last change".into();
+            return true;
+        }
         let range = s.writer.as_ref().map(|v| v.entry.range()).unwrap_or((0, 0));
         writer_apply(s, move |doc, path| doc.toggle_inline_fmt(path, range.0, range.1, fmt));
         return true;
     }
     if !ev.mods.shift {
         if ev.is_command('0') {
+            if saving(s) {
+                s.note = "wait a moment: saving the last change".into();
+                return true;
+            }
             writer_apply(s, |doc, path| {
                 let st = doc.styles.body_style();
                 doc.set_block_kind(path, None, st)
@@ -4439,6 +4466,10 @@ fn writer_key(s: &mut App, ev: &KeyEvent) -> bool {
         }
         for lv in 1..=6u8 {
             if ev.is_command((b'0' + lv) as char) {
+                if saving(s) {
+                    s.note = "wait a moment: saving the last change".into();
+                    return true;
+                }
                 writer_apply(s, move |doc, path| {
                     let st = doc.styles.heading_style(lv);
                     doc.set_block_kind(path, Some(lv), st)
@@ -5528,7 +5559,7 @@ fn jump_scad_line(s: &mut App, line_1based: usize, tx: &mut Tx) {
     let at = line_start_byte(&s.edit.text, line_1based);
     s.edit.set_selection(at, at);
     s.edit.focused = true;
-    editor_reveal(s, tx);
+    s.edit_reveal_pending = !editor_reveal(s, tx);
     tx.focus_when_shown(FIELD, false);
 }
 
@@ -7126,9 +7157,11 @@ fn find_in(src: &str, query: &str) -> Vec<Vec<std::ops::Range<usize>>> {
 }
 
 /// Where find's query is in the text being edited, as it is typed there.
+/// Keeps leading and trailing spaces when the query is not all whitespace so
+/// highlights, counts, and Replace / Replace all match the exact string typed.
 fn edit_matches(s: &App) -> Vec<std::ops::Range<usize>> {
-    match s.find.as_ref().filter(|_| s.editing) {
-        Some(q) => rune_kit::search::Fold::default().find(&s.edit.text, q.text.trim()),
+    match s.find.as_ref().filter(|q| s.editing && !q.text.trim().is_empty()) {
+        Some(q) => rune_kit::search::Fold::default().find(&s.edit.text, &q.text),
         None => Vec::new(),
     }
 }
@@ -9168,8 +9201,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
     } else {
         s.link_open = None;
+        s.edit_reveal_pending = false;
     }
     if s.editing {
+        if s.edit_reveal_pending && editor_reveal(s, tx) {
+            s.edit_reveal_pending = false;
+            changed = true;
+        }
         // debounce live Markdown preview so held keys (like Backspace) never rebuild the full
         // preview tree on every key repeat
         if !s.rich && s.preview {
@@ -19448,10 +19486,13 @@ fn fill_editor(s: &App, label: &str, spans: Vec<Span>, k: &Kit) -> El {
         view.scroll(ScrollSpec { stick_bottom: false }).child(field.w_full().wrap_anywhere())
     };
     let view = view.on_layout_tx(|s: &mut App, r: [f32; 4], tx: &mut Tx| {
-        if s.edit_wide == r[2] {
+        if s.edit_wide == r[2] && !s.edit_reveal_pending {
             tx.live_only();
         }
         s.edit_wide = r[2];
+        if s.edit_reveal_pending && editor_reveal(s, tx) {
+            s.edit_reveal_pending = false;
+        }
     });
     let mut boxed = col().role("textbox").padding(8.0).min_h(inner + 16.0).w_full().min_w(0.0).radius(k.radius.md).fill(c.bg_base).child(view);
     if s.edit.focused {
@@ -19486,11 +19527,13 @@ fn caret_down(text: &str, at: usize, style: rune::TextStyle, spans: &[Span], wid
 
 /// Brings the caret's line into the editor's view, a third of the way down it. Rune keeps a caret
 /// in view as it is typed at, and not one put somewhere by the app, as the outline and find put it.
-fn editor_reveal(s: &App, tx: &mut Tx) {
-    let Some((style, spans)) = EDIT_DRAWN.with_borrow(|d| d.clone()) else { return };
+/// Returns `true` when `EDIT_DRAWN` was available and the scroll was scheduled.
+fn editor_reveal(s: &App, tx: &mut Tx) -> bool {
+    let Some((style, spans)) = EDIT_DRAWN.with_borrow(|d| d.clone()) else { return false };
     let wide = (!s.prefs.no_wrap && s.edit_wide > 0.0).then_some(s.edit_wide);
     let down = caret_down(&s.edit.text, s.edit.range().0, style, &spans, wide);
     tx.scroll_to_y(FIELD_SCROLL, (down - s.edit_room.max(120.0) * 0.3).max(0.0));
+    true
 }
 
 /// Returns the pages list regardless of whether Knowledge (memories) or Pages is active.
@@ -24895,6 +24938,24 @@ mod tests {
         assert!(on_key(&mut s, &cmd('z', false), &mut tx));
         assert!(on_key(&mut s, &cmd('z', true), &mut tx));
         assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Paragraph { .. })));
+
+        // Dirty block text bar defers Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z to TextArea's own small-step undo/redo.
+        s.writer.as_mut().unwrap().entry.insert(" draft");
+        let dirty_text = s.writer.as_ref().unwrap().entry.text.clone();
+        assert!(!writer_key(&mut s, &cmd('z', false)));
+        assert!(!writer_key(&mut s, &cmd('y', false)));
+        assert!(!writer_key(&mut s, &cmd('z', true)));
+        assert_eq!(s.writer.as_ref().unwrap().entry.text, dirty_text);
+        let was = s.writer.as_ref().unwrap().entry_was.clone();
+        s.writer.as_mut().unwrap().entry = TextEdit::new(was.as_str());
+
+        // While a save is in flight, Writer shortcuts take the key and inform the user instead of dropping silently.
+        s.save_for = Some("doc".into());
+        s.note.clear();
+        assert!(on_key(&mut s, &cmd('b', false), &mut tx));
+        assert!(s.note.contains("saving"));
+        s.save_for = None;
+
         // Shortcuts do not fire while a prompt overlay, old revision, another input, or tracked-changes doc is active.
         s.prompt = Some(Prompt::Kind(TextEdit::new("fodt")));
         assert!(!on_key(&mut s, &cmd('z', false), &mut tx));
@@ -24966,6 +25027,14 @@ mod tests {
         assert!(s.editing);
         assert_eq!(s.edit.range(), (16, 16));
         assert_eq!(&s.edit.text[16..], "cube([w, h, 5]);\n");
+        // When EDIT_DRAWN is empty, jump_scad_line records a pending reveal until the editor draws.
+        EDIT_DRAWN.set(None);
+        s.editing = false;
+        jump_scad_line(&mut s, 3, &mut tx);
+        assert!(s.edit_reveal_pending);
+        EDIT_DRAWN.set(Some((rune::TextStyle::new(14.0, 400.0), Vec::new())));
+        poll(&mut s, 0.0, &mut tx);
+        assert!(!s.edit_reveal_pending);
         // Out-of-range line clamps cleanly to the final line.
         jump_scad_line(&mut s, 99, &mut tx);
         assert_eq!(s.edit.range(), (src.len(), src.len()));
@@ -25175,6 +25244,14 @@ mod tests {
         assert_eq!(s.edit.text, "ab");
         assert_eq!(s.find_at, 0);
         assert_eq!(s.edit.selected(), "ab");
+
+        // Queries with leading/trailing spaces match and replace exact whitespace rather than trimming.
+        s.edit = TextEdit::new("foo baz and foobar");
+        s.find.as_mut().unwrap().text = "foo ".into();
+        s.find_replace = TextEdit::new("bar ");
+        assert_eq!(find_count(&s), 1);
+        assert_eq!(find_replace_all(&mut s, &mut tx), 1);
+        assert_eq!(s.edit.text, "bar baz and foobar");
 
         // Ctrl+H: focuses Find when query is empty, preserves find_at and focuses Replace when query is set.
         let ctrl_h = KeyEvent { key: Key::Command('h'), mods: rune::Mods { cmd: true, ctrl: true, ..rune::Mods::default() } };

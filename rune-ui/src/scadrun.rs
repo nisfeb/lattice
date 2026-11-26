@@ -227,8 +227,9 @@ pub fn console(log: &[String], notes: &[String]) -> (Vec<(Level, String)>, Strin
 }
 
 /// Extracts a 1-based line number in `main_file` from an OpenSCAD console line
-/// (mirroring `ui-src/scad/view.js::showLog`). Returns `None` when the message
-/// names a different included file or holds no line number.
+/// (mirroring `ui-src/scad/view.js::showLog`, plus resolver notes of the form
+/// `line N of <page>:` when `<page>` is the open page). Returns `None` when the
+/// message names a different included file/page or holds no file-scoped line number.
 pub fn console_line(line: &str, main_file: &str) -> Option<usize> {
     let parse_num = |s: &str| -> Option<usize> {
         let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -241,27 +242,36 @@ pub fn console_line(line: &str, main_file: &str) -> Option<usize> {
         }
         digits.parse::<usize>().ok().filter(|&n| n >= 1)
     };
+    let main_rel = main_file.strip_prefix(crate::scad::ROOT).unwrap_or(main_file.trim_start_matches('/'));
     if let Some(pos) = line.find("in file ") {
         let after = &line[pos + "in file ".len()..];
         let (file_raw, rest) = after.split_once(", line ")?;
         let file = file_raw.trim().trim_matches('"');
-        let main_rel = main_file.strip_prefix(crate::scad::ROOT).unwrap_or(main_file.trim_start_matches('/'));
         let file_rel = file.strip_prefix(crate::scad::ROOT).unwrap_or(file.trim_start_matches('/'));
         let matches_main = file == main_file
             || file_rel == main_rel
             || main_file.rsplit('/').next().is_some_and(|base| !base.is_empty() && file == base);
         return matches_main.then(|| parse_num(rest)).flatten();
     }
-    let mut rest = line;
-    while let Some(pos) = rest.find("line ") {
-        let ok_before = pos == 0 || rest[..pos].chars().next_back().is_some_and(|c| !c.is_ascii_alphanumeric() && c != '_');
-        let after = &rest[pos + "line ".len()..];
-        if ok_before {
-            if let Some(n) = parse_num(after) {
-                return Some(n);
+    // Resolver notes from `scad::collect` look like `WARNING: line 3 of parts/box: ...`.
+    let main_page = main_rel.strip_suffix(".scad").unwrap_or(main_rel);
+    if !main_page.is_empty() {
+        let mut rest = line;
+        while let Some(pos) = rest.find("line ") {
+            let ok_before = pos == 0 || rest[..pos].chars().next_back().is_some_and(|c| !c.is_ascii_alphanumeric() && c != '_');
+            let after = &rest[pos + "line ".len()..];
+            if ok_before {
+                if let Some((num_part, page_rest)) = after.split_once(" of ") {
+                    if let Some(n) = parse_num(num_part) {
+                        let page = page_rest.split_once(':').map_or(page_rest, |(p, _)| p).trim();
+                        if page == main_page {
+                            return Some(n);
+                        }
+                    }
+                }
             }
+            rest = after;
         }
-        rest = after;
     }
     None
 }
@@ -442,8 +452,11 @@ mod tests {
         assert_eq!(console_line("ERROR: syntax error in file box.scad, line 9", main), Some(9));
         // An error inside an included file must not jump to a line in the main file.
         assert_eq!(console_line("ERROR: syntax error in file /w/parts/lib.scad, line 3", main), None);
-        // Standalone line reference with no file clause still parses.
-        assert_eq!(console_line("ERROR: Parser error in line 7: unexpected token", main), Some(7));
+        // Resolver notes (`line N of <page>: ...`) jump only for the open page, never an include.
+        assert_eq!(console_line("WARNING: line 3 of parts/box: only lattice pages can be included", main), Some(3));
+        assert_eq!(console_line("WARNING: line 3 of lib/part: only lattice pages can be included", main), None);
+        // Unscoped line references without a file or page do not jump.
+        assert_eq!(console_line("ERROR: Parser error in line 7: unexpected token", main), None);
         assert_eq!(console_line("ECHO: \"online 3 items\"", main), None);
         assert_eq!(console_line("WARNING: something on line 0", main), None);
     }
