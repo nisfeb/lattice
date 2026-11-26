@@ -4357,9 +4357,79 @@ fn writer_redo(s: &mut App) {
     }
 }
 
+/// Handles Writer keyboard shortcuts (`ui-src/writer/keys.js`):
+/// Ctrl+B/I/U, Ctrl+Shift+X, Ctrl+0..6 (body/headings), Ctrl+Z (undo),
+/// and Ctrl+Shift+Z / Ctrl+Y (redo).
+fn writer_key(s: &mut App, ev: &KeyEvent) -> bool {
+    let over = s.palette.is_some()
+        || s.jump.is_some()
+        || s.prompt.is_some()
+        || s.find.is_some()
+        || s.settings.is_some()
+        || s.grub.is_some()
+        || s.skills.is_some()
+        || s.ships_open
+        || s.tree_menu.is_some()
+        || s.link_menu.is_some();
+    if over || s.editing || page_hidden(s) || !writer_editable(s) {
+        return false;
+    }
+    let Some(p) = &s.open else { return false };
+    let Some(v) = &s.writer else { return false };
+    if p.kind != "fodt" || v.name != p.name {
+        return false;
+    }
+    if (ev.is_command('z') && ev.mods.shift && !ev.mods.alt) || (ev.is_command('y') && !ev.mods.shift && !ev.mods.alt) {
+        writer_redo(s);
+        return true;
+    }
+    if ev.is_command('z') && !ev.mods.shift && !ev.mods.alt {
+        writer_undo(s);
+        return true;
+    }
+    if v.cursor.is_none() {
+        return false;
+    }
+    let fmt = if ev.is_command('b') && !ev.mods.shift && !ev.mods.alt {
+        Some(writer::InlineFmt::Strong)
+    } else if ev.is_command('i') && !ev.mods.shift && !ev.mods.alt {
+        Some(writer::InlineFmt::Em)
+    } else if ev.is_command('u') && !ev.mods.shift && !ev.mods.alt {
+        Some(writer::InlineFmt::Underline)
+    } else if ev.is_command('x') && ev.mods.shift && !ev.mods.alt {
+        Some(writer::InlineFmt::Strike)
+    } else {
+        None
+    };
+    if let Some(fmt) = fmt {
+        let range = s.writer.as_ref().map(|v| v.entry.range()).unwrap_or((0, 0));
+        writer_apply(s, move |doc, path| doc.toggle_inline_fmt(path, range.0, range.1, fmt));
+        return true;
+    }
+    if !ev.mods.shift {
+        if ev.is_command('0') {
+            writer_apply(s, |doc, path| {
+                let st = doc.styles.body_style();
+                doc.set_block_kind(path, None, st)
+            });
+            return true;
+        }
+        for lv in 1..=6u8 {
+            if ev.is_command((b'0' + lv) as char) {
+                writer_apply(s, move |doc, path| {
+                    let st = doc.styles.heading_style(lv);
+                    doc.set_block_kind(path, Some(lv), st)
+                });
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Renders styled inline runs of a Writer block into a Rune rich-text element,
 /// plus clickable link chips for any safe `<text:a>` links inside the block.
-fn writer_inlines_el(doc: &writer::Doc, inlines: &[writer::Inline], base_font: rune::TextStyle, k: &Kit, key: String) -> El {
+fn writer_inlines_el(doc: &writer::Doc, inlines: &[writer::Inline], base_font: rune::TextStyle, find: Option<(&str, bool)>, k: &Kit, key: String) -> El {
     let c = &k.c;
     let mut full = String::new();
     let mut spans: Vec<Span> = Vec::new();
@@ -4435,6 +4505,12 @@ fn writer_inlines_el(doc: &writer::Doc, inlines: &[writer::Inline], base_font: r
     let mut el = if full.is_empty() {
         text(" ").font(base_font).color(c.text_faint)
     } else {
+        if let Some((q, current)) = find.filter(|(q, _)| !q.is_empty()) {
+            let alpha = if current { 0.55 } else { 0.22 };
+            for r in rune_kit::search::Fold::default().find(&full, q) {
+                spans.push(Span::new(r.start, r.end).bg(c.text_accent.alpha(alpha), 1.0));
+            }
+        }
         let mut r = rune::rich(full, spans).font(base_font).color(c.text_base).wrap().selectable(true);
         for (a, b) in strikes {
             r = r.strike(a, b, None);
@@ -4461,7 +4537,7 @@ fn writer_inlines_el(doc: &writer::Doc, inlines: &[writer::Inline], base_font: r
     el.key(key)
 }
 
-fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(usize) -> writer::BlockPath, editable: bool, outline_at: Option<usize>, heading_idx: &mut usize, depth: usize, k: &Kit, prefix: &str) -> Vec<El> {
+fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(usize) -> writer::BlockPath, editable: bool, outline_at: Option<usize>, find: Option<(&str, Option<&str>)>, heading_idx: &mut usize, depth: usize, k: &Kit, prefix: &str) -> Vec<El> {
     let c = &k.c;
     let mut out = Vec::new();
     for (idx, b) in blocks.iter().enumerate() {
@@ -4469,6 +4545,9 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
         let picked = v.cursor.as_ref() == Some(&path);
         match b {
             writer::Block::Paragraph { page_break, quote, inlines, style, .. } => {
+                let bkey = format!("{prefix}-pbx-{idx}");
+                let find_cur = find.and_then(|(_, cur)| cur) == Some(bkey.as_str());
+                let find_arg = find.map(|(q, _)| (q, find_cur));
                 if *page_break {
                     out.push(
                         row()
@@ -4485,7 +4564,7 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                 let align = style
                     .as_deref()
                     .and_then(|sn| v.doc.styles.resolve("paragraph", Some(sn), "style:paragraph-properties").get("fo:text-align").cloned());
-                let content = writer_inlines_el(&v.doc, inlines, k.ty.body, k, format!("{prefix}-p-{idx}"));
+                let content = writer_inlines_el(&v.doc, inlines, k.ty.body, find_arg, k, format!("{prefix}-p-{idx}"));
                 let mut inner = col().grow(1.0).min_w(0.0).child(content);
                 if align.as_deref() == Some("center") {
                     inner = inner.items_center();
@@ -4506,6 +4585,8 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                 };
                 if picked && editable {
                     box_el = box_el.fill(c.layer_01).border(1.0, c.text_accent);
+                } else if find_cur {
+                    box_el = box_el.fill(k.selection());
                 } else if editable {
                     box_el = box_el.hover(c.layer_01);
                 }
@@ -4513,11 +4594,14 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                     let p2 = path.clone();
                     box_el = box_el.on_press(move |s: &mut App| writer_pick(s, p2.clone()));
                 }
-                out.push(box_el.key(format!("{prefix}-pbx-{idx}")));
+                out.push(box_el.key(bkey));
             }
             writer::Block::Heading { page_break, level, inlines, .. } => {
                 let hi = *heading_idx;
                 *heading_idx += 1;
+                let bkey = format!("wr-h-{hi}");
+                let find_cur = find.and_then(|(_, cur)| cur) == Some(bkey.as_str());
+                let find_arg = find.map(|(q, _)| (q, find_cur));
                 if *page_break {
                     out.push(
                         row()
@@ -4538,9 +4622,9 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                     _ => 15.0,
                 };
                 let face = rune::TextStyle { size, weight: 650.0, ..k.ty.body };
-                let content = writer_inlines_el(&v.doc, inlines, face, k, format!("{prefix}-ht-{idx}"));
-                let mut box_el = col().key(format!("wr-h-{hi}")).w_full().px(8.0).pt(10.0).pb(4.0).radius(k.radius.sm).child(content);
-                if outline_at == Some(hi) {
+                let content = writer_inlines_el(&v.doc, inlines, face, find_arg, k, format!("{prefix}-ht-{idx}"));
+                let mut box_el = col().key(bkey).w_full().px(8.0).pt(10.0).pb(4.0).radius(k.radius.sm).child(content);
+                if outline_at == Some(hi) || find_cur {
                     box_el = box_el.fill(k.selection());
                 } else if picked && editable {
                     box_el = box_el.fill(c.layer_01).border(1.0, c.text_accent);
@@ -4569,6 +4653,7 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                         &move |bi| writer::BlockPath::ListItem { path: Box::new(lp.clone()), item: ii, block: bi },
                         editable,
                         outline_at,
+                        find,
                         heading_idx,
                         depth + 1,
                         k,
@@ -4606,6 +4691,7 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                             &move |bi| writer::BlockPath::TableCell { path: Box::new(tp.clone()), row: ri, col: ci, block: bi },
                             editable,
                             outline_at,
+                            find,
                             heading_idx,
                             depth + 1,
                             k,
@@ -4626,6 +4712,7 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
                     &move |bi| writer::BlockPath::Section { path: Box::new(sp.clone()), block: bi },
                     editable,
                     outline_at,
+                    find,
                     heading_idx,
                     depth,
                     k,
@@ -4635,13 +4722,15 @@ fn writer_blocks_el(v: &WriterView, blocks: &[writer::Block], parent: &dyn Fn(us
             }
             writer::Block::OpaqueBlock { name, label, .. } => {
                 if !label.is_empty() {
+                    let bkey = format!("{prefix}-op-{idx}");
+                    let find_cur = find.and_then(|(_, cur)| cur) == Some(bkey.as_str());
                     out.push(
                         col()
-                            .key(format!("{prefix}-op-{idx}"))
+                            .key(bkey)
                             .w_full()
                             .padding(8.0)
                             .radius(k.radius.sm)
-                            .fill(c.layer_01)
+                            .fill(if find_cur { k.selection() } else { c.layer_01 })
                             .border(1.0, c.border_weak)
                             .child(text(format!("{name}")).font(k.ty.small).color(c.text_faint))
                             .child(text(label.clone()).font(k.ty.small).color(c.text_muted).wrap()),
@@ -5024,6 +5113,7 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
                                 .placeholder("Type text for the selected block")
                                 .rows(2)
                                 .on_edit(|s: &mut App| &mut s.writer.as_mut().expect("writer open").entry)
+                                .on_key(|s: &mut App, ev: &KeyEvent, _| writer_key(s, ev))
                                 .build(k)
                                 .grow(1.0)
                                 .key("wr-entry"),
@@ -5064,7 +5154,13 @@ fn writer_view(v: &WriterView, s: &App, k: &Kit) -> El {
     }
 
     let mut heading_idx = 0usize;
-    let body_els = writer_blocks_el(v, &v.doc.blocks, &writer::BlockPath::Top, editable, s.outline_at, &mut heading_idx, 0, k, "wr");
+    let wr_find_q = s.find.as_ref().map(|q| q.text.trim()).filter(|q| !q.is_empty());
+    let wr_find_cur = wr_find_q.and_then(|_| {
+        let ms = writer_matches(s);
+        (!ms.is_empty()).then(|| ms[s.find_at.min(ms.len() - 1)].1.clone())
+    });
+    let wr_find = wr_find_q.map(|q| (q, wr_find_cur.as_deref()));
+    let body_els = writer_blocks_el(v, &v.doc.blocks, &writer::BlockPath::Top, editable, s.outline_at, wr_find, &mut heading_idx, 0, k, "wr");
     let sheet = col()
         .key(format!("writer-sheet:{}", v.name))
         .w_full()
@@ -6930,6 +7026,7 @@ enum FindIn {
     #[cfg(not(target_arch = "wasm32"))]
     Web,
     Sheet,
+    Writer,
     Source,
     Nothing,
 }
@@ -6944,6 +7041,8 @@ fn find_where(s: &App) -> FindIn {
         FindIn::Editor
     } else if read_md(s, p).is_some() {
         FindIn::Reader
+    } else if s.writer.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
+        FindIn::Writer
     } else if s.sheet.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
         FindIn::Sheet
     } else if s.map.as_ref().is_some_and(|m| m.name == p.name && m.rev == p.rev) {
@@ -6951,6 +7050,93 @@ fn find_where(s: &App) -> FindIn {
     } else {
         FindIn::Source
     }
+}
+
+fn collect_writer_matches(
+    blocks: &[writer::Block],
+    parent: &dyn Fn(usize) -> writer::BlockPath,
+    prefix: &str,
+    heading_idx: &mut usize,
+    q: &str,
+    fold: &rune_kit::search::Fold,
+    out: &mut Vec<(writer::BlockPath, String)>,
+) {
+    for (idx, b) in blocks.iter().enumerate() {
+        let path = parent(idx);
+        match b {
+            writer::Block::Paragraph { inlines, .. } => {
+                if fold.contains(&writer::inlines_text(inlines), q) {
+                    out.push((path, format!("{prefix}-pbx-{idx}")));
+                }
+            }
+            writer::Block::Heading { inlines, .. } => {
+                let hi = *heading_idx;
+                *heading_idx += 1;
+                if fold.contains(&writer::inlines_text(inlines), q) {
+                    out.push((path, format!("wr-h-{hi}")));
+                }
+            }
+            writer::Block::List { items, .. } => {
+                for (ii, it) in items.iter().enumerate() {
+                    let lp = path.clone();
+                    collect_writer_matches(
+                        &it.blocks,
+                        &move |bi| writer::BlockPath::ListItem { path: Box::new(lp.clone()), item: ii, block: bi },
+                        &format!("{prefix}-li-{idx}-{ii}"),
+                        heading_idx,
+                        q,
+                        fold,
+                        out,
+                    );
+                }
+            }
+            writer::Block::Table { rows, .. } => {
+                for (ri, r) in rows.iter().enumerate() {
+                    for (ci, cell) in r.cells.iter().enumerate() {
+                        let tp = path.clone();
+                        collect_writer_matches(
+                            &cell.blocks,
+                            &move |bi| writer::BlockPath::TableCell { path: Box::new(tp.clone()), row: ri, col: ci, block: bi },
+                            &format!("{prefix}-tc-{idx}-{ri}-{ci}"),
+                            heading_idx,
+                            q,
+                            fold,
+                            out,
+                        );
+                    }
+                }
+            }
+            writer::Block::Section { blocks: sub, .. } => {
+                let sp = path.clone();
+                collect_writer_matches(
+                    sub,
+                    &move |bi| writer::BlockPath::Section { path: Box::new(sp.clone()), block: bi },
+                    &format!("{prefix}-sec-{idx}"),
+                    heading_idx,
+                    q,
+                    fold,
+                    out,
+                );
+            }
+            writer::Block::OpaqueBlock { label, .. } => {
+                if !label.is_empty() && fold.contains(label, q) {
+                    out.push((path, format!("{prefix}-op-{idx}")));
+                }
+            }
+        }
+    }
+}
+
+/// Matching blocks in the open Writer document, in document order, with their scroll keys.
+fn writer_matches(s: &App) -> Vec<(writer::BlockPath, String)> {
+    let (Some(q), Some(v)) = (s.find.as_ref().map(|q| q.text.trim()).filter(|q| !q.is_empty()), &s.writer) else {
+        return Vec::new();
+    };
+    let fold = rune_kit::search::Fold::default();
+    let mut heading_idx = 0usize;
+    let mut out = Vec::new();
+    collect_writer_matches(&v.doc.blocks, &writer::BlockPath::Top, "wr", &mut heading_idx, q, &fold, &mut out);
+    out
 }
 
 /// The cells of the sheet showing that hold find's query, by row then column.
@@ -6991,6 +7177,7 @@ fn find_count(s: &App) -> usize {
         #[cfg(not(target_arch = "wasm32"))]
         (FindIn::Web, ..) => s.web.find_ys.len(),
         (FindIn::Sheet, ..) => sheet_matches(s).len(),
+        (FindIn::Writer, ..) => writer_matches(s).len(),
         (FindIn::Source, ..) => source_matches(s).len(),
         _ => 0,
     }
@@ -7037,6 +7224,21 @@ fn find_step(s: &mut App, by: isize, tx: &mut Tx) {
                 v.table.reveal(row.to_string(), tx);
             }
         }
+        FindIn::Writer => {
+            if let Some((path, key)) = writer_matches(s).get(s.find_at).cloned() {
+                if writer_editable(s) && s.writer.as_ref().is_some_and(|v| v.entry.text == v.entry_was) {
+                    if let Some(v) = &mut s.session.writer {
+                        if let Some(writer::Block::Paragraph { inlines, .. } | writer::Block::Heading { inlines, .. }) = v.doc.block_at(&path) {
+                            let txt = writer::inlines_text(inlines);
+                            v.cursor = Some(path);
+                            v.entry_was = txt.clone();
+                            v.entry = TextEdit::new(txt.as_str());
+                        }
+                    }
+                }
+                tx.scroll_into_view(key);
+            }
+        }
         // ponytail: a source page's match is marked but not scrolled to. The text is one element,
         // and Rune brings elements into view, not places in a text
         FindIn::Source | FindIn::Nothing => {}
@@ -7061,7 +7263,13 @@ fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
             if find_where(s) == FindIn::Web {
                 s.web.find_jump = true;
             }
-            tx.scroll_into_view(Markdown::highlight_key(0));
+            if find_where(s) == FindIn::Writer {
+                if let Some((_, key)) = writer_matches(s).into_iter().next() {
+                    tx.scroll_into_view(key);
+                }
+            } else {
+                tx.scroll_into_view(Markdown::highlight_key(0));
+            }
         })
         .on_key(|s: &mut App, ev: &KeyEvent, tx: &mut Tx| match ev.key {
             Key::Enter => {
@@ -21301,6 +21509,9 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
             _ => {}
         }
     }
+    if !over && writer_key(s, ev) {
+        return true;
+    }
     if ev.is_command('n') && !s.editing {
         ask_new(s);
         return true;
@@ -24350,6 +24561,58 @@ mod tests {
         assert_eq!(cw.len(), 1);
         assert_eq!(cw[0].0, "pub/site");
         assert_eq!(cw[0].1.as_deref(), Some("https://ship.example/apps/lattice/c/pub/site"));
+    }
+
+    #[test]
+    fn writer_shortcuts_and_find_work_across_blocks() {
+        let mut doc = writer::parse_fodt(include_str!("../../ui-src/writer/blank.fodt")).unwrap();
+        let p0 = doc.first_editable_path().unwrap();
+        assert!(doc.set_block_text(&p0, "First needle here"));
+        assert!(doc.set_block_kind(&p0, Some(1), doc.styles.heading_style(1)));
+        let p1 = doc.insert_paragraph_after(writer::top_index(&p0));
+        assert!(doc.set_block_text(&p1, "Second paragraph"));
+        let tp = doc.insert_table_after(writer::top_index(&p1), 1, 2);
+        assert!(doc.set_block_text(&tp, "Table needle cell"));
+        let xml = writer::serialize_fodt(&doc).unwrap();
+
+        let mut s = sample("welcome");
+        s.open = Some(Page { name: "doc".into(), kind: "fodt".into(), body: xml, rev: 1 });
+        sync_writer(&mut s);
+        assert_eq!(find_where(&s), FindIn::Writer);
+
+        // Find matches heading and table cell, skips non-matching paragraph.
+        let mut tx = Tx::default();
+        open_find(&mut s);
+        s.find.as_mut().unwrap().text = "NEEDLE".into();
+        let ms = writer_matches(&s);
+        assert_eq!(ms.len(), 2);
+        assert_eq!(ms[0].1, "wr-h-0");
+        assert!(ms[1].1.starts_with("wr-tc-"));
+        assert_eq!(find_count(&s), 2);
+        // Step forward to second match (table cell), selects its block.
+        find_step(&mut s, 1, &mut tx);
+        assert_eq!(s.find_at, 1);
+        assert_eq!(s.writer.as_ref().unwrap().cursor.as_ref(), Some(&ms[1].0));
+
+        // Close find and test Writer keyboard shortcuts (Ctrl+B, Ctrl+2, Ctrl+Z, Ctrl+Shift+Z).
+        s.find = None;
+        writer_pick(&mut s, p1.clone());
+        let cmd = |ch: char, shift: bool| KeyEvent {
+            key: Key::Command(ch),
+            mods: rune::Mods { cmd: true, ctrl: true, shift, ..rune::Mods::default() },
+        };
+        assert!(on_key(&mut s, &cmd('b', false), &mut tx));
+        assert!(s.open.as_ref().unwrap().body.contains("fo:font-weight=\"bold\""));
+        assert!(on_key(&mut s, &cmd('2', false), &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 2, .. })));
+        // Undo reverts heading level change, redo restores it.
+        assert!(on_key(&mut s, &cmd('z', false), &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Paragraph { .. })));
+        assert!(on_key(&mut s, &cmd('z', true), &mut tx));
+        assert!(matches!(s.writer.as_ref().unwrap().doc.block_at(&p1), Some(writer::Block::Heading { level: 2, .. })));
+        // Shortcuts do not fire while a prompt overlay is open.
+        s.prompt = Some(Prompt::Kind(TextEdit::new("fodt")));
+        assert!(!on_key(&mut s, &cmd('z', false), &mut tx));
     }
 }
 
