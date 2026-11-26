@@ -5,6 +5,14 @@
 //! that changed it. A block both changed is a conflict: this window's is
 //! kept and the other's is handed back beside it, to be chosen between.
 
+/// Which side to keep for a single merge conflict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    Mine,
+    Theirs,
+    Both,
+}
+
 /// A part both changed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Conflict {
@@ -16,11 +24,95 @@ pub struct Conflict {
     pub theirs: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum Step {
+    Clean(Vec<(bool, usize, String)>),
+    Conflict {
+        mine: Vec<(bool, usize, String)>,
+        theirs: Vec<(bool, usize, String)>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Plan {
+    steps: Vec<Step>,
+    mine_len: usize,
+    mine_ends_nl: bool,
+    mine_empty: bool,
+    theirs_ends_nl: bool,
+}
+
+impl Plan {
+    fn render(&self, picks: &[Pick]) -> (String, Vec<usize>) {
+        let mut items: Vec<(bool, usize, &str)> = Vec::new();
+        let mut conflict_starts: Vec<usize> = Vec::new();
+        let mut ci = 0usize;
+        for step in &self.steps {
+            match step {
+                Step::Clean(v) => items.extend(v.iter().map(|(is_m, idx, s)| (*is_m, *idx, s.as_str()))),
+                Step::Conflict { mine, theirs } => {
+                    let pick = picks.get(ci).copied().unwrap_or(Pick::Mine);
+                    ci += 1;
+                    // For a deletion conflict (empty mine), anchor to the preceding block so it stays under the section it was deleted from rather than the following heading.
+                    let anchor = if matches!(pick, Pick::Mine) && mine.is_empty() {
+                        items.len().saturating_sub(1)
+                    } else {
+                        items.len()
+                    };
+                    conflict_starts.push(anchor);
+                    match pick {
+                        Pick::Mine => items.extend(mine.iter().map(|(is_m, idx, s)| (*is_m, *idx, s.as_str()))),
+                        Pick::Theirs => items.extend(theirs.iter().map(|(is_m, idx, s)| (*is_m, *idx, s.as_str()))),
+                        Pick::Both => {
+                            items.extend(mine.iter().map(|(is_m, idx, s)| (*is_m, *idx, s.as_str())));
+                            items.extend(theirs.iter().map(|(is_m, idx, s)| (*is_m, *idx, s.as_str())));
+                        }
+                    }
+                }
+            }
+        }
+        let mut text = String::new();
+        let mut starts = Vec::with_capacity(items.len());
+        for (n, (mine_one, x, block)) in items.iter().enumerate() {
+            starts.push(text.len());
+            // two blocks that did not stand together where they came from get a blank line between them, unless the first ends in one
+            let together = items.get(n + 1).is_none_or(|(next_mine, y, _)| next_mine == mine_one && *y == x + 1);
+            if together || block.ends_with("\n\n") || block.trim().is_empty() {
+                text.push_str(block);
+            } else {
+                text.push_str(block.trim_end());
+                text.push_str("\n\n");
+            }
+        }
+        // the text ends as this window's did, when the last block is not this window's last
+        if items.last().is_some_and(|(mine_one, x, _)| !(*mine_one && *x + 1 == self.mine_len)) {
+            let cut = text.trim_end().len();
+            text.truncate(cut);
+            if !text.is_empty() && (self.mine_ends_nl || (self.mine_empty && self.theirs_ends_nl)) {
+                text.push('\n');
+            }
+        }
+        let c_byte_starts = conflict_starts
+            .into_iter()
+            .map(|at| starts.get(at).or(starts.last()).copied().unwrap_or(0))
+            .collect();
+        (text, c_byte_starts)
+    }
+}
+
 /// The three texts merged.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Merged {
     pub text: String,
     pub conflicts: Vec<Conflict>,
+    plan: Plan,
+}
+
+impl Merged {
+    /// Reconstructs the merged text using one `Pick` per conflict (defaults to `Pick::Mine` for any omitted index).
+    pub fn resolve(&self, picks: &[Pick]) -> String {
+        self.plan.render(picks).0
+    }
 }
 
 /// A text as its blocks, each with the blank lines after it. What
@@ -97,7 +189,11 @@ fn walk(kind: &str, base: &str, mine: &str, theirs: &str) -> (Merged, bool) {
     let (hm, ht) = (hunks(&refs(&bt), &refs(&mt)), hunks(&refs(&bt), &refs(&tt)));
     // each block put out, with the side and place it came from
     let mut out: Vec<(bool, usize)> = Vec::new();
+    let mut steps: Vec<Step> = Vec::new();
     let mut marks = Vec::new();
+    let to_owned_blocks = |is_m: bool, range: std::ops::Range<usize>, src: &[&str]| -> Vec<(bool, usize, String)> {
+        range.map(|x| (is_m, x, src[x].to_owned())).collect()
+    };
     // where the walk stands in the base, and in each side, and the next change of each
     let (mut i, mut mp, mut tp, mut im, mut it) = (0usize, 0usize, 0usize, 0usize, 0usize);
     loop {
@@ -105,10 +201,16 @@ fn walk(kind: &str, base: &str, mine: &str, theirs: &str) -> (Merged, bool) {
         let next = [hm.get(im), ht.get(it)].into_iter().flatten().map(|h| h.base).min();
         let Some((g0, first_end)) = next else {
             out.extend((mp..m.len()).map(|x| (true, x)));
+            if mp < m.len() {
+                steps.push(Step::Clean(to_owned_blocks(true, mp..m.len(), &m)));
+            }
             break;
         };
         // what stands unchanged before it, as this window has it
-        out.extend((mp..mp + (g0 - i)).map(|x| (true, x)));
+        if g0 > i {
+            out.extend((mp..mp + (g0 - i)).map(|x| (true, x)));
+            steps.push(Step::Clean(to_owned_blocks(true, mp..mp + (g0 - i), &m)));
+        }
         (mp, tp) = (mp + (g0 - i), tp + (g0 - i));
         // the change, and every change of either side that meets it
         let (mut g1, mut mine_in, mut theirs_in) = (first_end, Vec::new(), Vec::new());
@@ -138,11 +240,27 @@ fn walk(kind: &str, base: &str, mine: &str, theirs: &str) -> (Merged, bool) {
         let end = |taken: &[Hunk], at: usize| taken.last().map_or(at + (g1 - g0), |h| h.side.1 + (g1 - h.base.1));
         let (m1, t1) = (end(&mine_in, mp), end(&theirs_in, tp));
         match (mine_in.is_empty(), theirs_in.is_empty()) {
-            (false, true) => out.extend((mp..m1).map(|x| (true, x))),
-            (true, false) => out.extend((tp..t1).map(|x| (false, x))),
+            (false, true) => {
+                out.extend((mp..m1).map(|x| (true, x)));
+                if mp < m1 {
+                    steps.push(Step::Clean(to_owned_blocks(true, mp..m1, &m)));
+                }
+            }
+            (true, false) => {
+                out.extend((tp..t1).map(|x| (false, x)));
+                if tp < t1 {
+                    steps.push(Step::Clean(to_owned_blocks(false, tp..t1, &t)));
+                }
+            }
             _ => {
                 if mt[mp..m1] != tt[tp..t1] {
-                    marks.push((out.len(), mt[mp..m1].join("\n\n"), tt[tp..t1].join("\n\n")));
+                    marks.push((mt[mp..m1].join("\n\n"), tt[tp..t1].join("\n\n")));
+                    steps.push(Step::Conflict {
+                        mine: to_owned_blocks(true, mp..m1, &m),
+                        theirs: to_owned_blocks(false, tp..t1, &t),
+                    });
+                } else if mp < m1 {
+                    steps.push(Step::Clean(to_owned_blocks(true, mp..m1, &m)));
                 }
                 out.extend((mp..m1).map(|x| (true, x)));
             }
@@ -179,36 +297,23 @@ fn walk(kind: &str, base: &str, mine: &str, theirs: &str) -> (Merged, bool) {
             (m > b || t > b || o <= m.max(t)) && (o >= m.min(t) || !marks.is_empty())
         }
     });
-    let mut text = String::new();
-    let mut starts = Vec::with_capacity(out.len());
-    for (n, (mine_one, x)) in out.iter().enumerate() {
-        starts.push(text.len());
-        let block = if *mine_one { m[*x] } else { t[*x] };
-        // two blocks that did not stand together where they came from get a blank line between them, unless the first ends in one
-        let together = out.get(n + 1).is_none_or(|(next_mine, y)| next_mine == mine_one && *y == x + 1);
-        if together || block.ends_with("\n\n") || block.trim().is_empty() {
-            text.push_str(block);
-        } else {
-            text.push_str(block.trim_end());
-            text.push_str("\n\n");
-        }
-    }
-    // the text ends as this window's did, when the last block is not this window's last
-    if out.last().is_some_and(|(mine_one, x)| !(*mine_one && *x + 1 == m.len())) {
-        let cut = text.trim_end().len();
-        text.truncate(cut);
-        if mine.ends_with('\n') || (mine.is_empty() && theirs.ends_with('\n')) {
-            text.push('\n');
-        }
-    }
+    let plan = Plan {
+        steps,
+        mine_len: m.len(),
+        mine_ends_nl: mine.ends_with('\n'),
+        mine_empty: mine.is_empty(),
+        theirs_ends_nl: theirs.ends_with('\n'),
+    };
+    let (text, c_starts) = plan.render(&[]);
     let conflicts = marks
         .into_iter()
-        .map(|(at, mine, theirs)| {
-            let place = starts.get(at).or(starts.last()).map_or(String::new(), |s| crate::here::place(kind, &text, *s));
+        .zip(c_starts)
+        .map(|((mine, theirs), start)| {
+            let place = crate::here::place(kind, &text, start);
             Conflict { place, mine, theirs }
         })
         .collect();
-    (Merged { text, conflicts }, sound)
+    (Merged { text, conflicts, plan }, sound)
 }
 
 #[cfg(test)]
@@ -232,7 +337,8 @@ mod tests {
     fn nothing_changed_on_one_side_is_the_other_side_whole() {
         let theirs = BASE.replace("Behind the tree.", "Behind the apple tree.");
         assert_eq!(merge3("md", BASE, BASE, &theirs).text, theirs);
-        assert_eq!(merge3("md", BASE, &theirs, BASE), Merged { text: theirs.clone(), conflicts: Vec::new() });
+        let same_side = merge3("md", BASE, &theirs, BASE);
+        assert_eq!((same_side.text, same_side.conflicts), (theirs.clone(), Vec::new()));
         assert_eq!(merge3("md", BASE, &theirs, &theirs).conflicts, []);
         assert_eq!(merge3("md", BASE, &theirs, &theirs).text, theirs);
         // typed here, in a text nobody else touched: not a letter is moved
@@ -474,5 +580,39 @@ mod tests {
         let got = merge3("js", base, &base.replace("a = 1", "a = 10"), &base.replace("c = 3", "c = 30"));
         assert_eq!((got.text.as_str(), got.conflicts.len()), ("a = 10\n\nb = 2\n\nc = 30\n", 0));
         assert_eq!(merge3("js", "", "", "x = 1\n").text, "x = 1\n");
+    }
+
+    #[test]
+    fn resolve_picks_mine_theirs_or_both_per_conflict() {
+        let mine = BASE
+            .replace("A plan.", "Mine plan.")
+            .replace("Behind the tree.", "Mine site.");
+        let theirs = BASE
+            .replace("A plan.", "Their plan.")
+            .replace("Behind the tree.", "Their site.")
+            .replace("- Timber", "- Timber\n- Nails");
+        let m = safe("md", BASE, &mine, &theirs).unwrap();
+        assert_eq!(m.conflicts.len(), 2);
+        // default (all Mine) matches m.text byte-for-byte
+        assert_eq!(m.resolve(&[Pick::Mine, Pick::Mine]), m.text);
+        // mix: first conflict takes Theirs, second takes Both; non-conflicting Nails is preserved
+        let mixed = m.resolve(&[Pick::Theirs, Pick::Both]);
+        assert!(mixed.contains("Their plan."), "{mixed}");
+        assert!(!mixed.contains("Mine plan."), "{mixed}");
+        assert!(mixed.contains("Mine site.\n\nTheir site."), "{mixed}");
+        assert!(mixed.contains("- Nails"), "{mixed}");
+        // deletion conflict: picking the empty side omits the block cleanly
+        let del_theirs = BASE.replace("Behind the tree.\n\n", "");
+        let m2 = safe("md", BASE, &BASE.replace("Behind the tree.", "Mine site."), &del_theirs).unwrap();
+        assert_eq!(m2.conflicts.len(), 1);
+        assert_eq!(m2.resolve(&[Pick::Theirs]), del_theirs);
+        assert_eq!(m2.resolve(&[Pick::Both]), BASE.replace("Behind the tree.", "Mine site."));
+        // deletion conflict where mine deleted the block under ## Site right before ## Cost stays attributed to ## Site
+        let m3 = safe("md", BASE, &del_theirs, &BASE.replace("Behind the tree.", "Their site.")).unwrap();
+        assert_eq!(m3.conflicts.len(), 1);
+        assert!(m3.conflicts[0].place.starts_with("site\u{1f}"), "got {}", m3.conflicts[0].place);
+        // deleting all blocks via Pick::Theirs yields empty string, not "\n"
+        let m4 = safe("md", "A.\n", "A mine.\n", "").unwrap();
+        assert_eq!(m4.resolve(&[Pick::Theirs]), "");
     }
 }

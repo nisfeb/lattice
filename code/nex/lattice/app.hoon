@@ -19039,9 +19039,16 @@
   =.  o  (~(put by o) 'kind' s+'page')
   =.  o  (~(put by o) 'mode' mode)
   =.  o  (~(put by o) 'name' s+nam)
-  ::  a published page's public thread, other people's words
+  ::  a published page's public thread, other people's words, and comment policy
   ;<  our=@p  bind:m  bowl-our
+  ;<  copen=?  bind:m  (comments-on rel)
+  ;<  cmode=comet-mode:ls  bind:m  (comet-mode-at rel)
   ;<  thr=(list [id=@ta c=comment:lc])  bind:m  (page-thread our our rel |)
+  =.  o  (~(put by o) 'comments-open' b+copen)
+  =.  o
+    %+  ~(put by o)  'comet'
+    ?:  =(%open cmode)  ~
+    (pairs:enjs:format ~[['mode' s+cmode] ['until' ~]])
   =.  o
     %+  ~(put by o)  'comments'
     :-  %a

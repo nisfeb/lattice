@@ -2336,6 +2336,9 @@ pub struct Prefs {
     /// Vim keys in the source editor.
     #[serde(default)]
     pub vim: bool,
+    /// Automatically merge non-conflicting remote changes while editing.
+    #[serde(default)]
+    pub auto_merge: bool,
     /// Making a page public does not ask first: "do not ask again" was ticked on a publish that went ahead.
     #[serde(default)]
     pub pub_ok: bool,
@@ -5333,9 +5336,9 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, split_shares: vec![0.6, 0.4], right_open: Some(false), right_tab: "page".into(), worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new(), ship: String::new(), edit_size: 0.0, no_wrap: false, last_dropped_job: String::new() }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, auto_merge: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, split_shares: vec![0.6, 0.4], right_open: Some(false), right_tab: "page".into(), worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into(), html_plain: true, of: String::new(), ship: String::new(), edit_size: 0.0, no_wrap: false, last_dropped_job: String::new() }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
-        assert!(back.sort_desc);
+        assert!(back.sort_desc && back.auto_merge);
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
     }
 
@@ -6174,13 +6177,99 @@ mod tests {
         assert!(matches!(c.send_queued(&name, &q), Sent::Done { .. }));
         c.share(&name, "shared").unwrap();
         let got = c.urb_read(&format!("urb://{}/{name}", c.ship())).unwrap();
-        assert_eq!(got, Urb::Page { ship: c.ship().to_owned(), path: name.clone(), kind: "md".into(), body: "# Read by address\n".into(), comments: Vec::new(), comments_open: None, comet: None });
+        match &got {
+            Urb::Page { ship, path, kind, body, comments, .. } => {
+                assert_eq!((ship.as_str(), path.as_str(), kind.as_str(), body.as_str()), (c.ship(), name.as_str(), "md", "# Read by address\n"));
+                assert!(comments.is_empty());
+            }
+            other => panic!("expected Urb::Page, got {other:?}"),
+        }
         let folder = c.urb_read(&format!("urb://{}/{dir}/", c.ship()));
         eprintln!("the folder's address: {folder:?}");
         let away = c.urb_read("urb://~nec/notes/a").unwrap_err();
         eprintln!("a ship that is not there: {away}");
         assert!(away.starts_with("504") || away.starts_with("404"), "{away}");
         c.delete(&name).unwrap();
+    }
+
+    #[test]
+    #[ignore = "needs a ship: LATTICE_URL and LATTICE_COOKIE"]
+    fn live_wave2_and_3_routes() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let stamp = crate::api::since_epoch().unwrap().as_secs();
+
+        // 1. Remote comment policy on /urb-read (comments-open + comet mode)
+        let dir = format!("w3pol{stamp}");
+        let page = format!("{dir}/note");
+        let q = Queued { kind: "md".into(), body: "# Policy test\n".into(), base: None, is_new: true, at: 0, tries: 0 };
+        assert!(matches!(c.send_queued(&page, &q), Sent::Done { .. }));
+        c.share(&page, "shared").unwrap();
+        c.set_comments(&page, false).unwrap();
+        c.set_comets(&page, "off").unwrap();
+        match c.urb_read(&format!("urb://{}/{page}", c.ship())).unwrap() {
+            Urb::Page { comments_open, comet, .. } => {
+                assert_eq!(comments_open, Some(false), "comments_open should reflect disabled comments");
+                assert_eq!(comet.as_ref().map(|p| p.mode.as_str()), Some("off"), "comet policy should reflect off");
+            }
+            other => panic!("expected Urb::Page, got {other:?}"),
+        }
+        c.set_comments(&page, true).unwrap();
+        c.set_comets(&page, "held").unwrap();
+        match c.urb_read(&format!("urb://{}/{page}", c.ship())).unwrap() {
+            Urb::Page { comments_open, comet, .. } => {
+                assert_eq!(comments_open, Some(true), "comments_open should reflect enabled comments");
+                assert_eq!(comet.as_ref().map(|p| p.mode.as_str()), Some("held"), "comet policy should reflect held");
+            }
+            other => panic!("expected Urb::Page, got {other:?}"),
+        }
+
+        // 2. Page errors & tree job routes
+        let errs = c.page_errors(&page).unwrap();
+        assert!(errs.is_empty(), "markdown page should have no compile errors, got: {errs}");
+        let job = c.tree_job().unwrap();
+        assert!(job.job.is_none(), "idle ship should have no active tree job, got: {:?}", job.job);
+
+        // 3. Pruned folder list on rename_as (wrapping a path under a new prefix triggers +prune-husks)
+        let moved = format!("w3wrap{stamp}/{page}");
+        let rn = real_name(&moved).unwrap();
+        let pruned = c.rename_as(&page, &rn).unwrap();
+        assert!(pruned.iter().any(|p| p == &dir), "wrapping {page} under w3wrap{stamp}/ should prune {dir}, got {pruned:?}");
+        c.delete(&moved).unwrap();
+
+        // 4. Grub editor routes: read an owned page's code grub and read/write a /mime grub
+        let gpage = format!("w3grub{stamp}");
+        let qg = Queued { kind: "md".into(), body: "grub initial\n".into(), base: None, is_new: true, at: 0, tries: 0 };
+        assert!(matches!(c.send_queued(&gpage, &qg), Sent::Done { .. }));
+        let base = c.base().unwrap();
+        let grub_path = format!("{base}/page/{gpage}/code");
+        let gs = c.grub_source(&grub_path).unwrap();
+        assert!(gs.editable, "markdown code grub should be editable");
+        assert_eq!(gs.blot, "/lattice/page");
+        assert!(gs.text.contains("grub initial"));
+        c.delete(&gpage).unwrap();
+
+        // 5. Skills CRUD + attached file + grub_save on /mime grub + tags + history + trash + restore
+        let sname = format!("w2-smoke-{stamp}");
+        let sbody = format!("---\nname: {sname}\ndescription: Live smoke skill\n---\n\n# Smoke\n");
+        assert!(!c.skill_save(&sname, "SKILL.md", &sbody, None, Some(false)).unwrap(), "SKILL.md save should not conflict");
+        assert!(!c.skill_save(&sname, "notes.txt", "attached v1\n", None, None).unwrap(), "attached file save should not conflict");
+        let list = c.skills_list().unwrap();
+        assert!(list.iter().any(|r| r.name == sname), "created skill should appear in skills_list");
+        c.skill_tag(&sname, "smoke", true).unwrap();
+        let detail = c.skill_read(&sname).unwrap();
+        assert!(detail.tags.iter().any(|t| t == "smoke"));
+        assert!(detail.body.contains("Live smoke skill"));
+        let (ftext, _) = c.skill_file(&sname, "notes.txt").unwrap();
+        assert_eq!(ftext, "attached v1\n");
+        let revs = c.skill_history(&sname).unwrap();
+        assert!(!revs.is_empty());
+        c.skill_file_delete(&sname, "notes.txt").unwrap();
+        c.skill_delete(&sname).unwrap();
+        let trash = c.skill_trash().unwrap();
+        assert!(trash.iter().any(|r| r.name == sname));
+        c.skill_restore(&sname).unwrap();
+        assert!(c.skills_list().unwrap().iter().any(|r| r.name == sname));
+        c.skill_delete(&sname).unwrap();
     }
 
     #[test]
