@@ -7346,6 +7346,7 @@
   ^-  form:m
   ;<  seen=view:nexus  bind:m  (peek:fio road ~)
   ?.  ?=([%file *] seen)  (pure:m ~)
+  ?:  (is-boom:tarball sang.seen)  (pure:m ~)
   (pure:m `(mole |.(!<(know-entry:lk (need-vase:tarball sang.seen)))))
 ::  +sens-apply: write the records in put and drop those in cull, as
 ::  /know/vault/<key>/sensitive. Every tenth write, the writer sleeps a

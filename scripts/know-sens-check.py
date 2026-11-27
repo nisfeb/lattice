@@ -107,6 +107,7 @@ def main():
     batch([('b1', SEN), ('b2', 'plain')])
     check('batch: records', until(lambda: rec(ns + 'b1')) and not rec(ns + 'b2'))
     batch([('b3', SEN)])
+    check('batch: b3 record', until(lambda: rec(ns + 'b3')))
     save('b3', 'unmarked')
     check('owner plain save drops the mark: record gone', until(lambda: not rec(ns + 'b3')))
 
