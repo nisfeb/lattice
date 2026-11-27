@@ -330,6 +330,11 @@
         ::  published page under its view-mode mark (+migrate-pub-marks). 0
         ::  until it has run. Covered, so the stamp survives reload.
             [%fall %& [/pub %'marks-migrated'] [[/ %ud] 0]]
+        ::  /know/sens-migrated: the version of the one-time sweep that gives
+        ::  every sensitive memory its `sensitive` record and drops the ones
+        ::  that have no entry (+migrate-know-sens). 0 until it has run.
+        ::  Covered, so the stamp survives reload.
+            [%fall %& [/know %'sens-migrated'] [[/ %ud] 0]]
         ::  /salt: the private salt behind every published revision's scry
         ::  id (+page-id:lp). Outside /pub, so no peer can read it; 0 until
         ::  +ensure-pub-ids mints it. Covered, because a new salt renames
@@ -656,6 +661,10 @@
         %-  (say 2 ?~(err ~ [leaf+"lattice: the forum tags marker sweep failed" u.err]))
         ::  pages published before per-format marks were grown as gmi
         ;<  ~  bind:m  (migrate-pub-marks root)
+        ::  memories get their sensitive records. A failure here is printed,
+        ::  and the start goes on.
+        ;<  err=(unit tang)  bind:m  (fiber-try (migrate-know-sens root))
+        %-  (say 2 ?~(err ~ [leaf+"lattice: the memory sensitive sweep failed" u.err]))
         ::  a whole-tree action a reload cut short (+job-set)
         ;<  ~  bind:m  (job-resume root)
         ::  a folder move a reload cut short, finished (+move-resume-arm)
@@ -24639,6 +24648,54 @@
   ;<  *  bind:m
     (poke-soft:io &+&+[/sys/scry %'main.sig'] [[/ %scry-cull] `path`i.culls])
   $(culls t.culls)
+::  +sens-version: bump to make +migrate-know-sens run again on upgrade.
+::
+++  sens-version  1
+::  +sens-walk: the vault ball's entries and records, by key. An entry that
+::  will not decode is ~ (it counts as sensitive), a boomed one is absent.
+::
+++  sens-walk
+  |=  [base=path b=ball:tarball]
+  ^-  [ents=(map path (unit know-entry:lk)) recs=(set path)]
+  =/  acc=[ents=(map path (unit know-entry:lk)) recs=(set path)]
+    ?~  fil.b  [~ ~]
+    =/  ent  (~(get by contents.u.fil.b) entry-leaf:lk)
+    =/  rec  (~(get by contents.u.fil.b) sens-leaf:lk)
+    :-  ?~  ent  ~
+        ?:  (is-boom:tarball sang.u.ent)  ~
+        (my [base (mole |.(!<(know-entry:lk (need-vase:tarball sang.u.ent))))] ~)
+    ?~  rec  ~
+    ?:  (is-boom:tarball sang.u.rec)  ~
+    (sy base ~)
+  =/  kids=(list [seg=@ta kid=ball:tarball])  ~(tap by dir.b)
+  |-
+  ?~  kids  acc
+  =/  sub  (sens-walk (snoc base seg.i.kids) kid.i.kids)
+  %=  $
+    kids  t.kids
+    acc   [(~(uni by ents.acc) ents.sub) (~(uni in recs.acc) recs.sub)]
+  ==
+::  +migrate-know-sens: ONE-TIME, stamp-guarded. Memories saved before the
+::  sensitive record existed have none, so the vault is read once and
+::  +sens-plan:lk names the records to write and to drop. The stamp comes
+::  last, so a run that dies partway is done again at the next start. A
+::  vault that will not read leaves no stamp.
+::
+++  migrate-know-sens
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  done=@ud  bind:m  (read-pub-seq (rf root /know %'sens-migrated'))
+  ?:  (gte done sens-version)  (pure:m ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rv root /know/vault) ~)
+  ?.  ?=([%ball *] seen)
+    %-  (say 2 [leaf+"lattice: memory sensitive records: the vault did not read"]~)
+    (pure:m ~)
+  =/  pl=[put=(set path) cull=(set path)]
+    (sens-plan:lk (sens-walk ~ ball.seen))
+  ;<  ~  bind:m  (sens-apply root ~(tap in put.pl) ~(tap in cull.pl))
+  %-  (say 1 [leaf+"lattice: memory sensitive records: {(a-co:co ~(wyt in put.pl))} written, {(a-co:co ~(wyt in cull.pl))} dropped"]~)
+  (put-file (rf root /know %'sens-migrated') [/ %ud] sens-version)
 ::  +read-rev-high / +put-rev-high: /rev-high, each page name's highest
 ::  revision ever published or deleted (+rev-high:lp). Outside /pub, so
 ::  no peer reads it.

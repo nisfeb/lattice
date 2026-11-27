@@ -64,6 +64,12 @@ def main():
     ns = f'memchk-{os.getpid()}/'
     SEN = '---\nsensitive: yes\n---\nsecret'
 
+    def reload():
+        req('POST', INST, b'action=reload-nexus', ctype='application/x-www-form-urlencoded')
+        # the writer starts again: wait for a route to answer
+        time.sleep(5)
+        until(lambda: lat('GET', '/tree-job')[0] == 200, 600)
+
     def rec(k):
         # a dir peek lists its files: the record's mark has no rendering,
         # so a peek of the file itself answers 500 whether or not it is there
@@ -111,8 +117,24 @@ def main():
     save('b3', 'unmarked')
     check('owner plain save drops the mark: record gone', until(lambda: not rec(ns + 'b3')))
 
+    # --- the one-time migration ---
+    save('m', SEN)
+    until(lambda: rec(ns + 'm'))
+    st1, o1 = req('DELETE', CULL + '/know/vault/' + ns + 'm/sensitive')  # a memory that lost its record
+    st2, o2 = req('PUT', MAKE + '/know/vault/' + ns + 'b2/sensitive?blot=/txt', b'x', ctype='text/plain')  # a stale record on a plain memory
+    check('migration: record culled', until(lambda: not rec(ns + 'm')), (st1, o1))
+    check('migration: stale record laid', until(lambda: rec(ns + 'b2')), (st2, o2))
+    req('DELETE', CULL + '/know/sens-migrated')
+    reload()  # the on-load row lays the stamp at 0
+    check('migration: missing record written', until(lambda: rec(ns + 'm')))
+    check('migration: stale record dropped', until(lambda: not rec(ns + 'b2')))
+    check('migration: other records kept', rec(ns + 's2') and rec(ns + 'b1'))
+    req('DELETE', CULL + '/know/vault/' + ns + 'm/sensitive')
+    reload()  # the stamp is now set
+    check('migration: runs once', not rec(ns + 'm'))
+
     # --- clean up ---
-    for k in ('s', 's2', 'p', 'b1', 'b2', 'b3'):
+    for k in ('s', 's2', 'p', 'b1', 'b2', 'b3', 'm'):
         delete(k)
     print('know-sens-check: ' + ('FAIL ' + ', '.join(fails) if fails else 'all passed'))
     sys.exit(1 if fails else 0)
