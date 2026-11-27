@@ -331,8 +331,9 @@
         ::  until it has run. Covered, so the stamp survives reload.
             [%fall %& [/pub %'marks-migrated'] [[/ %ud] 0]]
         ::  /know/sens-migrated: the version of the one-time sweep that gives
-        ::  every sensitive memory its `sensitive` record and drops the ones
-        ::  that have no entry (+migrate-know-sens). 0 until it has run.
+        ::  every sensitive memory its `sensitive` record and drops the records
+        ::  of memories that are plain or gone (+migrate-know-sens). 0 until
+        ::  it has run.
         ::  Covered, so the stamp survives reload.
             [%fall %& [/know %'sens-migrated'] [[/ %ud] 0]]
         ::  /salt: the private salt behind every published revision's scry
@@ -7345,9 +7346,18 @@
       ?(%save %key-save %tag %untag %import %import-trashed)  ~[key.act]
     ==
   |=(t=@t (bind (know-key t) |=(p=path [p imp])))
+::  +decode-entry: a stored entry grub as a know-entry, ~ when it will not
+::  decode. A boom (a grub that failed its mark's check) is one of those.
+::  The one place the sensitive record's fail-closed decode is written.
+::
+++  decode-entry
+  |=  =sang:tarball
+  ^-  (unit know-entry:lk)
+  ?:  (is-boom:tarball sang)  ~
+  (mole |.(!<(know-entry:lk (need-vase:tarball sang))))
 ::  +read-entry-sens: a vault entry for the sensitive record's sake. ~ when
-::  absent or a boom, [~ ~] when the file will not decode (it counts as
-::  sensitive), [~ ~ e] otherwise.
+::  absent (no file, or a tomb), [~ ~] when the file is a boom or will not
+::  decode (it counts as sensitive), [~ ~ e] otherwise.
 ::
 ++  read-entry-sens
   |=  road=road:tarball
@@ -7355,8 +7365,7 @@
   ^-  form:m
   ;<  seen=view:nexus  bind:m  (peek:fio road ~)
   ?.  ?=([%file *] seen)  (pure:m ~)
-  ?:  (is-boom:tarball sang.seen)  (pure:m ~)
-  (pure:m `(mole |.(!<(know-entry:lk (need-vase:tarball sang.seen)))))
+  (pure:m `(decode-entry sang.seen))
 ::  +sens-apply: write the records in put and drop those in cull, as
 ::  /know/vault/<key>/sensitive. Every tenth write, the writer sleeps a
 ::  moment so the ship takes what is waiting (as a batch does).
@@ -7380,8 +7389,10 @@
     (pure:m ~)
   $(todo t.todo, done +(done))
 ::  +sens-sync: each touched key's sensitive record in step with its
-::  entry, after memory actions. A key is read once and its record probed
-::  once, then +sens-plan:lk decides and +sens-apply writes.
+::  entry, after memory actions. Each key is read and its record probed
+::  (a repeated key is read again, and its last read wins), then
+::  +sens-plan:lk decides and +sens-apply writes. Every tenth key the
+::  writer sleeps a moment, as a batch does.
 ::
 ++  sens-sync
   |=  [root=@ud acts=(list know-action:lk)]
@@ -7391,10 +7402,12 @@
   =/  ks=(list [k=path imp=(unit know-entry:lk)])  (touched-keys acts)
   =|  ents=(map path (unit know-entry:lk))
   =|  recs=(set path)
+  =|  done=@ud
   |-  ^-  form:m
   ?~  ks
     =/  pl=[put=(set path) cull=(set path)]  (sens-plan:lk ents recs)
     (sens-apply up ~(tap in put.pl) ~(tap in cull.pl))
+  ;<  ~  bind:m  (tree-yield done 10)
   ;<  e=(unit (unit know-entry:lk))  bind:m
     ?^  imp.i.ks  (pure:(fiber:fiber:nexus ,(unit (unit know-entry:lk))) `imp.i.ks)
     (read-entry-sens (entry-road up /know/vault k.i.ks))
@@ -7402,7 +7415,8 @@
     (peek-exists:fio (rf up (weld /know/vault k.i.ks) sens-leaf:lk))
   %=  $
     ks    t.ks
-    ents  ?~(e ents (~(put by ents) k.i.ks u.e))
+    done  +(done)
+    ents  ?~(e (~(del by ents) k.i.ks) (~(put by ents) k.i.ks u.e))
     recs  ?:(has (~(put in recs) k.i.ks) recs)
   ==
 ::  +read-terms: the term cache, ~ when absent or undecodable, or when
@@ -7952,8 +7966,8 @@
     ;<  ~  bind:m  (sens-sync root ~[act])
     (terms-sync root ~[act])
   ::  many memory actions in one poke (POST /know-save-batch): each applied
-  ::  in order, then one term-cache sync for them all. Every tenth, the
-  ::  writer sleeps a moment so the ship takes what is waiting: unbroken,
+  ::  in order, then one record sync and one term-cache sync for them
+  ::  all. Every tenth, the writer sleeps a moment so the ship takes what is waiting: unbroken,
   ::  200 saves held it for over two minutes (~pyl, 1,000 memories). Pokes
   ::  to the writer stay queued meanwhile (+take-wake-drain skips them).
   ?:  =([/lattice %know-batch] p.sage)
@@ -24652,7 +24666,8 @@
 ::
 ++  sens-version  1
 ::  +sens-walk: the vault ball's entries and records, by key. An entry that
-::  will not decode is ~ (it counts as sensitive), a boomed one is absent.
+::  will not decode, boomed or not, is ~ (it counts as sensitive). A boomed
+::  `sensitive` file is not counted as a record.
 ::
 ++  sens-walk
   |=  [base=path b=ball:tarball]
@@ -24662,8 +24677,7 @@
     =/  ent  (~(get by contents.u.fil.b) entry-leaf:lk)
     =/  rec  (~(get by contents.u.fil.b) sens-leaf:lk)
     :-  ?~  ent  ~
-        ?:  (is-boom:tarball sang.u.ent)  ~
-        (my [base (mole |.(!<(know-entry:lk (need-vase:tarball sang.u.ent))))] ~)
+        (my [base (decode-entry sang.u.ent)] ~)
     ?~  rec  ~
     ?:  (is-boom:tarball sang.u.rec)  ~
     (sy base ~)
@@ -24691,10 +24705,12 @@
   ?.  ?=([%ball *] seen)
     %-  (say 2 [leaf+"lattice: memory sensitive records: the vault did not read"]~)
     (pure:m ~)
-  =/  pl=[put=(set path) cull=(set path)]
-    (sens-plan:lk (sens-walk ~ ball.seen))
+  =/  wk=[ents=(map path (unit know-entry:lk)) recs=(set path)]
+    (sens-walk ~ ball.seen)
+  =/  pl=[put=(set path) cull=(set path)]  (sens-plan:lk wk)
+  =/  unreadable=@ud  (lent (skim ~(val by ents.wk) |=(u=(unit know-entry:lk) ?=(~ u))))
   ;<  ~  bind:m  (sens-apply root ~(tap in put.pl) ~(tap in cull.pl))
-  %-  (say 1 [leaf+"lattice: memory sensitive records: {(a-co:co ~(wyt in put.pl))} written, {(a-co:co ~(wyt in cull.pl))} dropped"]~)
+  %-  (say 1 [leaf+"lattice: memory sensitive records: {(a-co:co ~(wyt in put.pl))} written, {(a-co:co ~(wyt in cull.pl))} dropped, {(a-co:co unreadable)} unreadable"]~)
   (put-file (rf root /know %'sens-migrated') [/ %ud] sens-version)
 ::  +read-rev-high / +put-rev-high: /rev-high, each page name's highest
 ::  revision ever published or deleted (+rev-high:lp). Outside /pub, so

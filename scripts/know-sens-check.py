@@ -48,10 +48,6 @@ def main():
         if not ok:
             fails.append(name)
 
-    def grub(rel):
-        st, out = req('GET', DATA + rel, timeout=60)
-        return out.decode(errors='replace') if st == 200 else None
-
     def until(f, secs=120):
         t = time.monotonic()
         while time.monotonic() - t < secs:
@@ -71,8 +67,9 @@ def main():
         until(lambda: lat('GET', '/tree-job')[0] == 200, 600)
 
     def rec(k):
-        # a dir peek lists its files: the record's mark has no rendering,
-        # so a peek of the file itself answers 500 whether or not it is there
+        # a dir peek lists its files. A file peek of these grubs answers
+        # 500 (the gate logs show a grubbery peek nest-fail), the `entry`
+        # file too, so the directory listing is what answers
         st, out = req('GET', DATA + '/know/vault/' + k + '/', timeout=60)
         try:
             return st == 200 and 'sensitive' in json.loads(out).get('files', [])
@@ -117,6 +114,12 @@ def main():
     save('b3', 'unmarked')
     check('owner plain save drops the mark: record gone', until(lambda: not rec(ns + 'b3')))
 
+    # --- the vault restore path: %import ---
+    imp = json.dumps({'items': [{'key': ns + 'i', 'body': SEN,
+                                 'updated': '~2026.1.1', 'tags': []}]})
+    lat('POST', '/know-import', imp.encode())
+    check('import: record', until(lambda: rec(ns + 'i')))
+
     # --- the one-time migration ---
     save('m', SEN)
     until(lambda: rec(ns + 'm'))
@@ -131,10 +134,10 @@ def main():
     check('migration: other records kept', rec(ns + 's2') and rec(ns + 'b1'))
     req('DELETE', CULL + '/know/vault/' + ns + 'm/sensitive')
     reload()  # the stamp is now set
-    check('migration: runs once', not rec(ns + 'm'))
+    check('migration: runs once', not until(lambda: rec(ns + 'm'), 30))
 
     # --- clean up ---
-    for k in ('s', 's2', 'p', 'b1', 'b2', 'b3', 'm'):
+    for k in ('s', 's2', 'p', 'b1', 'b2', 'b3', 'i', 'm'):
         delete(k)
     print('know-sens-check: ' + ('FAIL ' + ', '.join(fails) if fails else 'all passed'))
     sys.exit(1 if fails else 0)
