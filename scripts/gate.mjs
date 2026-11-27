@@ -258,7 +258,7 @@ const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs', 'ui-sheet-g
 const TWO_SHIP = ['ui-links.mjs', 'ui-shares-live.mjs', 'ui-follow-live.mjs'];
 const allShip = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
-  'job-check.py', 'big-page-check.py', 'dirshare-check.py', 'storage-check.py', 'fs-old-beacon-check.sh', 'hoon-suites',
+  'job-check.py', 'big-page-check.py', 'dirshare-check.py', 'storage-check.py', 'know-sens-check.py', 'fs-old-beacon-check.sh', 'hoon-suites',
 ];
 const shipSuites = allShip.filter((n) => !ONLY || ONLY.includes(n));
 const TWOS = [['two-ship-links.sh', 'bash'], ['two-ship-save.sh', 'bash'], ['two-ship-comments.sh', 'bash'],

@@ -7306,21 +7306,7 @@
   =/  tr=road:tarball  (rf root /know %terms)
   ;<  tc=term-cache:lk  bind:m  (read-terms tr (rf root /know %'terms-stem'))
   ::  each touched key, with the entry an import carries (so no read back)
-  =/  ks=(list [k=path imp=(unit know-entry:lk)])
-    %-  zing
-    %+  turn  acts
-    |=  act=know-action:lk
-    ^-  (list [k=path imp=(unit know-entry:lk)])
-    =/  imp=(unit know-entry:lk)  ?:(?=(%import -.act) `entry.act ~)
-    %+  murn
-      ?-  -.act
-        %move  ~[from.act to.act]
-      ::  split by shape: a bare key and a key with a second field sit at
-      ::  different axes, so one case cannot name key.act for both
-        ?(%del %restore)  ~[key.act]
-        ?(%save %key-save %tag %untag %import %import-trashed)  ~[key.act]
-      ==
-    |=(t=@t (bind (know-key t) |=(p=path [p imp])))
+  =/  ks=(list [k=path imp=(unit know-entry:lk)])  (touched-keys acts)
   |-  ^-  form:m
   ?~  ks
     ;<  ~  bind:m  (put-file tr [/lattice %know-terms] tc)
@@ -7329,6 +7315,86 @@
     ?^  imp.i.ks  (pure:(fiber:fiber:nexus ,(unit know-entry:lk)) imp.i.ks)
     (read-entry (entry-road up /know/vault k.i.ks))
   $(ks t.ks, tc ?~(e (~(del by tc) k.i.ks) (~(put by tc) k.i.ks (row-of:lk k.i.ks u.e))))
+::  +touched-keys: each key a memory action touches, with the entry an
+::  import carries (so no read back). The case over the action is
+::  exhaustive, so every vault write is named here.
+::
+++  touched-keys
+  |=  acts=(list know-action:lk)
+  ^-  (list [k=path imp=(unit know-entry:lk)])
+  %-  zing
+  %+  turn  acts
+  |=  act=know-action:lk
+  ^-  (list [k=path imp=(unit know-entry:lk)])
+  =/  imp=(unit know-entry:lk)  ?:(?=(%import -.act) `entry.act ~)
+  %+  murn
+    ?-  -.act
+      %move  ~[from.act to.act]
+    ::  split by shape: a bare key and a key with a second field sit at
+    ::  different axes, so one case cannot name key.act for both
+      ?(%del %restore)  ~[key.act]
+      ?(%save %key-save %tag %untag %import %import-trashed)  ~[key.act]
+    ==
+  |=(t=@t (bind (know-key t) |=(p=path [p imp])))
+::  +read-entry-sens: a vault entry for the sensitive record's sake. ~ when
+::  absent or a boom, [~ ~] when the file will not decode (it counts as
+::  sensitive), [~ ~ e] otherwise.
+::
+++  read-entry-sens
+  |=  road=road:tarball
+  =/  m  (fiber:fiber:nexus ,(unit (unit know-entry:lk)))
+  ^-  form:m
+  ;<  seen=view:nexus  bind:m  (peek:fio road ~)
+  ?.  ?=([%file *] seen)  (pure:m ~)
+  (pure:m `(mole |.(!<(know-entry:lk (need-vase:tarball sang.seen)))))
+::  +sens-apply: write the records in put and drop those in cull, as
+::  /know/vault/<key>/sensitive. Every tenth write, the writer sleeps a
+::  moment so the ship takes what is waiting (as a batch does).
+::
+++  sens-apply
+  |=  [up=@ud put=(list path) cull=(list path)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  todo=(list [add=? k=path])
+    (weld (turn put |=(k=path [& k])) (turn cull |=(k=path [| k])))
+  =|  done=@ud
+  |-  ^-  form:m
+  ?~  todo  (pure:m ~)
+  ;<  ~  bind:m
+    ?.  &(!=(0 done) =(0 (mod done 10)))  (pure:m ~)
+    (sleep-draining (div ~s1 100))
+  ;<  ~  bind:m
+    ?:  add.i.todo
+      (put-file (rf up (weld /know/vault k.i.todo) sens-leaf:lk) [/lattice %comment-flag] &)
+    ;<  *  bind:m  (cull-soft:io (rf up (weld /know/vault k.i.todo) sens-leaf:lk))
+    (pure:m ~)
+  $(todo t.todo, done +(done))
+::  +sens-sync: each touched key's sensitive record in step with its
+::  entry, after memory actions. A key is read once and its record probed
+::  once, then +sens-plan:lk decides and +sens-apply writes.
+::
+++  sens-sync
+  |=  [root=@ud acts=(list know-action:lk)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  ks=(list [k=path imp=(unit know-entry:lk)])  (touched-keys acts)
+  =|  ents=(map path (unit know-entry:lk))
+  =|  recs=(set path)
+  |-  ^-  form:m
+  ?~  ks
+    =/  pl=[put=(set path) cull=(set path)]  (sens-plan:lk ents recs)
+    (sens-apply up ~(tap in put.pl) ~(tap in cull.pl))
+  ;<  e=(unit (unit know-entry:lk))  bind:m
+    ?^  imp.i.ks  (pure:(fiber:fiber:nexus ,(unit (unit know-entry:lk))) `imp.i.ks)
+    (read-entry-sens (entry-road up /know/vault k.i.ks))
+  ;<  has=?  bind:m
+    (peek-exists:fio (rf up (weld /know/vault k.i.ks) sens-leaf:lk))
+  %=  $
+    ks    t.ks
+    ents  ?~(e ents (~(put by ents) k.i.ks u.e))
+    recs  ?:(has (~(put in recs) k.i.ks) recs)
+  ==
 ::  +read-terms: the term cache, ~ when absent or undecodable, or when
 ::  its rows were stemmed by another rule set (`sr`, /know/terms-stem
 ::  beside it, is not +stem-ver:lk). A row is checked against its entry's time
@@ -7873,6 +7939,7 @@
   ?:  =([/lattice %know-action] p.sage)
     =/  act=know-action:lk  !<(know-action:lk q.sage)
     ;<  ~  bind:m  (apply root now act)
+    ;<  ~  bind:m  (sens-sync root ~[act])
     (terms-sync root ~[act])
   ::  many memory actions in one poke (POST /know-save-batch): each applied
   ::  in order, then one term-cache sync for them all. Every tenth, the
@@ -7884,7 +7951,9 @@
     =/  todo=(list know-action:lk)  acts
     =|  done=@ud
     |-  ^-  form:m
-    ?~  todo  (terms-sync root acts)
+    ?~  todo
+      ;<  ~  bind:m  (sens-sync root acts)
+      (terms-sync root acts)
     ;<  ~  bind:m
       ?.  &(!=(0 done) =(0 (mod done 10)))  (pure:m ~)
       (sleep-draining (div ~s1 100))
