@@ -93,9 +93,10 @@ def main():
         body = json.dumps({'items': [{'key': ns + k, 'body': b} for k, b in items]})
         return lat('POST', '/know-save-batch', body.encode())
 
+    save('p', 'plain')
     save('s', SEN)
     check('save sensitive: record', until(lambda: rec(ns + 's')))
-    save('p', 'plain')
+    # the writer takes its pokes in order, so p is done once s has a record
     check('save plain: no record', not rec(ns + 'p'))
     save('p', 'plain', sensitive='1')
     check('owner raises: record', until(lambda: rec(ns + 'p')))
