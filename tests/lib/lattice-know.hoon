@@ -827,4 +827,28 @@
     (expect !>(!(~(has in bad) /ok1)))
     (expect !>(!(~(has in bad) /ok2)))
   ==
+++  sen-e  ^-  know-entry  ['---\0asensitive: yes\0a---\0asecret' ~2026.1.1 ~ ~]
+++  pln-e  ^-  know-entry  ['plain' ~2026.1.1 ~ ~]
+++  sens-ents
+  ^-  (map path (unit know-entry))
+  %-  my
+  :~  [/a `pln-e]    ::  a plain memory that is also a folder
+      [/a/b `sen-e]  ::  a sensitive memory under it
+      [/p `sen-e]    ::  a sensitive memory that is also a folder
+      [/p/q `pln-e]  ::  a plain memory under it
+      [/c `sen-e]    ::  sensitive, its record already there
+      [/u ~]         ::  an entry file that will not decode
+  ==
+::  /gone has a record and no entry. /a has a stale one on a plain memory.
+++  sens-recs  ^-  (set path)  (sy ~[/c /gone /a])
+++  test-sens-plan
+  %+  expect-eq
+    !>(`[put=(set path) cull=(set path)]`[(sy ~[/a/b /p /u]) (sy ~[/gone /a])])
+  !>((sens-plan sens-ents sens-recs))
+++  test-sens-plan-twice
+  =/  p  (sens-plan sens-ents sens-recs)
+  =/  after=(set path)  (~(uni in (~(dif in sens-recs) cull.p)) put.p)
+  (expect-eq !>(`[put=(set path) cull=(set path)]`[~ ~]) !>((sens-plan sens-ents after)))
+++  test-sens-plan-empty
+  (expect-eq !>(`[put=(set path) cull=(set path)]`[~ ~]) !>((sens-plan ~ ~)))
 --

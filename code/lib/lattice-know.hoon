@@ -936,6 +936,25 @@
   |=  e=know-entry
   ^-  ?
   (sens-text body.e)
+::  +sens-leaf: the name of the record file kept beside a sensitive
+::  memory's entry file.
+++  sens-leaf  `@ta`%sensitive
+::  +sens-plan: which records to write and which to drop. A key needs a
+::  record exactly when its live entry is sensitive, or will not decode
+::  (`~` in ents), which fails closed like +sensitive. Sensitivity is per
+::  memory, so a sensitive memory that is also a folder marks nothing
+::  under it. put: keys that need a record and lack one. cull: keys that
+::  have one and should not, a plain entry or no entry at all.
+++  sens-plan
+  |=  [ents=(map path (unit know-entry)) recs=(set path)]
+  ^-  [put=(set path) cull=(set path)]
+  =/  want=(set path)
+    %-  silt
+    %+  murn  ~(tap by ents)
+    |=  [k=path u=(unit know-entry)]
+    ?:  |(?=(~ u) (sensitive u.u))  `k
+    ~
+  [(~(dif in want) recs) (~(dif in recs) want)]
 ::  +sens-text: does a body carry the mark? Every line from the opening
 ::  fence to the closing one is read with +field-of, as +front reads it,
 ::  so the name counts in any case and with CRLF line ends. It also
