@@ -7379,9 +7379,7 @@
   =|  done=@ud
   |-  ^-  form:m
   ?~  todo  (pure:m ~)
-  ;<  ~  bind:m
-    ?.  &(!=(0 done) =(0 (mod done 10)))  (pure:m ~)
-    (sleep-draining (div ~s1 100))
+  ;<  ~  bind:m  (tree-yield done 10)
   ;<  ~  bind:m
     ?:  add.i.todo
       (put-file (rf up (weld /know/vault k.i.todo) sens-leaf:lk) [/lattice %comment-flag] &)
@@ -7398,7 +7396,6 @@
   |=  [root=@ud acts=(list know-action:lk)]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  up=@ud  bind:m  nexus-up
   =/  ks=(list [k=path imp=(unit know-entry:lk)])  (touched-keys acts)
   =|  ents=(map path (unit know-entry:lk))
   =|  recs=(set path)
@@ -7406,13 +7403,13 @@
   |-  ^-  form:m
   ?~  ks
     =/  pl=[put=(set path) cull=(set path)]  (sens-plan:lk ents recs)
-    (sens-apply up ~(tap in put.pl) ~(tap in cull.pl))
+    (sens-apply root ~(tap in put.pl) ~(tap in cull.pl))
   ;<  ~  bind:m  (tree-yield done 10)
   ;<  e=(unit (unit know-entry:lk))  bind:m
     ?^  imp.i.ks  (pure:(fiber:fiber:nexus ,(unit (unit know-entry:lk))) `imp.i.ks)
-    (read-entry-sens (entry-road up /know/vault k.i.ks))
+    (read-entry-sens (entry-road root /know/vault k.i.ks))
   ;<  has=?  bind:m
-    (peek-exists:fio (rf up (weld /know/vault k.i.ks) sens-leaf:lk))
+    (peek-exists:fio (rf root (weld /know/vault k.i.ks) sens-leaf:lk))
   %=  $
     ks    t.ks
     done  +(done)
@@ -24667,7 +24664,7 @@
 ++  sens-version  1
 ::  +sens-walk: the vault ball's entries and records, by key. An entry that
 ::  will not decode, boomed or not, is ~ (it counts as sensitive). A boomed
-::  `sensitive` file is not counted as a record.
+::  `sensitive` file counts as a record, as +sens-sync's probe sees it.
 ::
 ++  sens-walk
   |=  [base=path b=ball:tarball]
@@ -24679,7 +24676,6 @@
     :-  ?~  ent  ~
         (my [base (decode-entry sang.u.ent)] ~)
     ?~  rec  ~
-    ?:  (is-boom:tarball sang.u.rec)  ~
     (sy base ~)
   =/  kids=(list [seg=@ta kid=ball:tarball])  ~(tap by dir.b)
   |-
