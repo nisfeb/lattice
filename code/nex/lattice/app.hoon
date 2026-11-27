@@ -330,6 +330,12 @@
         ::  published page under its view-mode mark (+migrate-pub-marks). 0
         ::  until it has run. Covered, so the stamp survives reload.
             [%fall %& [/pub %'marks-migrated'] [[/ %ud] 0]]
+        ::  /know/sens-migrated: the version of the one-time sweep that gives
+        ::  every sensitive memory its `sensitive` record and drops the records
+        ::  of memories that are plain or gone (+migrate-know-sens). 0 until
+        ::  it has run.
+        ::  Covered, so the stamp survives reload.
+            [%fall %& [/know %'sens-migrated'] [[/ %ud] 0]]
         ::  /salt: the private salt behind every published revision's scry
         ::  id (+page-id:lp). Outside /pub, so no peer can read it; 0 until
         ::  +ensure-pub-ids mints it. Covered, because a new salt renames
@@ -656,6 +662,10 @@
         %-  (say 2 ?~(err ~ [leaf+"lattice: the forum tags marker sweep failed" u.err]))
         ::  pages published before per-format marks were grown as gmi
         ;<  ~  bind:m  (migrate-pub-marks root)
+        ::  memories get their sensitive records. A failure here is printed,
+        ::  and the start goes on.
+        ;<  err=(unit tang)  bind:m  (fiber-try (migrate-know-sens root))
+        %-  (say 2 ?~(err ~ [leaf+"lattice: the memory sensitive sweep failed" u.err]))
         ::  a whole-tree action a reload cut short (+job-set)
         ;<  ~  bind:m  (job-resume root)
         ::  a folder move a reload cut short, finished (+move-resume-arm)
@@ -7306,21 +7316,7 @@
   =/  tr=road:tarball  (rf root /know %terms)
   ;<  tc=term-cache:lk  bind:m  (read-terms tr (rf root /know %'terms-stem'))
   ::  each touched key, with the entry an import carries (so no read back)
-  =/  ks=(list [k=path imp=(unit know-entry:lk)])
-    %-  zing
-    %+  turn  acts
-    |=  act=know-action:lk
-    ^-  (list [k=path imp=(unit know-entry:lk)])
-    =/  imp=(unit know-entry:lk)  ?:(?=(%import -.act) `entry.act ~)
-    %+  murn
-      ?-  -.act
-        %move  ~[from.act to.act]
-      ::  split by shape: a bare key and a key with a second field sit at
-      ::  different axes, so one case cannot name key.act for both
-        ?(%del %restore)  ~[key.act]
-        ?(%save %key-save %tag %untag %import %import-trashed)  ~[key.act]
-      ==
-    |=(t=@t (bind (know-key t) |=(p=path [p imp])))
+  =/  ks=(list [k=path imp=(unit know-entry:lk)])  (touched-keys acts)
   |-  ^-  form:m
   ?~  ks
     ;<  ~  bind:m  (put-file tr [/lattice %know-terms] tc)
@@ -7329,6 +7325,97 @@
     ?^  imp.i.ks  (pure:(fiber:fiber:nexus ,(unit know-entry:lk)) imp.i.ks)
     (read-entry (entry-road up /know/vault k.i.ks))
   $(ks t.ks, tc ?~(e (~(del by tc) k.i.ks) (~(put by tc) k.i.ks (row-of:lk k.i.ks u.e))))
+::  +touched-keys: each key a memory action touches, with the entry an
+::  import carries (so no read back). The case over the action is
+::  exhaustive, so every vault write is named here.
+::
+++  touched-keys
+  |=  acts=(list know-action:lk)
+  ^-  (list [k=path imp=(unit know-entry:lk)])
+  %-  zing
+  %+  turn  acts
+  |=  act=know-action:lk
+  ^-  (list [k=path imp=(unit know-entry:lk)])
+  =/  imp=(unit know-entry:lk)  ?:(?=(%import -.act) `entry.act ~)
+  %+  murn
+    ?-  -.act
+      %move  ~[from.act to.act]
+    ::  split by shape: a bare key and a key with a second field sit at
+    ::  different axes, so one case cannot name key.act for both
+      ?(%del %restore)  ~[key.act]
+      ?(%save %key-save %tag %untag %import %import-trashed)  ~[key.act]
+    ==
+  |=(t=@t (bind (know-key t) |=(p=path [p imp])))
+::  +decode-entry: a stored entry grub as a know-entry, ~ when it will not
+::  decode. A boom (a grub that failed its mark's check) is one of those.
+::  The one place the sensitive record's fail-closed decode is written.
+::
+++  decode-entry
+  |=  =sang:tarball
+  ^-  (unit know-entry:lk)
+  ?:  (is-boom:tarball sang)  ~
+  (mole |.(!<(know-entry:lk (need-vase:tarball sang))))
+::  +read-entry-sens: a vault entry for the sensitive record's sake. ~ when
+::  absent (no file, or a tomb), [~ ~] when the file is a boom or will not
+::  decode (it counts as sensitive), [~ ~ e] otherwise.
+::
+++  read-entry-sens
+  |=  road=road:tarball
+  =/  m  (fiber:fiber:nexus ,(unit (unit know-entry:lk)))
+  ^-  form:m
+  ;<  seen=view:nexus  bind:m  (peek:fio road ~)
+  ?.  ?=([%file *] seen)  (pure:m ~)
+  (pure:m `(decode-entry sang.seen))
+::  +sens-apply: write the records in put and drop those in cull, as
+::  /know/vault/<key>/sensitive. Every tenth write, the writer sleeps a
+::  moment so the ship takes what is waiting (as a batch does).
+::
+++  sens-apply
+  |=  [up=@ud put=(list path) cull=(list path)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  todo=(list [add=? k=path])
+    (weld (turn put |=(k=path [& k])) (turn cull |=(k=path [| k])))
+  =|  done=@ud
+  |-  ^-  form:m
+  ?~  todo  (pure:m ~)
+  ;<  ~  bind:m  (tree-yield done 10)
+  ;<  ~  bind:m
+    ?:  add.i.todo
+      (put-file (rf up (weld /know/vault k.i.todo) sens-leaf:lk) [/lattice %comment-flag] &)
+    ;<  *  bind:m  (cull-soft:io (rf up (weld /know/vault k.i.todo) sens-leaf:lk))
+    (pure:m ~)
+  $(todo t.todo, done +(done))
+::  +sens-sync: each touched key's sensitive record in step with its
+::  entry, after memory actions. Each key is read and its record probed
+::  (a repeated key is read again, and its last read wins), then
+::  +sens-plan:lk decides and +sens-apply writes. Every tenth key the
+::  writer sleeps a moment, as a batch does.
+::
+++  sens-sync
+  |=  [root=@ud acts=(list know-action:lk)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  ks=(list [k=path imp=(unit know-entry:lk)])  (touched-keys acts)
+  =|  ents=(map path (unit know-entry:lk))
+  =|  recs=(set path)
+  =|  done=@ud
+  |-  ^-  form:m
+  ?~  ks
+    =/  pl=[put=(set path) cull=(set path)]  (sens-plan:lk ents recs)
+    (sens-apply root ~(tap in put.pl) ~(tap in cull.pl))
+  ;<  ~  bind:m  (tree-yield done 10)
+  ;<  e=(unit (unit know-entry:lk))  bind:m
+    ?^  imp.i.ks  (pure:(fiber:fiber:nexus ,(unit (unit know-entry:lk))) `imp.i.ks)
+    (read-entry-sens (entry-road root /know/vault k.i.ks))
+  ;<  has=?  bind:m
+    (peek-exists:fio (rf root (weld /know/vault k.i.ks) sens-leaf:lk))
+  %=  $
+    ks    t.ks
+    done  +(done)
+    ents  ?~(e (~(del by ents) k.i.ks) (~(put by ents) k.i.ks u.e))
+    recs  ?:(has (~(put in recs) k.i.ks) recs)
+  ==
 ::  +read-terms: the term cache, ~ when absent or undecodable, or when
 ::  its rows were stemmed by another rule set (`sr`, /know/terms-stem
 ::  beside it, is not +stem-ver:lk). A row is checked against its entry's time
@@ -7873,10 +7960,11 @@
   ?:  =([/lattice %know-action] p.sage)
     =/  act=know-action:lk  !<(know-action:lk q.sage)
     ;<  ~  bind:m  (apply root now act)
+    ;<  ~  bind:m  (sens-sync root ~[act])
     (terms-sync root ~[act])
   ::  many memory actions in one poke (POST /know-save-batch): each applied
-  ::  in order, then one term-cache sync for them all. Every tenth, the
-  ::  writer sleeps a moment so the ship takes what is waiting: unbroken,
+  ::  in order, then one record sync and one term-cache sync for them
+  ::  all. Every tenth, the writer sleeps a moment so the ship takes what is waiting: unbroken,
   ::  200 saves held it for over two minutes (~pyl, 1,000 memories). Pokes
   ::  to the writer stay queued meanwhile (+take-wake-drain skips them).
   ?:  =([/lattice %know-batch] p.sage)
@@ -7884,7 +7972,9 @@
     =/  todo=(list know-action:lk)  acts
     =|  done=@ud
     |-  ^-  form:m
-    ?~  todo  (terms-sync root acts)
+    ?~  todo
+      ;<  ~  bind:m  (sens-sync root acts)
+      (terms-sync root acts)
     ;<  ~  bind:m
       ?.  &(!=(0 done) =(0 (mod done 10)))  (pure:m ~)
       (sleep-draining (div ~s1 100))
@@ -24569,6 +24659,55 @@
   ;<  *  bind:m
     (poke-soft:io &+&+[/sys/scry %'main.sig'] [[/ %scry-cull] `path`i.culls])
   $(culls t.culls)
+::  +sens-version: bump to make +migrate-know-sens run again on upgrade.
+::
+++  sens-version  1
+::  +sens-walk: the vault ball's entries and records, by key. An entry that
+::  will not decode, boomed or not, is ~ (it counts as sensitive). A boomed
+::  `sensitive` file counts as a record, as +sens-sync's probe sees it.
+::
+++  sens-walk
+  |=  [base=path b=ball:tarball]
+  ^-  [ents=(map path (unit know-entry:lk)) recs=(set path)]
+  =/  acc=[ents=(map path (unit know-entry:lk)) recs=(set path)]
+    ?~  fil.b  [~ ~]
+    =/  ent  (~(get by contents.u.fil.b) entry-leaf:lk)
+    =/  rec  (~(get by contents.u.fil.b) sens-leaf:lk)
+    :-  ?~  ent  ~
+        (my [base (decode-entry sang.u.ent)] ~)
+    ?~  rec  ~
+    (sy base ~)
+  =/  kids=(list [seg=@ta kid=ball:tarball])  ~(tap by dir.b)
+  |-
+  ?~  kids  acc
+  =/  sub  (sens-walk (snoc base seg.i.kids) kid.i.kids)
+  %=  $
+    kids  t.kids
+    acc   [(~(uni by ents.acc) ents.sub) (~(uni in recs.acc) recs.sub)]
+  ==
+::  +migrate-know-sens: ONE-TIME, stamp-guarded. Memories saved before the
+::  sensitive record existed have none, so the vault is read once and
+::  +sens-plan:lk names the records to write and to drop. The stamp comes
+::  last, so a run that dies partway is done again at the next start. A
+::  vault that will not read leaves no stamp.
+::
+++  migrate-know-sens
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  done=@ud  bind:m  (read-pub-seq (rf root /know %'sens-migrated'))
+  ?:  (gte done sens-version)  (pure:m ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rv root /know/vault) ~)
+  ?.  ?=([%ball *] seen)
+    %-  (say 2 [leaf+"lattice: memory sensitive records: the vault did not read"]~)
+    (pure:m ~)
+  =/  wk=[ents=(map path (unit know-entry:lk)) recs=(set path)]
+    (sens-walk ~ ball.seen)
+  =/  pl=[put=(set path) cull=(set path)]  (sens-plan:lk wk)
+  =/  unreadable=@ud  (lent (skim ~(val by ents.wk) |=(u=(unit know-entry:lk) ?=(~ u))))
+  ;<  ~  bind:m  (sens-apply root ~(tap in put.pl) ~(tap in cull.pl))
+  %-  (say 1 [leaf+"lattice: memory sensitive records: {(a-co:co ~(wyt in put.pl))} written, {(a-co:co ~(wyt in cull.pl))} dropped, {(a-co:co unreadable)} unreadable"]~)
+  (put-file (rf root /know %'sens-migrated') [/ %ud] sens-version)
 ::  +read-rev-high / +put-rev-high: /rev-high, each page name's highest
 ::  revision ever published or deleted (+rev-high:lp). Outside /pub, so
 ::  no peer reads it.
